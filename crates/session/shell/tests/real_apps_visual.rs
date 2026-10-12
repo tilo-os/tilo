@@ -58,13 +58,19 @@ impl Driver {
     }
     fn send(&mut self, fb: &mut FrameBuilder, ev: &WindowEvent) {
         let mods = Modifiers::default();
-        fb.dispatch_event(ev, &mods, &mut self.doc, &ROOT, &mut self.focus);
+        fb.dispatch_event(
+            ev,
+            &mods,
+            &mut ui::widget::Edits::lend(&mut self.doc),
+            &ROOT,
+            &mut self.focus,
+        );
     }
     fn cursor(&mut self, fb: &mut FrameBuilder, p: Point) {
         self.send(
             fb,
             &WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             },
         );
@@ -73,7 +79,7 @@ impl Driver {
         self.send(
             fb,
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
@@ -81,7 +87,7 @@ impl Driver {
         self.send(
             fb,
             &WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state: ElementState::Released,
                 button: MouseButton::Left,
             },

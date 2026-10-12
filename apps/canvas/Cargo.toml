@@ -27,6 +27,8 @@ serde.workspace = true
 serde_json.workspace = true
 # Ids derived from an action's content, so every replica names marks alike.
 blake3.workspace = true
+# Tiles an export or a look waits for are painted side by side.
+rayon = "1.12.0"
 # Ids minted where a layer is authored.
 uuid.workspace = true
 # Exports are PNGs; looks are JPEGs unless a caller asks for PNG.
@@ -37,15 +39,18 @@ image = { workspace = true, features = ["png", "jpeg", "webp"] }
 usvg = { version = "0.47", default-features = false }
 # SVG export embeds a painted layer's picture.
 base64.workspace = true
-# A picture the chooser could not add is reported in the log.
+# Recent artworks that cannot be remembered are reported in the log.
 tracing.workspace = true
 # Selections and shapes are combined (union, subtract, intersect, exclude)
 # exactly, as polygons.
 i_overlay = { version = "9.0", default-features = false }
 # An SVG or reference picture named by a path is read where files have one.
 tilo-files = { path = "../../crates/platform/tilo-files" }
-# The artworks opened or saved lately are kept in the app's own state.
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
+# A photo's subject is found on this device by the model the person set
+# up, through the model gateway; its edge is refined to the picture here.
+tilo-subject = { path = "../../crates/platform/tilo-subject" }
+# A saved artwork is a ZIP package carrying its pictures.
+zip.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -54,6 +59,9 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # Saving to and opening from a file in Files, in a directory of the test's.
 tempfile.workspace = true
+# A fresh content store, for opening a saved artwork where its pictures
+# never were.
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

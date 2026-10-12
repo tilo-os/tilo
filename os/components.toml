@@ -94,8 +94,6 @@
 #
 # Not listed: /usr/libexec/tilo-local-model-service arrives with the
 # local-model system extension rather than from this image build.
-# `tilo-control` is listed, but as a dev-only component: production images do
-# not ship it.
 
 # Units provided by distribution packages rather than os/usr/lib/systemd.
 external_units = ["greetd.service"]
@@ -112,6 +110,24 @@ dev_features = ["dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "shell", to = "/usr/bin/shell", mode = "0755" },
+  # The PAM entry point and compositor share the session-recovery contract.
+  # A fresh slot login must run this source's wrapper, not the base image's.
+  { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },
+]
+
+# The control-socket CLI, the one way agents and scripts drive a running
+# desktop (AGENTS.md): the action model over the device admin's control socket
+# in every image, plus synthetic input over a dev session's test-control
+# socket. tilo-vmd's `control` passes through to it.
+[[component]]
+name = "control"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-control"]
+bins = ["tilo-control"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-control", to = "/usr/bin/tilo-control", mode = "0755" },
 ]
 
 [[component]]
@@ -170,36 +186,6 @@ bins = ["tilo-pdf-helper"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-pdf-helper", to = "/usr/libexec/tilo-pdf-helper", mode = "0755" },
-]
-
-# Standalone release builds of the system apps that are also directly invoked
-# (Files doubles as a recovery surface). Their packaged thin builds belong to
-# apps+runtime below.
-[[component]]
-name = "system-apps"
-kind = "userspace"
-scope = "session"
-packages = ["terminal", "file-explorer", "settings"]
-bins = ["terminal", "file-explorer", "settings"]
-layer = "desktop-binaries"
-files = [
-  { from = "terminal", to = "/usr/bin/terminal", mode = "0755" },
-  { from = "file-explorer", to = "/usr/bin/file-explorer", mode = "0755" },
-  { from = "settings", to = "/usr/bin/settings", mode = "0755" },
-]
-
-# Omitted when the image is built with TILO_WITH_BROWSER=0.
-[[component]]
-name = "browser"
-kind = "userspace"
-scope = "session"
-packages = ["browser"]
-bins = ["browser"]
-features = ["browser/wpe"]
-optional = true
-layer = "desktop-binaries"
-files = [
-  { from = "browser", to = "/usr/bin/browser", mode = "0755" },
 ]
 
 # ---- Session: package management and user services -------------------------
@@ -277,18 +263,28 @@ user_units = ["tilo-app-host.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-app-host", to = "/usr/libexec/tilo-app-host", mode = "0755" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-app-host.service", to = "/usr/lib/systemd/user/tilo-app-host.service", mode = "0644" },
 ]
 
 [[component]]
 name = "ush"
 kind = "userspace"
 scope = "session"
-packages = ["ush"]
-bins = ["tilo-ush"]
+packages = ["ush", "tilo-relay", "legacy-vm"]
+bins = ["tilo-ush", "tilo-relay-environment", "tilo-relay-offers", "tilo-legacy"]
 user_units = ["tilo-ush.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-ush", to = "/usr/libexec/tilo-ush", mode = "0755" },
+  { from = "ush-editor/bash-editor.so", to = "/usr/lib/tilo/ush/bash-editor.so", mode = "0755" },
+  { link = "../libexec/tilo-ush", to = "/usr/bin/ush" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-ush.service", to = "/usr/lib/systemd/user/tilo-ush.service", mode = "0644" },
+  # A Terminal environment on a relay: the pty's far end, and what tells
+  # the relay picker which relays run environments.
+  { from = "tilo-relay-environment", to = "/usr/libexec/tilo-relay-environment", mode = "0755" },
+  { from = "tilo-relay-offers", to = "/usr/libexec/tilo-relay-offers", mode = "0755" },
+  # The legacy VM service a guest's app shims reach through the broker.
+  { from = "tilo-legacy", to = "/usr/bin/tilo-legacy", mode = "0755" },
 ]
 
 [[component]]
@@ -296,11 +292,13 @@ name = "model-manager"
 kind = "userspace"
 scope = "session"
 packages = ["local-model-service"]
-bins = ["tilo-model-manager"]
+bins = ["tilo-model-manager", "tilo-speech-worker"]
 user_units = ["tilo-models.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-model-manager", to = "/usr/bin/tilo-model-manager", mode = "0755" },
+  { from = "tilo-speech-worker", to = "/usr/bin/tilo-speech-worker", mode = "0755" },
+  { from = "@manifest/usr/share/licenses/tilo-speech-worker/LICENSE", to = "/usr/share/licenses/tilo-speech-worker/LICENSE", mode = "0644" },
 ]
 
 [[component]]
@@ -328,16 +326,18 @@ profile = "thin-app"
 packages = ["runtime-dylib"]
 app_manifests = "apps/*/tilo-app.toml"
 features = [
-  "music/audio", "music/live", "video-player/decode",
+  "music/audio", "music/live", "music/runtime-engine", "video-player/decode",
   "camera/live-capture", "tube/live", "tube/media", "tube/grayjay-sync",
-  "chat/live-media", "mail/live", "disks/live", "video-editor/decode",
-  "video-editor/gst",
+  "mail/live", "disks/live", "video-editor/decode",
+  "video-editor/gst", "typst-editor/runtime-engine",
 ]
 layer = "direct"
 files = [
   { from = "/usr/lib/tilo-runtime/", to = "/usr/lib/tilo-runtime/", tree = true },
+  { from = "/usr/share/tilo/font-catalogs/", to = "/usr/share/tilo/font-catalogs/", tree = true },
   { from = "runtime-bundle-publisher.hex", to = "/usr/share/tilo/runtime-bundle-publisher.hex", mode = "0644" },
   { from = "browser-runtime-publisher.hex", to = "/usr/share/tilo/browser-runtime-publisher.hex", mode = "0644" },
+  { from = "registry-runtime-publisher.hex", to = "/usr/share/tilo/registry-runtime-publisher.hex", mode = "0644" },
   { from = "/usr/share/tilo-apps/", to = "/usr/share/tilo-apps/", tree = true },
   { from = "app-publisher.hex", to = "/usr/share/tilo/app-publisher.hex", mode = "0644" },
 ]
@@ -448,6 +448,11 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-image-trust", to = "/usr/bin/tilo-image-trust", mode = "0755" },
   { from = "tilo-device-key-init", to = "/usr/bin/tilo-device-key-init", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-image-trust-staged", to = "/usr/libexec/tilo-image-trust-staged", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-verified-update", to = "/usr/libexec/tilo-verified-update", mode = "0755" },
+  { from = "@manifest/usr/libexec/tilo-board-successor.py", to = "/usr/libexec/tilo-board-successor.py", mode = "0755" },
+  { from = "@manifest/dev/hardware_profile.py", to = "/usr/lib/tilo/hardware_profile.py", mode = "0644" },
+  { from = "@asset/cosign-v2.5.2", to = "/usr/libexec/tilo-cosign", mode = "0755" },
 ]
 
 [[component]]
@@ -482,6 +487,18 @@ files = [
 ]
 
 [[component]]
+name = "sibling-unlock"
+kind = "boot"
+scope = "vm"
+scenario = "os/dev/test-nearby-pairing.sh"
+packages = ["tilo-sibling-unlock"]
+bins = ["tilo-sibling-unlock"]
+layer = "rollback-files"
+files = [
+  { from = "tilo-sibling-unlock", to = "/usr/bin/tilo-sibling-unlock", mode = "0755" },
+]
+
+[[component]]
 name = "windows"
 kind = "userspace"
 scope = "vm"
@@ -500,20 +517,6 @@ files = [
 # tools/policy/check_dev_image_contract.py fails if the production image builds
 # or copies any of it.
 
-# The compositor's control-socket CLI, the one way agents and scripts drive a
-# running desktop (AGENTS.md). tilo-vmd's `control` passes through to it.
-[[component]]
-name = "control"
-kind = "userspace"
-scope = "session"
-packages = ["shell"]
-bins = ["tilo-control"]
-dev_features = ["dev-overrides"]
-layer = "dev-tools"
-files = [
-  { from = "tilo-control", to = "/usr/bin/tilo-control", mode = "0755" },
-]
-
 # The dev-VM guest daemon. It is not a service: `tilo-vm` runs
 # `ssh <vm> tilo-vmd rpc` per call, hence the PATH link.
 [[component]]
@@ -528,6 +531,51 @@ files = [
   { link = "../libexec/tilo-vmd", to = "/usr/bin/tilo-vmd" },
 ]
 
+# tilo-vmd's requests over the peer network, for a device beyond the LAN
+# (docs/device-reach.md). os/dev-image/ carries its unit,
+# tilo-device-admin.service, which os/Containerfile.dev enables; `tilo-vm`
+# runs `tilo-device-admin id` over SSH to record the route, hence the PATH
+# link. A developer's machine runs the same binary's `dial`.
+[[component]]
+name = "device-admin"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-device-admin"]
+bins = ["tilo-device-admin"]
+layer = "dev-tools"
+files = [
+  { from = "tilo-device-admin", to = "/usr/libexec/tilo-device-admin", mode = "0755" },
+  { link = "../libexec/tilo-device-admin", to = "/usr/bin/tilo-device-admin" },
+]
+
+# The host CLI, so a Tilo dev machine is a developer's machine too: it drives
+# other devices over SSH, or beyond the LAN through tilo-device-admin beside
+# it (os/dev/test-device-admin-reach.sh drives a device that way).
+[[component]]
+name = "vm-cli"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-vm"]
+bins = ["tilo-vm"]
+layer = "dev-tools"
+files = [
+  { from = "tilo-vm", to = "/usr/bin/tilo-vm", mode = "0755" },
+]
+
+# A signed app registry on loopback offering newer versions of an installed
+# app, for os/tests/booted_app_update.sh: the system image's apps update and
+# roll back through `app` like any other.
+[[component]]
+name = "test-registry"
+kind = "userspace"
+scope = "session"
+packages = ["test-app-registry"]
+bins = ["tilo-test-registry"]
+layer = "dev-tools"
+files = [
+  { from = "tilo-test-registry", to = "/usr/bin/tilo-test-registry", mode = "0755" },
+]
+
 # ---- Boot: effective only after a cold boot ---------------------------------
 # Built and installed outside this manifest for now (the kernel RPM stage, the
 # `uki` stage via os/dev/uki.sh, dracut in the rootfs stage). Listed so dev
@@ -535,9 +583,10 @@ files = [
 # (`dev_swap = "reboot"`): tilo-vm builds it with `dev_build`, installs it
 # VM-wide as the next boot entry and reboots. The others stay scenario-only, and
 # a swap of them is redirected to the scenario that cold-boots them.
-# `installer` and `rollback` above are boot components too: the installer runs
-# from installer media, and tilo-rollback is copied into the initramfs by
-# os/usr/lib/dracut/modules.d/91tilo-rollback.
+# `installer`, `rollback` and `sibling-unlock` above are boot components too:
+# the installer runs from installer media, tilo-rollback is copied into the
+# initramfs by os/usr/lib/dracut/modules.d/91tilo-rollback, and
+# tilo-sibling-unlock by os/usr/lib/dracut/modules.d/92tilo-sibling-unlock.
 
 [[component]]
 name = "kernel"

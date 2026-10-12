@@ -4,7 +4,7 @@
 //! client. Each one carries a seal band in that shell-owned region. The band
 //! follows the active theme's accent and spacing so high contrast can recolour
 //! it, but it is not a [`Theme`](ui::theme::Theme) token and
-//! [`CustomThemeSpec`](ui::theme::CustomThemeSpec) cannot name it.
+//! [`ThemeDocument`](ui::theme::ThemeDocument) cannot name it.
 //!
 //! Automation tells a real surface from an app fake by the target name. That
 //! name is inserted only from shell chrome registration.
@@ -12,7 +12,6 @@
 //! it through `name`, `test_id`, or `test_rects`.
 
 use ui::theme::Theme;
-use ui::tokens::colors::ACCENT_PRIMARY_IDX;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Fill;
@@ -22,6 +21,9 @@ pub const FRAME_NAMESPACE: &str = "tilo.shell.trusted-frame";
 
 /// Seal on the inline permission prompt.
 pub const PERMISSION_PROMPT_TARGET: &str = "tilo.shell.trusted-frame/permission-prompt";
+
+/// Seal on local one-session microphone consent.
+pub const DICTATION_PROMPT_TARGET: &str = "tilo.shell.trusted-frame/dictation-microphone";
 
 /// Seal on a portal sheet (review, authentication, secrets, device choice).
 pub const PORTAL_DIALOG_TARGET: &str = "tilo.shell.trusted-frame/portal-dialog";
@@ -93,16 +95,9 @@ pub fn paint_seal(
     if band.width() <= 0.0 || band.height() <= 0.0 {
         return;
     }
-    let Some(ink) = theme
-        .tokens
-        .colors
-        .accent
-        .stops
-        .get(ACCENT_PRIMARY_IDX)
-        .copied()
-    else {
-        return;
-    };
+    // The seal wears the person's own colour: an app cannot know it, so it
+    // cannot paint a convincing copy.
+    let ink = theme.tokens.colors.intent.you;
     scene.fill(Fill::NonZero, transform, ink, None, &band);
 }
 
@@ -115,8 +110,8 @@ mod tests {
     use crate::shell::state::{Capability, GRANT_ONCE};
     use std::collections::HashMap;
     use taffy::{NodeId, Style, TaffyTree};
+    use ui::widget::TaffyTreeExt;
     use ui::widget::Widget;
-    use vello::kurbo::Point;
 
     struct Forgery {
         rect: Rect,
@@ -132,21 +127,7 @@ mod tests {
             _theme: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let node = taffy.new_leaf(Style::default()).expect("leaf");
-            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-
-        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut ui::text_render::TextRenderer,
-            _theme: &Theme,
-            _presence: &ui::presence::PresenceCtx,
-        ) {
+            taffy.widget_leaf(Style::default(), node_map, self)
         }
 
         fn name(&self) -> &str {

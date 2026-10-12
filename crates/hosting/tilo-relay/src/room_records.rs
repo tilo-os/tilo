@@ -132,6 +132,42 @@ impl RoomRecords {
             .collect())
     }
 
+    /// Bounded existing ciphertext for one channel, without changing retention.
+    #[cfg(feature = "agents")]
+    pub(crate) async fn view_channel(
+        &self,
+        workspace: u64,
+        channel: [u8; 32],
+        max_bytes: usize,
+    ) -> Result<Vec<RetainedBody>, String> {
+        let ws = self
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace)
+            .cloned()
+            .ok_or("the workspace is not hosted here")?;
+        let guard = ws.lock().await;
+        let encoded = guard
+            .store
+            .load_view_channel(&channel, max_bytes)
+            .map_err(|error| error.to_string())?;
+        drop(guard);
+        drop(ws);
+        encoded
+            .into_iter()
+            .map(|raw| {
+                let (author, payload) = crate::store::retained::payload(&raw, workspace)
+                    .ok_or("invalid retained source frame")?;
+                let body = match payload {
+                    CoeditPayload::Checkpoint { body, .. }
+                    | CoeditPayload::RetainedDelta { body, .. } => body,
+                };
+                Ok(RetainedBody { author, body })
+            })
+            .collect()
+    }
+
     /// Admit `commit` to `workspace_id` as this host's own change: ordered,
     /// retained, fanned out to every subscriber and queued for offline
     /// members. Returns its host order.

@@ -7,13 +7,13 @@
 //! revalidated install action; palette activation never downloads software.
 
 use crate::shell::state::WorkspaceAuthority as _;
-use std::cell::{Ref, RefCell};
+use std::cell::Ref;
 use std::collections::HashSet;
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 
+use super::background_index::BackgroundIndex;
 use crate::portal::desktop_services::DynamicLauncherRecord;
 use crate::shell::catalogue::{self, CatalogueApp};
 use crate::shell::chrome_state::{Chrome, OpenTarget};
@@ -37,66 +37,9 @@ pub const APPLICATIONS_KIND: &str = "Applications";
 const NOT_INSTALLED_TIEBREAK: i32 = 1;
 const STORE_PACKAGE_ID: &str = "so.tilo.store";
 
-/// Product-owned ordering for the empty Applications palette. Search queries
-/// continue to rank purely by match quality; this only prevents a fresh system
-/// from presenting forty alphabetised tools as though they were equally likely
-/// starting points. The first group is deliberately useful to curious
-/// tinkerers without assuming they are developers. The group is a catalogue
-/// key, resolved where the subtitle is built.
-fn empty_palette_presentation(package_id: &str) -> (&'static str, i32) {
-    // A local build publishes the same apps under `dev.tilo.`.
-    let canonical = package_id
-        .strip_prefix("dev.tilo.")
-        .map(|name| format!("so.tilo.{name}"));
-    match canonical.as_deref().unwrap_or(package_id) {
-        "so.tilo.browser" => ("search-apps-group-start-here", 90),
-        "so.tilo.file-explorer" => ("search-apps-group-start-here", 89),
-        "so.tilo.notes" => ("search-apps-group-start-here", 88),
-        "so.tilo.terminal" => ("search-apps-group-start-here", 87),
-        "so.tilo.settings" => ("search-apps-group-start-here", 86),
-        "so.tilo.store" => ("search-apps-group-start-here", 85),
-
-        "so.tilo.calendar" => ("search-apps-group-everyday", 74),
-        "so.tilo.mail" => ("search-apps-group-everyday", 73),
-        "so.tilo.contacts" => ("search-apps-group-everyday", 72),
-        "so.tilo.chat" => ("search-apps-group-everyday", 71),
-        "so.tilo.calculator" => ("search-apps-group-everyday", 70),
-
-        "so.tilo.word-processor" => ("search-apps-group-work", 59),
-        "so.tilo.sheets" => ("search-apps-group-work", 58),
-        "so.tilo.slides" => ("search-apps-group-work", 57),
-        "so.tilo.pdf-viewer" => ("search-apps-group-work", 56),
-        "so.tilo.typst-editor" => ("search-apps-group-work", 55),
-
-        "so.tilo.music" => ("search-apps-group-media", 49),
-        "so.tilo.tube" => ("search-apps-group-media", 48),
-        "so.tilo.video-player" => ("search-apps-group-media", 47),
-        "so.tilo.photos" => ("search-apps-group-media", 46),
-        "so.tilo.camera" => ("search-apps-group-media", 45),
-        "so.tilo.weather" => ("search-apps-group-everyday", 44),
-        "so.tilo.maps" => ("search-apps-group-everyday", 43),
-        "so.tilo.feeds" => ("search-apps-group-everyday", 42),
-        "so.tilo.ebook" => ("search-apps-group-media", 41),
-        "so.tilo.totp" => ("search-apps-group-everyday", 40),
-
-        "so.tilo.monitor" | "so.tilo.disks" | "so.tilo.logs" | "so.tilo.firewall"
-        | "so.tilo.vpn" | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager"
-        | "so.tilo.themes" => ("search-apps-group-system-tools", 25),
-        "so.tilo.api-tester"
-        | "so.tilo.snippets"
-        | "so.tilo.diffmerge"
-        | "so.tilo.db-client"
-        | "so.tilo.containers"
-        | "so.tilo.hex-editor"
-        | "so.tilo.git-client"
-        | "so.tilo.code-editor" => ("search-apps-group-developer-tools", 5),
-        _ => ("search-apps-group-more-apps", 10),
-    }
-}
-
 fn presentation_score(needle: &str, package_id: &str, match_score: i32) -> i32 {
     if needle.is_empty() {
-        empty_palette_presentation(package_id).1
+        ui::search::system::starting_point_rank(package_id)
     } else {
         match_score
     }
@@ -108,31 +51,22 @@ fn grouped_detail(package_id: &str, metadata: String) -> String {
     t_args(
         "search-apps-detail-grouped",
         &[
-            ("group", t(empty_palette_presentation(package_id).0).into()),
+            (
+                "group",
+                ui::search::system::starting_point_group(package_id).into(),
+            ),
             ("detail", metadata.into()),
         ],
     )
 }
 
-fn app_detail(needle: &str, app: &InstalledApp) -> String {
-    let metadata = match app.category.as_deref() {
-        Some(category) => format!("Tilo · {category} · {}", app.package_id),
-        None => format!("Tilo · {} · {}", app.package_id, app.version),
+fn app_detail(needle: &str, package_id: &str, category: Option<&str>, version: &str) -> String {
+    let metadata = match category {
+        Some(category) => format!("Tilo · {category} · {package_id}"),
+        None => format!("Tilo · {package_id} · {version}"),
     };
     if needle.is_empty() {
-        grouped_detail(&app.package_id, metadata)
-    } else {
-        metadata
-    }
-}
-
-fn catalogue_app_detail(needle: &str, app: &CatalogueApp) -> String {
-    let metadata = match app.category.as_deref() {
-        Some(category) => format!("Tilo · {category} · {}", app.package_id),
-        None => format!("Tilo · {} · {}", app.package_id, app.version),
-    };
-    if needle.is_empty() {
-        grouped_detail(&app.package_id, metadata)
+        grouped_detail(package_id, metadata)
     } else {
         metadata
     }
@@ -140,19 +74,9 @@ fn catalogue_app_detail(needle: &str, app: &CatalogueApp) -> String {
 
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
-    snapshot: RefCell<Option<ApplicationsSnapshot>>,
-    build: RefCell<Option<Receiver<ApplicationsSnapshot>>>,
+    index: BackgroundIndex<(u64, u64, u64, u128), ApplicationsSnapshot>,
     #[cfg(test)]
     source: Option<Arc<ApplicationsTestSource>>,
-    #[cfg(test)]
-    build_probe: Arc<BuildProbe>,
-}
-
-#[cfg(test)]
-#[derive(Default)]
-struct BuildProbe {
-    builds: std::sync::atomic::AtomicUsize,
-    thread: Mutex<Option<std::thread::ThreadId>>,
 }
 
 #[cfg(test)]
@@ -224,7 +148,6 @@ enum ApplicationEntry {
 }
 
 struct ApplicationsSnapshot {
-    source_generation: (u64, u64, u64, u128),
     entries: Vec<ApplicationEntry>,
     /// Canonical lower-cased identities make the warm catalogue membership
     /// check O(1).  Re-walking either complete source for every indexed row
@@ -239,12 +162,9 @@ impl ApplicationsProvider {
     pub fn new() -> Self {
         Self {
             kinds: vec![ResourceKind::Application],
-            snapshot: RefCell::new(None),
-            build: RefCell::new(None),
+            index: BackgroundIndex::new("tilo-app-search-index"),
             #[cfg(test)]
             source: None,
-            #[cfg(test)]
-            build_probe: Arc::new(BuildProbe::default()),
         }
     }
 
@@ -276,25 +196,13 @@ impl ApplicationsProvider {
     /// first keystroke into an indexing job.
     fn build_snapshot(
         #[cfg(test)] source: Option<Arc<ApplicationsTestSource>>,
-        #[cfg(test)] probe: &BuildProbe,
-    ) -> ApplicationsSnapshot {
-        #[cfg(test)]
-        {
-            probe
-                .builds
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            *probe.thread.lock().expect("application build thread lock") =
-                Some(std::thread::current().id());
-        }
+    ) -> ((u64, u64, u64, u128), ApplicationsSnapshot) {
         #[cfg(test)]
         if let Some(source) = source {
             let (generation, installed, catalogue_apps, host_apps, dynamic) = source.snapshot();
-            return Self::snapshot_from_parts(
+            return (
                 (generation, generation, generation, u128::from(generation)),
-                &installed,
-                catalogue_apps,
-                &host_apps,
-                dynamic,
+                Self::snapshot_from_parts(&installed, catalogue_apps, &host_apps, dynamic),
             );
         }
         let (installed_generation, installed) = launcher::gui_apps_snapshot();
@@ -302,22 +210,18 @@ impl ApplicationsProvider {
         let (host_generation, host_apps) = crate::shell::host_apps::host_apps_snapshot();
         let (dynamic_generation, dynamic) =
             crate::portal::desktop_services::dynamic_launcher_snapshot();
-        Self::snapshot_from_parts(
+        (
             (
                 installed_generation,
                 catalogue_generation,
                 host_generation,
                 dynamic_generation,
             ),
-            &installed,
-            catalogue_apps,
-            &host_apps,
-            dynamic,
+            Self::snapshot_from_parts(&installed, catalogue_apps, &host_apps, dynamic),
         )
     }
 
     fn snapshot_from_parts(
-        source_generation: (u64, u64, u64, u128),
         installed: &[InstalledApp],
         catalogue_apps: Vec<CatalogueApp>,
         host_apps: &[crate::shell::host_apps::HostApp],
@@ -351,11 +255,6 @@ impl ApplicationsProvider {
         );
         let index = index_entries(&entries);
         ApplicationsSnapshot {
-            // Never stamp a completed mixed read with a generation fetched
-            // afterwards: a source can change while this worker builds.
-            // `snapshot()` compares these captured generations to current
-            // source generations and rejects a stale worker result.
-            source_generation,
             entries,
             installed_ids,
             host_app_ids,
@@ -363,56 +262,24 @@ impl ApplicationsProvider {
         }
     }
 
-    /// Start/poll one source-owned worker.  The worker reads and clones every
-    /// source itself; this UI-tick method never flattens an application
-    /// corpus before spawn, and a query never starts it.
-    fn refresh_snapshot(&self) {
-        let receiver = self.build.borrow_mut().take();
-        if let Some(receiver) = receiver {
-            match receiver.try_recv() {
-                Ok(snapshot) => *self.snapshot.borrow_mut() = Some(snapshot),
-                Err(TryRecvError::Empty) => *self.build.borrow_mut() = Some(receiver),
-                Err(TryRecvError::Disconnected) => {}
-            }
-        }
-        let current = self.source_generation();
-        if self
-            .snapshot
-            .borrow()
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.source_generation == current)
-            || self.build.borrow().is_some()
-        {
-            return;
-        }
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let spawned = std::thread::Builder::new()
-            .name("tilo-app-search-index".into())
-            .spawn({
+    /// The worker reads and clones every source itself; the UI tick never
+    /// flattens an application corpus before spawn, and a query never starts it.
+    #[allow(clippy::unused_self, reason = "test builds use the injected source")]
+    fn builder(
+        &self,
+    ) -> impl FnOnce() -> ((u64, u64, u64, u128), ApplicationsSnapshot) + Send + 'static {
+        #[cfg(test)]
+        let source = self.source.clone();
+        move || {
+            Self::build_snapshot(
                 #[cfg(test)]
-                let source = self.source.clone();
-                #[cfg(test)]
-                let probe = Arc::clone(&self.build_probe);
-                move || {
-                    let _ = sender.send(Self::build_snapshot(
-                        #[cfg(test)]
-                        source,
-                        #[cfg(test)]
-                        &probe,
-                    ));
-                }
-            });
-        if spawned.is_ok() {
-            *self.build.borrow_mut() = Some(receiver);
+                source,
+            )
         }
     }
 
     fn snapshot(&self) -> Option<Ref<'_, ApplicationsSnapshot>> {
-        let generation = self.source_generation();
-        let snapshot = self.snapshot.borrow();
-        Ref::filter_map(snapshot, Option::as_ref)
-            .ok()
-            .filter(|snapshot| snapshot.source_generation == generation)
+        self.index.current(&self.source_generation())
     }
 
     /// Score `apps` against `needle`, as [`Self::installed_rows`].
@@ -446,7 +313,12 @@ impl ApplicationsProvider {
             };
             let launch_app = app.clone();
             // A declared category is a more useful second line than the version.
-            let detail = app_detail(needle, &app);
+            let detail = app_detail(
+                needle,
+                &app.package_id,
+                app.category.as_deref(),
+                &app.version,
+            );
             // Where the window will land leads the line, since it's the
             // part of a launch row that changes with context.
             let subtitle = t_args(
@@ -665,7 +537,12 @@ impl ApplicationsProvider {
             };
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
-            let detail = catalogue_app_detail(needle, &app);
+            let detail = app_detail(
+                needle,
+                &app.package_id,
+                app.category.as_deref(),
+                &app.version,
+            );
             let trust = if app.trust.trim().is_empty() {
                 t("search-apps-verification-pending")
             } else {
@@ -709,7 +586,7 @@ impl ApplicationsProvider {
                         );
                         tree.desktop
                             .active_workspace()
-                            .map(|ws| (ws.room, ws.capabilities.clone()))
+                            .map(|ws| (ws.room, ws.launch_grants(tilo_clock::unix_now())))
                     };
                     let Some((room, capabilities)) = context else {
                         // No active workspace is no room to launch into —
@@ -821,19 +698,19 @@ fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
 /// Every member mints their own rather than receiving a copy, since the path
 /// names *this* machine's home and is meaningless on anybody else's. Doesn't
 /// mirror into the room document the way `GrantStoreHandle::insert` does,
-/// but the workspace projection writes `ws.capabilities` wholesale
+/// but the workspace projection writes `ws.sandbox` wholesale
 /// (`state.rs`), so the grant still reaches every peer on the next persist.
 pub(crate) fn grant_file_manager_home(
     tree: &mut crate::shell::state::WorkspaceTree,
     workspace: crate::shell::state::WorkspaceId,
     package_id: &str,
 ) -> bool {
-    use crate::shell::state::{Capability, FsMode, GRANT_SESSION, ResourceRef, Verb};
+    use crate::shell::state::{Access, Capability, FsMode, GRANT_SESSION, ResourceRef};
 
     if package_id != SYSTEM_FILE_MANAGER {
         return false;
     }
-    let Some(home) = xdg_paths::home() else {
+    let Some(home) = tilo_paths::home() else {
         return false;
     };
     let Some(ws) = tree
@@ -849,11 +726,11 @@ pub(crate) fn grant_file_manager_home(
     if ws.allows(
         &actor,
         &ResourceRef::FsPath(home.to_string_lossy().into_owned()),
-        Verb::Read,
+        Access::Read,
     ) {
         return false;
     }
-    ws.grant_app(
+    let ids = ws.grant_app(
         package_id,
         &Capability::Filesystem {
             path: home,
@@ -861,6 +738,21 @@ pub(crate) fn grant_file_manager_home(
             scope: GRANT_SESSION,
         },
     );
+    let remembered = tree.native_runtime.remember_files_home_consent(ws, &ids);
+    if !remembered && tree.native_authority.requires(ws.room) {
+        // Native session consent must have exact live local provenance. A
+        // missing identity or full ledger must not leave an unbound home row.
+        ws.sandbox
+            .retain(|capability| !ids.contains(&capability.id));
+        return false;
+    }
+    // The launch that follows captures this grant, and its sandbox is
+    // released only once the accepted policy holds it: publish it with a
+    // save, which the launch waits for. Nothing else may save before then:
+    // when Files is already an author (any session after the first, the
+    // home grant ending with each session while authorship persists) every
+    // later open of it was refused for the rest of the session.
+    tree.queue_save();
     true
 }
 
@@ -946,6 +838,44 @@ fn report_refused_launch(
     ActionError::Refused(format!("Couldn't open {display_name}: {message}"))
 }
 
+/// Reopening the app while its saved card is focused recovers that window
+/// and acknowledges queued/opening recovery without another document. Other activation keeps its
+/// ordinary placement; no failed sibling is selected by app identity alone.
+fn reopen_focused_local_card(chrome: &Chrome, package_id: &str) -> bool {
+    let target = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        crate::shell::window_actions::focused_group(&state).and_then(|focused| {
+            let workspace = tree.desktop.active_workspace()?;
+            workspace.strips.iter().find_map(|strip| {
+                let group = strip
+                    .window_groups
+                    .iter()
+                    .find(|group| group.id == focused)?;
+                let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
+                match &tab.tile {
+                    crate::shell::state::TileContent::LocalApp { app_id, .. }
+                        if launcher::app_id_matches_package(app_id, package_id) =>
+                    {
+                        Some((workspace.id, strip.id, group.id, tab.id, app_id.clone()))
+                    }
+                    _ => None,
+                }
+            })
+        })
+    };
+    let Some((workspace, strip, group, tab, app_id)) = target else {
+        return false;
+    };
+    let mut state = chrome.borrow_mut();
+    let accepted =
+        crate::shell::peer_windows::reopen_local_restore(&mut state.tree_mut(), tab, &app_id);
+    if accepted {
+        state.focus_tab(workspace, strip, group, tab);
+    }
+    accepted
+}
+
 fn launch_resolved_installed_app(
     chrome: &Chrome,
     app: &launcher::InstalledApp,
@@ -953,6 +883,9 @@ fn launch_resolved_installed_app(
     let package_id = app.package_id.as_str();
     let display_name = app.display_name.as_str();
     grant_user_home_to_file_manager(chrome, package_id);
+    if reopen_focused_local_card(chrome, package_id) {
+        return Ok(());
+    }
     // If the room already has this app open, focus it rather than starting
     // a second copy. See `peer_windows::opened_for_the_room`.
     let already = {
@@ -963,6 +896,15 @@ fn launch_resolved_installed_app(
             .active_workspace()
             .and_then(|ws| {
                 crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
+                    .or_else(|| {
+                        (package_id == "so.tilo.terminal")
+                            .then(|| {
+                                crate::shell::peer_windows::opened_locally_in_workspace(
+                                    ws, package_id, salt,
+                                )
+                            })
+                            .flatten()
+                    })
                     .map(|(strip, group, tab)| (ws.id, strip, group, tab))
             })
             .or_else(|| {
@@ -1016,8 +958,23 @@ fn launch_resolved_installed_app(
     let launched = {
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
-        tree.workspace_after_opening_app(package_id)
-            .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
+        let native_room = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room)
+            .filter(|room| tree.requires_native_owner(*room));
+        if let Some(room) = native_room {
+            drop(tree);
+            Some(launcher::queue_native_authoring_launch(
+                app.clone(),
+                st.tree_handle(),
+                room,
+                st.native_app_opening.clone(),
+            ))
+        } else {
+            tree.workspace_after_opening_app(package_id)
+                .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
+        }
     };
     // Non-blocking past resolution — only pre-fork failures land here, the
     // rest arrive as launch events drained each frame.
@@ -1058,7 +1015,8 @@ impl SearchProvider for ApplicationsProvider {
     }
 
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
-        self.refresh_snapshot();
+        self.index
+            .refresh(&self.source_generation(), self.builder());
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
@@ -1071,6 +1029,13 @@ impl SearchProvider for ApplicationsProvider {
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         if !ctx.wanted.contains(&ResourceKind::Application) {
             return None;
+        }
+        if self.snapshot().is_none() {
+            self.index.settle(
+                crate::shell::search::RESOLVE_INDEX_WAIT,
+                || self.source_generation(),
+                || self.builder(),
+            );
         }
         let snapshot = self.snapshot()?;
         snapshot
@@ -1151,17 +1116,11 @@ impl SearchProvider for ApplicationsProvider {
         }
         let exhausted = !found.more && considered == found.hits.len();
         let next = offset.saturating_add(considered);
-        SearchPage {
-            revision: revision.clone(),
+        SearchPage::continuing(
+            revision,
             results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("applications:{next}\u{1f}{}", ctx.needle),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+            (!exhausted).then(|| format!("applications:{next}\u{1f}{}", ctx.needle)),
+        )
     }
 }
 
@@ -1217,9 +1176,7 @@ impl ApplicationsProvider {
 
     fn revision(&self) -> String {
         let (installed, catalogue, host, dynamic) = self.source_generation();
-        let ready = self.snapshot.borrow().as_ref().is_some_and(|snapshot| {
-            snapshot.source_generation == (installed, catalogue, host, dynamic)
-        });
+        let ready = self.index.is_ready(&(installed, catalogue, host, dynamic));
         format!(
             "{}:{installed}:{catalogue}:{host}:{dynamic}",
             if ready { "ready" } else { "indexing" }
@@ -1318,13 +1275,192 @@ mod tests {
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
     use automerge::AutoCommit;
-    use parking_lot::RwLock;
     use std::path::PathBuf;
     use std::sync::Arc;
 
     fn chrome_rc() -> Chrome {
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
+        let handle: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
+    }
+
+    /// Files' home grant lasts one session; its authorship of the workspace
+    /// persists. So in any session after the first, opening Files adds the
+    /// home grant and no authorship grant, and nothing else saves before the
+    /// launch, which is released only once the accepted policy (published by
+    /// a save) holds the grant. The grant itself must queue that save, or
+    /// every open of Files is refused for the rest of the session.
+    #[test]
+    fn the_files_home_grant_queues_the_save_that_publishes_it() {
+        let home = tilo_test_env::TestHome::new().unwrap();
+        let state = home.state().join("files-home-grant").join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.persist_path = Some(state.clone());
+        let workspace = tree.desktop.active;
+        crate::shell::persist::wait_for_saves();
+        assert!(!state.exists(), "nothing saved the tree before the grant");
+        assert!(grant_file_manager_home(
+            &mut tree,
+            workspace,
+            SYSTEM_FILE_MANAGER
+        ));
+        crate::shell::persist::wait_for_saves();
+        assert!(
+            state.exists(),
+            "the grant queued a save, whose publication the launch waits for"
+        );
+        assert!(
+            !grant_file_manager_home(&mut tree, workspace, SYSTEM_FILE_MANAGER),
+            "a second open finds the grant in place"
+        );
+    }
+
+    #[test]
+    fn opening_a_live_local_terminal_focuses_without_another_record_writer() {
+        use crate::shell::state::{
+            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+            next_id,
+        };
+        let tab_id = next_id();
+        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+        let mut strip = Strip::new(StripId::from(next_id()), "Main");
+        let group_id = next_id();
+        strip.window_groups.push(WindowGroup {
+            id: group_id,
+            tabs: vec![Tab {
+                id: tab_id,
+                title: "Terminal".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.terminal".into(),
+                    surface_id: 7,
+                },
+            }],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        workspace.strips.push(strip);
+        let mut tree = WorkspaceTree::default();
+        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces = vec![workspace];
+        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
+        let chrome = ChromeState::new_with_handle(handle.clone());
+        let provider = ApplicationsProvider::new();
+        let rows = provider.results_for(
+            "terminal",
+            vec![app("so.tilo.terminal", "Terminal")],
+            OpenTarget::Beside,
+        );
+        let row = rows.first().expect("installed Terminal action");
+        let mut doc = AutoCommit::new();
+        (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("Open must focus the existing local Terminal");
+        assert_eq!(chrome.borrow().active_tab_id(), Some(tab_id));
+        assert!(
+            chrome.borrow().notifications().is_empty(),
+            "focus must not queue a second launcher or opening notice"
+        );
+        assert_eq!(
+            handle.read().desktop.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn opening_the_focused_failed_app_reuses_its_saved_window() {
+        use crate::shell::state::{
+            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+            next_id,
+        };
+        let tab = next_id();
+        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+        let mut strip = Strip::new(StripId::from(next_id()), "Main");
+        strip.window_groups.push(WindowGroup {
+            id: next_id(),
+            tabs: vec![Tab {
+                id: tab,
+                title: "Browser".into(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.browser".into(),
+                    label: "Browser".into(),
+                    note: "Failed to open".into(),
+                },
+            }],
+            active_tab: tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+        });
+        workspace.strips.push(strip);
+        let mut tree = WorkspaceTree::default();
+        tree.set_salt_override(crate::shell::state::peer_salt_of(tab));
+        tree.desktop.active = workspace.id;
+        tree.desktop.workspaces = vec![workspace];
+        tree.remember_local_app_record(tab, 8183);
+        let records = tree.local_app_records.clone();
+        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
+        let chrome = ChromeState::new_with_handle(handle.clone());
+        let rows = ApplicationsProvider::new().results_for(
+            "browser",
+            vec![app("so.tilo.browser", "Browser")],
+            OpenTarget::Beside,
+        );
+        let mut doc = AutoCommit::new();
+        (rows[0].on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("retry the focused saved window");
+        (rows[0].on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("repeated activation while the saved recovery is queued");
+        let state = handle.read();
+        let tabs = &state.desktop.workspaces[0].strips[0].window_groups[0].tabs;
+        assert_eq!(tabs.len(), 1, "Applications must not create another tab");
+        assert_eq!(tabs[0].id, tab);
+        assert!(matches!(&tabs[0].tile, TileContent::LocalApp { note, .. } if note.is_empty()));
+        assert_eq!(state.local_app_records, records);
+        drop(state);
+        assert_eq!(chrome.borrow().active_tab_id(), Some(tab));
+        assert!(chrome.borrow().notifications().is_empty());
+        {
+            let mut state = handle.write();
+            let TileContent::LocalApp { note, .. } =
+                &mut state.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile
+            else {
+                panic!("the saved card remains local");
+            };
+            *note = crate::shell::peer_windows::OPENING.into();
+            drop(state);
+        }
+        (rows[0].on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("opening recovery is already accepted");
+        let state = handle.read();
+        assert!(
+            matches!(&state.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile,
+            TileContent::LocalApp { note, .. } if note == crate::shell::peer_windows::OPENING)
+        );
+        assert_eq!(state.local_app_records, records);
+        drop(state);
+        assert!(chrome.borrow().notifications().is_empty());
     }
 
     fn refresh_until_ready(provider: &ApplicationsProvider, ctx: &SearchContext<'_>) {
@@ -1413,7 +1549,12 @@ mod tests {
             );
             let row = out.first().expect("a row for the offered app");
             assert!(c.borrow().notifications().is_empty());
-            let opened = (row.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none());
+            let opened = (row.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &c,
+                &ActionArgs::none(),
+            );
             assert!(
                 opened.is_err(),
                 "no active workspace is no room to launch into — the caller must be told, \
@@ -1454,7 +1595,7 @@ mod tests {
             let row = out.first().expect("a row for the ghost app");
             assert!(c.borrow().notifications().is_empty());
             let outcome = (row.on_open)(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &c,
                 &crate::shell::search::action_api::ActionArgs::none(),
@@ -1648,6 +1789,8 @@ mod tests {
             let cs = c.borrow();
             let doc = AutoCommit::new();
             let out = p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "hello",
                 wanted: &[ResourceKind::File],
                 chrome: &cs,
@@ -1951,6 +2094,8 @@ mod tests {
             let state = c.borrow();
             let doc = AutoCommit::new();
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "sheets",
                 wanted: &[ResourceKind::Application],
                 chrome: &state,
@@ -1989,6 +2134,8 @@ mod tests {
         let doc = AutoCommit::new();
         for needle in ["Dateien", "dateien", "Files"] {
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle,
                 wanted: &[ResourceKind::Application],
                 chrome: &state,
@@ -2116,6 +2263,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "unique-tail",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2129,7 +2278,7 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            cold.build.borrow().is_none(),
+            !cold.index.building(),
             "a public cold query must not start or clone a full application corpus"
         );
 
@@ -2155,15 +2304,19 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let index = index_entries(&entries);
-        *provider.snapshot.borrow_mut() = Some(ApplicationsSnapshot {
-            source_generation: provider.source_generation(),
-            entries,
-            installed_ids: HashSet::new(),
-            host_app_ids: HashSet::new(),
-            index,
-        });
+        provider.index.set_ready(
+            provider.source_generation(),
+            ApplicationsSnapshot {
+                entries,
+                installed_ids: HashSet::new(),
+                host_app_ids: HashSet::new(),
+                index,
+            },
+        );
         let page = provider.query_page(
             SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "unique-tail",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome,
@@ -2180,7 +2333,7 @@ mod tests {
         assert_eq!(page.results.len(), 1);
         assert_eq!(page.results[0].title, "Open unique-tail");
         assert!(page.exhausted, "the rare posting needs one warm inspection");
-        assert!(provider.build.borrow().is_none());
+        assert!(!provider.index.building());
     }
 
     #[test]
@@ -2191,6 +2344,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "anything",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2254,6 +2409,8 @@ mod tests {
         {
             let chrome = chrome.borrow();
             let ctx = SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome,
@@ -2321,32 +2478,20 @@ mod tests {
         let chrome = chrome_rc();
         let doc = AutoCommit::new();
         let resource = ResourceRef::new("applications", "so.tilo.calculator");
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
-        loop {
-            let opened = ActionCatalog::build_for_resource(
-                &registry,
-                &resource,
-                SearchScope::All,
-                None,
-                &chrome.borrow(),
-                &doc,
-                &automerge::ROOT,
-                &AllVisible,
-            )
-            .select(&resource)
-            .map(|action| action.title().to_string());
-            if let Some(title) = opened {
-                assert_eq!(title, "Open Calculator");
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "invoking by address alone never takes in the finished index"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        // The first request resolves: no listing beforehand, no retry.
+        let opened = ActionCatalog::build_for_resource(
+            &registry,
+            &resource,
+            SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        )
+        .select(&resource)
+        .map(|action| action.title().to_string());
+        assert_eq!(opened.as_deref(), Some("Open Calculator"));
     }
 
     #[test]
@@ -2376,6 +2521,8 @@ mod tests {
         let chrome = chrome.borrow();
         let doc = AutoCommit::new();
         let ctx = SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle: "unique-source-tail",
             wanted: &[ResourceKind::Application],
             chrome: &chrome,
@@ -2392,7 +2539,8 @@ mod tests {
         );
         assert_eq!(
             provider
-                .build_probe
+                .index
+                .probe
                 .builds
                 .load(std::sync::atomic::Ordering::Relaxed),
             0
@@ -2403,7 +2551,7 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             0
         );
-        assert!(provider.build.borrow().is_none());
+        assert!(!provider.index.building());
 
         for _ in 0..6_000 {
             provider.refresh_search_index(&ctx);
@@ -2415,17 +2563,19 @@ mod tests {
         assert!(provider.search_revision(&ctx).starts_with("ready:"));
         assert_eq!(
             provider
-                .build_probe
+                .index
+                .probe
                 .builds
                 .load(std::sync::atomic::Ordering::Relaxed),
             1
         );
         assert_ne!(
             *provider
-                .build_probe
+                .index
+                .probe
                 .thread
                 .lock()
-                .expect("application build thread lock"),
+                .expect("index build probe lock"),
             Some(query_thread)
         );
         let page = provider.query_page(
@@ -2539,9 +2689,11 @@ mod native_application_tests {
             let directory = tempfile::tempdir().unwrap();
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
             chrome.borrow_mut().hosted_inputs =
-                HostedTileInputs::for_host_directory(directory.path()).unwrap();
+                HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),
@@ -2550,7 +2702,13 @@ mod native_application_tests {
             });
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].id, crate::shell::hosted_inputs::FILES_PACKAGE_ID);
-            (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+            (results[0].on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap();
             assert_eq!(chrome.borrow().active_app_title().as_deref(), Some("Files"));
             assert!(
                 chrome
@@ -2573,8 +2731,13 @@ mod native_application_tests {
             );
             chrome.borrow_mut().hosted_inputs = HostedTileInputs::default();
             assert!(
-                (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none())
-                    .is_err()
+                (results[0].on_open)(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &chrome,
+                    &ActionArgs::none()
+                )
+                .is_err()
             );
         }
 
@@ -2602,7 +2765,7 @@ mod native_application_tests {
             {
                 let mut state = chrome.borrow_mut();
                 state.hosted_inputs =
-                    HostedTileInputs::for_host_directory(directory.path()).unwrap();
+                    HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
                 state.set_strip_viewport(Some(tilo_desktop_model::commands::StripViewport {
                     strip: strip_id,
                     groups: ids
@@ -2625,13 +2788,21 @@ mod native_application_tests {
 
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
                 needle: "Files",
                 wanted: &[ResourceKind::Application],
                 chrome: &chrome.borrow(),
                 doc: &doc,
                 doc_root: &automerge::ROOT,
             });
-            (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+            (results[0].on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+            .unwrap();
 
             let state = chrome.borrow();
             let tree = state.tree();

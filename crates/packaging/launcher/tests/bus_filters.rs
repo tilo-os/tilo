@@ -8,9 +8,8 @@
 )]
 
 use std::io::BufRead;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
 
 use launcher::dbus_proxy::{ATSPI_FILTER_ARGS, session_filter_args};
 use zbus::blocking::Connection;
@@ -50,39 +49,24 @@ impl Drop for Bus {
 
 /// `xdg-dbus-proxy` in front of `upstream` with exactly `filter`.
 struct Proxy {
-    child: Child,
-    socket: PathBuf,
+    guard: launcher::dbus_proxy::DBusProxyGuard,
 }
 
 impl Proxy {
-    fn start(upstream: &str, socket: PathBuf, filter: &[&str]) -> Self {
-        let child = Command::new("xdg-dbus-proxy")
-            .arg(upstream)
-            .arg(&socket)
-            .args(filter)
-            .spawn()
-            .expect("the bus filter tests need xdg-dbus-proxy, which the builder image installs");
-        let deadline = Instant::now().checked_add(Duration::from_secs(30)).unwrap();
-        while !socket.exists() {
-            assert!(Instant::now() < deadline, "xdg-dbus-proxy never listened");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        Self { child, socket }
+    fn start(upstream: &str, socket: &Path, filter: &[&str]) -> Self {
+        let binary = launcher::dbus_proxy::find_proxy_binary()
+            .expect("the bus filter tests need xdg-dbus-proxy");
+        let guard = launcher::dbus_proxy::spawn_filtered_proxy(&binary, upstream, socket, filter)
+            .expect("the production proxy reports its listener ready");
+        Self { guard }
     }
 
     fn connect(&self) -> Connection {
-        let address = format!("unix:path={}", self.socket.display());
+        let address = format!("unix:path={}", self.guard.socket_path().display());
         zbus::blocking::connection::Builder::address(address.as_str())
             .unwrap()
             .build()
             .expect("the proxy accepts the sandboxed client")
-    }
-}
-
-impl Drop for Proxy {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -235,22 +219,25 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
     // accessibility status rules.
     let session_proxy = Proxy::start(
         &session.address,
-        dir.path().join("session-proxy"),
+        &dir.path().join("session-proxy"),
         &session_filter_args(false, true),
     );
     let atspi_proxy = Proxy::start(
         &atspi.address,
-        dir.path().join("atspi-proxy"),
+        &dir.path().join("atspi-proxy"),
         ATSPI_FILTER_ARGS,
     );
     let app_session = session_proxy.connect();
     // The app publishes its accessible tree on its own connection, through
     // the proxy.
-    let app_atspi = connect(&format!("unix:path={}", atspi_proxy.socket.display()))
-        .serve_at("/org/a11y/atspi/accessible/root", Accessible)
-        .unwrap()
-        .build()
-        .expect("the proxy accepts the sandboxed client");
+    let app_atspi = connect(&format!(
+        "unix:path={}",
+        atspi_proxy.guard.socket_path().display()
+    ))
+    .serve_at("/org/a11y/atspi/accessible/root", Accessible)
+    .unwrap()
+    .build()
+    .expect("the proxy accepts the sandboxed client");
 
     // Session bus: where the AT-SPI bus is, and whether AT is on.
     let reply = call(

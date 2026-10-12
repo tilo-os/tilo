@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use serde_json::json;
 use tilo_actions::{Action, ActionError, ActionParam, ActionSpec, OperationKind, ParamType};
+use tilo_app::advanced::{NodeId, TaffyTree};
 use tilo_app::automerge::transaction::Transactable;
 use tilo_app::automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use tilo_app::framework::EffectAnswer;
@@ -32,12 +33,15 @@ const TOTAL: &str = "tally/total";
 )]
 enum TallyAction {
     Add { by: i64 },
+    Double,
 }
 
 impl Action for TallyAction {
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
-        let Self::Add { by } = self;
-        let next = count(doc).saturating_add(*by);
+        let next = match self {
+            Self::Add { by } => count(doc).saturating_add(*by),
+            Self::Double => count(doc).saturating_mul(2),
+        };
         doc.put(ROOT, "count", next)?;
         Ok(())
     }
@@ -67,11 +71,10 @@ impl Resource for Tally {
         Ok(count(doc))
     }
 
-    fn bound_declarations(count: &i64) -> Vec<ActionDecl<Self>> {
-        let by = *count;
+    fn declarations() -> Vec<ActionDecl<Self>> {
         vec![
-            ActionDecl::new("double", "Double the count", Vec::new(), move |_, _| {
-                Ok(TallyAction::Add { by })
+            ActionDecl::new("double", "Double the count", Vec::new(), |_, _| {
+                Ok(TallyAction::Double)
             })
             .describe("Add the count to itself."),
         ]
@@ -103,8 +106,6 @@ enum Raw {
     Nothing,
     /// A hand-built document action the surface publishes itself.
     DocumentAction,
-    /// The same, from a surface that declares it still does.
-    DeclaredDocumentAction,
 }
 
 /// What the jobs surface does outside the document, each offered on the
@@ -153,7 +154,7 @@ impl ResourceApp for TallyApp {
         Box::new(
             Column::new()
                 .push(Box::new(
-                    Button::new("step-up", "Step up", None)
+                    Button::new("step-up", "Step up")
                         .on_click(move || step.set(step.get().saturating_add(1))),
                 ))
                 .push(cx.surface(Jobs::default())),
@@ -186,9 +187,6 @@ impl Widget for Jobs {
 
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, Size::ZERO);
-    }
-
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
     }
 
     fn name(&self) -> &'static str {
@@ -277,10 +275,6 @@ impl ResourceSurface<Tally, JobEffect> for Jobs {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         let id = id.strip_prefix("job:")?.parse().ok()?;
         Some(job(id))
-    }
-
-    fn publishes_document_actions(&self) -> bool {
-        RAW.get() == Raw::DeclaredDocumentAction
     }
 }
 
@@ -382,7 +376,7 @@ fn live_rows_and_bound_edits_join_the_resource_tree() {
     assert_eq!(app.state(), 4);
 
     // Edits bound to where the user is are typed actions of the resource:
-    // the surface's selection, the view's step, the resource's own state.
+    // the surface's selection, the view's step; the resource's own wins.
     let root = find(&resources, Tally::KIND).unwrap().clone();
     for id in ["add-selected", "add-step", "double"] {
         let spec = root.actions.iter().find(|action| action.id == id).unwrap();
@@ -416,10 +410,70 @@ fn a_surface_cannot_publish_a_document_action_of_its_own() {
     assert_eq!(app.state(), 0);
 }
 
+thread_local! {
+    static RETAINED_ACTIONS: RefCell<Option<tilo_app::framework::Actions<Tally>>> = const { RefCell::new(None) };
+}
+
+struct DynamicBindingsApp;
+
+impl ResourceApp for DynamicBindingsApp {
+    type Resource = Tally;
+    const ID: &'static str = "so.tilo.test-dynamic-bindings";
+    const TITLE: &'static str = "Dynamic bindings";
+
+    fn view(cx: &mut ViewCx<Tally>) -> Element {
+        RETAINED_ACTIONS.with(|actions| *actions.borrow_mut() = Some(cx.actions()));
+        cx.bind_declarations(|count| {
+            let mut declarations = vec![ActionDecl::new("seed", "Seed", Vec::new(), |_, _| {
+                Ok(TallyAction::Add { by: 1 })
+            })];
+            if *count > 0 {
+                declarations.push(ActionDecl::new(
+                    "conditional",
+                    "Conditional",
+                    Vec::new(),
+                    |_, _| Ok(TallyAction::Add { by: 1 }),
+                ));
+            }
+            declarations
+        });
+        Box::new(Text::new("Dynamic declarations"))
+    }
+}
+
 #[test]
-fn a_surface_declaring_its_document_actions_keeps_them() {
-    RAW.set(Raw::DeclaredDocumentAction);
-    let mut app = TestApp::<TallyApp>::new().unwrap();
-    let resources = published(&mut app);
-    assert_eq!(action_ids(find(&resources, "rogue").unwrap()), ["bump"]);
+fn retained_actions_follow_canonical_publication_through_edits_and_undo() {
+    use tilo_resource::ActionRef;
+    let mut app = TestApp::<DynamicBindingsApp>::new().unwrap();
+    let actions = RETAINED_ACTIONS
+        .with(|actions| actions.borrow().clone())
+        .unwrap();
+    let conditional = ActionRef::<Tally, ()>::new("conditional", &[]);
+    let root = actions
+        .binding::<()>(ActionRef::<Tally, ()>::new("seed", &[]))
+        .unwrap()
+        .address()
+        .resource
+        .clone();
+    assert!(actions.binding::<()>(conditional).is_none());
+    app.invoke(ActionRef::<Tally, ()>::new("seed", &[]).invoke())
+        .unwrap();
+    let binding = actions
+        .binding::<()>(conditional)
+        .expect("new declaration is bindable");
+    assert_eq!(binding.address().resource, root);
+    assert!(app.undo());
+    assert!(
+        actions.binding::<()>(conditional).is_none(),
+        "removed declaration cannot bind"
+    );
+    assert!(app.redo());
+    assert_eq!(
+        actions
+            .binding::<()>(conditional)
+            .unwrap()
+            .address()
+            .resource,
+        root
+    );
 }

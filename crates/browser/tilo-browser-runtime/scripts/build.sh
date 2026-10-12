@@ -98,17 +98,26 @@ if [[ $optimize == 1 ]]; then
 else
   wasm_opt_flags=
 fi
+compute_opt=--no-wasm-opt
+[[ $optimize == 1 ]] && compute_opt=--wasm-opt
+bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$profile" "$compute_opt"
 find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' -exec cp {} "$out/" \;
 cp "$crate/web/index.html" "$out/index.html"
+cp "$crate/web/resource.html" "$out/resource.html"
+cp "$crate/web/resource.css" "$out/resource.css"
 # The live plane's MoQ library is bundled from the published @moq/net pinned
 # in scripts/moq-browser/package-lock.json, never committed; this replaces
 # any local development copy just copied.
 (cd "$repo/scripts/moq-browser" && npm ci --no-audit --no-fund --silent && node build.mjs "$out/media-moq-library.mjs")
 
 python3 - "$repo" "$out" <<'PY'
-import json, pathlib, re, shutil, sys
+import importlib.util, json, pathlib, re, shutil, sys
 repo, out = map(pathlib.Path, sys.argv[1:])
-source = repo / 'crates/sdk/ui-core/assets/fonts'
+tool = repo / 'tools/font-catalog.py'
+spec = importlib.util.spec_from_file_location('font_catalog', tool)
+catalog_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(catalog_module)
+source = catalog_module.prepared_root(repo / 'crates/sdk/ui-core/assets/fonts', 'product')
 text = (source / 'manifest.toml').read_text()
 assets = []
 for block in text.split('[[font]]')[1:]:
@@ -125,6 +134,7 @@ for block in text.split('[[font]]')[1:]:
 assert any(asset['startup'] for asset in assets), 'no browser startup fonts in the manifest'
 shutil.copytree(source / 'LICENSES', out / 'fonts/LICENSES', dirs_exist_ok=True)
 shutil.copy2(source / 'manifest.toml', out / 'fonts/manifest.toml')
+shutil.copy2(source / 'PROVENANCE.md', out / 'fonts/PROVENANCE.md')
 catalog = re.search(r'^catalog_id = "(.*?)"$', text, re.M)[1]
 (out / 'fonts.json').write_text(json.dumps(dict(schema=1, catalog=catalog, assets=assets), separators=(',', ':')) + '\n')
 PY
@@ -149,7 +159,7 @@ python3 - "$out" "$revision" "$source_status" "$profile" "$(rustc --version)" "$
   "$cargo_profile" "$bundle" "$wasm_opt_version" "$wasm_opt_flags" <<'PY'
 import hashlib, json, pathlib, sys
 out = pathlib.Path(sys.argv[1])
-metadata = dict(revision=sys.argv[2], dirty=bool(sys.argv[3]), profile=sys.argv[4], rustc=sys.argv[5],
+metadata = dict(revision=sys.argv[2], dirty=bool(sys.argv[3]), profile=sys.argv[4], builtFromSource=True, rustc=sys.argv[5],
                 wasmBindgen=sys.argv[6], wasmOpt=sys.argv[7] == '1', target='wasm32-unknown-unknown',
                 cargoProfile=sys.argv[8], bundle=sys.argv[9])
 if metadata['wasmOpt']:

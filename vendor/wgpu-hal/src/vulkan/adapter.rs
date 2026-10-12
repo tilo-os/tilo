@@ -1163,6 +1163,10 @@ impl PhysicalDeviceProperties {
 
         // Require `VK_KHR_swapchain`
         extensions.push(khr::swapchain::NAME);
+        // Optional presentation damage for clients which retain their pixels.
+        if self.supports_extension(khr::incremental_present::NAME) {
+            extensions.push(khr::incremental_present::NAME);
+        }
 
         if self.device_api_version < vk::API_VERSION_1_1 {
             // Require `VK_KHR_maintenance1`

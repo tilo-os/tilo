@@ -102,9 +102,9 @@ fn tree() -> (WorkspaceTree, StripId, StripId) {
 /// Drive one production frame — `Widget::update` runs the host's per-frame
 /// reconcilers, `mark_focused_group` among them.
 fn tick(host: &mut ShellOverlayHost) {
-    let mut doc = automerge::AutoCommit::new();
+    let doc = automerge::AutoCommit::new();
     let root = automerge::ROOT;
-    host.update(&mut doc, &root);
+    host.update(&doc, &root);
 }
 
 /// Every `(strip, group)` pair currently reporting focus.

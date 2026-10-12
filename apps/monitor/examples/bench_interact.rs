@@ -20,14 +20,13 @@ use ui::time::Instant;
 
 use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 
 const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -53,25 +52,12 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
     None
 }
 
-fn synth_cursor(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 fn synth_click(state: ElementState) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state,
-        button: MouseButton::Left,
-    }
+    ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
 }
 fn synth_wheel(dy: f32) -> WindowEvent {
-    WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: MouseScrollDelta::LineDelta(0.0, dy),
-        phase: TouchPhase::Moved,
-    }
+    ui::synthetic_input::mouse_wheel(0.0, dy)
 }
 
 enum BenchAction {
@@ -79,25 +65,90 @@ enum BenchAction {
     Scroll(f64, f64, f32),
 }
 
+/// Where the control an accessibility node describes sits: the node whose
+/// semantic key, or else whose name (and value, when given), matches.
+fn control_center(
+    node: &serde_json::Value,
+    key: Option<&str>,
+    name: &str,
+    value: Option<&str>,
+) -> Option<(f64, f64)> {
+    let text = |field: &str| node.get(field).and_then(serde_json::Value::as_str);
+    let matches = match key {
+        Some(key) => text("semantic_key") == Some(key),
+        None => {
+            text("name") == Some(name) && value.is_none_or(|value| text("value") == Some(value))
+        }
+    };
+    if matches && let Some(bounds) = node.get("bounds").filter(|bounds| !bounds.is_null()) {
+        let coordinate = |field: &str| bounds.get(field).and_then(serde_json::Value::as_f64);
+        return Some((
+            f64::midpoint(coordinate("x0")?, coordinate("x1")?),
+            f64::midpoint(coordinate("y0")?, coordinate("y1")?),
+        ));
+    }
+    match node {
+        serde_json::Value::Object(fields) => fields
+            .values()
+            .find_map(|child| control_center(child, key, name, value)),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .find_map(|child| control_center(child, key, name, value)),
+        _ => None,
+    }
+}
+
 /// The seven interactions this benchmark times: two tab switches, a
 /// scroll pair, a row click and two toggles — the everyday inputs the
-/// process/resources views take.
-fn bench_actions() -> Vec<(&'static str, BenchAction)> {
-    vec![
-        ("click Resources tab", BenchAction::Click(705.0, 42.0)),
-        ("click Processes tab", BenchAction::Click(575.0, 42.0)),
+/// process/resources views take — aimed where the window lays out each
+/// control at `viewport`.
+fn bench_actions(
+    viewport: (u32, u32),
+) -> Result<Vec<(&'static str, BenchAction)>, Box<dyn std::error::Error>> {
+    let mut harness = ui::headless::FrameHarness::for_root(
+        ui::State::new(),
+        monitor::MonitorApp::new(),
+        viewport,
+        Theme::dark(),
+    );
+    for _ in 0..4 {
+        harness.relayout();
+    }
+    let inspection: serde_json::Value = serde_json::from_str(&harness.inspection_json()?)?;
+    let at = |key: Option<&str>, name: &str, value: Option<&str>| {
+        control_center(&inspection, key, name, value)
+            .ok_or_else(|| format!("`{name}` is not on screen at {viewport:?}"))
+    };
+    let resources = at(Some("monitor.tabs:segment:1"), "Resources", None)?;
+    let processes = at(Some("monitor.tabs:segment:0"), "Processes", None)?;
+    let table = at(None, "Processes", None)?;
+    let row = at(None, "Name", Some("tilo-fs"))?;
+    let kernel = at(None, "Kernel threads", None)?;
+    let tree = at(None, "Tree view", None)?;
+    Ok(vec![
+        (
+            "click Resources tab",
+            BenchAction::Click(resources.0, resources.1),
+        ),
+        (
+            "click Processes tab",
+            BenchAction::Click(processes.0, processes.1),
+        ),
         (
             "scroll process table down",
-            BenchAction::Scroll(700.0, 300.0, -8.0),
+            BenchAction::Scroll(table.0, table.1, -8.0),
         ),
         (
             "scroll process table up",
-            BenchAction::Scroll(700.0, 300.0, 8.0),
+            BenchAction::Scroll(table.0, table.1, 8.0),
         ),
-        ("click a process row", BenchAction::Click(700.0, 240.0)),
-        ("toggle kernel threads", BenchAction::Click(1205.0, 102.0)),
-        ("toggle Tree/flat", BenchAction::Click(985.0, 102.0)),
-    ]
+        ("click a process row", BenchAction::Click(row.0, row.1)),
+        (
+            "toggle kernel threads",
+            BenchAction::Click(kernel.0, kernel.1),
+        ),
+        ("toggle Tree/flat", BenchAction::Click(tree.0, tree.1)),
+    ])
 }
 
 /// [`BenchHarness::frame`]'s result: the drawn scene, the live taffy tree +
@@ -114,7 +165,6 @@ struct BenchHarness {
     text_renderer: TextRenderer,
     theme: Theme,
     presence: PresenceCtx,
-    permission: PermissionContext,
     renderer: OffscreenRenderer,
     modifiers: winit::event::Modifiers,
     viewport: (u32, u32),
@@ -129,7 +179,6 @@ impl BenchHarness {
             text_renderer: TextRenderer::new(),
             theme: Theme::dark(),
             presence: PresenceCtx::empty(),
-            permission: PermissionContext::permissive(),
             renderer: OffscreenRenderer::new(w, h),
             modifiers: winit::event::Modifiers::default(),
             viewport,
@@ -145,7 +194,7 @@ impl BenchHarness {
         let us = |t: Instant| t.elapsed().as_secs_f64() * 1e6;
 
         let t = ui::time::now();
-        self.widget.sync(&mut self.state.doc, &self.state.root);
+        self.widget.sync(&self.state.doc, &self.state.root);
         let sync_us = us(t);
 
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -194,13 +243,12 @@ impl BenchHarness {
 
         let mut scene = Scene::new();
         let t = ui::time::now();
-        self.widget.draw_with_presence(
+        self.widget.draw(
             &mut scene,
             Affine::IDENTITY,
             &mut self.text_renderer,
             &self.theme,
             &self.presence,
-            &self.permission,
         );
         let draw_us = us(t);
 
@@ -223,7 +271,7 @@ impl BenchHarness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &self.modifiers,
-                state: &mut self.state.doc,
+                state: ui::widget::Edits::lend(&mut self.state.doc),
                 path: &self.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -246,12 +294,12 @@ impl BenchHarness {
         let (_scene, taffy, child, _) = self.frame()?;
         let event_us = match *action {
             BenchAction::Click(x, y) => {
-                self.dispatch(&synth_cursor(x, y), child, &taffy)
+                self.dispatch(&cursor_moved(x, y), child, &taffy)
                     + self.dispatch(&synth_click(ElementState::Pressed), child, &taffy)
                     + self.dispatch(&synth_click(ElementState::Released), child, &taffy)
             }
             BenchAction::Scroll(x, y, dy) => {
-                self.dispatch(&synth_cursor(x, y), child, &taffy)
+                self.dispatch(&cursor_moved(x, y), child, &taffy)
                     + self.dispatch(&synth_wheel(dy), child, &taffy)
             }
         };
@@ -305,7 +353,7 @@ fn run_interaction_bench(viewport: (u32, u32)) -> Result<(), Box<dyn std::error:
     );
 
     let mut totals = Vec::new();
-    for (label, action) in bench_actions() {
+    for (label, action) in bench_actions(viewport)? {
         let (event_us, ft, encode_us) = bench.run_action(&action)?;
         let frame_us = ft.iter().sum::<f64>();
         let total = event_us + frame_us + encode_us;

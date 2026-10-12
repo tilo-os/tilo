@@ -14,6 +14,7 @@ import {dirname, resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {deflateSync} from 'node:zlib';
 import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
+import {fixtureBytes} from '../../../../tools/web/fixture-assets.mjs';
 
 const [bundle, ...only] = process.argv.slice(2);
 const shots = process.env.SHOTS_DIR;
@@ -26,9 +27,9 @@ const FIXTURES = {
   left: () => file('left.txt', 'text/plain', Buffer.from('alpha\nPERSIST-LEFT\ngamma\n')),
   right: () => file('right.txt', 'text/plain', Buffer.from('alpha\nPERSIST-RIGHT\ngamma\n')),
   png: () => file('persist-probe.png', 'image/png', png(64, 48)),
-  epub: () => file('sample.epub', 'application/epub+zip', readFileSync(`${repo}/apps/ebook/assets/sample.epub`)),
-  pdf: () => file('latin.pdf', 'application/pdf', readFileSync(`${repo}/crates/platform/tilo-pdf/tests/fixtures/latin.pdf`)),
-  mp4: () => file('persist-clip.mp4', 'video/mp4', readFileSync(`${repo}/apps/video-player/tests/fixtures/h264-aac.mp4`)),
+  epub: () => file('sample.epub', 'application/epub+zip', fixtureBytes(repo, 'apps/ebook/assets/artifacts.json', 'sample.epub')),
+  pdf: () => file('latin.pdf', 'application/pdf', fixtureBytes(repo, 'crates/platform/tilo-pdf/tests/fixtures/artifacts.json', 'latin.pdf')),
+  mp4: () => file('persist-clip.mp4', 'video/mp4', fixtureBytes(repo, 'apps/video-player/tests/fixtures/artifacts.json', 'h264-aac.mp4')),
 };
 
 // Steps: {at: [x, y]} clicks; {press: 'Name'} clicks the control with that

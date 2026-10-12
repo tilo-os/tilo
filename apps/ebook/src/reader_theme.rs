@@ -5,18 +5,14 @@
 //! warm "paper" even with the rest of the OS in dark mode. So all **chrome**
 //! (toolbars, drawers, buttons) reads strictly from the OS [`Theme`], while the
 //! **page** uses one of these three palettes. The dark page palette is derived
-//! from theme tokens so it stays on-brand; light/sepia are fixed paper tints.
-//! High contrast / forced colours reach into the page: a sepia paper must not
-//! ignore an OS high-contrast theme.
+//! from theme tokens so it follows the workspace; light/sepia are fixed paper
+//! tints. Forced colours reach into the page: a sepia paper must not ignore an
+//! OS high-contrast theme.
 
 use vello::peniko::Color;
 
 use crate::model::{ColorScheme, HiColor, ReadTheme};
 use ui::theme::Theme;
-
-fn is_high_contrast(theme: &Theme) -> bool {
-    theme.name == Theme::high_contrast().name
-}
 
 fn page_is_dark(page: Color) -> bool {
     ui::a11y::relative_luminance(page) < 0.5
@@ -37,8 +33,8 @@ pub struct ReaderPalette {
     pub rule: Color,
     /// Inline-code chip background.
     pub code_bg: Color,
-    /// The scheme accent — tints on-page affordances (progress bar, selection).
-    /// Built-in tints inherit the OS accent; custom schemes carry their own.
+    /// The scheme's accent: a custom scheme carries its own; the built-in
+    /// pages have none and use their ink.
     pub accent: Color,
     /// Whether this is a dark reading mode (affects highlight alpha).
     pub dark: bool,
@@ -64,39 +60,58 @@ impl ReaderPalette {
     }
 
     pub fn resolve(mode: ReadTheme, theme: &Theme) -> Self {
-        if is_high_contrast(theme) {
-            return Self::from_theme(theme);
+        if theme.colors_are_forced() {
+            return Self::forced(theme);
         }
         match mode {
-            ReadTheme::Light => Self::paper_light(theme),
-            ReadTheme::Sepia => Self::paper_sepia(theme),
+            ReadTheme::Light => Self::paper_light(),
+            ReadTheme::Sepia => Self::paper_sepia(),
             ReadTheme::Dark => Self::dark_page(theme),
             ReadTheme::HighContrast => Self::from_theme(&Theme::high_contrast()),
         }
     }
 
-    fn paper_light(theme: &Theme) -> Self {
+    /// The page an accessibility setting forces: the theme's content
+    /// surface and ink.
+    fn forced(theme: &Theme) -> Self {
+        let surface = theme.content_surface();
+        let rule = ui::surface::edge_on(surface.page);
+        ReaderPalette {
+            page: surface.page,
+            page_edge: rule,
+            ink: surface.ink,
+            ink_dim: surface.ink_dim,
+            rule,
+            code_bg: theme.tokens.colors.lift_on(surface.page, 1.0),
+            accent: surface.ink,
+            dark: page_is_dark(surface.page),
+        }
+    }
+
+    fn paper_light() -> Self {
+        let ink = Color::from_rgb8(0x1B, 0x1B, 0x1F);
         ReaderPalette {
             page: Color::from_rgb8(0xFC, 0xFC, 0xFA),
             page_edge: Color::from_rgb8(0xE6, 0xE6, 0xE0),
-            ink: Color::from_rgb8(0x1B, 0x1B, 0x1F),
+            ink,
             ink_dim: Color::from_rgb8(0x6B, 0x6B, 0x73),
             rule: Color::from_rgb8(0xDA, 0xDA, 0xD2),
             code_bg: Color::from_rgb8(0xEE, 0xEE, 0xE8),
-            accent: theme.accent_primary,
+            accent: ink,
             dark: false,
         }
     }
 
-    fn paper_sepia(theme: &Theme) -> Self {
+    fn paper_sepia() -> Self {
+        let ink = Color::from_rgb8(0x40, 0x33, 0x22);
         ReaderPalette {
             page: Color::from_rgb8(0xF6, 0xEC, 0xD8),
             page_edge: Color::from_rgb8(0xE3, 0xD3, 0xB3),
-            ink: Color::from_rgb8(0x40, 0x33, 0x22),
+            ink,
             ink_dim: Color::from_rgb8(0x8A, 0x76, 0x59),
             rule: Color::from_rgb8(0xD8, 0xC4, 0x9F),
             code_bg: Color::from_rgb8(0xEA, 0xDC, 0xC0),
-            accent: theme.accent_primary,
+            accent: ink,
             dark: false,
         }
     }
@@ -123,8 +138,8 @@ impl ReaderPalette {
             ink: on.ink,
             ink_dim: on.ink_dim,
             rule,
-            code_bg: c.neutral[0],
-            accent: theme.accent_primary,
+            code_bg: c.lift_on(page, 1.0),
+            accent: on.ink,
             dark: page_is_dark(page),
         }
     }
@@ -153,16 +168,17 @@ mod tests {
         (c.r(), c.g(), c.b())
     }
 
-    /// Dark paper tracks the OS theme so a Nord/Dracula desktop stays on-brand;
-    /// light and sepia paper tints stay fixed; high contrast reaches the page.
+    /// Dark paper tracks the OS theme so a tinted workspace carries into the
+    /// page; light and sepia paper tints stay fixed; forced colours reach the
+    /// page.
     #[test]
     fn page_palettes_split_chrome_from_paper_and_honour_high_contrast() {
         // --- phase: dark_page_tracks_the_os_theme ---
         {
             let dark = Theme::dark();
-            let nord = Theme::nord();
+            let cool = Theme::preset(ui::theme::Preset::DarkCool);
             let from_dark = ReaderPalette::resolve(ReadTheme::Dark, &dark);
-            let from_nord = ReaderPalette::resolve(ReadTheme::Dark, &nord);
+            let from_cool = ReaderPalette::resolve(ReadTheme::Dark, &cool);
             assert_eq!(
                 rgb(from_dark.page),
                 rgb(dark.tokens.colors.surfaces.raised),
@@ -173,13 +189,16 @@ mod tests {
                 rgb(dark.on_surface(from_dark.page).ink),
                 "dark ink is readable on that surface"
             );
-            assert_eq!(from_dark.accent, dark.accent_primary);
+            assert_eq!(
+                from_dark.accent, from_dark.ink,
+                "a built-in page has no hue"
+            );
             assert_ne!(
-                rgb(from_nord.page),
+                rgb(from_cool.page),
                 rgb(from_dark.page),
                 "a different OS dark theme must yield a different dark page"
             );
-            assert_eq!(rgb(from_nord.page), rgb(nord.tokens.colors.surfaces.raised));
+            assert_eq!(rgb(from_cool.page), rgb(cool.tokens.colors.surfaces.raised));
         }
 
         // --- phase: dark_reading_on_a_light_os_still_uses_a_dark_theme_page ---
@@ -201,24 +220,25 @@ mod tests {
             let sepia = ReaderPalette::resolve(ReadTheme::Sepia, &dark);
             assert_eq!(rgb(light.page), (0xFC, 0xFC, 0xFA));
             assert_eq!(rgb(sepia.page), (0xF6, 0xEC, 0xD8));
-            assert_eq!(light.accent, dark.accent_primary);
-            assert_eq!(sepia.accent, dark.accent_primary);
+            assert_eq!(light.accent, light.ink);
+            assert_eq!(sepia.accent, sepia.ink);
             assert!(!light.dark && !sepia.dark);
         }
 
-        // --- phase: high_contrast_os_theme_overrides_sepia_paper ---
+        // --- phase: forced_colours_override_sepia_paper ---
         {
-            let hc = Theme::high_contrast();
+            let hc = Theme::dark().with_high_contrast();
+            assert!(hc.colors_are_forced());
             let sepia = ReaderPalette::resolve(ReadTheme::Sepia, &hc);
             let light = ReaderPalette::resolve(ReadTheme::Light, &hc);
+            let surface = hc.content_surface();
             assert_eq!(
                 rgb(sepia.page),
-                rgb(hc.tokens.colors.surfaces.raised),
-                "sepia must not keep warm paper under high contrast"
+                rgb(surface.page),
+                "sepia must not keep warm paper under forced colours"
             );
-            assert_eq!(rgb(sepia.ink), rgb(hc.on_surface(sepia.page).ink));
+            assert_eq!(rgb(sepia.ink), rgb(surface.ink));
             assert_eq!(rgb(light.page), rgb(sepia.page));
-            assert_eq!(sepia.accent, hc.accent_primary);
             assert!(sepia.dark);
         }
 
@@ -228,7 +248,6 @@ mod tests {
             let hc = Theme::high_contrast();
             assert_eq!(rgb(pal.page), rgb(hc.tokens.colors.surfaces.raised));
             assert_eq!(rgb(pal.ink), rgb(hc.on_surface(pal.page).ink));
-            assert_eq!(pal.accent, hc.accent_primary);
             assert!(pal.dark);
         }
 
@@ -237,7 +256,7 @@ mod tests {
             let scheme = ColorScheme::from_bg("ocean", "Ocean", [0x0A, 0x22, 0x33]);
             let kept = ReaderPalette::from_scheme(&scheme);
             assert_eq!(rgb(kept.page), (0x0A, 0x22, 0x33));
-            let hc = ReaderPalette::resolve(ReadTheme::Sepia, &Theme::high_contrast());
+            let hc = ReaderPalette::resolve(ReadTheme::Sepia, &Theme::dark().with_high_contrast());
             assert_ne!(
                 rgb(hc.page),
                 (0x0A, 0x22, 0x33),

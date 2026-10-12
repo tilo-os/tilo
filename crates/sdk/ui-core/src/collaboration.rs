@@ -27,18 +27,37 @@ pub use transport::{
     TransportError, TransportStatus,
 };
 
+/// How an app's error begins when it could not join its collaboration route
+/// and stopped. The shell recognises it in a failed launch's output to say
+/// why the app did not open.
+pub const ROUTE_JOIN_FAILED: &str = "joining collaboration route failed";
+
+/// Whether this host supports the local session runtime transport.
+/// This describes transport availability, not an inherited capability or permission.
+#[cfg(feature = "local-daemons")]
+pub const SESSION_RUNTIME_SUPPORTED: bool = runtime_portal::local_socket::SUPPORTED;
+/// No local session runtime transport was included in this host.
+#[cfg(not(feature = "local-daemons"))]
+pub const SESSION_RUNTIME_SUPPORTED: bool = false;
+
+#[cfg(feature = "broker-transport")]
+pub(crate) mod approved_checks;
 #[cfg(feature = "broker-transport")]
 mod broker;
+pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
-mod channel_settings;
+pub(crate) mod channel_settings;
 pub mod handoff;
 mod history;
+pub mod owner_view;
 pub mod participants;
+pub mod record_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
-    CertifiedEndpointIdentity, HostSessionConnector, speaker_command, wifi_continuity_command,
+    CertifiedEndpointIdentity, HostSessionConnector, display_control, speaker_command,
+    wifi_continuity_command,
 };
 // Committed reads live with the broker worker that retains them. Without the
 // broker transport no committed capture can exist, but the type stays part of
@@ -62,6 +81,12 @@ mod portable_committed {
         never: std::convert::Infallible,
     }
     impl CommittedDocument {
+        pub(crate) fn creation_workspace(
+            &self,
+        ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
+            match self.never {}
+        }
+
         pub(crate) fn with_mutation<T>(
             &self,
             _apply: impl FnOnce(&collab_types::DocumentMutation) -> T,
@@ -74,14 +99,15 @@ mod portable_committed {
         pub(crate) fn applied(&self) {
             match self.never {}
         }
+        pub(crate) fn applies_to(&self, _document: &impl automerge::ReadDoc) -> bool {
+            match self.never {}
+        }
+        pub(crate) fn refuse(&self) {
+            match self.never {}
+        }
     }
 }
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
-
-#[cfg(any(test, feature = "test-support"))]
-mod loopback;
-#[cfg(any(test, feature = "test-support"))]
-pub use loopback::{LoopbackPeer, LoopbackTransport};
 
 /// Reserved `invokePublishedAction.peerId` meaning "the application
 /// connection making this request". Live broker peer ids are allocated from
@@ -90,6 +116,7 @@ pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
+pub use runtime_collab::file_clipboard;
 pub use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneInfo,
     CalibrationMicrophoneRun, CalibrationMicrophoneState, CalibrationPhaseInfo,
@@ -134,6 +161,15 @@ pub fn speaker_command(
     _command: runtime_collab::SpeakerCommand,
 ) -> Result<runtime_collab::SpeakerReply, String> {
     Err("speakers need the certified collaboration service".to_string())
+}
+
+/// The native display control service is unavailable without an admitted broker.
+///
+/// # Errors
+/// Always reports unavailable on this transport.
+#[cfg(not(feature = "broker-transport"))]
+pub fn display_control(_command: Vec<u8>, _origin: DisplayOrigin) -> Result<Vec<u8>, String> {
+    Err("Displays need the certified collaboration service.".into())
 }
 
 pub use crate::host::ContinuationMetadata;
@@ -181,6 +217,11 @@ impl From<TransportError> for CollabSendError {
 
 #[derive(Debug, Clone)]
 pub enum CollabRequest {
+    LocalFileClipboard {
+        request_id: u64,
+        command: runtime_collab::file_clipboard::Command,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
+    },
     Hello {
         app_id: String,
         cluster_id: Uuid,
@@ -209,6 +250,18 @@ pub enum CollabRequest {
     /// Ask the broker to select one existing holder of this exact route as a
     /// snapshot responder. Safe to retry while no holder is available.
     RequestDocumentSnapshot,
+    /// Content this route's record references, which the app stored: the
+    /// host keeps it where the record's readers are served from.
+    OfferContent {
+        hash: String,
+        bytes: Vec<u8>,
+    },
+    /// Content this route's record references and the app lacks. Answered,
+    /// from this device or the route's other devices, with
+    /// [`CollabEvent::RecordContent`].
+    WantContent {
+        hash: String,
+    },
     /// Outbound presence update — pointer moved, caret changed, selection
     /// shifted, or arrived/left a keyed object. Fanned out to every
     /// connected peer as `CollabEvent::RemotePresenceUpdate`.
@@ -368,6 +421,14 @@ pub enum CollabRequest {
         /// before it launches the target application.
         content_hash: Option<String>,
     },
+    /// A Store launch, with a dedicated reply vocabulary so a widget's
+    /// correlation id cannot complete an unrelated SDK action invocation.
+    LaunchInstalledApplication {
+        request_id: u64,
+        app_id: String,
+        package_root: Option<String>,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
+    },
     /// Lifecycle record for a broker-minted task lease. Only an admitted
     /// agent connection can make this request; the broker checks the lease.
     SubscribeEnrolledTasks {
@@ -384,6 +445,7 @@ pub enum CollabRequest {
         update: runtime_collab::TaskRunUpdate,
     },
     ReportTaskRun {
+        request_id: Option<u64>,
         run_id: u64,
         lease: String,
         update: runtime_collab::TaskRunUpdate,
@@ -448,30 +510,9 @@ pub enum ActionDirectoryRequest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExportedInput {
-    None,
-    Text {
-        prompt: String,
-        placeholder: String,
-        wants_content: bool,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedAction {
-    pub resource: String,
-    pub action: String,
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub action_label: String,
-    pub description: Option<String>,
-    pub operation_kind: String,
-    pub params_json: String,
-    pub contract_json: String,
-    pub view: Option<tilo_actions::ResourceViewDescriptor>,
-    pub input: ExportedInput,
-}
+/// One inert operation this application exports, and what invoking it
+/// carries: the one exported-action shape, shared with the broker.
+pub use runtime_collab::{ExportedAction, ExportedInput};
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct BrokerActionSurface {
@@ -486,6 +527,8 @@ pub struct BrokerActionSurface {
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct BrokerActionDescriptor {
     pub resource: String,
+    #[serde(default)]
+    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
     pub action: String,
     pub resource_kind: String,
     pub resource_label: String,
@@ -509,13 +552,7 @@ pub struct BrokerActionInput {
 }
 
 #[derive(serde::Deserialize)]
-#[cfg_attr(
-    not(feature = "broker-transport"),
-    allow(
-        dead_code,
-        reason = "only the broker transport decodes the catalogue wire"
-    )
-)]
+#[cfg(feature = "broker-transport")]
 pub(crate) struct BrokerActionCatalogueWire {
     pub(crate) surfaces: Vec<BrokerActionSurface>,
 }
@@ -594,6 +631,10 @@ impl ChannelAccessState {
 
 #[derive(Debug, Clone)]
 pub enum CollabEvent {
+    LocalFileClipboardResult {
+        request_id: u64,
+        result: Result<runtime_collab::file_clipboard::Reply, String>,
+    },
     /// Original committed history from this SDK channel, applied by its document owner.
     CommittedDocument {
         route: RouteSpec,
@@ -734,6 +775,10 @@ pub enum CollabEvent {
         request_id: u64,
         result: Result<(u64, tilo_actions::InvocationUpdate), String>,
     },
+    InstalledApplicationLaunchResult {
+        request_id: u64,
+        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
+    },
     /// A run addressed to this admitted agent. The envelope is broker-minted
     /// and contains a lease, not a caller-selected authority token.
     TaskRun(runtime_collab::TaskRunEnvelope),
@@ -760,6 +805,14 @@ pub enum CollabEvent {
         request_id: u64,
         result: Result<bool, String>,
     },
+    TaskRunControl {
+        request_id: u64,
+        control: runtime_collab::TaskRunControl,
+    },
+    TaskRunReportResult {
+        request_id: u64,
+        result: Result<(), String>,
+    },
     WorkspaceControl {
         session_id: u64,
         event: runtime_collab::WorkspaceControlEvent,
@@ -767,6 +820,14 @@ pub enum CollabEvent {
     NativeMediaCommandResult {
         request_id: u64,
         result: Result<runtime_collab::native_media::Snapshot, String>,
+    },
+    /// Content the record on `route` references arrived: an answer to
+    /// [`CollabRequest::WantContent`], or content another app on the record
+    /// offered. The bytes are verified against `hash` before use.
+    RecordContent {
+        route: RouteSpec,
+        hash: String,
+        bytes: Vec<u8>,
     },
     RealtimeCommandResult {
         request_id: u64,
@@ -845,13 +906,41 @@ pub enum PresencePayload {
 pub struct Collaborator {
     pub id: String,
     pub name: String,
-    pub color: [f32; 3],
+    /// The colour this participant wears, as they chose it or as their
+    /// stable identity derives it. `None` when the room has not heard it;
+    /// they are then painted in the colour their id derives
+    /// ([`crate::presence::user_color`]).
+    pub colour: Option<crate::tokens::PresenceHue>,
     /// Whether this participant is an agent rather than a person.
     pub is_agent: bool,
     /// Whether this row is the receiving machine's own participant.
     /// Apps can't derive this themselves: `id` is the address *other*
     /// machines use, and a machine never announces its own to its own apps.
     pub is_self: bool,
+}
+
+impl Collaborator {
+    /// [`Self::colour`] as the roster's wire carries it: the presence
+    /// colour's sRGB packed `0x00RRGGBB`, `0` for none (no presence colour
+    /// is black).
+    #[must_use]
+    pub fn packed_colour(&self) -> u32 {
+        self.colour.map_or(0, |hue| {
+            let (r, g, b) = crate::presence::identity_rgb(hue);
+            (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
+        })
+    }
+
+    /// The colour a roster row's packed `0x00RRGGBB` names: the presence
+    /// hue nearest it, `None` for `0` or a grey.
+    #[must_use]
+    pub fn colour_from_packed(packed: u32) -> Option<crate::tokens::PresenceHue> {
+        if packed == 0 {
+            return None;
+        }
+        let [_, r, g, b] = packed.to_be_bytes();
+        crate::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
+    }
 }
 
 /// Failure modes for [`CollaborationManager::send_signed_op`].
@@ -934,7 +1023,7 @@ impl SigningIdentity {
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
-        op_class: collab_types::OpClass,
+        kind: collab_types::OpKind,
     ) -> Result<collab_types::SignedOp, SignedSendError> {
         let timestamp = crate::time::wall();
         let sequence = self
@@ -946,7 +1035,7 @@ impl SigningIdentity {
             artifact,
             self.public_key,
             self.attestation_id,
-            op_class,
+            kind,
             timestamp,
             sequence,
         );
@@ -1134,10 +1223,9 @@ impl CollaborationManager {
     }
 }
 
-/// Launcher-issued instance identity for an app window. It deliberately rides
-/// in the existing record component of the authenticated CRDT route so the
-/// broker can retain multiple Browser windows in one workspace without
-/// conflating their continuation metadata.
+/// Compatibility route marker for a launcher-issued app window. Native
+/// document routes obtain their separate window binding from original broker
+/// custody; this environment value cannot authorize native private control.
 fn continuation_instance_env() -> Option<String> {
     let environment = crate::host::environment();
     let value = environment.identity.continuity_instance.as_deref()?.trim();
@@ -1270,6 +1358,23 @@ impl CollaborationManager {
         self.primary_route.current(self.is_connected())
     }
 
+    pub(crate) fn private_window_instance(&self) -> Option<u64> {
+        let witness = self.primary_route()?;
+        let Backend::Transport(transport) = &self.backend else {
+            return None;
+        };
+        if transport.committed_document_required(&witness.route.channel_id()) {
+            return transport.private_window_binding(&witness.route);
+        }
+        witness
+            .route
+            .record
+            .as_deref()?
+            .strip_prefix("continuation:")?
+            .parse::<u64>()
+            .ok()
+    }
+
     /// Whether requests currently reach peers: [`Self::state`] is
     /// [`CollaborationState::Ready`].
     pub fn is_connected(&self) -> bool {
@@ -1319,10 +1424,10 @@ impl CollaborationManager {
         &mut self,
         payload: Vec<u8>,
         artifact: collab_types::ArtifactId,
-        op_class: collab_types::OpClass,
+        kind: collab_types::OpKind,
     ) -> Result<(), SignedSendError> {
         let identity = self.identity.as_mut().ok_or(SignedSendError::NoIdentity)?;
-        let envelope = identity.sign_op(payload, artifact, op_class)?;
+        let envelope = identity.sign_op(payload, artifact, kind)?;
         self.send(CollabRequest::SignedOperation {
             envelope: Box::new(envelope),
         });
@@ -1541,6 +1646,35 @@ impl CollaborationManager {
         let _ = self.try_send_to_route(route, req);
     }
 
+    /// Whether the actual route's original document history has been applied.
+    /// This is the same transport gate used before document publication. A
+    /// closed transport never reopens, so its routes stop being ready the
+    /// moment it closes, before the worker clears their read state.
+    pub(crate) fn document_route_ready(&self, route: Option<&RouteSpec>) -> bool {
+        let channel = route.map(RouteSpec::channel_id);
+        !self.awaiting_primary
+            && match &self.backend {
+                Backend::Transport(transport) => {
+                    !matches!(transport.status(), TransportStatus::Closed(_))
+                        && transport.document_publishable(channel.as_deref())
+                }
+                Backend::Disabled(_) => false,
+            }
+    }
+
+    /// Independently sample the existing transport read gates without admission.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub(crate) fn controlled_document_read_phase_for_test(
+        &self,
+        route: &RouteSpec,
+    ) -> Option<serde_json::Value> {
+        if let Backend::Transport(transport) = &self.backend {
+            transport.controlled_document_read_phase_for_test(&route.channel_id())
+        } else {
+            None
+        }
+    }
+
     /// Test-only: whether `route` has resolved its document mode, so a
     /// document mutation on it would be admitted rather than refused.
     #[cfg(test)]
@@ -1566,6 +1700,10 @@ impl CollaborationManager {
         req: CollabRequest,
     ) -> Result<(), CollabSendError> {
         if self.missing_required_document_custody(&req) {
+            tracing::debug!(
+                cause = "missing_committed_document_custody",
+                "document route handoff refused"
+            );
             return Err(CollabSendError::Unavailable);
         }
         if matches!(req, CollabRequest::Hello { .. }) {
@@ -1573,6 +1711,10 @@ impl CollaborationManager {
             return Err(CollabSendError::Unavailable);
         }
         if self.awaiting_primary {
+            tracing::debug!(
+                cause = "primary_join_pending",
+                "document route handoff refused"
+            );
             return Err(CollabSendError::Unavailable);
         }
         if let CollabRequest::NativeMediaCommand {
@@ -1597,13 +1739,35 @@ impl CollaborationManager {
             }
             Backend::Disabled(_) => false,
         };
-        if unpublishable {
+        let known_pending_document = matches!(&req, CollabRequest::Document { .. })
+            && matches!(&self.backend, Backend::Transport(transport)
+                if transport.committed_document_required(&route.channel_id()));
+        if unpublishable && !known_pending_document {
+            let required = match &self.backend {
+                Backend::Transport(transport) => {
+                    transport.committed_document_required(&route.channel_id())
+                }
+                Backend::Disabled(_) => false,
+            };
+            tracing::debug!(
+                cause = "original_history_unapplied",
+                required,
+                "document route handoff refused"
+            );
             // Join first; the route's original history must be applied
             // before any local mutation is published on it.
             let _ = self.submit(TransportCommand::Join(route));
             return Err(CollabSendError::Unavailable);
         }
-        Ok(self.submit(TransportCommand::ToRoute(route, req))?)
+        // A known committed route may be refreshing. Required original
+        // custody was checked above; retain this mutation in the bounded queue.
+        // The worker still waits for this exact route before checking retained
+        // custody and applying the existing certification/commit policy.
+        let result = self.submit(TransportCommand::ToRoute(route, req));
+        if let Err(error) = &result {
+            tracing::debug!(%error, cause = "transport_queue_refusal", "document route handoff refused");
+        }
+        Ok(result?)
     }
 
     pub(crate) fn document_publication_failed(&self) -> bool {
@@ -1636,6 +1800,18 @@ impl CollaborationManager {
             Backend::Disabled("pre-terminal document publication; outcome unknown".into());
         self.awaiting_primary = false;
         self.primary_route.accepted = None;
+    }
+
+    pub(crate) fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.set_document_owner_routes(routes);
+        }
+    }
+
+    pub(crate) fn finish_event_batch(&mut self) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.finish_event_batch();
+        }
     }
 
     /// Drain every event pending on the current backend. Non-blocking.
@@ -1793,9 +1969,9 @@ pub mod channel_key {
 ///
 /// 1. `TILO_PACKAGE_ID` / `TILO_WORKSPACE_ID` — launcher-set for every
 ///    compositor-started app.
-/// 2. `QUICK_APP_ID` / `QUICK_CLUSTER_ID` — standalone-dev override,
-///    ranked below `TILO_PACKAGE_ID` so a dev identity never fragments
-///    routing under a real session.
+/// 2. `QUICK_APP_ID` — standalone-dev app id, ranked below
+///    `TILO_PACKAGE_ID` so a dev identity never fragments routing under a
+///    real session.
 /// 3. A fresh random app id + the nil cluster — fails closed: nothing
 ///    else announces the same id, so nothing is ever delivered here.
 ///
@@ -1909,23 +2085,7 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     let cluster_id = identity
         .workspace_id
         .clone()
-        .and_then(|s| {
-            if let Ok(id) = Uuid::parse_str(&s) {
-                Some(id)
-            } else {
-                tracing::debug!(
-                    "TILO_WORKSPACE_ID={s:?} is not a uuid; \
-                 falling back to QUICK_CLUSTER_ID for collaboration routing"
-                );
-                None
-            }
-        })
-        .or_else(|| {
-            identity
-                .cluster_id
-                .as_deref()
-                .and_then(|s| Uuid::parse_str(s).ok())
-        })
+        .and_then(|s| Uuid::parse_str(&s).ok())
         .unwrap_or_else(Uuid::nil);
 
     (app_id, cluster_id)
@@ -1959,33 +2119,6 @@ mod task4_route_tests {
     }
 }
 
-/// A host-owned document commit resolving to the broker-signed envelope.
-pub type HostDocumentCommit =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<SignedOp, String>> + Send + 'static>>;
-
-/// Host-local capability, never selected by a wire peer. Called on the SDK
-/// shovel thread, while the application's ordinary owner thread keeps pumping.
-/// Implementations bind an exact route and revalidate current authority.
-/// Native launcher and explicit-key endpoints retain their existing signer.
-pub trait HostDocumentCommitter: Send + Sync {
-    fn commit(
-        &self,
-        route: &RouteSpec,
-        mutation: collab_types::DocumentMutation,
-    ) -> HostDocumentCommit;
-
-    /// Required custody must reach the concrete final owner intact. A legacy
-    /// committer cannot silently downgrade it to its unqualified commit method.
-    fn commit_scoped(
-        &self,
-        _route: &RouteSpec,
-        _mutation: collab_types::DocumentMutation,
-        _authorization: crate::invocation_scope::DocumentAuthorization,
-    ) -> HostDocumentCommit {
-        Box::pin(async { Err("host has no final scoped document evaluator".into()) })
-    }
-}
-
 #[cfg(test)]
 mod portable_transport_tests {
     use super::*;
@@ -2014,3 +2147,6 @@ mod portable_transport_tests {
         assert!(manager.poll().is_empty());
     }
 }
+
+/// Original authority retained across display background work.
+pub use runtime_collab::DisplayOrigin;

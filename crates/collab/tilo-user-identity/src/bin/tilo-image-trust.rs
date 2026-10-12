@@ -18,6 +18,9 @@ use tilo_user_identity::{
     verify_image_signing_authorization_at, verify_revocation_entry,
 };
 
+#[path = "image_trust/renewal.rs"]
+mod renewal;
+
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024;
 
 #[cfg(target_os = "linux")]
@@ -64,7 +67,7 @@ fn open_lock_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 fn usage() -> String {
-    "usage:\n  tilo-image-trust parse-bootc-status < status.json\n  tilo-image-trust bootc-status-field SELECTOR < status.json\n  tilo-image-trust grant ROOT_KEY DEVICE_CERT ISSUED_NS EXPIRES_NS OUTPUT\n  tilo-image-trust prepare-grant DEVICE_CERT ISSUED_NS EXPIRES_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-grant UNSIGNED_GRANT SIGNATURE OUTPUT\n  tilo-image-trust endorse DEVICE_KEY DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS OUTPUT\n  tilo-image-trust prepare-endorsement DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-endorsement UNSIGNED_ENDORSEMENT SIGNATURE OUTPUT\n  tilo-image-trust revocations ROOT_PUBLIC_KEY OUTPUT [REVOCATION_ENTRY ...]\n  tilo-image-trust verify ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS\n  tilo-image-trust verify-and-record ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS GENERATION_STATE TIME_STATE\n  tilo-image-trust arm ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust rotate ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]".into()
+    "usage:\n  tilo-image-trust parse-bootc-status < status.json\n  tilo-image-trust bootc-status-field SELECTOR < status.json\n  tilo-image-trust grant ROOT_KEY DEVICE_CERT ISSUED_NS EXPIRES_NS OUTPUT\n  tilo-image-trust prepare-grant DEVICE_CERT ISSUED_NS EXPIRES_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-grant UNSIGNED_GRANT SIGNATURE OUTPUT\n  tilo-image-trust endorse DEVICE_KEY DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS OUTPUT\n  tilo-image-trust prepare-endorsement DEVICE_CERT GRANT IMAGE_SHA256 GENERATION ISSUED_NS UNSIGNED_OUTPUT DIGEST_OUTPUT\n  tilo-image-trust attach-endorsement UNSIGNED_ENDORSEMENT SIGNATURE OUTPUT\n  tilo-image-trust revocations ROOT_PUBLIC_KEY OUTPUT [REVOCATION_ENTRY ...]\n  tilo-image-trust verify ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS\n  tilo-image-trust verify-and-record ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT IMAGE_SHA256 GENERATION NOW_NS GENERATION_STATE TIME_STATE\n  tilo-image-trust arm ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust rotate ROOT_PUBLIC_KEY REVOCATIONS ENDORSEMENT NOW_NS TRUST_DIR [UPDATE_LOCK]\n  tilo-image-trust renew-under-update-lock TRUST_DIR DEVICE_KEY IMAGE_SHA256 GENERATION NOW_NS UPDATE_LOCK_FD UPDATE_LOCK".into()
 }
 
 fn parse_bootc_status_bytes(bytes: &[u8]) -> Result<Option<(String, String)>, String> {
@@ -937,6 +940,7 @@ fn run() -> Result<(), String> {
         Some("revocations") => revocations(args),
         Some("arm") => arm(args),
         Some("rotate") => rotate(args),
+        Some("renew-under-update-lock") => renewal::run(args),
         Some("verify") => verify(args),
         Some("verify-and-record") => verify_common(args, true),
         _ => Err(usage()),

@@ -8,6 +8,7 @@
 
 use serde_json::{Value, json};
 use ui::TextRenderer;
+use ui::num::f64_of_usize;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect};
 use ui::vello::peniko::Color;
@@ -118,8 +119,19 @@ pub fn render_rgba(
     pixels_per_unit: f64,
     options: &Options,
 ) -> Result<(Vec<u8>, u32, u32), String> {
+    // A picture is drawn at its own detail: a painted layer is simulated as
+    // finely as the picture's pixels need (up to its finest level), not
+    // enlarged from the coarser simulation a whole view shows.
+    let options = Options {
+        detail: Some(options.detail.unwrap_or(crate::detail::Detail {
+            visible: region,
+            pixels_per_unit,
+            wait: true,
+        })),
+        ..options.clone()
+    };
     pixels(region, pixels_per_unit, options.bare, |scene, to| {
-        renderer.draw(art, scene, to, text, options);
+        renderer.draw(art, scene, to, text, &options);
     })
 }
 
@@ -352,7 +364,7 @@ fn flatten(reference: &[u8], width: u32, inside: Rect, ground: [u8; 3]) -> Vec<u
     for (index, pixel) in reference.chunks_exact(4).enumerate() {
         let x = index % width;
         let y = index / width;
-        let centre = ui::vello::kurbo::Point::new(count(x) + 0.5, count(y) + 0.5);
+        let centre = ui::vello::kurbo::Point::new(f64_of_usize(x) + 0.5, f64_of_usize(y) + 0.5);
         if !inside.contains(centre) {
             out.extend_from_slice(&[0, 0, 0, 0]);
             continue;
@@ -365,10 +377,6 @@ fn flatten(reference: &[u8], width: u32, inside: Rect, ground: [u8; 3]) -> Vec<u
         out.push(255);
     }
     out
-}
-
-fn count(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// The mean colour distance within the reference's frame, overall and per
@@ -524,6 +532,8 @@ pub fn look(
         wet: None,
         marks: None,
         selection: true,
+        detail: None,
+        live: false,
     };
     let picture = render(renderer, text, art, (region, scale), &options, jpeg)?;
     let info = json!({
@@ -599,7 +609,10 @@ pub fn measure(
             if alpha <= 0.0 {
                 continue;
             }
-            let (x, y) = (count(index % width) + 0.5, count(index / width) + 0.5);
+            let (x, y) = (
+                f64_of_usize(index % width) + 0.5,
+                f64_of_usize(index / width) + 0.5,
+            );
             mass += alpha;
             mx += alpha * x;
             my += alpha * y;
@@ -666,7 +679,18 @@ pub fn export(
             "scale must be within 0.05..=4 and the picture at most 8192 pixels wide".into(),
         );
     }
-    let format = export.format.as_deref().unwrap_or("png");
+    // A path names its format when the caller names none.
+    let named = export
+        .path
+        .as_deref()
+        .and_then(|path| std::path::Path::new(path).extension())
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    let format = export
+        .format
+        .as_deref()
+        .or(named.as_deref())
+        .unwrap_or("png");
     let quality = export.quality.unwrap_or(EXPORT_JPEG_QUALITY);
     if !(1..=100).contains(&quality) {
         return Err("quality is 1 to 100".into());
@@ -677,7 +701,10 @@ pub fn export(
         art,
         art.bounds(),
         scale,
-        &Options::default(),
+        &Options {
+            bare: export.transparent.unwrap_or(false),
+            ..Options::default()
+        },
     )?;
     let (bytes, format) = match format {
         "png" => (encode_png(&rgba, width, height)?, "png"),
@@ -685,7 +712,18 @@ pub fn export(
         "webp" => (encode_webp(&rgba, width, height)?, "webp"),
         other => return Err(format!("format {other:?} is png, jpeg or webp")),
     };
-    let info = json!({"width": width, "height": height, "format": format, "bytes": bytes.len()});
+    let mut info =
+        json!({"width": width, "height": height, "format": format, "bytes": bytes.len()});
+    if let Some(path) = &export.path {
+        let extensions: &[&str] = match format {
+            "jpeg" => &["jpg", "jpeg"],
+            other => &[other],
+        };
+        let written = crate::document::export_to(path, extensions, &bytes)?;
+        if let Value::Object(fields) = &mut info {
+            fields.insert("path".into(), written.into());
+        }
+    }
     Ok((
         Picture {
             bytes,
@@ -908,11 +946,13 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
             region.is_none_or(|region| art.visible_bounds(mark).intersect(region).area() > 0.0)
         })
         .collect();
+    // Measuring, the measures are the answer: marks are listed when asked.
+    let listed = if inspect.measure.is_some() { 0 } else { LISTED };
     let limit = inspect
         .limit
-        .map_or(LISTED, |limit| usize::try_from(limit).unwrap_or(MAX_LISTED));
-    if !(1..=MAX_LISTED).contains(&limit) {
-        return Err(format!("limit must be within 1..={MAX_LISTED}"));
+        .map_or(listed, |limit| usize::try_from(limit).unwrap_or(MAX_LISTED));
+    if limit > MAX_LISTED {
+        return Err(format!("limit must be within 0..={MAX_LISTED}"));
     }
     let marks: Vec<Value> = matching
         .iter()
@@ -951,6 +991,16 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         "listed": marks.len(),
         "matching": matching.len(),
     });
+    if inspect.palette == Some(true)
+        && let Value::Object(fields) = &mut answer
+    {
+        let palette = crate::palette::used(matching.iter().copied());
+        fields.insert("palette_colours".into(), json!(palette.len()));
+        fields.insert(
+            "palette".into(),
+            json!(palette.into_iter().take(32).collect::<Vec<_>>()),
+        );
+    }
     if let Some(selection) = selection_info(art)
         && let Value::Object(fields) = &mut answer
     {
@@ -977,6 +1027,7 @@ fn layer_entry(art: &Artwork, layer: &Layer) -> Value {
     let mut entry = json!({
         "id": layer.id,
         "name": layer.name,
+        "group": layer.group,
         "medium": if layer.medium.is_empty() { "plain" } else { layer.medium.as_str() },
         "marks": art.marks_of(&layer.id).count(),
     });
@@ -1210,6 +1261,7 @@ fn mark_fields(old: &Mark, new: &Mark) -> Vec<String> {
 fn layer_fields(old: &Layer, new: &Layer) -> Vec<String> {
     [
         (old.name != new.name, "name"),
+        (old.group != new.group, "group"),
         (old.order != new.order, "stacking"),
         (old.medium != new.medium, "medium"),
         (old.opacity.to_bits() != new.opacity.to_bits(), "opacity"),

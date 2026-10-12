@@ -7,16 +7,24 @@
 //! section of the same sheet, so "put my desktop on that screen" has one
 //! home whether the screen is on a cable or on the network.
 //!
+//! Between them, the person's other devices' screens are listed, each with
+//! whether it takes part in their shared display layout: on, this device's
+//! pointer and keyboard can move onto it. The four layouts only ever plan
+//! this device's own hardware; another device's screen is arranged, never
+//! driven, from here.
+//!
 //! The sheet owns its state, animation, rendering, credential editing and
 //! hit-testing. The overlay host only coordinates visibility and invalidation.
 
 use std::time::{Duration, Instant};
+use ui::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 
 use settings_store::display_mode::{self, DisplayLayoutError, DisplayLayoutMode};
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplayOutputSnapshot, DisplayTransaction,
     DisplayTransactionState,
 };
+use settings_store::person_displays::PersonDisplays;
 use taffy::{Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -33,36 +41,23 @@ use ui::widget::{EventCtx, TextInput, Widget};
 
 use crate::shell::i18n::{t, t_args};
 use crate::shell::projection::{
-    DisplayResolutionLimit, ProjectionBackend, ProjectionController, ProjectionMode,
-    ProjectionProtocol, ProjectionStatus,
+    DisplayResolutionLimit, ProjectionController, ProjectionMode, ProjectionProtocol,
+    ProjectionStatus,
 };
+use crate::shell::shared_display_actions::{self, SharedDisplayView};
+use ui::TextRole;
+use ui::widget::ButtonRole;
 
 const OPEN_ANIM_MS: u64 = 220;
 const SCRIM_ALPHA: f32 = 0.45;
-const SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
-/// How often an open sheet re-reads the compositor's display snapshot and
-/// the transaction it staged. Bounded so an open sheet never turns into
-/// per-frame settings I/O.
+/// How often an open sheet asks whether the settings document holding the
+/// committed layout and the staged change moved on. It parses the document
+/// again only when it did. Never asked while painting.
 const DISPLAY_POLL: Duration = Duration::from_millis(250);
 
-#[allow(clippy::cast_precision_loss, reason = "device counts are small")]
-fn usize_to_f64_lossy(n: usize) -> f64 {
-    n as f64
-}
-
-#[allow(clippy::cast_possible_truncation, reason = "screen pixels fit f32")]
-fn f64_to_f32_lossy(v: f64) -> f32 {
-    v as f32
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "float-to-usize casts saturate and caller clamps the result"
-)]
-fn f64_floor_to_usize_saturating(v: f64) -> usize {
-    v.floor() as usize
-}
+/// A settings file modified this recently may be modified again within the
+/// same timestamp tick, so a read taken now is not trusted to stay current.
+const RACY_STAMP: Duration = Duration::from_secs(1);
 
 #[allow(
     clippy::cast_possible_truncation,
@@ -71,10 +66,6 @@ fn f64_floor_to_usize_saturating(v: f64) -> usize {
 )]
 fn f32_to_u8_saturating(v: f32) -> u8 {
     v.clamp(0.0, 255.0) as u8
-}
-
-fn panel_surface(theme: &Theme) -> Color {
-    ui::chrome::shell::panel_ground(theme).with_alpha_factor(SURFACE_ALPHA)
 }
 
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, theme: &Theme) {
@@ -140,50 +131,304 @@ fn layout_for_wireless(mode: ProjectionMode) -> DisplayLayoutMode {
     }
 }
 
+/// A display change still waiting to be applied, kept or reverted.
+fn waiting(transaction: &DisplayTransaction) -> bool {
+    matches!(
+        transaction.state,
+        DisplayTransactionState::Requested
+            | DisplayTransactionState::AwaitingConfirmation
+            | DisplayTransactionState::ConfirmRequested
+    )
+}
+
+/// A display choice the sheet asks the host to make through its published
+/// action, so the person at the sheet passes the same authority check as an
+/// agent or a script invoking it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DisplayRequest {
+    Layout(DisplayLayoutMode),
+    Keep,
+    Revert,
+}
+
+impl DisplayRequest {
+    /// The published action this choice is.
+    pub(crate) fn action_id(self) -> &'static str {
+        use crate::shell::search::providers::actions as ids;
+        match self {
+            Self::Layout(DisplayLayoutMode::Extend) => ids::DISPLAY_EXTEND_ID,
+            Self::Layout(DisplayLayoutMode::Mirror) => ids::DISPLAY_MIRROR_ID,
+            Self::Layout(DisplayLayoutMode::BuiltinOnly) => ids::DISPLAY_BUILTIN_ONLY_ID,
+            Self::Layout(DisplayLayoutMode::ExternalOnly) => ids::DISPLAY_EXTERNAL_ONLY_ID,
+            Self::Keep => ids::DISPLAY_KEEP_ID,
+            Self::Revert => ids::DISPLAY_REVERT_ID,
+        }
+    }
+}
+
+/// The display change a layout action staged, from its receipt.
+fn staged_transaction(receipt: &crate::shell::search::ActionReceipt) -> Option<u64> {
+    let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &receipt.update else {
+        return None;
+    };
+    output.value.as_ref()?.get("transaction")?.as_u64()
+}
+
+/// Which version of the settings document the sheet last read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SettingsSeen {
+    /// Not read yet, or read while it may still change under the same stamp.
+    #[default]
+    Unread,
+    /// Read at this stamp (`None`: there was no document to stamp).
+    At(Option<settings_store::SettingsStamp>),
+}
+
 /// Attached displays, the committed layout and the transaction this
-/// session staged, as the compositor published them.
+/// session staged. Displays come from what the compositor published in
+/// memory; the layout and the change from the settings document, read again
+/// only when it changed. None of it is read while painting.
 #[derive(Default)]
 pub(crate) struct DisplayLayouts {
     outputs: Vec<DisplayOutputSnapshot>,
     committed: DisplayConfig,
     transaction: Option<DisplayTransaction>,
     polled_at: Option<Instant>,
+    /// Generation of the published display snapshot `outputs` came from.
+    outputs_seen: Option<u64>,
+    /// Generation of the published person's displays `person` came from.
+    person_seen: Option<u64>,
+    /// Settings document version `committed` and `transaction` were read at.
+    settings_seen: SettingsSeen,
     /// Id of the transaction this sheet staged, so an old rejection left in
     /// settings is never reported as the answer to a new choice.
     staged: Option<u64>,
+    /// Id of the change an action opened the sheet for, once it was first
+    /// read for [`Self::settled`].
+    followed: Option<u64>,
     notice: Option<String>,
+    /// The Keep or Revert action this sheet invoked, until it is recorded.
+    answer: Option<crate::shell::search::PendingInvocation>,
+    /// The layout action this sheet invoked, until it is recorded.
+    staging: Option<crate::shell::search::PendingInvocation>,
+
+    /// The person's displays across their devices, as this device routes by
+    /// them; `None` while display continuity is off.
+    person: Option<SharedDisplayView>,
+}
+
+/// One of the person's other devices' screens, as the sheet lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemoteDisplay {
+    device: String,
+    output: String,
+    name: String,
+    number: usize,
+    revision: u64,
+    device_label: String,
+    online: bool,
+    /// Its device shows something on it; a connected screen switched off
+    /// there is listed so its place in the layout can still be chosen.
+    active: bool,
+    /// Takes part in the shared layout.
+    enabled: bool,
+}
+
+impl RemoteDisplay {
+    fn title(&self) -> String {
+        t_args(
+            "display-remote-title",
+            &[
+                ("number", self.number.to_string().into()),
+                ("name", self.name.clone().into()),
+                ("device", self.device_label.clone().into()),
+            ],
+        )
+    }
+
+    fn detail(&self) -> String {
+        t(match (self.online, self.enabled, self.active) {
+            (false, false, _) => "display-remote-offline-excluded",
+            (false, true, _) => "display-remote-offline",
+            (true, false, _) => "display-remote-out-of-layout",
+            (true, true, false) => "display-remote-switched-off",
+            (true, true, true) => "display-remote-in-layout",
+        })
+    }
 }
 
 impl DisplayLayouts {
-    fn refresh(&mut self, now: Instant) {
-        self.outputs = DisplayHardwareSnapshot::load()
-            .map(|snapshot| snapshot.outputs)
-            .unwrap_or_default();
+    fn refresh_person(&mut self) {
+        self.person = shared_display_actions::published();
+    }
+
+    /// The other devices' screens in display order.
+    fn remote(&self) -> Vec<RemoteDisplay> {
+        let Some(view) = self.person.as_ref() else {
+            return Vec::new();
+        };
+        view.layout
+            .listed()
+            .filter(|display| !display.local)
+            .map(|display| RemoteDisplay {
+                device: display.device.clone(),
+                output: display.output.clone(),
+                name: display.name.clone(),
+                number: display.order.saturating_add(1),
+                revision: view
+                    .arrangement
+                    .entry(&display.device, &display.output)
+                    .map_or(0, |entry| entry.rev),
+                device_label: display.device_label.clone(),
+                online: display.online,
+                active: display.rect.width > 0,
+                enabled: display.enabled,
+            })
+            .collect()
+    }
+
+    /// Take what the compositor published since the last look, from
+    /// memory: the attached displays and the person's other screens.
+    /// Returns whether anything changed.
+    fn sync_published(&mut self) -> bool {
+        let mut changed = false;
+        let generation = DisplayHardwareSnapshot::published_generation();
+        if self.outputs_seen != Some(generation) {
+            self.outputs_seen = Some(generation);
+            let outputs = DisplayHardwareSnapshot::published()
+                .map(|snapshot| snapshot.outputs.clone())
+                .unwrap_or_default();
+            if outputs != self.outputs {
+                self.outputs = outputs;
+                // The committed layout is the attached set's own.
+                self.settings_seen = SettingsSeen::Unread;
+                self.polled_at = None;
+                changed = true;
+            }
+        }
+        let generation = PersonDisplays::published_generation();
+        if self.person_seen != Some(generation) {
+            self.person_seen = Some(generation);
+            self.refresh_person();
+            changed = true;
+        }
+        changed
+    }
+
+    /// Read the committed layout and the staged change from the settings
+    /// document, and the arrangement of the person's screens with them.
+    fn read_settings(&mut self, now: Instant) {
+        let stamp = settings_store::stamp();
         self.committed =
             DisplayConfig::load_for(&settings_store::display_mode::attached_set(&self.outputs));
         self.transaction = DisplayTransaction::load();
+        self.refresh_person();
         self.polled_at = Some(now);
+        // A file stamped just now can change again within the same tick
+        // and keep its stamp; read it once more on the next poll.
+        let racy = matches!(stamp, Some(settings_store::SettingsStamp::Modified(at))
+            if std::time::SystemTime::now().duration_since(at).is_ok_and(|age| age < RACY_STAMP));
+        self.settings_seen = if racy {
+            SettingsSeen::Unread
+        } else {
+            SettingsSeen::At(stamp)
+        };
     }
 
-    fn poll(&mut self, now: Instant) {
+    /// Everything at once: when the sheet opens.
+    fn refresh(&mut self, now: Instant) {
+        self.sync_published();
+        self.read_settings(now);
+    }
+
+    fn poll_completions(&mut self) -> bool {
+        let mut changed = false;
+        if let Some(staging) = self.staging.as_ref() {
+            match staging() {
+                Ok(None) => {}
+                Ok(Some(receipt)) => {
+                    changed = true;
+                    self.staging = None;
+                    self.staged = staged_transaction(&receipt);
+                    self.notice = None;
+                    // Show the stored change, with its Keep and Revert.
+                    self.settings_seen = SettingsSeen::Unread;
+                    self.polled_at = None;
+                }
+                Err(error) => {
+                    changed = true;
+                    self.staging = None;
+                    tracing::warn!(%error, "display layout was not staged");
+                    self.notice = Some(error.to_string());
+                }
+            }
+        }
+        if let Some(answer) = self.answer.as_ref() {
+            let done = match answer() {
+                Ok(None) => None,
+                Ok(Some(_)) => Some(None),
+                Err(error) => Some(Some(error.to_string())),
+            };
+            if let Some(notice) = done {
+                changed = true;
+                self.answer = None;
+                self.notice = notice;
+                self.settings_seen = SettingsSeen::Unread;
+                self.polled_at = None;
+            }
+        }
+        changed
+    }
+
+    /// The ordinary update while the sheet is open: completions, what the
+    /// compositor published, and the settings document if it moved on, at
+    /// most every [`DISPLAY_POLL`]. Returns whether anything changed.
+    fn poll(&mut self, now: Instant) -> bool {
+        let mut changed = self.poll_completions();
+        changed |= self.sync_published();
         if self
             .polled_at
             .is_none_or(|at| now.duration_since(at) >= DISPLAY_POLL)
         {
-            self.refresh(now);
+            self.polled_at = Some(now);
+            let stamp = settings_store::stamp();
+            if self.settings_seen != SettingsSeen::At(stamp) {
+                let before = (self.committed.clone(), self.transaction.clone());
+                self.read_settings(now);
+                changed |= before != (self.committed.clone(), self.transaction.clone());
+            }
         }
+        changed
     }
 
     /// The staged transaction while it still waits for Keep or Revert.
     fn pending(&self) -> Option<&DisplayTransaction> {
-        self.transaction.as_ref().filter(|transaction| {
-            matches!(
-                transaction.state,
-                DisplayTransactionState::Requested
-                    | DisplayTransactionState::AwaitingConfirmation
-                    | DisplayTransactionState::ConfirmRequested
-            )
-        })
+        self.transaction
+            .as_ref()
+            .filter(|transaction| waiting(transaction))
+    }
+
+    /// Whether display change `id` is over: kept, reverted, refused, or
+    /// replaced by another. Storage is asked at most every
+    /// [`DISPLAY_POLL`], and at once when a new change is first followed.
+    fn settled(&mut self, id: u64, now: Instant) -> bool {
+        if self.followed != Some(id) {
+            self.followed = Some(id);
+            self.polled_at = None;
+            self.settings_seen = SettingsSeen::Unread;
+        }
+        self.poll(now);
+        self.read_as_settled(id)
+    }
+
+    /// Whether `id` is settled as last read, or not read since it was
+    /// first followed. Never reads storage.
+    fn read_as_settled(&self, id: u64) -> bool {
+        self.followed != Some(id)
+            || self
+                .transaction
+                .as_ref()
+                .is_none_or(|transaction| transaction.id != id || !waiting(transaction))
     }
 
     fn effective(&self) -> &DisplayConfig {
@@ -203,34 +448,32 @@ impl DisplayLayouts {
         display_mode::plan_layout(mode, &self.outputs, &self.committed).err()
     }
 
-    fn apply(&mut self, mode: DisplayLayoutMode, now: Instant) {
-        match display_mode::stage_layout(mode) {
-            Ok(transaction) => {
-                self.staged = Some(transaction.id);
-                self.transaction = Some(transaction);
-                self.notice = None;
+    /// Follow the action the host invoked for `request`: wait for its
+    /// receipt, or show why it was refused.
+    fn follow(
+        &mut self,
+        request: DisplayRequest,
+        outcome: Result<
+            crate::shell::search::InvocationDisposition,
+            crate::shell::search::action_api::ActionError,
+        >,
+    ) {
+        use crate::shell::search::InvocationDisposition;
+        let ticket: crate::shell::search::PendingInvocation = match outcome {
+            Ok(InvocationDisposition::Pending(ticket)) => ticket,
+            Ok(InvocationDisposition::Accepted(receipt)) => {
+                std::rc::Rc::new(move || Ok(Some(receipt.clone())))
             }
             Err(error) => {
-                tracing::warn!(%error, mode = mode.id(), "display layout was not staged");
+                tracing::warn!(%error, action = request.action_id(), "display choice refused");
                 self.notice = Some(error.to_string());
+                return;
             }
-        }
-        self.polled_at = Some(now);
-    }
-
-    fn keep(&mut self) {
-        if let Some(transaction) = self.transaction.as_mut()
-            && let Err(error) = transaction.request_confirmation()
-        {
-            self.notice = Some(error.to_string());
-        }
-    }
-
-    fn revert(&mut self) {
-        if let Some(transaction) = self.transaction.as_mut()
-            && let Err(error) = transaction.request_revert()
-        {
-            self.notice = Some(error.to_string());
+        };
+        self.notice = None;
+        match request {
+            DisplayRequest::Layout(_) => self.staging = Some(ticket),
+            DisplayRequest::Keep | DisplayRequest::Revert => self.answer = Some(ticket),
         }
     }
 
@@ -259,6 +502,8 @@ enum SheetFocus {
     Layout(DisplayLayoutMode),
     Keep,
     Revert,
+    /// One of the other devices' screens, by its position in the list.
+    Remote(usize),
     Receivers,
 }
 
@@ -290,6 +535,7 @@ impl EventOutcome {
 
 pub struct ProjectionOverlay {
     controller: ProjectionController,
+    authority: Option<crate::shell::chrome_state::Chrome>,
     displays: DisplayLayouts,
     focus: SheetFocus,
     transition: ui::Transition,
@@ -302,6 +548,10 @@ pub struct ProjectionOverlay {
     layout_rects: [Rect; 4],
     keep_rect: Rect,
     revert_rect: Rect,
+    remote_rects: Vec<(RemoteDisplay, Rect)>,
+    remote_scroll: ui::widget::ScrollRegion,
+    remote_theme: Option<Theme>,
+    remote_focus_seen: Option<usize>,
     device_rects: Vec<Rect>,
     refresh_rect: Rect,
     close_rect: Rect,
@@ -311,6 +561,9 @@ pub struct ProjectionOverlay {
     fps_rect: Rect,
     credential_input: TextInput,
     credential_rect: Rect,
+    /// A display choice made on the sheet, for the host to invoke as its
+    /// published action.
+    requested: Option<DisplayRequest>,
 }
 
 impl Default for ProjectionOverlay {
@@ -323,6 +576,7 @@ impl ProjectionOverlay {
     pub(crate) fn from_controller(controller: ProjectionController) -> Self {
         Self {
             controller,
+            authority: None,
             displays: DisplayLayouts::default(),
             focus: SheetFocus::Layout(DisplayLayoutMode::Extend),
             transition: ui::Transition::closed(),
@@ -332,6 +586,10 @@ impl ProjectionOverlay {
             layout_rects: [Rect::ZERO; 4],
             keep_rect: Rect::ZERO,
             revert_rect: Rect::ZERO,
+            remote_rects: Vec::new(),
+            remote_scroll: ui::widget::ScrollRegion::vertical(),
+            remote_theme: None,
+            remote_focus_seen: None,
             device_rects: Vec::new(),
             refresh_rect: Rect::ZERO,
             close_rect: Rect::ZERO,
@@ -341,15 +599,28 @@ impl ProjectionOverlay {
             fps_rect: Rect::ZERO,
             credential_input: TextInput::local()
                 .with_id("projection-airplay-credential")
-                .with_placeholder(&t("wireless-credential-placeholder"))
+                .with_placeholder(t("wireless-credential-placeholder"))
                 .with_secret(true)
                 .with_enter_submits(true),
             credential_rect: Rect::ZERO,
+            requested: None,
         }
     }
 
-    pub fn with_backend(backend: Box<dyn ProjectionBackend>) -> Self {
-        Self::from_controller(ProjectionController::new(backend))
+    pub(crate) fn bind_shared_display_authority(
+        &mut self,
+        chrome: crate::shell::chrome_state::Chrome,
+    ) {
+        self.authority = Some(chrome);
+    }
+
+    fn shared_display_editable(&self) -> bool {
+        self.authority.as_ref().is_some_and(|chrome| {
+            crate::shell::search::providers::actions::current_shell_action_authorized(
+                &chrome.borrow(),
+                shared_display_actions::INCLUDE_ID,
+            )
+        })
     }
 
     pub fn controller(&self) -> &ProjectionController {
@@ -395,14 +666,77 @@ impl ProjectionOverlay {
         Some(Rect::new(field.x0, field.y0, field.x1 + slide, field.y1))
     }
 
+    /// The sheet's part of the ordinary host update: take the open-time
+    /// state when it opens, drain the receiver worker and the display
+    /// actions' receipts (even at rest), and, while open, take up what the
+    /// compositor published and what changed in settings. Painting reads
+    /// none of it again. Waiting itself is not animation; the existing native
+    /// wake schedules this update and only a change invalidates the sheet.
+    pub(crate) fn poll_storage(&mut self, open: bool) -> bool {
+        let opened = open && !self.session_open;
+        self.sync_open_state(open);
+        let mut changed = opened | self.controller.poll();
+        changed |= if open {
+            self.poll_displays(Instant::now())
+        } else {
+            self.displays.poll_completions()
+        };
+        changed
+    }
+
+    /// The display choice made on the sheet since the last look, for the
+    /// host to invoke as its published action.
+    pub(crate) fn take_request(&mut self) -> Option<DisplayRequest> {
+        self.requested.take()
+    }
+
+    /// What invoking the action for `request` answered: a job to follow to
+    /// its receipt, or why it was refused.
+    pub(crate) fn follow_request(
+        &mut self,
+        request: DisplayRequest,
+        outcome: Result<
+            crate::shell::search::InvocationDisposition,
+            crate::shell::search::action_api::ActionError,
+        >,
+    ) {
+        self.displays.follow(request, outcome);
+    }
+
+    /// Whether the display change an action opened this sheet for, `id`,
+    /// has settled, so the sheet that only showed it can close.
+    pub(crate) fn followed_change_settled(&mut self, id: u64, now: Instant) -> bool {
+        self.displays.settled(id, now)
+    }
+
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
         self.transition.is_animating(now)
             || matches!(
                 self.controller.status,
                 ProjectionStatus::Scanning | ProjectionStatus::Connecting { .. }
             )
+            || (self.was_open && self.remote_theme.as_ref().is_some_and(|theme|
+                self.remote_scroll.needs_animation_frame(theme)))
             // The Keep/Revert countdown ticks while the sheet is open.
             || (self.was_open && self.displays.pending().is_some())
+            // The change an action opened the sheet for read as settled: one
+            // more host update closes the sheet.
+            || self.followed_change_read_as_settled()
+    }
+
+    fn followed_change_read_as_settled(&self) -> bool {
+        let Some(state) = self
+            .authority
+            .as_ref()
+            .and_then(|chrome| chrome.try_borrow().ok())
+        else {
+            return false;
+        };
+        let crate::shell::chrome_state::ProjectionFollow::Transaction(id) = state.projection_follow
+        else {
+            return false;
+        };
+        state.overlays.projection && self.displays.read_as_settled(id)
     }
 
     /// The layout the sheet highlights as current: the physical layout when
@@ -420,6 +754,9 @@ impl ProjectionOverlay {
     /// Whether choosing `mode` does anything: it can be planned for the
     /// attached displays, or the selected receiver can stream it.
     fn layout_enabled(&self, mode: DisplayLayoutMode) -> bool {
+        if self.displays.staging.is_some() {
+            return false;
+        }
         self.displays.plan_error(mode).is_none()
             || (!self.controller.devices.is_empty()
                 && wireless_mode_for(mode)
@@ -441,11 +778,17 @@ impl ProjectionOverlay {
             self.displays.notice = None;
             self.displays.staged = None;
             self.displays.refresh(Instant::now());
+            self.controller.refresh();
             let initial = self
                 .active_layout()
-                .or_else(|| self.enabled_layouts().first().copied())
-                .unwrap_or(DisplayLayoutMode::Extend);
-            self.focus = SheetFocus::Layout(initial);
+                .or_else(|| self.enabled_layouts().first().copied());
+            // With no layout to choose on this device's own screens, the
+            // first choice is the other devices' screens.
+            self.focus = match initial {
+                Some(mode) => SheetFocus::Layout(mode),
+                None if !self.displays.remote().is_empty() => SheetFocus::Remote(0),
+                None => SheetFocus::Layout(DisplayLayoutMode::Extend),
+            };
         } else if !open {
             self.session_open = false;
         }
@@ -488,7 +831,7 @@ impl ProjectionOverlay {
             self.controller.options.mode = wireless;
         }
         if self.displays.plan_error(mode).is_none() {
-            self.displays.apply(mode, Instant::now());
+            self.requested = Some(DisplayRequest::Layout(mode));
             self.focus = SheetFocus::Keep;
         } else {
             self.focus = SheetFocus::Layout(mode);
@@ -518,6 +861,23 @@ impl ProjectionOverlay {
             && let Some(outcome) = self.handle_credential_event(event, ctx, cursor)
         {
             return outcome;
+        }
+        let walks_rows = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    logical_key: Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown),
+                    ..
+                },
+                ..
+            }
+        );
+        if !walks_rows && let Some(theme) = self.remote_theme.as_ref() {
+            let previously_handled = *ctx.handled;
+            let changed = self.remote_scroll.handle_event(event, ctx, theme);
+            if changed || (!previously_handled && *ctx.handled) {
+                return EventOutcome::consumed(changed);
+            }
         }
         match event {
             WindowEvent::KeyboardInput {
@@ -577,7 +937,7 @@ impl ProjectionOverlay {
             &mut EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state: &mut *ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: &mut input_handled,
                 focus_target: &mut *ctx.focus_target,
@@ -597,19 +957,32 @@ impl ProjectionOverlay {
     }
 
     /// Up/Down walk the sheet in visual order: layouts, Keep/Revert while a
-    /// change waits for confirmation, then the receivers.
+    /// change waits for confirmation, the other devices' screens, then the
+    /// receivers.
     fn move_focus(&mut self, down: bool) {
         let confirming = self.confirming();
         let last_layout = DisplayLayoutMode::ExternalOnly;
-        self.focus = match (self.focus, down) {
+        let remote = self.displays.remote().len();
+        // Where focus goes below the layouts and the confirmation band.
+        let below = if remote > 0 {
+            Some(SheetFocus::Remote(0))
+        } else if self.controller.devices.is_empty() {
+            None
+        } else {
+            Some(SheetFocus::Receivers)
+        };
+        // Where focus goes above the other devices' screens.
+        let above = if confirming {
+            SheetFocus::Keep
+        } else {
+            SheetFocus::Layout(last_layout)
+        };
+        let next = match (self.focus, down) {
             (SheetFocus::Layout(mode), true) if mode == last_layout => {
                 if confirming {
                     SheetFocus::Keep
-                } else if self.controller.devices.is_empty() {
-                    self.focus
                 } else {
-                    self.controller.selected = 0;
-                    SheetFocus::Receivers
+                    below.unwrap_or(self.focus)
                 }
             }
             (SheetFocus::Layout(mode), true) => DisplayLayoutMode::ALL
@@ -620,45 +993,126 @@ impl ProjectionOverlay {
                 .checked_sub(1)
                 .and_then(|index| DisplayLayoutMode::ALL.get(index))
                 .map_or(self.focus, |previous| SheetFocus::Layout(*previous)),
-            (SheetFocus::Keep | SheetFocus::Revert, true) => {
+            (SheetFocus::Keep | SheetFocus::Revert, true) => below.unwrap_or(self.focus),
+            (SheetFocus::Keep | SheetFocus::Revert, false) => SheetFocus::Layout(last_layout),
+            (SheetFocus::Remote(index), true) if index.saturating_add(1) < remote => {
+                SheetFocus::Remote(index.saturating_add(1))
+            }
+            (SheetFocus::Remote(_), true) => {
                 if self.controller.devices.is_empty() {
                     self.focus
                 } else {
-                    self.controller.selected = 0;
                     SheetFocus::Receivers
                 }
             }
-            (SheetFocus::Keep | SheetFocus::Revert, false) => SheetFocus::Layout(last_layout),
+            (SheetFocus::Remote(index), false) => {
+                index.checked_sub(1).map_or(above, SheetFocus::Remote)
+            }
             (SheetFocus::Receivers, true) => {
                 self.controller.move_selection(1);
                 self.focus
             }
             (SheetFocus::Receivers, false) => {
                 if self.controller.selected == 0 {
-                    if confirming {
-                        SheetFocus::Keep
-                    } else {
-                        SheetFocus::Layout(last_layout)
-                    }
+                    remote.checked_sub(1).map_or(above, SheetFocus::Remote)
                 } else {
                     self.controller.move_selection(-1);
                     self.focus
                 }
             }
         };
+        if next == SheetFocus::Receivers && self.focus != SheetFocus::Receivers {
+            self.controller.selected = 0;
+        }
+        self.focus = next;
+    }
+
+    /// Ask for Keep or Revert on the change waiting for one, unless an
+    /// answer is already on its way.
+    fn answer(&mut self, request: DisplayRequest) {
+        if self.displays.answer.is_none() && self.displays.transaction.is_some() {
+            self.requested = Some(request);
+        }
+    }
+
+    fn poll_displays(&mut self, now: Instant) -> bool {
+        let focused = if let SheetFocus::Remote(index) = self.focus {
+            self.displays.remote().get(index).cloned()
+        } else {
+            None
+        };
+        let changed = self.displays.poll(now);
+        if let Some(display) = focused {
+            self.focus = self
+                .displays
+                .remote()
+                .iter()
+                .position(|row| row.device == display.device && row.output == display.output)
+                .map_or(SheetFocus::Receivers, SheetFocus::Remote);
+        }
+        changed
+    }
+
+    fn toggle_remote(&mut self, index: usize) {
+        if let Some(display) = self.displays.remote().get(index).cloned() {
+            self.toggle_shared_output(&display);
+        }
+    }
+
+    fn toggle_shared_output(&mut self, display: &RemoteDisplay) {
+        if let Some(index) = self
+            .displays
+            .remote()
+            .iter()
+            .position(|row| row.device == display.device && row.output == display.output)
+        {
+            self.focus = SheetFocus::Remote(index);
+        }
+        let result = self
+            .authority
+            .as_ref()
+            .ok_or_else(|| {
+                crate::shell::search::action_api::ActionError::Refused(t(
+                    "display-remote-unavailable",
+                ))
+            })
+            .and_then(|chrome| {
+                shared_display_actions::include(
+                    &chrome.borrow(),
+                    &display.device,
+                    &display.output,
+                    display.revision,
+                    !display.enabled,
+                )
+            });
+        match result {
+            Ok(()) => {
+                self.displays.refresh_person();
+                self.displays.notice = None;
+                if let Some(index) =
+                    self.displays.remote().iter().position(|row| {
+                        row.device == display.device && row.output == display.output
+                    })
+                {
+                    self.focus = SheetFocus::Remote(index);
+                }
+            }
+            Err(error) => self.displays.notice = Some(error.to_string()),
+        }
     }
 
     fn activate_focus(&mut self) {
         match self.focus {
             SheetFocus::Layout(mode) => self.choose_layout(mode),
             SheetFocus::Keep => {
-                self.displays.keep();
+                self.answer(DisplayRequest::Keep);
                 self.focus = self.active_layout().map_or(self.focus, SheetFocus::Layout);
             }
             SheetFocus::Revert => {
-                self.displays.revert();
+                self.answer(DisplayRequest::Revert);
                 self.focus = self.active_layout().map_or(self.focus, SheetFocus::Layout);
             }
+            SheetFocus::Remote(index) => self.toggle_remote(index),
             SheetFocus::Receivers => {
                 let selected_id = self
                     .controller
@@ -699,6 +1153,9 @@ impl ProjectionOverlay {
                 self.focus = SheetFocus::Revert;
             }
             Key::Named(NamedKey::Enter) => self.activate_focus(),
+            Key::Named(NamedKey::Space) if matches!(self.focus, SheetFocus::Remote(_)) => {
+                self.activate_focus();
+            }
             Key::Named(NamedKey::Space) => {
                 self.controller.options.audio = !self.controller.options.audio;
             }
@@ -738,6 +1195,13 @@ impl ProjectionOverlay {
                 self.focus = SheetFocus::Layout(mode);
                 self.choose_layout(mode);
             }
+        } else if let Some(display) = self
+            .remote_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(point))
+            .map(|(display, _)| display.clone())
+        {
+            self.toggle_shared_output(&display);
         } else if self.refresh_rect.contains(point) {
             self.controller.refresh();
         } else if self.audio_rect.contains(point) {
@@ -824,7 +1288,20 @@ impl ProjectionOverlay {
 
         let mut sheet = AccessNode::new(Role::Dialog)
             .with_name(t("display-sheet-title"))
-            .with_description(t("display-sheet-a11y-description"))
+            .with_description(
+                if self.displays.staging.is_some() {
+                    Some(t("display-sheet-saving-layout"))
+                } else {
+                    // Why the last choice was refused is said, not only shown.
+                    self.displays
+                        .rejection()
+                        .filter(|reason| !reason.is_empty())
+                }
+                .map_or_else(
+                    || t("display-sheet-a11y-description"),
+                    |status| format!("{status}. {}", t("display-sheet-a11y-description")),
+                ),
+            )
             .with_bounds(self.sheet_rect())
             .with_state(AccessState::new().modal(true));
         let active = self.active_layout();
@@ -867,9 +1344,18 @@ impl ProjectionOverlay {
                         .with_name(t(key))
                         .with_description(t("display-confirm-title"))
                         .with_bounds(rect)
-                        .with_state(AccessState::new().focused(self.focus == focus)),
+                        .with_state(
+                            AccessState::new()
+                                .focused(self.focus == focus)
+                                .disabled(self.displays.answer.is_some()),
+                        ),
                 );
             }
+        }
+        for (index, display) in self.displays.remote().iter().enumerate() {
+            sheet
+                .children
+                .push(self.remote_accessibility(index, display));
         }
         for (index, device) in self.controller.devices.iter().enumerate() {
             sheet.children.push(
@@ -885,7 +1371,35 @@ impl ProjectionOverlay {
         sheet
     }
 
-    /// Paint the complete sheet and return whether worker polling changed state.
+    fn remote_accessibility(&self, index: usize, display: &RemoteDisplay) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        AccessNode::new(Role::Switch)
+            .with_name(display.title())
+            .with_description(display.detail())
+            .with_semantic_key(format!(
+                "shared-output:{}:{}{}",
+                display.device.len(),
+                display.device,
+                display.output
+            ))
+            .with_bounds(
+                self.remote_rects
+                    .iter()
+                    .find(|(painted, _)| {
+                        painted.device == display.device && painted.output == display.output
+                    })
+                    .map_or(Rect::ZERO, |(_, rect)| *rect),
+            )
+            .with_state(
+                AccessState::new()
+                    .focused(self.focus == SheetFocus::Remote(index))
+                    .checked(display.enabled)
+                    .disabled(!self.shared_display_editable()),
+            )
+    }
+
+    /// Paint the complete sheet from the state the host update took. Reads
+    /// no storage and changes no state but its own geometry.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -895,14 +1409,14 @@ impl ProjectionOverlay {
         presence: &PresenceCtx,
         host_rect: Rect,
         open: bool,
-    ) -> bool {
+    ) {
         // Theme type tokens already carry the user's text scale, and this
         // sheet lays out and paints with those resolved sizes; the renderer
         // must not scale them a second time (HIG §7a), so it is reset for
         // the pass exactly as the lens pass resets it, and restored after.
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
-        let changed = self.draw_at_theme_scale(
+        self.draw_at_theme_scale(
             scene,
             transform,
             text_renderer,
@@ -912,7 +1426,6 @@ impl ProjectionOverlay {
             open,
         );
         text_renderer.set_text_scale(renderer_scale);
-        changed
     }
 
     fn draw_at_theme_scale(
@@ -924,18 +1437,10 @@ impl ProjectionOverlay {
         presence: &PresenceCtx,
         host_rect: Rect,
         open: bool,
-    ) -> bool {
+    ) {
         self.host_rect = host_rect;
-        self.sync_open_state(open);
-        let changed = self.controller.poll();
-        if open && !self.was_open {
-            self.controller.refresh();
-        }
         self.was_open = open;
         let now = Instant::now();
-        if open {
-            self.displays.poll(now);
-        }
         self.transition.set_open(
             open,
             if theme.reduce_motion {
@@ -967,13 +1472,15 @@ impl ProjectionOverlay {
         } else {
             self.clear_geometry();
         }
-        changed
     }
 
     fn clear_geometry(&mut self) {
         self.layout_rects = [Rect::ZERO; 4];
         self.keep_rect = Rect::ZERO;
         self.revert_rect = Rect::ZERO;
+        self.remote_rects.clear();
+        self.remote_theme = None;
+        self.remote_focus_seen = None;
         self.device_rects.clear();
         self.refresh_rect = Rect::ZERO;
         self.close_rect = Rect::ZERO;
@@ -1015,7 +1522,7 @@ impl ProjectionOverlay {
     fn layout_row_rect(&self, index: usize) -> Rect {
         let r = self.sheet_rect();
         // Rows of 52 px on a 58 px pitch, below the 80 px header.
-        let y0 = r.y0 + 80.0 + usize_to_f64_lossy(index) * 58.0;
+        let y0 = r.y0 + 80.0 + f64_of_usize(index) * 58.0;
         Rect::new(r.x0 + 16.0, y0, r.x1 - 16.0, y0 + 52.0)
     }
 
@@ -1026,10 +1533,12 @@ impl ProjectionOverlay {
             + 10.0
     }
 
-    /// Top of the wireless section; the confirmation band or a rejection
-    /// notice pushes it down while visible.
-    fn wireless_top(&self) -> f64 {
-        let band = if self.confirming() || self.displays.rejection().is_some() {
+    /// Top of the other devices' screens, after any display confirmation.
+    fn remote_top(&self) -> f64 {
+        let band = if self.displays.staging.is_some()
+            || self.confirming()
+            || self.displays.rejection().is_some()
+        {
             Self::confirm_band_height() + 10.0
         } else {
             0.0
@@ -1037,9 +1546,69 @@ impl ProjectionOverlay {
         self.confirm_top() + band + 8.0
     }
 
+    fn remote_spacing(&self) -> ui::tokens::Spacing {
+        self.remote_theme
+            .as_ref()
+            .map_or(ui::tokens::Spacing::BASE, |theme| theme.tokens.spacing)
+    }
+
+    fn remote_metrics(&self) -> ui::tokens::Metrics {
+        self.remote_theme
+            .as_ref()
+            .map_or(ui::tokens::Metrics::BASE, |theme| theme.tokens.metrics)
+    }
+
+    fn remote_row_pitch(&self) -> f64 {
+        f64::from(self.remote_metrics().panel_row_height + self.remote_spacing().s2)
+    }
+
+    /// Bound the shared-output viewport; the shared scroll region retains every row.
+    fn remote_viewport(&self) -> Rect {
+        let r = self.sheet_rect();
+        let spacing = self.remote_spacing();
+        let heading = f64::from(self.remote_metrics().menu_row_height);
+        let gutter = f64::from(spacing.s3);
+        let pitch = self.remote_row_pitch();
+        let footer = f64::from(self.remote_metrics().menu_row_height + spacing.s2);
+        let available = (r.y1
+            - self.remote_top()
+            - heading
+            - gutter
+            - self.wireless_controls_height()
+            - Self::device_row_pitch()
+            - footer)
+            .max(pitch);
+        let height = (f64_of_usize(self.displays.remote().len().min(3)) * pitch).min(available);
+        Rect::new(
+            r.x0 + gutter,
+            self.remote_top() + heading,
+            r.x1 - gutter,
+            self.remote_top() + heading + height,
+        )
+    }
+
+    fn remote_row_rect(&self, index: usize) -> Rect {
+        let y0 = f64_of_usize(index) * self.remote_row_pitch();
+        Rect::new(
+            0.0,
+            y0,
+            self.remote_scroll.content_rect().width(),
+            y0 + f64::from(self.remote_metrics().panel_row_height),
+        )
+    }
+
+    /// Wireless receivers keep their section below the bounded shared-output viewport.
+    fn wireless_top(&self) -> f64 {
+        if self.displays.remote().is_empty() {
+            self.remote_top()
+        } else {
+            self.remote_viewport().y1 + f64::from(self.remote_spacing().s3)
+        }
+    }
+
     fn row_rect(&self, index: usize) -> Rect {
         let r = self.sheet_rect();
-        let y0 = self.device_rows_top() + usize_to_f64_lossy(index) * Self::device_row_pitch();
+        let y0 = self.device_rows_top() + f64_of_usize(index) * Self::device_row_pitch();
         Rect::new(r.x0 + 16.0, y0, r.x1 - 16.0, y0 + 56.0)
     }
 
@@ -1052,13 +1621,16 @@ impl ProjectionOverlay {
             })
     }
 
+    fn wireless_controls_height(&self) -> f64 {
+        if self.airplay_selected() {
+            214.0
+        } else {
+            118.0
+        }
+    }
+
     fn device_rows_top(&self) -> f64 {
-        self.wireless_top()
-            + if self.airplay_selected() {
-                214.0
-            } else {
-                118.0
-            }
+        self.wireless_top() + self.wireless_controls_height()
     }
 
     fn draw_content(
@@ -1071,11 +1643,12 @@ impl ProjectionOverlay {
     ) {
         let r = self.sheet_rect();
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
 
         self.draw_header(scene, transform, text_renderer, theme, r);
         self.draw_layout_rows(scene, transform, text_renderer, theme);
         self.draw_confirm_band(scene, transform, text_renderer, theme, r);
+        self.draw_remote_displays(scene, transform, text_renderer, theme, r);
         self.draw_devices_heading(scene, transform, text_renderer, theme, r);
         self.draw_audio_toggle(scene, transform, text_renderer, theme, r);
         self.draw_stream_chips(scene, transform, text_renderer, theme, r);
@@ -1083,9 +1656,7 @@ impl ProjectionOverlay {
 
         self.device_rects.clear();
         let rows_top = self.device_rows_top();
-        let max_rows =
-            f64_floor_to_usize_saturating((r.y1 - rows_top - 40.0) / Self::device_row_pitch())
-                .max(1);
+        let max_rows = usize_of_f64((r.y1 - rows_top - 40.0) / Self::device_row_pitch()).max(1);
         if self.controller.devices.is_empty() {
             self.draw_devices_empty(scene, transform, text_renderer, theme, r);
         } else {
@@ -1093,14 +1664,15 @@ impl ProjectionOverlay {
         }
 
         let footer = t("wireless-protocols");
-        let (fw, _) = text_renderer.measure(&footer, type_scale.xs, None);
-        text_renderer.draw_text(
+        let (fw, _) =
+            text_renderer.measure_style(&footer, None, &type_scale.style(TextRole::Caption));
+        text_renderer.draw_style(
             scene,
             &footer,
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.center().x - f64::from(fw) / 2.0, r.y1 - 28.0).into()),
             None,
+            &type_scale.style(TextRole::Caption),
         );
     }
 
@@ -1114,11 +1686,17 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let radius = ui::chrome::ChromeRole::Panel.radius(theme, r.height());
         let card = RoundedRect::from_rect(r, radius);
         ui::chrome::shell::panel_shadow(scene, transform, r, radius, theme, 1.0);
-        scene.fill(Fill::NonZero, transform, panel_surface(theme), None, &card);
+        ui::floating_surface::paint_material(
+            scene,
+            transform,
+            &card,
+            ui::floating_surface::Material::Floating,
+            theme,
+        );
         // Panel edge derived against the ground (HIG §9.5), not declared.
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
@@ -1128,22 +1706,21 @@ impl ProjectionOverlay {
             &card,
         );
 
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("display-sheet-title"),
-            type_scale.xl,
             colors.text_primary,
             transform.pre_translate((r.x0 + 20.0, r.y0 + 18.0).into()),
             None,
-            TextWeight::Semibold,
+            &type_scale.style(TextRole::Title),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("display-sheet-subtitle"),
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.x0 + 20.0, r.y0 + 49.0).into()),
-            Some(f64_to_f32_lossy(r.width() - 88.0)),
+            Some(f32_of_f64(r.width() - 88.0)),
+            &type_scale.style(TextRole::Caption),
         );
 
         self.close_rect = Rect::new(r.x1 - 48.0, r.y0 + 12.0, r.x1 - 12.0, r.y0 + 48.0);
@@ -1167,7 +1744,7 @@ impl ProjectionOverlay {
         theme: &Theme,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         // Control role (HIG §9.1/§9.3): the highlighted layout is a lift with
         // the tier's hairline, never an accent wash (the accent means live
         // state, §9.4); idle rows rest on the lift floor with an edge
@@ -1201,19 +1778,15 @@ impl ProjectionOverlay {
                 &ui::surface::edge_outline(row, radius),
             );
             if highlighted {
-                ui::widget::ActionRowFace::new(row, t(layout_title_key(mode)))
-                    .focused(true)
-                    .radius(radius)
-                    .paint_focus(scene, transform, theme);
+                ui::widget::paint_focus_ring(scene, transform, row, radius, theme);
             }
             let pictogram = Rect::new(row.x0 + 12.0, row.y0 + 14.0, row.x0 + 56.0, row.y1 - 14.0);
             draw_layout_pictogram(scene, transform, pictogram, mode, theme, enabled);
             let text_x = pictogram.x1 + 14.0;
-            let text_w = f64_to_f32_lossy(row.x1 - text_x - 44.0);
-            text_renderer.draw_text_weighted(
+            let text_w = f32_of_f64(row.x1 - text_x - 44.0);
+            text_renderer.draw_style(
                 scene,
                 &t(layout_title_key(mode)),
-                type_scale.sm,
                 if enabled {
                     colors.text_primary
                 } else {
@@ -1221,7 +1794,9 @@ impl ProjectionOverlay {
                 },
                 transform.pre_translate((text_x, row.y0 + 8.0).into()),
                 Some(text_w),
-                TextWeight::Medium,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             let detail = if enabled {
                 t(layout_detail_key(mode))
@@ -1230,16 +1805,20 @@ impl ProjectionOverlay {
                     .plan_error(mode)
                     .map_or_else(|| t(layout_detail_key(mode)), |e| t(unavailable_key(&e)))
             };
-            let detail = text_renderer.elide_to_width(&detail, type_scale.xs, text_w);
-            text_renderer.draw_text(
+            let detail = text_renderer.elide_to_width_style(
+                &detail,
+                text_w,
+                &type_scale.style(TextRole::Caption),
+            );
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                type_scale.xs,
                 colors
                     .text_dim
                     .with_alpha_factor(if enabled { 1.0 } else { 0.62 }),
                 transform.pre_translate((text_x, row.y0 + 29.0).into()),
                 None,
+                &type_scale.style(TextRole::Caption),
             );
             if active == Some(mode) {
                 ui::icons::draw_icon(
@@ -1272,7 +1851,7 @@ impl ProjectionOverlay {
         self.keep_rect = Rect::ZERO;
         self.revert_rect = Rect::ZERO;
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let top = self.confirm_top();
         let band = Rect::new(
             r.x0 + 16.0,
@@ -1280,14 +1859,32 @@ impl ProjectionOverlay {
             r.x1 - 16.0,
             top + Self::confirm_band_height(),
         );
-        if self.confirming() {
-            let status = crate::shell::display_confirm::countdown_status(
-                self.displays.seconds_left(tilo_clock::unix_now_ms()),
+        if self.displays.staging.is_some() {
+            text_renderer.draw_style(
+                scene,
+                &t("display-sheet-saving-layout"),
+                colors.text_dim,
+                transform.pre_translate((band.x0 + 4.0, band.y0 + 8.0).into()),
+                Some(f32_of_f64(band.width() - 8.0)),
+                &type_scale.style(TextRole::Caption),
             );
+        } else if self.confirming() {
+            let status = if self.displays.answer.is_some() {
+                t("display-confirm-answer-pending")
+            } else if let Some(notice) = self.displays.notice.as_ref() {
+                t_args(
+                    "display-confirm-answer-failed",
+                    &[("reason", ArgValue::Text(notice.clone()))],
+                )
+            } else {
+                crate::shell::display_confirm::countdown_status(
+                    self.displays.seconds_left(tilo_clock::unix_now_ms()),
+                )
+            };
             let focus = match self.focus {
                 SheetFocus::Keep => Some(crate::shell::display_confirm::BandFocus::Keep),
                 SheetFocus::Revert => Some(crate::shell::display_confirm::BandFocus::Revert),
-                SheetFocus::Layout(_) | SheetFocus::Receivers => None,
+                SheetFocus::Layout(_) | SheetFocus::Remote(_) | SheetFocus::Receivers => None,
             };
             let buttons = crate::shell::display_confirm::paint_keep_revert_band(
                 scene,
@@ -1297,21 +1894,149 @@ impl ProjectionOverlay {
                 band,
                 &t("display-confirm-title"),
                 &status,
-                focus,
+                crate::shell::display_confirm::BandState {
+                    focus,
+                    disabled: self.displays.answer.is_some(),
+                },
             );
             self.keep_rect = buttons.keep;
             self.revert_rect = buttons.revert;
         } else if let Some(reason) = self.displays.rejection() {
             let message = t_args("display-rejected", &[("reason", ArgValue::Text(reason))]);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &message,
-                type_scale.xs,
                 colors.semantic.danger,
                 transform.pre_translate((band.x0 + 4.0, band.y0 + 8.0).into()),
-                Some(f64_to_f32_lossy(band.width() - 8.0)),
+                Some(f32_of_f64(band.width() - 8.0)),
+                &type_scale.style(TextRole::Caption),
             );
         }
+    }
+
+    /// Shared output rows use retained-control faces and the shared scroll engine.
+    fn draw_remote_displays(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+    ) {
+        self.remote_rects.clear();
+        let remote = self.displays.remote();
+        if remote.is_empty() {
+            return;
+        }
+        self.remote_theme = Some(theme.clone());
+        text_renderer.draw_style(
+            scene,
+            &t("display-remote-heading"),
+            theme.tokens.colors.text_primary,
+            transform.pre_translate(
+                (r.x0 + f64::from(theme.tokens.spacing.s3), self.remote_top()).into(),
+            ),
+            None,
+            &theme.text(TextRole::Label),
+        );
+        self.remote_scroll
+            .set_viewport(self.remote_viewport(), theme);
+        self.remote_scroll.set_content_size(
+            self.remote_viewport().width(),
+            f64_of_usize(remote.len()) * self.remote_row_pitch(),
+        );
+        let focused = if let SheetFocus::Remote(index) = self.focus {
+            Some(index)
+        } else {
+            None
+        };
+        self.remote_scroll.set_focused(focused.is_some());
+        if focused != self.remote_focus_seen
+            && let Some(index) = focused
+        {
+            self.remote_scroll
+                .scroll_into_view(self.remote_row_rect(index));
+        }
+        self.remote_focus_seen = focused;
+        let content_transform = self.remote_scroll.content_transform(Affine::IDENTITY);
+        let viewport = self.remote_scroll.content_rect();
+        let rows = (0..remote.len())
+            .map(|index| self.remote_row_rect(index))
+            .collect::<Vec<_>>();
+        self.remote_rects = remote
+            .iter()
+            .zip(&rows)
+            .map(|(display, row)| {
+                (
+                    display.clone(),
+                    content_transform
+                        .transform_rect_bbox(*row)
+                        .intersect(viewport),
+                )
+            })
+            .collect();
+        let disabled = !self.shared_display_editable();
+        self.remote_scroll
+            .paint(scene, transform, theme, |scene, transform| {
+                for (index, (display, row)) in remote.iter().zip(&rows).enumerate() {
+                    Self::paint_remote_row(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        *row,
+                        display,
+                        ui::widget::ToggleInteract {
+                            focused: focused == Some(index),
+                            disabled,
+                            ..Default::default()
+                        },
+                    );
+                }
+            });
+    }
+
+    fn paint_remote_row(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        display: &RemoteDisplay,
+        interact: ui::widget::ToggleInteract,
+    ) {
+        let title = t_args(
+            "display-remote-row",
+            &[
+                ("title", display.title().into()),
+                ("status", display.detail().into()),
+            ],
+        );
+        let toggle_width =
+            ui::widget::ToggleFace::size(theme).0 + f64::from(theme.tokens.spacing.s3);
+        let label_rect = Rect::new(row.x0, row.y0, row.x1 - toggle_width, row.y1);
+        ui::widget::Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ui::widget::ButtonFace::new(label_rect, &title)
+                .role(ButtonRole::Plain)
+                .icon(ui::icons::Icon::Monitor)
+                .focused(interact.focused)
+                .disabled(interact.disabled),
+        );
+        ui::widget::Toggle::paint(
+            scene,
+            transform,
+            theme,
+            &ui::widget::ToggleFace::new(
+                Rect::new(label_rect.x1, row.y0, row.x1, row.y1),
+                display.enabled,
+            )
+            .focused(interact.focused)
+            .disabled(interact.disabled),
+        );
     }
 
     /// "Wireless displays" heading plus the refresh button beside it.
@@ -1324,16 +2049,17 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let heading_y = self.wireless_top();
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("wireless-heading"),
-            type_scale.sm,
             colors.text_primary,
             transform.pre_translate((r.x0 + 20.0, heading_y).into()),
             None,
-            TextWeight::Semibold,
+            &type_scale
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
         self.refresh_rect = Rect::new(r.x1 - 48.0, heading_y - 8.0, r.x1 - 12.0, heading_y + 28.0);
         ui::icons::draw_icon(
@@ -1356,7 +2082,7 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let top = self.wireless_top() + 32.0;
         self.audio_rect = Rect::new(r.x0 + 20.0, top, r.x1 - 62.0, top + 38.0);
         ui::icons::draw_icon(
@@ -1371,13 +2097,13 @@ impl ProjectionOverlay {
             colors.text_dim,
             1.5,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("wireless-share-audio"),
-            type_scale.sm,
             colors.text_primary,
             transform.pre_translate((r.x0 + 52.0, top + 10.0).into()),
             None,
+            &type_scale.style(TextRole::Caption),
         );
         let toggle = Rect::new(r.x1 - 58.0, top + 6.0, r.x1 - 20.0, top + 28.0);
         // The shared switch (HIG §9.9): track, knob and their palette come
@@ -1400,16 +2126,17 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let top = self.wireless_top() + 76.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("wireless-stream"),
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.x0 + 20.0, top + 10.0).into()),
             None,
-            TextWeight::Medium,
+            &type_scale
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
         let x0 = r.x0 + 76.0;
         let fps = f64::from(self.controller.options.stream_policy.max_fps);
@@ -1459,11 +2186,11 @@ impl ProjectionOverlay {
                 None,
                 &ui::surface::edge_outline(chip, radius),
             );
-            let (label_w, label_h) = text_renderer.measure(label, type_scale.xs, None);
-            text_renderer.draw_text_weighted(
+            let (label_w, label_h) =
+                text_renderer.measure_style(label, None, &type_scale.style(TextRole::Caption));
+            text_renderer.draw_style(
                 scene,
                 label,
-                type_scale.xs,
                 colors.text_primary,
                 transform.pre_translate(
                     (
@@ -1473,7 +2200,9 @@ impl ProjectionOverlay {
                         .into(),
                 ),
                 None,
-                TextWeight::Medium,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             chip_x += width + 6.0;
         }
@@ -1491,30 +2220,31 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         if self.airplay_selected() {
             let top = self.wireless_top() + 120.0;
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &t("wireless-credential-label"),
-                type_scale.xs,
                 colors.text_primary,
                 transform.pre_translate((r.x0 + 20.0, top).into()),
                 None,
-                TextWeight::Semibold,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Semibold),
             );
             self.credential_rect = Rect::new(r.x0 + 20.0, top + 21.0, r.x1 - 20.0, top + 63.0);
             self.credential_input
                 .apply_layout_external(self.credential_rect);
             self.credential_input
                 .draw(scene, transform, text_renderer, theme, presence);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &t("wireless-credential-hint"),
-                type_scale.xs,
                 colors.text_dim,
                 transform.pre_translate((r.x0 + 20.0, top + 71.0).into()),
-                Some(f64_to_f32_lossy(r.width() - 40.0)),
+                Some(f32_of_f64(r.width() - 40.0)),
+                &type_scale.style(TextRole::Caption),
             );
         } else {
             self.credential_rect = Rect::ZERO;
@@ -1533,7 +2263,7 @@ impl ProjectionOverlay {
         r: Rect,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         let (message, detail) = match &self.controller.status {
             ProjectionStatus::Scanning => (t("wireless-scanning"), t("wireless-scanning-detail")),
             ProjectionStatus::Error(error) => (t("wireless-scan-failed"), error.clone()),
@@ -1549,29 +2279,32 @@ impl ProjectionOverlay {
             colors.text_dim,
             1.5,
         );
-        let (mw, _) = text_renderer.measure(&message, type_scale.sm, None);
-        text_renderer.draw_text_weighted(
+        let (mw, _) =
+            text_renderer.measure_style(&message, None, &type_scale.style(TextRole::Caption));
+        text_renderer.draw_style(
             scene,
             &message,
-            type_scale.sm,
             colors.text_primary,
             transform.pre_translate((r.center().x - f64::from(mw) / 2.0, top + 40.0).into()),
             None,
-            TextWeight::Medium,
+            &type_scale
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
-        let detail = text_renderer.elide_to_width(
+        let detail = text_renderer.elide_to_width_style(
             &detail,
-            type_scale.xs,
-            f64_to_f32_lossy(r.width() - 56.0),
+            f32_of_f64(r.width() - 56.0),
+            &type_scale.style(TextRole::Caption),
         );
-        let (dw, _) = text_renderer.measure(&detail, type_scale.xs, None);
-        text_renderer.draw_text(
+        let (dw, _) =
+            text_renderer.measure_style(&detail, None, &type_scale.style(TextRole::Caption));
+        text_renderer.draw_style(
             scene,
             &detail,
-            type_scale.xs,
             colors.text_dim,
             transform.pre_translate((r.center().x - f64::from(dw) / 2.0, top + 64.0).into()),
             None,
+            &type_scale.style(TextRole::Caption),
         );
     }
 
@@ -1586,7 +2319,7 @@ impl ProjectionOverlay {
         max_rows: usize,
     ) {
         let colors = &theme.tokens.colors;
-        let type_scale = &theme.tokens.typography.scale;
+        let type_scale = &theme.tokens.typography;
         // Control role: the selected device is a lift (HIG §9.3); every row
         // carries an edge derived from its fill (§9.5).
         let floor = colors.lift(0.35);
@@ -1617,10 +2350,7 @@ impl ProjectionOverlay {
                 &ui::surface::edge_outline(row, radius),
             );
             if selected && receivers_focused {
-                ui::widget::ActionRowFace::new(row, device.name.as_str())
-                    .focused(true)
-                    .radius(radius)
-                    .paint_focus(scene, transform, theme);
+                ui::widget::paint_focus_ring(scene, transform, row, radius, theme);
             }
             ui::icons::draw_icon(
                 scene,
@@ -1634,19 +2364,20 @@ impl ProjectionOverlay {
                 },
                 1.5,
             );
-            let name = text_renderer.elide_to_width(
+            let name = text_renderer.elide_to_width_style(
                 &device.name,
-                type_scale.sm,
-                f64_to_f32_lossy(row.width() - 142.0),
+                f32_of_f64(row.width() - 142.0),
+                &type_scale.style(TextRole::Caption),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &name,
-                type_scale.sm,
                 colors.text_primary,
                 transform.pre_translate((row.x0 + 46.0, row.y0 + 8.0).into()),
                 None,
-                TextWeight::Medium,
+                &type_scale
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             let sub = if connected {
                 t("wireless-connected")
@@ -1657,17 +2388,17 @@ impl ProjectionOverlay {
             } else {
                 format!("{} · {}", device.protocol.label(), device.detail)
             };
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &sub,
-                type_scale.xs,
                 if connected {
                     colors.semantic.success
                 } else {
                     colors.text_dim
                 },
                 transform.pre_translate((row.x0 + 46.0, row.y0 + 31.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 142.0)),
+                Some(f32_of_f64(row.width() - 142.0)),
+                &type_scale.style(TextRole::Caption),
             );
             Self::draw_device_action(
                 scene,
@@ -1706,12 +2437,11 @@ impl ProjectionOverlay {
             text_renderer,
             theme,
             &ui::widget::ButtonFace::new(action, &label)
-                .style(if connected {
-                    ui::widget::ButtonStyle::DangerOutline
+                .role(if connected {
+                    ButtonRole::Destructive
                 } else {
-                    ui::widget::ButtonStyle::Neutral
+                    ButtonRole::Secondary
                 })
-                .text_size(theme.tokens.typography.scale.xs)
                 .disabled(connecting),
         );
     }
@@ -1732,7 +2462,11 @@ fn draw_layout_pictogram(
     let alpha = if enabled { 1.0 } else { 0.5 };
     let lit = colors.text_primary.with_alpha_factor(alpha);
     let dark = colors.text_dim.with_alpha_factor(0.45 * alpha);
-    let content = theme.accent_primary.with_alpha_factor(0.85 * alpha);
+    let content = theme
+        .tokens
+        .colors
+        .text_primary
+        .with_alpha_factor(0.85 * alpha);
     let gap = 4.0;
     let width = (rect.width() - gap) / 2.0;
     let left = Rect::new(rect.x0, rect.y0, rect.x0 + width, rect.y1);
@@ -1948,8 +2682,74 @@ mod tests {
             ..ProjectionOverlay::default()
         };
         overlay.displays.outputs = outputs;
+        overlay.displays.outputs_seen = Some(DisplayHardwareSnapshot::published_generation());
         overlay.displays.polled_at = Some(Instant::now());
         overlay
+    }
+
+    #[test]
+    fn a_layout_choice_is_the_published_action_and_its_refusal_is_said() {
+        let mut overlay = overlay_with(two_displays());
+        overlay.focus = SheetFocus::Layout(DisplayLayoutMode::Mirror);
+        overlay.handle_key(&Key::Named(NamedKey::Enter), Modifiers::default());
+        let request = overlay
+            .take_request()
+            .expect("Enter hands the choice to the host as its action");
+        assert_eq!(request.action_id(), "display.layout.mirror");
+        assert!(
+            overlay.displays.staging.is_none(),
+            "the sheet stages nothing itself"
+        );
+        overlay.follow_request(
+            request,
+            Err(crate::shell::search::action_api::ActionError::Refused(
+                "not permitted here".into(),
+            )),
+        );
+        assert!(
+            overlay
+                .accessibility()
+                .description
+                .is_some_and(|description| description.contains("not permitted here")),
+            "the refusal is said, not only drawn"
+        );
+
+        // A staged layout's receipt names the change to answer.
+        let receipt = crate::shell::search::ActionReceipt::completed_with(
+            serde_json::json!({ "transaction": 7 }),
+        );
+        overlay.follow_request(
+            DisplayRequest::Layout(DisplayLayoutMode::Mirror),
+            Ok(crate::shell::search::InvocationDisposition::Accepted(
+                receipt,
+            )),
+        );
+        assert!(overlay.displays.poll_completions());
+        assert_eq!(overlay.displays.staged, Some(7));
+        assert!(overlay.displays.notice.is_none());
+    }
+
+    #[test]
+    fn keep_and_revert_wait_for_a_change_and_for_the_answer_in_flight() {
+        let mut overlay = overlay_with(two_displays());
+        overlay.focus = SheetFocus::Keep;
+        overlay.activate_focus();
+        assert_eq!(overlay.take_request(), None, "no change waits for Keep");
+        overlay.displays.transaction = Some(DisplayTransaction::default());
+        overlay.focus = SheetFocus::Revert;
+        overlay.activate_focus();
+        let request = overlay.take_request();
+        assert_eq!(request, Some(DisplayRequest::Revert));
+        let in_flight: crate::shell::search::PendingInvocation = std::rc::Rc::new(|| Ok(None));
+        overlay.follow_request(
+            DisplayRequest::Revert,
+            Ok(crate::shell::search::InvocationDisposition::Pending(
+                in_flight,
+            )),
+        );
+        overlay.focus = SheetFocus::Keep;
+        overlay.activate_focus();
+        assert_eq!(overlay.take_request(), None, "one answer at a time");
     }
 
     #[test]
@@ -2001,5 +2801,187 @@ mod tests {
             overlay.focus,
             SheetFocus::Layout(DisplayLayoutMode::ExternalOnly)
         );
+    }
+    #[test]
+    fn shared_output_rows_keep_offline_state_and_keyboard_inclusion_separate_from_hardware() {
+        let _home = shared_display_actions::test_support::publish();
+        let mut overlay = overlay_with(two_displays().into_iter().take(1).collect());
+        overlay.bind_shared_display_authority(shared_display_actions::test_support::owner());
+        overlay.displays.refresh_person();
+        assert!(overlay.enabled_layouts().is_empty());
+        let rows = overlay.displays.remote();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].title().contains('2') && rows[0].title().contains("Orange Pi"));
+        assert!(rows[1].detail().contains("Offline"));
+        let mode = overlay.controller.options.mode;
+        overlay.focus = SheetFocus::Remote(0);
+        overlay.handle_key(&Key::Named(NamedKey::Space), Modifiers::default());
+        let saved = settings_store::person_displays::Arrangement::load();
+        assert!(!saved.entry("bb02", "panel").unwrap().enabled);
+        assert!(saved.entry("cc03", "panel").unwrap().enabled);
+        let rows = overlay.displays.remote();
+        let peer = rows
+            .iter()
+            .position(|row| row.device == "bb02" && row.output == "panel")
+            .unwrap();
+        assert!(!rows[peer].enabled);
+        assert_eq!(
+            overlay.focus,
+            SheetFocus::Remote(peer),
+            "focus follows the certified pair, not its old row index"
+        );
+        assert_eq!(overlay.controller.options.mode, mode);
+        assert!(overlay.displays.staging.is_none());
+        overlay.handle_key(&Key::Named(NamedKey::Enter), Modifiers::default());
+        assert!(
+            settings_store::person_displays::Arrangement::load()
+                .entry("bb02", "panel")
+                .unwrap()
+                .enabled
+        );
+        overlay.handle_key(&Key::Named(NamedKey::ArrowDown), Modifiers::default());
+        assert_eq!(overlay.focus, SheetFocus::Remote(1));
+        overlay.handle_key(&Key::Named(NamedKey::Space), Modifiers::default());
+        let offline = overlay.displays.remote().remove(1);
+        assert!(!offline.online && !offline.enabled);
+        assert!(offline.detail().contains("Offline") && offline.detail().contains("Not in layout"));
+        let accessible = overlay.accessibility();
+        let switches = accessible
+            .children
+            .iter()
+            .filter(|node| node.role == ui::a11y::Role::Switch)
+            .collect::<Vec<_>>();
+        assert_eq!(switches.len(), 2);
+        assert_eq!(switches[1].state.checked, Some(false));
+        assert!(
+            switches[1]
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("Offline")
+        );
+    }
+
+    #[test]
+    fn shared_output_scroll_keeps_all_screens_reachable_in_every_theme() {
+        let _home = shared_display_actions::test_support::publish();
+        let mut facts = settings_store::person_displays::PersonDisplays::load().unwrap();
+        let peer = facts
+            .devices
+            .iter_mut()
+            .find(|device| device.device == "bb02")
+            .unwrap();
+        let output = peer.outputs[0].clone();
+        for index in 1..8 {
+            let mut next = output.clone();
+            next.id = format!("extra-{index}");
+            next.name = format!("Extra screen {index}");
+            next.x = index * 960;
+            peer.outputs.push(next);
+        }
+        facts.save().unwrap();
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut overlay = overlay_with(two_displays().into_iter().take(1).collect());
+            overlay.bind_shared_display_authority(shared_display_actions::test_support::owner());
+            overlay.displays.refresh_person();
+            let count = overlay.displays.remote().len();
+            assert_eq!(count, 9);
+            overlay.focus = SheetFocus::Remote(count - 1);
+            overlay.draw_remote_displays(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                overlay.sheet_rect(),
+            );
+            assert!(overlay.remote_scroll.overflows_vertically());
+            assert!(overlay.remote_rects[count - 1].1.area() > 0.0);
+            assert!(overlay.remote_rects[0].1.area() <= 0.0);
+            assert!(overlay.wireless_top() < overlay.sheet_rect().y1);
+            assert_eq!(
+                overlay
+                    .accessibility()
+                    .children
+                    .iter()
+                    .filter(|node| node.role == ui::a11y::Role::Switch)
+                    .count(),
+                count
+            );
+            overlay.handle_key(&Key::Named(NamedKey::ArrowUp), Modifiers::default());
+            assert_eq!(overlay.focus, SheetFocus::Remote(count - 2));
+        }
+    }
+    #[test]
+    fn shared_output_focus_tracks_the_certified_pair_after_a_collaborator_edit() {
+        let _home = shared_display_actions::test_support::publish();
+        let mut overlay = overlay_with(two_displays().into_iter().take(1).collect());
+        let chrome = shared_display_actions::test_support::owner();
+        overlay.bind_shared_display_authority(chrome.clone());
+        overlay.displays.refresh_person();
+        overlay.focus = SheetFocus::Remote(0);
+        shared_display_actions::include(&chrome.borrow(), "bb02", "panel", 0, false).unwrap();
+        let view = shared_display_actions::current().unwrap();
+        view.layout
+            .move_to_order(&view.arrangement, "cc03", "panel", 0)
+            .save()
+            .unwrap();
+        overlay.displays.polled_at = None;
+        overlay.poll_displays(Instant::now());
+        let rows = overlay.displays.remote();
+        let peer = rows
+            .iter()
+            .position(|row| row.device == "bb02" && row.output == "panel")
+            .unwrap();
+        assert_eq!(overlay.focus, SheetFocus::Remote(peer));
+        assert_ne!(
+            peer, 0,
+            "the collaborator edit reordered the actual resolved layout"
+        );
+        overlay.handle_key(&Key::Named(NamedKey::Space), Modifiers::default());
+        let saved = settings_store::person_displays::Arrangement::load();
+        assert!(saved.entry("bb02", "panel").unwrap().enabled);
+        assert!(saved.entry("cc03", "panel").unwrap().enabled);
+    }
+
+    #[test]
+    fn shared_output_clicks_keep_the_painted_identity_when_a_collaborator_reorders_rows() {
+        let _home = shared_display_actions::test_support::publish();
+        let mut overlay = overlay_with(two_displays().into_iter().take(1).collect());
+        overlay.bind_shared_display_authority(shared_display_actions::test_support::owner());
+        overlay.displays.refresh_person();
+        let theme = Theme::dark();
+        overlay.draw_remote_displays(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            overlay.sheet_rect(),
+        );
+        let painted_peer = overlay.remote_rects[0].1.center();
+        overlay.handle_click(painted_peer);
+        let saved = settings_store::person_displays::Arrangement::load();
+        assert!(!saved.entry("bb02", "panel").unwrap().enabled);
+        assert!(saved.entry("cc03", "panel").unwrap().enabled);
+        let view = shared_display_actions::current().unwrap();
+        view.layout
+            .move_to_order(&view.arrangement, "cc03", "panel", 0)
+            .save()
+            .unwrap();
+        overlay.displays.polled_at = None;
+        overlay.poll_displays(Instant::now());
+        assert_eq!(
+            overlay.displays.remote()[0].device,
+            "cc03",
+            "a real collaborator reorder changed the row index"
+        );
+        // Another click before repaint must never edit the screen that has
+        // since moved into this row index. Its painted binding is now stale.
+        overlay.handle_click(painted_peer);
+        let saved = settings_store::person_displays::Arrangement::load();
+        assert!(
+            saved.entry("cc03", "panel").unwrap().enabled,
+            "the remembered offline TV was never the clicked target"
+        );
+        assert!(!saved.entry("bb02", "panel").unwrap().enabled);
     }
 }

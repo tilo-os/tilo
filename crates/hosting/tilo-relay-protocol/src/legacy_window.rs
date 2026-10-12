@@ -174,7 +174,7 @@ pub struct Stream {
     pub surface: String,
     /// Desktop app id of the window.
     pub app: String,
-    /// `SurfaceStreamStart` codec label (`"h264"`).
+    /// `SurfaceStreamStart` codec label: [`H264`] or [`PAINT`].
     pub codec: String,
     /// Picture width the session announced, pixels.
     pub width: u32,
@@ -194,7 +194,7 @@ impl Stream {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
             && !self.app.is_empty()
             && self.app.len() <= 128
-            && self.codec == "h264"
+            && bridged_codec(&self.codec)
             && self.width > 0
             && self.height > 0
             && self.width <= 8192
@@ -417,6 +417,27 @@ pub fn chunks(
         .collect()
 }
 
+/// H.264 video, decoded by the page.
+pub const H264: &str = "h264";
+/// The paint stream (`tilo_paint_stream::wire::CODEC`): a page as a display
+/// list the page draws itself. Each frame is one postcard `Payload`, whose
+/// first byte is its variant; `0` is a whole frame a member can start from.
+pub const PAINT: &str = "tilo-paint";
+
+/// Whether the host re-publishes streams with this codec to browser members.
+pub fn bridged_codec(codec: &str) -> bool {
+    codec == H264 || codec == PAINT
+}
+
+/// Whether `frame` of a `codec` stream begins a group a member can start from.
+pub fn keyframe(codec: &str, frame: &[u8]) -> bool {
+    if codec == PAINT {
+        frame.first() == Some(&0)
+    } else {
+        h264_keyframe(frame)
+    }
+}
+
 /// Whether an H.264 Annex B access unit holds an IDR slice.
 pub fn h264_keyframe(access_unit: &[u8]) -> bool {
     access_unit
@@ -621,6 +642,18 @@ mod tests {
             InputEvent::PointerEnter { surface: 99 }.for_surface(7),
             InputEvent::PointerEnter { surface: 7 }
         );
+    }
+
+    #[test]
+    fn paint_streams_are_bridged_and_key_on_whole_frames() {
+        assert!(Stream::new(7, "so.tilo.browser", PAINT, 1280, 720).valid());
+        assert!(!Stream::new(7, "so.tilo.browser", "vp9", 1280, 720).valid());
+        assert!(keyframe(PAINT, &[0, 1, 2]));
+        assert!(!keyframe(PAINT, &[1, 0]));
+        assert!(!keyframe(PAINT, &[]));
+        // An IDR-looking paint payload is not a keyframe, nor the reverse.
+        assert!(!keyframe(PAINT, &[2, 0, 0, 1, 0x65]));
+        assert!(keyframe(H264, &[0, 0, 1, 0x65]));
     }
 
     #[test]

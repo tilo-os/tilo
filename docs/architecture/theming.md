@@ -17,9 +17,9 @@ Four rules generate the rest of this document:
    legibility, not only ranges, so "this theme broke my app" is not a bug class
    an app developer can receive.
 4. **Expressiveness grows by adding roles to a versioned schema.** When a theme
-   needs to say something new, the schema (`CustomThemeSpec`,
-   `CUSTOM_THEME_SCHEMA_VERSION` in `crates/sdk/ui-core/src/theme.rs`) gains a
-   role and a version. It never grows CSS-like access to widget internals.
+   needs to say something new, the schema (`ThemeDocument`,
+   `THEME_SCHEMA_VERSION` in `crates/sdk/ui-core/src/theme_document.rs`) gains
+   a role and a version. It never grows CSS-like access to widget internals.
 
 It builds on the HIG (`crates/sdk/ui-core/HIG.md`, §7 and §9: "roles, not
 pixels"), on `docs/settings-and-studios.md` (who owns which theme state), and
@@ -65,167 +65,245 @@ role, and every role is validated.
 ### Roles
 
 A role is a named promise. `surfaces.raised` is not "a grey"; it is "the
-surface one step above the ground, which primary and secondary text must read
-on". The current role set lives in `crates/sdk/ui-core/src/tokens/`:
+surface one step above the window ground, which primary and secondary text
+must read on". The roles are the ones `docs/design-language.md` describes,
+and a theme sets them through one document:
 
-| Family | Roles | Where |
-|---|---|---|
-| Surfaces | `base`, `raised`, `overlay`, `scrim`, `glass`, `window_card`, `window_card_border` | `tokens/colors.rs` (`Surfaces`) |
-| Text | `text_primary`, `text_dim`, `text_tertiary` | `tokens/colors.rs` (`Colors`) |
-| Accent | accent ramp, `ACCENT_PRIMARY_IDX` / `ACCENT_HOVER_IDX`, `border_focus` | `tokens/colors.rs` |
-| Semantic | `success`, `warning`, `danger`, `info` | `tokens/colors.rs` (`SemanticColors`) |
-| State veneers | `overlay_subtle` / `medium` / `strong`, `overlay_border_*` | `tokens/colors.rs` |
-| Shape | radii `sm` / `md` / `lg` / `xl` / `full` | `tokens/radii.rs` |
-| Density | spacing `s0`–`s16`, `Metrics` (pointer targets, panel widths) | `tokens/spacing.rs`, `tokens/metrics.rs` |
-| Type | families, scale `xs`–`x4l`, `font_size_base` | `tokens/typography.rs` |
-| Motion | durations and easings, `reduce_motion` | `tokens/motion.rs` |
-| Depth | elevation `e0`–`e4` | `tokens/elevation.rs` |
-| Derived palettes | terminal ANSI palette, syntax palette, categorical series | `tokens/terminal_palette.rs`, `tokens/syntax_palette.rs`, `Colors::categorical` |
+| Theme role | What it sets | Tokens it produces | Where |
+|---|---|---|---|
+| `palette` | Neutral hue and chroma (≤ 0.010), the lightness of `base`, `content`, `sidebar`, `inspector`, `raised`, `overlay`, three ink tiers, four muted status tones, light or dark, high contrast | `surfaces.*`, `text_primary` / `text_dim` / `text_tertiary`, `semantic.*`, `border_standard`, the neutral ramp, state veneers, `content_edge` | `tokens/palette.rs` (`Palette`), `tokens/colors.rs` (`Colors::as_authored`) |
+| `emphasis` | `inverted` (default) or `tinted { hue }` | `intent.inverted`, `inverted_hover`, `on_inverted` (primary actions, on switches, filled tracks), `intent.selection`, `selection_hover`, `Colors::lift_on` (the selection lift) | `tokens/palette.rs` (`Emphasis`) |
+| `presence` | Lightness and chroma of the twelve presence hues (hues stay 30° apart) | `presence` (`PresencePalette`), and through it `intent.you`, `selection_tint`, `border_focus` | `tokens/colors.rs` |
+| `shape` | `window_radius` | `radii.{tile, panel, control, item, detail}` derived concentrically (`Radii::from_window_radius`) | `tokens/radii.rs` |
+| `density` | `spacing`, a multiple of the 4 px scale | `spacing.s0`–`s16`; `Metrics` (pointer targets, control heights) stay put | `tokens/spacing.rs` |
+| `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `reading` (a reading face by name, `New Computer Modern`, `Libertinus`, `Literata`, `EB Garamond` or `Source Serif`, or any family name), `base_size`, `distinct_letters` (optional; absent follows the face: on with Hyperlegible) | `typography.sans_family`, `typography.serif_family` (the `Reading` role's face, set in the optical cut its size calls for), the body size every `TextRole` derives from (`Theme::text(role)`), `typography.distinct_letters` (every look-alike set apart in all text, `docs/typography.md`) | `tokens/typography.rs` (`UiFace`, `ReadingFace`, `Typography::set_face`, `Typography::set_reading_face`), `theme_document.rs` (`ThemeType::distinguishes_letters`) |
+| `motion` | `character`: 0 calm, 1 stock, 2 lively | the shared UI springs, `motion_character` | `tokens/motion.rs` |
+| `material` | `blur`, `tint_opacity` of floating chrome | `surfaces.material_blur_px`, `surfaces.material_opacity`, `surfaces.material` | `tokens/colors.rs`, `backdrop.rs` |
 
-A theme sets the authored roles. Everything else is **derived** in one place
-(`Colors::themed`, `Theme::from_tokens`): ramps, veneers whose polarity follows
-the ground, the terminal palette, ink measured against whatever surface a
-widget paints on (`Colors::on_surface`, `ink_on`, `legible_fill`). Derivation
-is what lets a ten-colour theme cover forty apps without a theme author ever
-seeing them.
+Not theme roles, by design: there is no accent and no app colour (an app
+has no brand colour in this language), no per-widget colour, no way to
+remove the selection lift or the focus ring, and no chrome weight or icon
+size. A person's own colour is identity, not theme ([Your
+colour](#your-colour)). Derived palettes — the terminal ANSI palette, the
+syntax palette, chart series (`PresencePalette::series`) — follow the
+colour tokens.
+
+Everything is derived in one place (`Colors::as_authored`, then
+`Theme::from_document`): every surface and ink tier is an OKLCH lightness
+at the palette's hue and chroma, so a hue never moves contrast.
 
 ### Data, versioned
 
-The authored form is `CustomThemeSpec`, and it is the document for built-in
-defaults, distribution defaults, and the user theme. Schema 1 is an id, a name,
-eleven colours, `radius_px`, `spacing_px` and a font. Schema 2 adds
-`motion_scale`, `material_scale` and `icon_scale`. Schema 3 adds
-`chrome_weight` (the rule under a toolbar and along a status bar; `1` is the
-hairline, `0` draws none), `motion_character` (the shared UI springs, from
-calm through stock to lively; drag tracking stays put) and `material_tint`
-(how far glass carries the accent; `0` is the stock film). A missing scale or
-chrome weight or motion character is `1.0`, and a missing tint is `0`, so a
-schema 1 or schema 2 file still opens. It is
-stored in `appearance.custom_theme` of the shared settings record, and Theme
-Studio is its only writer (`docs/settings-and-studios.md`, Themes). Built-in
-presets are the same contract expressed as `PaletteSpec` constructors.
+The document is `ThemeDocument`
+(`crates/sdk/ui-core/src/theme_document.rs`, `THEME_SCHEMA_VERSION` = 6):
 
-New roles arrive as new schema versions. A reader accepts every version it
-knows and fills new roles by derivation, so a file written by an older build
-still opens.
+```json
+{
+  "schema_version": 6,
+  "id": "ember",
+  "name": "Ember",
+  "palette": {
+    "dark": true, "high_contrast": false, "hue": 60.0, "chroma": 0.006,
+    "surfaces": { "base": 0.16, "content": 0.215, "sidebar": 0.195,
+                  "inspector": 0.235, "raised": 0.265, "overlay": 0.285 },
+    "ink": { "primary": 0.96, "secondary": 0.76, "tertiary": 0.62 },
+    "status": { "danger": { "lightness": 0.70, "chroma": 0.13 }, "warning": { … },
+                "success": { … }, "info": { … } }
+  },
+  "emphasis": { "kind": "tinted", "hue": 40.0 },
+  "presence": { "lightness": 0.74, "chroma": 0.14 },
+  "shape": { "window_radius": 14.0 },
+  "density": { "spacing": 1.0 },
+  "type": { "face": "Noto Sans", "reading": "Literata", "base_size": 14.0 },
+  "motion": { "character": 1.0 },
+  "material": { "blur": 24.0, "tint_opacity": 0.72 }
+}
+```
 
-### Validation: reject structure, repair legibility
+`palette.hue` may be absent: the palette then has no hue of its own and is
+pure grey until the workspace it is shown in gives it one.
 
-Validation has two halves, and they fail differently on purpose:
+Built-in presets, distribution defaults, the user's themes and every file
+Theme Studio exports are this document. Unknown fields are refused, and a
+document of any other schema version is not admitted: the layer it sits on
+contributes nothing and the layers below it apply. There is no migration
+from older schemas.
 
-- **Structure** (`CustomThemeSpec::validate`): schema version, id/name/font
-  shape, finite in-range radius and spacing. A file that fails is not a theme;
-  it is rejected and the user's previous or default theme stays.
-- **Legibility**: the contrast floors in
-  `crates/sdk/ui-core/src/tokens/contrast.rs` (`FLOORS`). Theme Studio refuses
-  to save or export a theme that misses one (`contrast_findings`), and shows
-  which pair and by how much. A theme that reaches the runtime anyway — a file
-  written by an older build, hand-edited, or produced by a future tool — is
-  **repaired, not rejected**: each failing foreground is stepped toward the
-  contrasting extreme until it clears its floor (`Theme::from_custom_spec`),
-  the same "clamp, don't drop the user's theme" rule `spacing_px` already
-  follows (`CustomThemeSpec::SPACING_PX_MIN`). `validate` stays ranges-only on
-  purpose, so a structurally valid legacy file still opens.
+The shipped presets (`Preset`, `Theme::ALL`):
 
-The floors are WCAG 2.x ratios, applied to the pairs apps actually rely on:
+| Preset | Hue / chroma | Ladder |
+|---|---|---|
+| Dark (default) | – / 0 (pure neutral) | the design language's dark ladder |
+| Dark cool | 255 / 0.008 | dark ladder |
+| Dark graphite | 60 / 0.006 | dark ladder |
+| Dark soft | 270 / 0.003 | base 0.19, content 0.25, sidebar 0.228, inspector 0.27, raised 0.30, overlay 0.32; tertiary ink 0.65 |
+| Light | – / 0.010 (neutral until a workspace gives it a hue) | the light ladder |
+| High contrast | – / 0 | black surfaces, ink 1.0 / 0.94 / 0.88, AAA |
+| High contrast light | – / 0 | white surfaces, ink 0 / 0.30 / 0.40, AAA |
+
+### Validation and legibility
+
+`ThemeDocument::validate` checks structure: the schema, id/name/face, and
+every number finite and inside the band its role admits (chroma ≤ 0.010,
+ink on the ink side of every surface, status chroma ≤ 0.13, presence
+lightness 0.35–0.90 and chroma 0.04–0.20, window radius 0–40, density
+0.5–2, base size 10–24, motion 0–2, blur 0–64, tint opacity 0.6–1). A value
+admitted but outside the usable band (radius above 28, density outside
+0.75–1.5, base size outside 12–18, blur above 48) is clamped when the theme
+is built.
+
+Legibility is measured on the materialized colours against the floors in
+`tokens/contrast.rs` (`FLOORS`). They are WCAG 2.x ratios, and text floors
+rise to AAA on a high-contrast palette:
 
 | Foreground | Ground(s) | Floor | Why |
 |---|---|---|---|
-| `text_primary` | `base`, `raised`, `overlay` | 4.5:1 | body text (WCAG AA) |
-| `text_dim` | `base`, `raised`, `overlay` | 4.5:1 | captions and labels are still body text |
-| `text_tertiary` | `base` | 3:1 | quietest tier; the token's documented contract is large-text AA |
-| accent primary | `base`, `raised` | 3:1 | active states: toggle on, slider track (WCAG 1.4.11) |
-| `border_focus` | `base` | 3:1 | focus indicator (WCAG 2.4.11) |
-| `success`, `warning`, `danger`, `info` | `base` | 3:1 | status dots and icons |
+| `text_primary`, `text_dim` | every surface, `intent.selection`, `intent.selection_hover` | 4.5:1 | body text, also on a selected or hovered row |
+| `text_tertiary` | every surface; `content` | 3:1; 4.5:1 | quietest tier: large-text AA everywhere, body text on the window ground |
+| `intent.selection` | `content` | 1.15:1 | a selected row is a visible step with no hue doing the work |
+| `intent.on_inverted` | `intent.inverted`, `intent.inverted_hover` | 4.5:1 | the label of a primary action, at rest and under the pointer |
+| `intent.inverted` | `content` | 3:1 | an on switch, a filled track (WCAG 1.4.11) |
+| `intent.you` | `content`, `sidebar`, `inspector`, `raised`, `overlay` | 3:1 | your focus ring (WCAG 2.4.11) |
+| every presence colour | `content`, `raised`, `overlay` | 3:1 | a collaborator's caret, cursor, pill |
+| `success`, `warning`, `danger`, `info` | `content`; `base` | 4.5:1; 3:1 | status ink on a control; status dots |
 
-Labels drawn *on* an accent or semantic fill are not part of the floor table
-because they are always derived (`Colors::on_accent`, `legible_fill`,
-`tinted_chip_on`) and cannot be authored wrong. One rule table serves the
-shipped presets, Theme Studio and the runtime, and
-`every_theme_that_materializes_keeps_the_contrast_floors` in `theme.rs` runs
-every preset through it.
+- `ThemeDocument::findings` audits a document as authored, for every
+  presence hue as the wearer's colour. Theme Studio shows the findings live
+  and refuses to apply or export a document that has any.
+- `contrast::repair` runs on every theme the runtime builds
+  (`Colors::of_palette`): a foreground that misses a floor is stepped in
+  OKLCH lightness, at its own hue, until it holds; grounds never move, and
+  the presence palette moves as one so every participant stays equally
+  loud. A hand-edited file therefore still renders legibly.
+- Tests sweep every preset at every temperature for every presence hue,
+  and every preset with every tinted emphasis hue (5° steps), and require
+  no findings at all (`every_preset_keeps_every_floor_at_every_temperature_for_everyone`,
+  `every_tinted_emphasis_hue_keeps_every_floor_on_every_preset`).
 
 ## Layers and precedence
 
 The theme a person sees is resolved from layers, lowest to highest:
 
-| # | Layer | Who writes it | Typical contents |
+| # | Layer | Who writes it | Contents |
 |---|---|---|---|
-| 1 | Built-in defaults | the toolkit, in code | [`Theme::dark()`](../../crates/sdk/ui-core/src/theme.rs): the stock dark palette, shape, density, type and motion. This is the code default. It is not a file |
-| 2 | **Distribution defaults** (`distribution` / `distribution_defaults`) | whoever ships the OS image | the same document as the user theme. Pins may name any of its roles. |
-| 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the same document: colours, radius, spacing, font, motion scale and character, material scale and tint, icon scale, chrome weight |
-| 4 | Workspace tint (optional) | the person, per workspace | an accent or identity hue for one workspace, on their own screen |
-| 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, thick caret |
+| 1 | Built-in defaults | the toolkit, in code | `Preset::Dark` |
+| 2 | **Distribution defaults** (`appearance.distribution_defaults` / `appearance.distribution`) | whoever ships the OS image | a preset id or a whole document, and pins |
+| 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the theme for the current mode, and the person's density |
+| 4 | Window | the shell, per window | the neutral hue of the workspace the window is in, and the person's colour (`WindowAppearance`) |
+| 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, reduce transparency, thick caret, the Hyperlegible face |
 
 **Accessibility always wins.** Nothing below layer 5 can lower contrast,
-shrink text, or re-enable motion that the person turned off, and distribution
-defaults cannot pin a value that layer 5 touches.
+shrink text, re-enable motion or make chrome translucent once the person
+asked otherwise, and a distribution cannot pin a value layer 5 touches.
 
-**Built-in defaults are `Theme::dark()`.** `resolve_theme_layers` uses
-that constructor when no higher layer supplies a palette. There is no
-defaults file, and nothing about this layer is signed.
+**Distribution defaults** (`DistributionDefaults`, schema 2) name a preset
+(`theme`) or carry a `document`, and may pin any of `palette`, `emphasis`,
+`presence`, `shape`, `density`, `type`, `motion`, `material`
+(`PINNABLE`). A pin beats the user's theme for that role only;
+accessibility names in the pin list are ignored, and any other name, an
+unknown preset or another schema rejects the layer.
 
-**Distribution defaults** (identifiers: `distribution`,
-`distribution_defaults`) are the layer for whoever ships the Tilo OS image —
-an agent-sandbox provider, a hardware vendor, an organisation's managed
-fleet. The layer sets the same fields a user theme sets, and may **pin** any of
-them (`palette`, `accent`, `shape`, `density`, `type`, `motion`, `material`,
-`icons`, `chrome`). A pin beats the user theme only for that field.
-Accessibility fields are not pinnable. Wallpaper, greeter artwork and boot artwork are image files, not roles on
-this document, so they are not an option on any of the three layers.
+**The user theme** is read from the settings document's `appearance`
+section (`theme_layers::user_document`):
 
-Distribution defaults, the user theme, the workspace tint and accessibility
-live in the settings document as **versioned JSON**. The settings store does
-not sign appearance records, and this design does not add a signature. Each
-of those layers carries a `schema_version`. `validate` runs before the layer
-is applied: a schema this build does not admit is left unused, and the theme
-stays as the layers below it resolved. A finite value inside an admitted
-schema that falls outside the usable band — a custom theme's `spacing_px`,
-an accessibility text or UI scale — is clamped when the layer is
-materialized, before it changes the theme. A non-finite accessibility scale
-rejects that payload the same way an unknown schema does.
+| Key | Value |
+|---|---|
+| `mode` | `"dark"`, `"light"` or `"automatic"` (light by day, dark by night, on the schedule night light shares) |
+| `dark_theme` | the theme dark mode shows: a preset id (`"dark-soft"`) or `"custom:<id>"`; default `"dark"` |
+| `light_theme` | the theme light mode shows; default `"light"` |
+| `custom_themes` | the documents a `custom:<id>` names (Theme Studio writes them when it applies one) |
+| `density` | the person's spacing over whichever theme is shown (Compact 0.85, Regular 1, Roomy 1.2) |
 
-Resolution is one deterministic function over the stack, in the style of the
-default-application resolver in `docs/settings-and-studios.md`. Layers
-contribute individual roles, not whole themes: distribution defaults that
-set only an accent leave the user's choice of light or dark alone.
+A section with none of `mode`, `dark_theme`, `light_theme` is no user
+theme, so distribution defaults still show.
+
+**The workspace temperature** is a hue only: the person's override for that
+workspace (`appearance.workspace_temperatures`, OKLCH degrees by workspace
+id, `workspace_temperature_override`) or the dominant hue of its wallpaper
+(`ui::workspace_hue`, `None` for a grey one). It never adds chroma, so the
+default dark (chroma 0) shows no temperature and Light (0.010) shows the
+most. Light has no hue of its own (`Palette::hue` is `None`): without a
+temperature — a grey wallpaper, no shell, a capture — it is pure neutral.
+The high-contrast palettes carry none.
+
+**The window layer** (`ThemeLayerStack::window`, `ui::WindowAppearance`) is
+set by the host that shows a window, never by a settings document: the
+temperature of the workspace the window is in and the person's colour,
+applied with `Theme::in_window`. The shell keeps every workspace's
+temperature and the person's colour (`shell::window_appearance`), dresses
+its own chrome in the active workspace's, and sends each app window the
+appearance of the workspace holding it over the app's authenticated
+shell-ui connection (`FloatingSurfaceHostMessage::Appearance`, on connect
+and whenever a temperature, the window's workspace or the colour changes).
+The app keeps it across theme rebuilds (`App::set_window_appearance`), so
+a workspace switch, a new wallpaper or a new colour reaches focus ring,
+caret, selection and unread marks live. Captures take it from
+`--workspace-hue DEGREES` and `--your-colour NAME`.
+
+**Accessibility** high contrast or forced colours swaps the palette for the
+high-contrast palette of the theme's own polarity (`Theme::with_high_contrast`):
+shape, density, type and motion stay, emphasis becomes inverted and the
+material turns opaque. Reduce transparency keeps floating chrome opaque
+(`backdrop::blurs`).
+
+Distribution defaults, the user theme and accessibility live in the
+settings document as versioned JSON; the workspace temperature is derived
+on the device from the wallpaper unless overridden. The settings store does
+not sign appearance records. Resolution is one deterministic function over
+the stack (`theme::resolve_theme_layers`), and `Theme::configured` reads it.
+
+### Your colour
+
+A person's colour is part of their identity, not of a theme: one of the
+twelve presence hues (`PresenceHue`: red, orange, amber, olive, green, teal,
+cyan, sky, blue, violet, magenta, pink), stored as `identity.colour` in the
+settings document and roaming with their other personal settings. Until
+they choose, it is derived from their stable identity
+(`PresenceHue::of_identity` of the person's id, never the session's
+handle). It reaches windows through the window layer, not the theme:
+`Theme::configured` does not read `identity.colour`; the shell sends it to
+each app window, and a standalone app that may read the person's settings
+starts from the stored choice (a private app with an ephemeral identity
+does not). Collaborators see the same colour: every presence plane carries
+it (`NeighbourMsg::PresenceMoved` and `AppPresenceV2` as the hue's
+`PresenceHue::id`, a live frame's `LiveParticipant::color`), and each
+receiving shell paints that peer in it and announces it to its apps in the
+roster (`Collaborator::colour`). It is their focus ring, text caret, text-selection tint and unread
+mark (`intent.you`, `selection_tint`, `border_focus`), painted at the
+current theme's presence lightness and chroma, so it reads on every theme.
+The theme sets only that lightness and chroma.
 
 ### What users get
 
-Far more than an accent colour, because every one of these is a token and not
-an implementation detail: palette (every surface, text tier, accent and
-semantic colour), shape (radius scale), density (spacing scale, kept
-proportional), type (family and scale), motion (durations and the character
-of the UI springs), materials (glass, elevation, and how far the film carries
-the accent), icons, and chrome weight (a hairline rule or a heavier one).
-Each is safe to expose because apps consume only the role, and the validator
-guarantees the role keeps its promise.
+Every one of these is a role and not an implementation detail: light, dark
+or automatic; which preset or own theme each mode shows; the temperature
+and chroma of the neutral material and its whole lightness ladder; inverted
+or tinted emphasis; the presence tone; the window radius; density; the
+interface face and text size; the character of motion; and how floating
+chrome blurs. Colour itself belongs to people: each person's colour marks
+their presence, and each workspace has a temperature.
 
-A person and an agent author the same document. Theme Studio's sliders and
-the Themes actions (`SetCustomThemeChrome`, `SetCustomThemeMotionCharacter`,
-`SetCustomThemeMaterialTint`, and the scale actions beside them) write the
-same fields. An agent does not invent a widget. Individuality is which
-values fill the roles; the widget vocabulary stays the one the toolkit draws.
-When a look still does not fit, the schema gains a role. It does not gain a
-selector.
+A person and an agent author the same document. Theme Studio's controls
+and its actions (`new_theme`, `set_hue`, `set_chroma`, `set_lightness`,
+`set_tinted`, `set_tint_hue`, `set_presence_lightness`, … on the
+`so.tilo.themes.studio` resource) write the same fields. When a look still
+does not fit, the schema gains a role. It does not gain a selector.
 
 ## App developers
 
 What an app may do:
 
-- **Supply a brand accent.** An app may declare one accent colour. The
-  toolkit checks it against the active theme's ground with the accent floor
-  above and falls back to the OS accent where it fails, so an app's identity
-  colour never costs a user legibility. The user can turn app accents off.
 - **Own its content surfaces.** A canvas, a document page, a video, a game or
   a map is content, and the app chooses how it looks. The reference pattern is
   `apps/ebook/src/reader_theme.rs`: all chrome (toolbars, drawers, buttons)
   reads strictly from `Theme`, while the page uses a palette the reader picks
-  (light, sepia, dark, high contrast), with on-page affordances tinted from
-  the OS accent.
+  (light, sepia, dark, high contrast).
 
 What an app may not do:
 
+- Bring a colour of its own. There is no brand accent; an app's content
+  colours (a calendar's event colours, a chart's series) come from the
+  presence palette.
 - Draw or restyle window chrome (title bars, tab pills, decorations).
 - Restyle the internals of shared controls. A `Button` is the system's
   button; an app that needs something different needs a new role or a new
@@ -248,12 +326,10 @@ theme, at their own text scale, with their own accessibility settings. A
 collaborator's high-contrast preference never reaches anyone else's screen,
 and a host's dark theme never reaches a guest.
 
-A workspace may carry an **identity colour** — a hint so that "the design
-review workspace" is recognisable at a glance. It is a hint, never an
-override: the viewer's theme decides whether and how it is shown (layer 4),
-and accessibility can suppress it. Collaborator colours work the same way:
-the room settles a colour per person for cursors and presence, and each viewer
-renders it through their own theme's legibility derivation.
+A workspace carries a **temperature** on each viewer's device (layer 4):
+it moves hue only, never contrast. Collaborator colours are identities: a
+person's presence hue is painted through each viewer's own theme, at that
+theme's presence lightness and chroma (one tone for everybody).
 
 ## Trusted UI
 
@@ -274,45 +350,40 @@ that **no theme and no app can reproduce**:
 
 Verified against the code at the time of writing:
 
-- **Contrast validation has landed.** `CustomThemeSpec::validate` is still
-  ranges-only (schema version, id, name, font, radius, spacing) so a
-  structurally valid legacy file opens. The legibility half lives in
-  `tokens/contrast.rs` (`FLOORS`, `audit`, `repair`). Theme Studio refuses to
-  save a custom theme with findings (`apps/themes/src/store.rs`,
-  `ensure_legible`). `Theme::from_custom_spec` repairs a file that reaches the
-  runtime anyway. Every shipped preset is swept against the same floors
-  (`every_theme_that_materializes_keeps_the_contrast_floors`).
-- **Layer resolution has landed.** [`theme::resolve_theme_layers`](../../crates/sdk/ui-core/src/theme_layers.rs)
-  resolves built-in defaults (`Theme::dark()` in code, not a file),
-  distribution defaults (`distribution` / `distribution_defaults`), the user
-  theme, an optional workspace tint, and accessibility, lowest to highest.
-  Distribution defaults, the workspace tint and accessibility are versioned
-  JSON in settings. Each has `schema_version` and `validate`, and a rejected
-  schema is not applied. Policy pins live on `DistributionPolicy.pins` and
-  name `palette`, `accent`, `shape`, `density`, `type`, `motion`, `material`,
-  `icons`, or `chrome`. A pin beats the user theme for that
-  field; an admitted accessibility layer still replaces the colour track and
-  applies text scale, UI scale and reduced motion last. Out-of-range
-  accessibility scales are clamped in `AccessibilityLayer::materialize`
-  before that apply. `Theme::configured` reads the same function. Wallpaper,
-  greeter and boot artwork are not part of this layer. Appearance records
-  are unsigned.
+- **The document and its presets.** `ThemeDocument` schema 6 with the
+  roles above; `Preset` ships Dark (default, chroma 0), Dark cool, Dark
+  graphite, Dark soft, Light and both high-contrast palettes;
+  `Theme::from_document` builds a theme, `Theme::named` finds a preset.
+- **Contrast.** `FLOORS`, `audit`, `ThemeDocument::findings` and
+  `contrast::repair` as above; the preset, temperature, presence-hue and
+  tinted-emphasis sweeps pass with no findings.
+- **Layer resolution.** `theme::resolve_theme_layers` resolves built-in
+  defaults, distribution defaults (schema 2, pins on the new roles), the
+  user theme (`mode`, `dark_theme`, `light_theme`, `custom_themes`,
+  `density`), the workspace temperature, the person's colour and
+  accessibility. `Theme::configured` reads the same function.
 - **Forced colours.** `Theme::colors_are_forced` and `Theme::content_surface`
-  answer "am I forced?" with the theme's page, ink and accent tokens. A
-  content palette keeps its own page when the flag is clear. Apps still have
-  to honour the flag; the toolkit does not restyle them.
-- **Brand accent.** `Theme::brand_accent` takes one `[u8; 3]`. It must clear
-  the 3:1 accent floor on the active base and raised surfaces. A miss, a
-  cleared `appearance.app_accents` switch, or forced colours rejects it and
-  the theme accent stays. The call cannot replace surfaces, text, chrome or
-  accessibility.
-- **Hard-coded colours in apps.** `rg -c "Color::from_rgb8\(|Color::rgb8\(|Color::new\(\["`
-  still counts 155 sites in `apps/`. 122 are legitimate (document and media
-  colours, stored user choices, colour-math helpers, test fixtures) and 33
-  are chrome that should come from `Theme`; see the appendix. That regex
-  misses `Color::from_rgba8` (71 sites) and `Color::WHITE`/`BLACK` (150
-  sites); the HIG §9.13 audit covers `ui-core` only, so apps are not ratcheted
-  yet.
+  answer "am I forced?" with the theme's page and ink tokens; apps still
+  have to honour the flag.
+- **Workspace temperature** is applied by the shell to its own chrome and
+  sent to every app window for the workspace that window is in, over the
+  shell-ui channel. Without one (a grey wallpaper, no shell, a capture) the
+  light palette is pure neutral.
+- **Your colour.** The shell resolves `identity.colour` or the
+  identity-derived hue, paints its chrome and the person's own avatar in it,
+  and sends it to every app window; collaborators receive it with the
+  person's presence and paint them in it.
+- **The material.** Blur and tint opacity are theme roles read by the
+  backdrop pass; reduce transparency, forced colours and the high-contrast
+  palettes keep floating chrome opaque.
+- **Theme Studio** (`apps/themes`) edits the document role by role with
+  live findings and applies or exports only legible themes. Settings does
+  not yet expose the appearance controls; `docs/ui-migration.md`
+  ("Theming") lists what it must offer.
+- **Hard-coded colours in apps.** The HIG §9.13 `theme` and `app-paint`
+  ratchets count literal colours, `Color::WHITE`/`BLACK`, ramp slots and
+  app-painted grounds per app, and the counts may only fall; see the
+  appendix for the classification of the remaining sites.
 - **Trusted-UI frame for permission prompts and portal sheets.** The shell
   paints a seal band on those surfaces and publishes it as
   `tilo.shell.trusted-frame/permission-prompt` or
@@ -325,20 +396,18 @@ Verified against the code at the time of writing:
 ## Roadmap
 
 1. **Hard-coded chrome colours onto tokens**, one app per change, following
-   the appendix. Add a shared role wherever an app had to invent one (a
-   distinct-hue series for spreadsheet references, a forced-colours flag for
-   content surfaces) rather than hard-coding it locally. Extend
-   `design_token_audit.rs` to `apps/` with a baseline that can only fall.
-2. **Layer resolution.** Landed: `theme::resolve_theme_layers`.
-3. **Forced colours and brand accent.** Landed: `Theme::content_surface` and
-   `Theme::brand_accent`. Still open: a compositor-drawn trusted-UI marker no
-   theme or app can reproduce, and wallpaper / greeter / boot artwork on the
-   distribution layer.
+   the appendix and the ratchet shards under
+   `crates/sdk/ui-core/tests/baselines/`.
+2. **Settings > Appearance** exposes the controls listed in
+   `docs/ui-migration.md` ("Theming").
+3. **A compositor-drawn trusted-UI marker** no theme or app can reproduce,
+   and wallpaper / greeter / boot artwork on the distribution layer.
 
 ## Appendix: hard-coded colours in `apps/`
 
 Classification of the 155 `from_rgb8` / `rgb8` / `Color::new([` sites, by
-file. **Content** means the colour belongs to the document, the media or the
+file, as counted before the token migration (the Themes row no longer
+applies: Theme Studio holds no colours of its own). **Content** means the colour belongs to the document, the media or the
 person: page and paper palettes, a stored or user-picked colour, overlays that
 keep controls legible over live video, colour-math helpers that convert rather
 than choose, and test fixtures. **Chrome** means the colour is a UI role the
@@ -349,7 +418,7 @@ theme should supply.
 | `ebook/src/reader_theme.rs` | 27 | 27 | 0 | page palettes (the reference pattern) |
 | `ebook/src/app.rs` | 4 | 2 | 2 | scheme swatches are content; badge ink should be measured (`readable_on`) |
 | `ebook/src/model.rs`, `input_controls.rs` | 3 | 3 | 0 | user-picked scheme and highlight colours |
-| `word-processor/src/widget.rs` | 19 | 16 | 3 | paper, paper ink, table and placeholder tints and stored run colours are content; caret, active-band edge and spelling squiggle are affordances that should come from the accent and `danger`, made legible on paper |
+| `word-processor/src/widget.rs` | 19 | 16 | 3 | paper, paper ink, table and placeholder tints and stored run colours are content; caret, active-band edge and spelling squiggle are affordances that should come from `intent.you` and `danger`, made legible on paper |
 | `word-processor/src/review_overlay.rs` | 14 | 0 | 14 | comment and change cards, accept/reject buttons, insertion/deletion ink |
 | `word-processor/src/widget/tests.rs`, `style_color_picker.rs` | 4 | 4 | 0 | fixtures; seed from a stored style |
 | `feeds/src/reader_theme.rs` | 14 | 14 | 0 | page palettes |

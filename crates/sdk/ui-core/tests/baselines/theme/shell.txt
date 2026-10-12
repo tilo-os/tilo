@@ -1,0 +1,8 @@
+# The theme ratchet for shell: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+crates/session/shell/src/compositor/backend/headless.rs literal_color 1
+crates/session/shell/src/compositor/backend/winit.rs literal_color 1
+crates/session/shell/src/compositor/projection_capture.rs literal_color 1
+crates/session/shell/src/shell/frame.rs literal_color 1
+crates/session/shell/src/shell/frame.rs white_or_black 2

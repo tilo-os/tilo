@@ -5,15 +5,15 @@
 //! widget that fills the card width, shows the device on one line and the
 //! model on a dimmer second line, and is **focusable** (so keyboard
 //! arrow-nav + startup auto-focus reach it). Selecting it — by click or
-//! by pressing Space/Enter while focused — sets a CRDT boolean flag the
-//! [`crate::installer_app::InstallerApp`] consumes on the next `sync`
-//! (rising-edge), exactly like `ui::Button`'s `on_click_path`.
+//! by pressing Space/Enter while focused, or by assistive activation — fires
+//! its [`Control`]: the disk's published `select` action, which the
+//! [`crate::installer_app::InstallerApp`] runs through its action door.
 
 use std::collections::HashMap;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
+use ui::widget::TaffyTreeExt;
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
@@ -25,6 +25,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
+use crate::control::Control;
 use crate::disks::Disk;
 
 const ROW_HEIGHT: f32 = 54.0;
@@ -34,8 +35,8 @@ const MODEL_SIZE: f32 = 12.0;
 
 pub struct DiskRow {
     disk: Disk,
-    /// CRDT path of the boolean flag raised when this row is chosen.
-    select_path: String,
+    /// The published action choosing this disk.
+    control: Control,
     /// Whether this row is the currently-selected disk (drives the
     /// highlight). Set by the app each time it rebuilds the composition.
     selected: bool,
@@ -45,10 +46,10 @@ pub struct DiskRow {
 }
 
 impl DiskRow {
-    pub fn new(disk: Disk, select_path: &str, selected: bool) -> Self {
+    pub fn new(disk: Disk, control: Control, selected: bool) -> Self {
         Self {
             disk,
-            select_path: select_path.to_string(),
+            control,
             selected,
             rect: Rect::ZERO,
             is_hovered: false,
@@ -56,9 +57,14 @@ impl DiskRow {
         }
     }
 
-    /// Raise the selection flag — consumed (rising-edge) by the app.
-    fn fire(&self, state: &mut AutoCommit, root: &ObjId) {
-        let _ = state.put(root, self.select_path.as_str(), true);
+    /// Choose this disk.
+    fn fire(&self) {
+        self.control.fire();
+    }
+
+    /// The stable control identity: the action it runs.
+    fn control_id(&self) -> String {
+        self.control.address().encode()
     }
 
     fn disabled(&self) -> bool {
@@ -120,37 +126,11 @@ impl Widget for DiskRow {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
-        // returns a bare `NodeId` across every implementor, so surfacing a
-        // theoretical error here would mean threading a `Result` through the
-        // whole toolkit for a branch that can't be taken.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(ROW_HEIGHT),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(crate::full_width_row(ROW_HEIGHT), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `layout` only errors for a `NodeId` from a different tree, which
-        // never happens here since `node` is always the id this same widget
-        // received from its own `build_layout` call.
-        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -161,18 +141,19 @@ impl Widget for DiskRow {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        let raised = theme.tokens.colors.surfaces.raised;
         let bg = if self.selected {
-            theme.bg_active
+            theme.tokens.colors.lift_on(raised, 1.0)
         } else if self.is_hovered {
-            theme.bg_hover
+            theme.tokens.colors.lift_on(raised, 0.5)
         } else {
-            theme.bg_primary
+            raised
         };
         let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
         scene.fill(Fill::NonZero, transform, bg, None, &shape);
 
         let (stroke_w, stroke_color) = if self.selected {
-            (2.0, theme.accent_primary)
+            (2.0, theme.tokens.colors.intent.inverted)
         } else if self.is_focused {
             (2.0, theme.border_focus)
         } else {
@@ -260,7 +241,7 @@ impl Widget for DiskRow {
                 ..
             } => {
                 if self.is_hovered && !self.disabled() {
-                    self.fire(ctx.state, ctx.path);
+                    self.fire();
                     *ctx.handled = true;
                 }
             }
@@ -278,7 +259,7 @@ impl Widget for DiskRow {
                 // app-level Enter shortcut tries to advance the page before a
                 // disk has been selected.
                 if matches!(logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
-                    self.fire(ctx.state, ctx.path);
+                    self.fire();
                     *ctx.handled = true;
                 }
             }
@@ -315,10 +296,10 @@ impl Widget for DiskRow {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
-        root: &ModelPath,
+        _key_path: &[u64],
+        _state: &mut ui::widget::Edits<'_>,
+        _root: &ModelPath,
     ) -> bool {
-        let (state, root) = ui::doc::document(state, root);
         if self.disabled()
             || !matches!(
                 action,
@@ -327,7 +308,7 @@ impl Widget for DiskRow {
         {
             return false;
         }
-        self.fire(state, root);
+        self.fire();
         true
     }
 
@@ -336,7 +317,7 @@ impl Widget for DiskRow {
 
         Some(
             AccessNode::new(Role::RadioButton)
-                .with_semantic_key(self.select_path.as_str())
+                .with_semantic_key(self.control_id())
                 .with_name(self.accessible_name())
                 .with_description(self.accessible_description())
                 .with_state(AccessState {
@@ -355,17 +336,14 @@ impl Widget for DiskRow {
 
 impl ui::widget::controls::ActionControls for DiskRow {
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        vec![ui::widget::ControlBindingMetadata {
-            control_id: self.select_path.clone(),
-            kind: ui::widget::ControlBindingKind::CollaborativeDocument(self.select_path.clone()),
-        }]
+        vec![self.control.metadata(&self.control_id())]
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use automerge::{ROOT, ReadDoc};
-    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+    use crate::control::Presses;
+    use automerge::{AutoCommit, ROOT, ReadDoc};
 
     use super::*;
 
@@ -390,56 +368,39 @@ mod tests {
         }
     }
 
-    fn press(key: NamedKey) -> WindowEvent {
-        // SAFETY: DiskRow reads only the initialized KeyEvent fields below.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(key);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
-        WindowEvent::KeyboardInput {
-            // SAFETY: DiskRow does not inspect the device id.
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        }
+    use ui::synthetic_input::named_key;
+
+    fn select() -> (Control, Presses) {
+        Control::detached("installer.disk:/dev/vdb", "select", serde_json::Value::Null)
+    }
+
+    fn row(target: Disk, selected: bool) -> DiskRow {
+        DiskRow::new(target, select().0, selected)
     }
 
     fn assert_key_selects(key: NamedKey) {
-        let mut row = DiskRow::new(disk(), "select", false);
+        let (control, presses) = select();
+        let mut row = DiskRow::new(disk(), control, false);
         row.set_focus(true);
         let mut doc = AutoCommit::new();
         let mut taffy = TaffyTree::new();
         let mut node_map = HashMap::new();
         let node = row.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let mut handled = false;
-        let mut focus_target = None;
-        row.handle_event(
-            &press(key),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(&mut row, &named_key(key))
+            .handled;
         assert!(handled);
         assert_eq!(
-            doc.get(&ROOT, "select")
-                .unwrap()
-                .and_then(|(v, _)| v.as_bool()),
-            Some(true)
+            presses.take().map(|press| press.address.encode()),
+            Some(tilo_actions::ActionAddress::new("installer.disk:/dev/vdb", "select").encode())
         );
+        assert_eq!(doc.length(ROOT), 0);
     }
 
     #[test]
-    fn disk_row_selection_is_one_flag_for_keys_and_assistive_activation() {
+    fn disk_row_selection_is_one_action_for_keys_and_assistive_activation() {
         // Phase `enter_and_space_select_a_focused_disk`.
         {
             assert_key_selects(NamedKey::Enter);
@@ -449,21 +410,26 @@ mod tests {
         {
             let mut target = disk();
             target.major_minor.clear();
-            let row = DiskRow::new(target, "select", false);
+            let row = row(target, false);
             assert!(!row.is_focusable());
         }
-        // Phase `assistive_activation_uses_the_same_selection_flag`.
+        // Phase `assistive_activation_runs_the_same_selection_action`.
         {
-            let mut row = DiskRow::new(disk(), "select", false);
+            let (control, presses) = select();
+            let mut row = DiskRow::new(disk(), control, false);
             let mut doc = AutoCommit::new();
 
-            assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+            assert!(row.perform_action(
+                &ui::a11y::Action::Activate,
+                &[],
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
             assert_eq!(
-                doc.get(&ROOT, "select")
-                    .unwrap()
-                    .and_then(|(value, _)| value.as_bool()),
-                Some(true)
+                presses.take().map(|press| press.address.action),
+                Some("select".to_string())
             );
+            assert_eq!(doc.length(ROOT), 0);
         }
     }
 
@@ -474,7 +440,7 @@ mod tests {
             let mut target = disk();
             target.model = "QEMU Fast Storage".into();
             target.wwn = "secret-wwn".into();
-            let mut row = DiskRow::new(target, "select", true);
+            let mut row = row(target, true);
             row.set_focus(true);
 
             let node = row.accessibility().expect("disk selection semantics");
@@ -498,7 +464,7 @@ mod tests {
         }
         // Phase `accessibility_uses_a_clear_fallback_when_model_is_missing`.
         {
-            let node = DiskRow::new(disk(), "select", false)
+            let node = row(disk(), false)
                 .accessibility()
                 .expect("disk selection semantics");
             assert_eq!(
@@ -513,7 +479,8 @@ mod tests {
             target.is_system = true;
             target.read_only = true;
             target.major_minor.clear();
-            let mut row = DiskRow::new(target, "select", false);
+            let (control, presses) = select();
+            let mut row = DiskRow::new(target, control, false);
 
             let node = row.accessibility().expect("disabled disk semantics");
             let description = node.description.as_deref().expect("disabled reason");
@@ -524,8 +491,13 @@ mod tests {
             assert!(description.contains("could not verify which physical disk"));
 
             let mut doc = AutoCommit::new();
-            assert!(!row.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
-            assert!(doc.get(&ROOT, "select").unwrap().is_none());
+            assert!(!row.perform_action(
+                &ui::a11y::Action::Activate,
+                &[],
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
+            assert!(presses.take().is_none());
         }
         // Phase `staged_installer_disk_is_selectable_and_says_what_it_holds`.
         {
@@ -541,7 +513,7 @@ mod tests {
                 root_start_bytes: 4 << 30,
                 root_size_bytes: 32 << 30,
             });
-            let row = DiskRow::new(target, "select", false);
+            let row = row(target, false);
             let node = row.accessibility().expect("staged disk semantics");
             assert!(!node.state.disabled);
             assert!(node.state.focusable);

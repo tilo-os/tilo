@@ -129,6 +129,8 @@ pub struct GuestPlan {
     pub grant_root: Option<PathBuf>,
     /// The runtime binary, bound in so the guest's `pkg`/`perm`/… resolve.
     pub runtime_bin: PathBuf,
+    /// Private loader closure for a dynamically linked runtime.
+    pub helper_runtime: Option<crate::helper_runtime::HelperRuntime>,
     /// Installed legacy apps' commands: shims that ask the broker for a
     /// `LegacyLaunch`.
     pub legacy_commands: Vec<String>,
@@ -139,12 +141,17 @@ pub struct GuestPlan {
     pub command: Vec<String>,
     /// The shell to host when `command` is empty.
     pub shell: PathBuf,
+    /// The key the shell marks its command runs with ([`crate::runs`]):
+    /// `bash` then starts on the rc file that writes the marks.
+    pub runs: Option<String>,
     pub term: String,
     /// Extra environment, applied last.
     pub env: Vec<(String, String)>,
     /// The guest's `/etc/resolv.conf`: the session's DNS stub. `None` copies
     /// the machine's.
     pub resolver: Option<String>,
+    /// Optional qualified native producer, never requested via a guest path.
+    pub editor: Option<crate::editor::GuestEditor>,
 }
 
 impl GuestPlan {
@@ -170,7 +177,17 @@ impl GuestPlan {
     ///
     /// Returns an error if a directory or file can't be created.
     pub fn prepare(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.session_dir)?;
+        if let Some(helper) = &self.helper_runtime {
+            helper.write_wrapper(&self.session_dir.join("helper-shim"))?;
+        }
         std::fs::create_dir_all(&self.guest_home)?;
+        if self.runs.is_some() {
+            std::fs::write(
+                self.session_dir.join("runs.bash"),
+                crate::runs::bash_rc(false),
+            )?;
+        }
         for dir in ENVIRONMENT_VAR_DIRS {
             std::fs::create_dir_all(self.var_dir.join(dir))?;
         }
@@ -262,20 +279,57 @@ pub fn host_resolver(host_root: &Path) -> Option<String> {
 /// land on the `/var` tmpfs, the masks after the grants they cover), so keep
 /// the call order matching the section order in this function.
 pub fn build_argv(plan: &GuestPlan, seccomp_fd: Option<std::os::fd::RawFd>) -> Vec<OsString> {
+    build_guest_argv(plan, seccomp_fd, None)
+}
+
+/// Build a broker-free, network-isolated check guest using the same image,
+/// namespace, seccomp and helper closure as ordinary environment guests.
+/// The trusted supervisor supplies both paths; neither comes from an effect.
+#[must_use]
+pub fn build_check_argv(
+    plan: &GuestPlan,
+    seccomp_fd: std::os::fd::RawFd,
+    checkout: &Path,
+    build: &Path,
+) -> Vec<OsString> {
+    build_guest_argv(plan, Some(seccomp_fd), Some((checkout, build)))
+}
+
+fn build_guest_argv(
+    plan: &GuestPlan,
+    seccomp_fd: Option<std::os::fd::RawFd>,
+    check: Option<(&Path, &Path)>,
+) -> Vec<OsString> {
     let mut a: Vec<OsString> = Vec::new();
     push_namespace_flags(&mut a, plan);
+    if check.is_some() {
+        a.push("--unshare-net".into());
+    }
     push_image_mounts(&mut a, plan);
     push_symlinks(&mut a);
     push_pseudo_filesystems_and_var(&mut a, plan);
-    push_runtime_and_broker(&mut a, plan);
+    push_runtime_and_broker(&mut a, plan, check.is_none());
+    push_runs(&mut a, plan);
     push_home_and_grants(&mut a, plan);
-    push_environment(&mut a, plan);
+    if let Some((checkout, build)) = check {
+        a.extend([
+            "--ro-bind".into(),
+            checkout.as_os_str().into(),
+            "/project".into(),
+            "--bind".into(),
+            build.as_os_str().into(),
+            "/project/target".into(),
+            "--chdir".into(),
+            "/project".into(),
+        ]);
+    }
+    push_environment(&mut a, plan, check.is_none());
     push_seccomp_and_command(&mut a, plan, seccomp_fd);
     a
 }
 
-/// `--clearenv`, the namespace/identity flags, and the hostname — the part
-/// of the argv that exists before any filesystem is touched.
+/// `--clearenv` and the namespace/identity flags — the part of the argv
+/// that exists before any filesystem is touched.
 fn push_namespace_flags(a: &mut Vec<OsString>, plan: &GuestPlan) {
     let push = |a: &mut Vec<OsString>, s: &str| a.push(OsString::from(s));
 
@@ -298,8 +352,9 @@ fn push_namespace_flags(a: &mut Vec<OsString>, plan: &GuestPlan) {
     push(a, "--unshare-uts");
     push(a, "--unshare-ipc");
     push(a, "--unshare-cgroup-try");
-    push(a, "--hostname");
-    push(a, "ush");
+    // The guest keeps the host's name in a namespace of its own: naming it
+    // takes `sethostname`, which a container's seccomp profile refuses, and
+    // bwrap then starts no shell at all.
     // The guest must not outlive the supervisor. Without this a crashed
     // supervisor leaves a shell running in a namespace nothing is watching.
     push(a, "--die-with-parent");
@@ -407,12 +462,53 @@ fn push_pseudo_filesystems_and_var(a: &mut Vec<OsString>, plan: &GuestPlan) {
 
 /// The runtime binary (read-only, with its command shims) and the broker
 /// socket the guest sends requests over.
-fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
+fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
+    if let Some(editor) = &plan.editor {
+        a.extend([
+            "--dir".into(),
+            crate::editor::GUEST_DIR.into(),
+            "--ro-bind".into(),
+            editor.module.clone().into_os_string(),
+            format!("{}/producer.so", crate::editor::GUEST_DIR).into(),
+            "--ro-bind".into(),
+            editor.rc.clone().into_os_string(),
+            format!("{}/rc", crate::editor::GUEST_DIR).into(),
+        ]);
+    }
     a.push("--dir".into());
     a.push(crate::GUEST_BIN_DIR.into());
     a.push("--ro-bind".into());
     a.push(plan.runtime_bin.clone().into_os_string());
-    a.push(format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into());
+    a.push(if plan.helper_runtime.is_some() {
+        crate::helper_runtime::EXECUTABLE.into()
+    } else {
+        format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into()
+    });
+    if let Some(helper) = &plan.helper_runtime {
+        a.extend(["--dir".into(), crate::helper_runtime::LIB_DIR.into()]);
+        for (name, path) in &helper.libraries {
+            a.extend([
+                "--ro-bind".into(),
+                path.clone().into_os_string(),
+                Path::new(crate::helper_runtime::LIB_DIR)
+                    .join(name)
+                    .into_os_string(),
+            ]);
+        }
+        a.extend([
+            "--ro-bind".into(),
+            helper.loader.clone().into_os_string(),
+            crate::helper_runtime::LOADER.into(),
+        ]);
+        a.extend([
+            "--ro-bind".into(),
+            plan.session_dir.join("helper-shim").into_os_string(),
+            format!("{}/tilo-ush", crate::GUEST_BIN_DIR).into(),
+        ]);
+    }
+    if !broker {
+        return;
+    }
     for cmd in crate::GUEST_COMMANDS {
         if !crate::guest_command_available(&plan.host_root, cmd) {
             continue;
@@ -429,6 +525,17 @@ fn push_runtime_and_broker(a: &mut Vec<OsString>, plan: &GuestPlan) {
     a.push("--bind".into());
     a.push(plan.broker_socket.clone().into_os_string());
     a.push(crate::GUEST_BROKER_SOCK.into());
+}
+
+/// The rc file of a shell that marks its runs, read-only at
+/// [`crate::runs::GUEST_RC`].
+fn push_runs(a: &mut Vec<OsString>, plan: &GuestPlan) {
+    if plan.runs.is_none() {
+        return;
+    }
+    a.push("--ro-bind".into());
+    a.push(plan.session_dir.join("runs.bash").into_os_string());
+    a.push(crate::runs::GUEST_RC.into());
 }
 
 /// The environment's home, then the grants at their host paths, then the
@@ -483,7 +590,7 @@ fn push_home_and_grants(a: &mut Vec<OsString>, plan: &GuestPlan) {
 /// The guest's whole environment: fixed variables, the locale/timezone
 /// carried from the supervisor, the plan's own extras, and finally
 /// unsetting the store path so nothing inside the namespace can reach it.
-fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan) {
+fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan, broker: bool) {
     let setenv = |k: &str, v: &str, a: &mut Vec<OsString>| {
         a.push("--setenv".into());
         a.push(k.into());
@@ -496,7 +603,12 @@ fn push_environment(a: &mut Vec<OsString>, plan: &GuestPlan) {
     setenv("LOGNAME", &plan.user.name, a);
     setenv("SHELL", &plan.shell.to_string_lossy(), a);
     setenv("TILO_USH_ENVIRONMENT", &plan.environment, a);
-    setenv("TILO_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
+    if let Some(key) = &plan.runs {
+        setenv(crate::runs::KEY_ENV, key, a);
+    }
+    if broker {
+        setenv("TILO_USH_BROKER", crate::GUEST_BROKER_SOCK, a);
+    }
     // Carried across explicitly since the guest no longer inherits it: a shell
     // with no `LANG` answers in the C locale, breaking `ls`, `date`, and messages.
     for key in INHERITED_ENV {
@@ -534,6 +646,10 @@ fn push_seccomp_and_command(
     a.push("--".into());
     if plan.command.is_empty() {
         a.push(plan.shell.clone().into_os_string());
+        if plan.runs.is_some() {
+            a.push("--rcfile".into());
+            a.push(crate::runs::GUEST_RC.into());
+        }
         a.push("-i".into());
     } else {
         for arg in &plan.command {
@@ -607,8 +723,26 @@ pub fn spawn(
     };
     let mut cmd = std::process::Command::new(program);
     cmd.args(rest);
+    // Direct `ush -c` must expose its command output and startup errors;
+    // served sessions inherit the supervisor's already-attached pty here.
+    cmd.stdout(std::process::Stdio::inherit());
+    cmd.stderr(std::process::Stdio::inherit());
     if let Some(netns) = netns {
         netns.enter(&mut cmd);
+    }
+    if let Some(editor) = &plan.editor {
+        use std::os::fd::{AsFd, AsRawFd};
+        use std::os::unix::process::CommandExt;
+        let fd = editor.producer.as_fd().as_raw_fd();
+        // SAFETY: only the qualified producer endpoint crosses this trusted exec.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
     cmd.spawn()
 }
@@ -616,6 +750,64 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approved_check_mounts_source_read_only_target_writeable_and_no_broker() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = plan_in(dir.path());
+        let argv = build_check_argv(
+            &plan,
+            42,
+            Path::new("/private/source"),
+            Path::new("/private/build"),
+        );
+        assert!(argv.iter().any(|s| s == "--unshare-net"));
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--ro-bind", "/private/source", "/project"])
+        );
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--bind", "/private/build", "/project/target"])
+        );
+        assert!(argv.windows(2).any(|w| w == ["--seccomp", "42"]));
+        assert!(!argv.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
+        assert!(!argv.iter().any(|s| s == plan.broker_socket.as_os_str()));
+    }
+
+    #[test]
+    fn native_editor_mounts_remain_read_only_with_broker_free_check_guests() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut plan = plan_in(dir.path());
+        let (_host, producer) = runtime_portal::editor::Socket::pair().unwrap();
+        let module = dir.path().join("producer.so");
+        let rc = dir.path().join("rc");
+        plan.editor = Some(crate::editor::GuestEditor {
+            producer: std::sync::Arc::new(producer),
+            module: module.clone(),
+            rc: rc.clone(),
+        });
+        let ordinary = build_argv(&plan, Some(42));
+        let check = build_check_argv(
+            &plan,
+            42,
+            Path::new("/private/source"),
+            Path::new("/private/build"),
+        );
+        for argv in [&ordinary, &check] {
+            for (source, target) in [
+                (&module, "/run/ush-editor/producer.so"),
+                (&rc, "/run/ush-editor/rc"),
+            ] {
+                assert!(argv.windows(3).any(|w| {
+                    w[0] == "--ro-bind" && w[1] == source.as_os_str() && w[2] == target
+                }));
+            }
+        }
+        assert!(ordinary.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
+        assert!(!check.iter().any(|s| s == crate::GUEST_BROKER_SOCK));
+        assert!(!check.iter().any(|s| s == plan.broker_socket.as_os_str()));
+    }
 
     fn plan_in(dir: &Path) -> GuestPlan {
         let tool = dir.join("pkgs/tool");
@@ -647,14 +839,17 @@ mod tests {
             readable_dirs: Vec::new(),
             grant_root: None,
             runtime_bin: PathBuf::from("/usr/libexec/tilo-ush"),
+            helper_runtime: None,
             legacy_commands: vec!["code".into()],
             broker_socket: dir.join("store/sessions/s1/broker.sock"),
             seccomp_blob: dir.join("store/sessions/s1/ush.bpf"),
             command: Vec::new(),
             shell: PathBuf::from("/usr/bin/bash"),
+            runs: None,
             term: "xterm-256color".into(),
             env: Vec::new(),
             resolver: None,
+            editor: None,
         }
     }
 
@@ -670,6 +865,17 @@ mod tests {
 
     fn path(p: &Path) -> String {
         p.display().to_string()
+    }
+
+    #[test]
+    fn the_guest_has_its_own_uts_namespace_without_renaming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = strings(&build_argv(&plan_in(dir.path()), Some(9)));
+        assert!(argv.iter().any(|arg| arg == "--unshare-uts"));
+        assert!(
+            !argv.iter().any(|arg| arg == "--hostname"),
+            "a container's seccomp profile refuses sethostname"
+        );
     }
 
     #[test]

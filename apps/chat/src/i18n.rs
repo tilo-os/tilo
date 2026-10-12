@@ -9,11 +9,8 @@ use ui::i18n::{ArgValue, EmbeddedCatalog};
 
 /// Loaded per thread on first use; a host's manager is joined, never replaced.
 /// The probe is a key every catalogue revision defines.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "chat-mention-agent-tag",
-);
+pub(crate) static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", &[("en-US", include_str!("../locales/en-US.ftl"))]);
 
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
@@ -50,13 +47,24 @@ mod tests {
         // A key that resolves to itself is a key with no catalogue entry — the
         // failure mode that ships an untranslatable literal to a screen.
         for key in [
+            "chat-voice-unavailable",
+            "chat-attachment-import-unavailable",
             "chat-mention-agent-tag",
+            "chat-person-unnamed",
+            "chat-person-relative-name",
             "chat-identity-available",
             "chat-identity-in-voice",
+            "chat-context-sharing",
+            "chat-context-following",
+            "chat-context-stop",
+            "chat-header-call-open",
+            "chat-header-voice-call",
+            "chat-attachment-no-access",
             "chat-call-connected",
             "chat-call-reconnecting",
             "chat-call-joining",
             "chat-call-unavailable",
+            "chat-call-voice-unavailable",
             "chat-call-open",
             "chat-call-join",
             "chat-call-leave-action",
@@ -86,6 +94,26 @@ mod tests {
             "chat-emoji-group",
             "chat-reaction-add",
             "chat-reaction-remove",
+            "chat-agent-work-taken",
+            "chat-agent-work-waiting",
+            "chat-agent-work-intent",
+            "chat-agent-work-intent-about",
+            "chat-agent-work-done",
+            "chat-agent-work-refused",
+            "chat-agent-work-model-rationale",
+            "chat-agent-work-rule-match",
+            "chat-agent-work-model-choice",
+            "chat-agent-work-rule-choice",
+            "chat-agent-work-rationale",
+            "chat-agent-work-step-requested",
+            "chat-agent-work-step-applied",
+            "chat-agent-work-step-no-change",
+            "chat-agent-work-step-refused",
+            "chat-agent-work-step-refused-why",
+            "chat-thread-title",
+            "chat-thread-back",
+            "chat-thread-close",
+            "chat-thread-replies",
         ] {
             let s = t(key);
             assert_ne!(s, key, "{key} has no entry in the catalogue");
@@ -102,18 +130,5 @@ mod call_title_tests {
         assert!(title.contains("standup"));
         assert!(!title.contains("chat-call-title"));
         assert!(!title.contains("$channel"));
-    }
-    #[test]
-    fn stream_status_interpolates_the_inventory_and_state() {
-        let status = super::t("chat-call-reconnecting");
-        let text = super::t_args(
-            "chat-call-stream-status",
-            &[("count", "2".into()), ("status", status.clone().into())],
-        );
-        assert!(text.contains('2'));
-        assert!(text.contains(&status));
-        assert!(!text.contains("chat-call-stream-status"));
-        assert!(!text.contains("$count"));
-        assert!(!text.contains("$status"));
     }
 }

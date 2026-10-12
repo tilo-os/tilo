@@ -272,6 +272,39 @@ impl Device {
         ComputePipeline { inner: pipeline }
     }
 
+    /// Creates a [`ComputePipeline`] without occupying the GPU's submission
+    /// thread while it compiles, where the backend can.
+    ///
+    /// On the WebGPU backend this is `createComputePipelineAsync`: the
+    /// browser compiles on worker threads, so pipelines compile in parallel
+    /// and its GPU process keeps serving frames and other work meanwhile.
+    /// The browser starts compiling when this is called, not when the future
+    /// is first polled. Other backends create the pipeline synchronously.
+    ///
+    /// Corresponds to [WebGPU `GPUDevice.createComputePipelineAsync`](
+    /// https://gpuweb.github.io/gpuweb/#dom-gpudevice-createcomputepipelineasync).
+    pub fn create_compute_pipeline_async(
+        &self,
+        desc: &ComputePipelineDescriptor<'_>,
+    ) -> impl Future<Output = ComputePipeline> + WasmNotSend + 'static {
+        #[cfg(webgpu)]
+        let pending = match self.inner.as_webgpu_opt() {
+            Some(device) => Ok(device.create_compute_pipeline_async(desc)),
+            None => Err(self.create_compute_pipeline(desc)),
+        };
+        #[cfg(not(webgpu))]
+        let pending: Result<core::future::Pending<dispatch::DispatchComputePipeline>, _> =
+            Err(self.create_compute_pipeline(desc));
+        async move {
+            match pending {
+                Ok(pending) => ComputePipeline {
+                    inner: pending.await,
+                },
+                Err(created) => created,
+            }
+        }
+    }
+
     /// Creates a [`Buffer`].
     #[must_use]
     pub fn create_buffer(&self, desc: &BufferDescriptor<'_>) -> Buffer {

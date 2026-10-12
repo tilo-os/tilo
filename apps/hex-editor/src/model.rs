@@ -11,17 +11,56 @@
 
 use std::collections::BTreeSet;
 
+use serde::{Deserialize, Serialize};
+// `#[derive(JsonSchema)]` names the crate as `tilo_resource`.
+use ui::tilo_resource::{self, JsonSchema};
+
+use crate::buffer::Hex;
+
 /// One primitive buffer mutation. Every byte edit reduces to an insert,
 /// delete, or overwrite at a concrete offset; cursor movement, selection,
-/// scroll, and mode/column/endian changes remain presentation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// scroll, and mode/column/endian changes remain presentation. It is also
+/// the edit of the record's bytes at their path
+/// ([`ByteBuffer`](crate::buffer::ByteBuffer)).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum BufferEdit {
     /// Splice `bytes` in *before* `offset`, growing the buffer.
-    Insert { offset: usize, bytes: Vec<u8> },
+    Insert { offset: usize, bytes: Hex },
     /// Remove `len` bytes starting at `offset`.
     Delete { offset: usize, len: usize },
-    /// Replace the bytes already at `offset..offset+bytes.len()` in place.
-    Overwrite { offset: usize, bytes: Vec<u8> },
+    /// Replace the bytes already at `offset..offset+bytes.len()` in place;
+    /// the buffer never grows, so bytes past its end are dropped.
+    Overwrite { offset: usize, bytes: Hex },
+}
+
+impl BufferEdit {
+    /// The edited span `(offset, len)`.
+    fn span(&self) -> (usize, usize) {
+        match self {
+            Self::Insert { offset, bytes } | Self::Overwrite { offset, bytes } => {
+                (*offset, bytes.0.len())
+            }
+            Self::Delete { offset, len } => (*offset, *len),
+        }
+    }
+
+    /// Whether `next`, right after `self`, continues the same run of typing
+    /// or deleting: the next nibble or byte typed, the next byte deleted.
+    #[must_use]
+    pub fn continues(&self, next: &Self) -> bool {
+        let ((at, len), (next_at, next_len)) = (self.span(), next.span());
+        match (self, next) {
+            (
+                Self::Insert { .. } | Self::Overwrite { .. },
+                Self::Insert { .. } | Self::Overwrite { .. },
+            ) => next_at >= at && next_at <= at.saturating_add(len),
+            // Delete steps in place (Delete) or backwards (Backspace).
+            (Self::Delete { .. }, Self::Delete { .. }) => {
+                next_at == at || next_at.saturating_add(next_len) == at
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Which of the two parallel columns the keyboard cursor is editing.
@@ -62,8 +101,8 @@ impl EditMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            EditMode::Overwrite => "OVR",
-            EditMode::Insert => "INS",
+            EditMode::Overwrite => "Overwrite",
+            EditMode::Insert => "Insert",
         }
     }
 }
@@ -86,8 +125,8 @@ impl Endian {
 
     pub fn label(self) -> &'static str {
         match self {
-            Endian::Little => "LE",
-            Endian::Big => "BE",
+            Endian::Little => "Little endian",
+            Endian::Big => "Big endian",
         }
     }
 }
@@ -161,8 +200,8 @@ impl HexModel {
     /// marked changed; where the buffer is as long as `saved`, the bytes
     /// that differ from `saved` are exactly the changed ones (an undo
     /// clears its byte's mark).
-    pub fn show_bytes(&mut self, bytes: Vec<u8>, saved: &[u8]) {
-        if bytes == self.bytes {
+    pub fn show_bytes(&mut self, bytes: &[u8], saved: &[u8]) {
+        if bytes == self.bytes.as_slice() {
             return;
         }
         if bytes.len() == saved.len() {
@@ -176,7 +215,7 @@ impl HexModel {
             let prefix = self
                 .bytes
                 .iter()
-                .zip(&bytes)
+                .zip(bytes)
                 .take_while(|(a, b)| a == b)
                 .count();
             let suffix = common_suffix(
@@ -200,7 +239,9 @@ impl HexModel {
                 .chain(prefix..new_end)
                 .collect();
         }
-        self.bytes = bytes;
+        // Reuse the buffer: a large file is not reallocated per edit.
+        self.bytes.clear();
+        self.bytes.extend_from_slice(bytes);
         self.pending_nibble = None;
         self.clamp_cursor();
     }
@@ -307,11 +348,6 @@ impl HexModel {
             Some((lo, hi)) => hi.saturating_sub(lo) + 1,
             None => 0,
         }
-    }
-
-    /// The byte at the cursor, if the cursor is within bounds.
-    pub fn byte_at_cursor(&self) -> Option<u8> {
-        self.bytes.get(self.cursor).copied()
     }
 
     // --- view configuration --------------------------------------------
@@ -475,7 +511,7 @@ impl HexModel {
                 self.dirty.insert(offset);
                 self.edits.push(BufferEdit::Overwrite {
                     offset,
-                    bytes: vec![value],
+                    bytes: Hex(vec![value]),
                 });
             }
             true
@@ -500,7 +536,7 @@ impl HexModel {
         self.dirty.insert(at);
         self.edits.push(BufferEdit::Insert {
             offset: at,
-            bytes: vec![value],
+            bytes: Hex(vec![value]),
         });
     }
 
@@ -739,7 +775,7 @@ mod tests {
             [
                 BufferEdit::Overwrite {
                     offset: 1,
-                    bytes: vec![0xAB]
+                    bytes: Hex(vec![0xAB])
                 },
                 BufferEdit::Delete { offset: 0, len: 2 },
             ]
@@ -786,16 +822,16 @@ mod tests {
         let mut m = HexModel::new(saved.clone());
         m.move_to(3, false);
         // An edit from elsewhere marks its byte; undoing it clears the mark.
-        m.show_bytes(vec![0x10, 0xFF, 0x30, 0x40], &saved);
+        m.show_bytes(&[0x10, 0xFF, 0x30, 0x40], &saved);
         assert!(m.is_dirty(1));
         assert_eq!(m.cursor(), 3);
-        m.show_bytes(saved.clone(), &saved);
+        m.show_bytes(&saved, &saved);
         assert_eq!(m.dirty_count(), 0);
         // A shorter buffer clamps the cursor and marks the changed span.
-        m.show_bytes(vec![0x10, 0x40], &saved);
+        m.show_bytes(&[0x10, 0x40], &saved);
         assert_eq!(m.cursor(), 1);
         assert_eq!(m.dirty_count(), 0, "a pure removal changes no byte left");
-        m.show_bytes(vec![0x10, 0x99, 0x40], &saved);
+        m.show_bytes(&[0x10, 0x99, 0x40], &saved);
         assert!(m.is_dirty(1));
         assert!(!m.is_dirty(2));
         // A load starts clean.

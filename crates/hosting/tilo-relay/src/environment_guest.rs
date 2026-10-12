@@ -136,6 +136,7 @@ pub struct UshGuestLauncher {
     config: UshLauncherConfig,
     supervisors: Mutex<BTreeMap<[u8; 32], Supervisor>>,
     tool_builds: Option<ToolBuildService>,
+    legacy_route: Option<crate::legacy_route::LegacyLaunchRoute>,
 }
 
 struct Supervisor {
@@ -143,12 +144,16 @@ struct Supervisor {
     child: Child,
     cgroup: Option<PathBuf>,
     builds: Option<tokio::task::JoinHandle<()>>,
+    legacy: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
         if let Some(builds) = &self.builds {
             builds.abort();
+        }
+        if let Some(legacy) = &self.legacy {
+            legacy.abort();
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -171,7 +176,17 @@ impl UshGuestLauncher {
             config,
             supervisors: Mutex::new(BTreeMap::new()),
             tool_builds: None,
+            legacy_route: None,
         }
+    }
+
+    /// Send members' legacy launches to the relay through `route`: a guest's
+    /// `code .` runs the app on a worker with KVM, and its windows open on
+    /// the member's devices.
+    #[must_use]
+    pub fn with_legacy_route(mut self, route: crate::legacy_route::LegacyLaunchRoute) -> Self {
+        self.legacy_route = Some(route);
+        self
     }
 
     /// Build members' missing tools through `service`, which signs them
@@ -248,8 +263,18 @@ impl UshGuestLauncher {
             .map(|service| service.listen(run.clone()))
             .transpose()
             .map_err(|error| failed("the member's tool builds", error))?;
+        let legacy_socket = area.runtime().join("legacy.sock");
+        let legacy = self
+            .legacy_route
+            .as_ref()
+            .map(|route| route.listen(member.identity, &legacy_socket, uid))
+            .transpose()
+            .map_err(|error| failed("the member's legacy launches", error))?;
         let publisher = self.tool_builds.as_ref().map(ToolBuildService::publisher);
         let mut command = self.supervisor_command(&run, &socket, publisher);
+        if legacy.is_some() {
+            command.env(ush::legacy_relay::LEGACY_LAUNCHES_ENV, &legacy_socket);
+        }
         let child = command
             .spawn()
             .map_err(|error| failed("start the member's supervisor", error))?;
@@ -258,6 +283,7 @@ impl UshGuestLauncher {
             child,
             cgroup,
             builds,
+            legacy,
         };
         if let Some(cgroup) = &supervisor.cgroup {
             std::fs::write(
@@ -409,6 +435,7 @@ pub fn open_ush_session(
     let serve = ush::supervisor::ServeRequest::OpenSession {
         target: tilo_environment::Target::Environment {
             record: Some(record_key.to_owned()),
+            location: tilo_environment::Location::ThisDevice,
         },
         cols: request.size.cols,
         rows: request.size.rows,
@@ -417,6 +444,10 @@ pub fn open_ush_session(
         // The member is a person at a terminal; an environment target is
         // never the host's shell, which no relay session reaches.
         requested_by: ush::host::RequestedBy::Person,
+        relay_session: None,
+        runs: None,
+        // Native editor custody is participant-private and never relayed.
+        editor_protocol: None,
     };
     let mut line = serde_json::to_vec(&serve)
         .map_err(|error| LaunchError::Failed(format!("encode the request: {error}")))?;
@@ -433,11 +464,13 @@ pub fn open_ush_session(
     match response {
         ush::supervisor::ServeResponse::Session { .. } => {}
         ush::supervisor::ServeResponse::Denied { reason }
-        | ush::supervisor::ServeResponse::HostNotAllowed { reason } => {
+        | ush::supervisor::ServeResponse::HostNotAllowed { reason }
+        | ush::supervisor::ServeResponse::NoRuntime { reason } => {
             return Err(LaunchError::Failed(format!("supervisor denied: {reason}")));
         }
         other @ (ush::supervisor::ServeResponse::Environments { .. }
-        | ush::supervisor::ServeResponse::Allowed) => {
+        | ush::supervisor::ServeResponse::Allowed
+        | ush::supervisor::ServeResponse::Relays { .. }) => {
             return Err(LaunchError::Failed(format!(
                 "supervisor answered {other:?} to a session request"
             )));
@@ -1030,13 +1063,17 @@ mod tests {
             assert_eq!(
                 target,
                 tilo_environment::Target::Environment {
-                    record: Some("relay-key".into())
+                    record: Some("relay-key".into()),
+                    location: tilo_environment::Location::ThisDevice,
                 }
             );
             let (master, slave) = openpty();
             let mut reply = serde_json::to_vec(&ush::supervisor::ServeResponse::Session {
                 session: "s".into(),
                 environment: "relay-key".into(),
+                relay_session: None,
+                runs: false,
+                editor_protocol: None,
             })
             .unwrap();
             reply.push(b'\n');

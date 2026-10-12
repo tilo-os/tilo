@@ -14,14 +14,16 @@
 //! page), a scratch directory, blobs in the content store, versions of the
 //! resource written by other people at other times, and collaborators shown
 //! where they are in it. Views read the values with
-//! [`ViewCx::fixture`](super::ViewCx::fixture), surfaces with
-//! [`SurfaceCx::fixture`](super::SurfaceCx::fixture).
+//! [`RecordEnv::fixture`](super::RecordEnv::fixture), surfaces with
+//! [`RecordEnv::fixture`](super::RecordEnv::fixture).
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_resource::{Doc, Invoke, Resource};
+use ui_core::history_mode::HistoryDefinition;
+use ui_core::history_mode::checked_files::FileHistorySource;
 
 use super::surface::ResourceSelection;
 
@@ -62,8 +64,56 @@ pub(crate) struct Fixtures {
 pub(crate) struct Run {
     pub(crate) mode: RunMode,
     pub(crate) fixtures: Rc<Fixtures>,
-    /// What the launch named: paths, URLs.
-    pub(crate) arguments: Rc<[String]>,
+    /// What the launch that opened the window named.
+    pub(crate) launched: Rc<Launched>,
+    /// A private window: a profile thrown away with the process.
+    pub(crate) private: bool,
+    /// The file whose history History shows beside the resource's, for an
+    /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY),
+    /// and the History scope the root witnesses it under.
+    pub(crate) file_history: Option<(FileHistorySource, &'static HistoryDefinition)>,
+    /// The names of the participants, as the host's roster has them.
+    pub(crate) people: super::People,
+    /// Opens another record in this window, in a window someone uses.
+    pub(crate) opener: Option<super::launch::OpenHere>,
+}
+
+/// The arguments, the app's own options, the file and the playback handoff
+/// a launch handed the
+/// app.
+#[derive(Default)]
+pub(crate) struct Launched {
+    /// The record selected by the host for this launch.
+    pub(crate) record: Option<ui_core::record::RecordId>,
+    pub(crate) arguments: Vec<String>,
+    pub(crate) options: Vec<ui_core::application::LaunchOption>,
+    pub(crate) file: Option<ui_core::application::OpenFile>,
+    pub(crate) handoff: Option<ui_core::application::PlaybackHandoff>,
+    /// The services the host that mounts the app in-process lent it.
+    pub(crate) lent: Lent,
+}
+
+/// What an in-process host lent the app
+/// ([`HostContext::lend`](ui_core::application::HostContext::lend)), each
+/// taken once by the view or surface that uses it.
+#[derive(Default)]
+pub(crate) struct Lent(std::cell::RefCell<Vec<Box<dyn Any>>>);
+
+impl Lent {
+    pub(crate) fn new(services: Vec<Box<dyn Any>>) -> Self {
+        Self(std::cell::RefCell::new(services))
+    }
+
+    /// The lent service of type `T`, once.
+    pub(crate) fn take<T: 'static>(&self) -> Option<T> {
+        let mut services = self.0.borrow_mut();
+        let index = services.iter().position(|service| service.is::<T>())?;
+        services
+            .remove(index)
+            .downcast::<T>()
+            .ok()
+            .map(|service| *service)
+    }
 }
 
 impl Run {
@@ -74,13 +124,26 @@ impl Run {
                 content,
                 ..Fixtures::default()
             }),
-            arguments: Rc::from([]),
+            launched: Rc::default(),
+            private: false,
+            file_history: None,
+            people: super::People::new(None),
+            opener: None,
         }
     }
 
-    /// This run, launched naming `arguments`.
-    pub(crate) fn launched_on(mut self, arguments: &[String]) -> Self {
-        self.arguments = Rc::from(arguments);
+    /// This run in a private window, when `private`.
+    pub(crate) fn in_private(mut self, private: bool) -> Self {
+        self.private = private;
+        self
+    }
+
+    /// This run, showing the history of the file `file_history` names.
+    pub(crate) fn showing_file_history(
+        mut self,
+        file_history: Option<(FileHistorySource, &'static HistoryDefinition)>,
+    ) -> Self {
+        self.file_history = file_history;
         self
     }
 
@@ -88,8 +151,49 @@ impl Run {
         Self {
             mode: RunMode::Past,
             fixtures: Rc::default(),
-            arguments: Rc::from([]),
+            launched: Rc::default(),
+            private: false,
+            file_history: None,
+            people: super::People::new(None),
+            opener: None,
         }
+    }
+
+    /// The same run, able to open another record in its window.
+    pub(crate) fn opening_with(mut self, opener: Option<super::launch::OpenHere>) -> Self {
+        self.opener = opener;
+        self
+    }
+
+    /// Open what a launch naming `arguments` opens in this window.
+    pub(crate) fn open_here(
+        &self,
+        arguments: &[String],
+    ) -> Result<ui_core::application::ReplacementOutcome, String> {
+        Ok(self
+            .opener
+            .as_ref()
+            .ok_or_else(|| "this window shows the record it was opened on".to_owned())?
+            .open(arguments))
+    }
+
+    /// The same run, for the participant `me`.
+    pub(crate) fn for_participant(mut self, me: Option<&str>) -> Self {
+        self.people = super::People::new(me);
+        self
+    }
+
+    /// The same run, opened by a launch that named `launched`.
+    pub(crate) fn launched(mut self, launched: Launched) -> Self {
+        self.launched = Rc::new(launched);
+        self
+    }
+
+    pub(crate) fn launch(&self) -> super::launch::LaunchInput<'_> {
+        super::launch::LaunchInput::new(&self.launched.arguments, self.launched.file.as_ref())
+            .with_content(self.fixtures.content.as_ref())
+            .with_handoff(self.launched.handoff.as_ref())
+            .with_options(&self.launched.options)
     }
 
     pub(crate) fn fixture<T: 'static>(&self) -> Option<Rc<T>> {
@@ -169,7 +273,7 @@ impl<R: Resource> Fixture<R> {
     }
 
     /// The content store the capture's views read from
-    /// ([`ViewCx::content`](super::ViewCx::content)), for the blobs a scene
+    /// ([`RecordEnv::content`](super::RecordEnv::content)), for the blobs a scene
     /// shows: photos, attachments, thumbnails. A private one when the host
     /// lent none.
     pub fn content(&mut self) -> &tilo_content::ContentStore {
@@ -223,7 +327,11 @@ impl<R: Resource> Fixture<R> {
                 content: self.content,
                 _directory: self.directory,
             }),
-            arguments: Rc::from([]),
+            launched: Rc::default(),
+            private: false,
+            file_history: None,
+            people: super::People::new(None),
+            opener: None,
         }
     }
 
@@ -243,11 +351,17 @@ fn write_version<R: Resource>(
     use tilo_actions::Action as _;
     let action = version.invoke.build(version.at_ms)?;
     let encoded = tilo_resource::encode::<R>(&action).map_err(|error| error.to_string())?;
-    let label =
-        tilo_resource::action_label::<R>(&action).unwrap_or_else(|| version.invoke.id.to_owned());
-    let context = tilo_actions::ActionContext::for_resource(label, R::KIND, R::KIND, R::LABEL)
+    let mut context = tilo_actions::ActionContext::for_resource(R::KIND, R::KIND, R::LABEL)
         .with_change(action.change_kind())
         .with_host_invoker(version.author.clone(), None);
+    if let Some(described) = action.describe(doc).or_else(|| {
+        tilo_actions::Described::of_published(
+            &encoded,
+            tilo_actions::ActionKey::new("", R::KIND, version.invoke.id),
+        )
+    }) {
+        context = context.with_described(described);
+    }
     let envelope = tilo_actions::ActionEnvelope {
         id: tilo_actions::ActionId::new(),
         action: encoded,

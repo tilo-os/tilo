@@ -125,35 +125,30 @@ impl Capabilities {
     }
 }
 
-/// `[target]` — a WebAssembly, Linux, Windows, macOS or Android build of the
-/// package.
+/// `[target]` — a Linux, Windows, macOS or Android build of the package.
 ///
-/// For `linux`, `windows`, `macos` and `android`, `architecture` is `x86_64`
-/// or `aarch64`, `module` is the executable the GUI entrypoint names (for
-/// `android`, an `.apk` or `.aab`), and `runtime` is the toolkit release
-/// linked into it (`[package].runtime`).
+/// `architecture` is `x86_64` or `aarch64`, `module` is the executable the
+/// GUI entrypoint names (for `android`, an `.apk` or `.aab`), and `runtime`
+/// is the toolkit release linked into it (`[package].runtime`).
 ///
 /// The first four fields are exactly the registry's signed `RegistryTarget`
 /// (see `registry_types::target` for the canonical spellings):
 ///
 /// ```toml
 /// [target]
-/// platform = "web"
-/// architecture = "wasm32"
-/// isa = "wasm32-mvp+bulk-memory+mutable-globals+sign-ext"
-/// runtime = "tilo-runtime/2026.07+wasm.fe8836616de68a65d59c02eb73caa005"
-/// module = "books.wasm"
+/// platform = "linux"
+/// architecture = "x86_64"
+/// isa = "x86_64"
+/// runtime = "tilo-runtime/2026.07"
+/// module = "bin/books"
 /// ```
-///
-/// For an app, `runtime` is the toolkit core it links against; for
-/// `kind = "runtime"` it is the core the package provides.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
     pub platform: String,
     pub architecture: String,
     pub isa: String,
     pub runtime: String,
-    /// Payload path of the WebAssembly module the loader instantiates.
+    /// Payload path of the executable the GUI entrypoint names.
     pub module: String,
 }
 
@@ -238,8 +233,29 @@ pub struct Package {
     pub kind: Kind,
     /// `<runtime-name>/<version>` of the Tilo runtime this binds to;
     /// `None` for `kind = "runtime"`. Version must parse as semver.
+    ///
+    /// A packed native app names the exact runtime build it was linked
+    /// against, `tilo-runtime/<release>+native.<abi digest>`: its Rust
+    /// dylibs have no stable ABI, so it loads on that build and no other.
+    /// Packaging stamps the build over the authored release.
     #[serde(default)]
     pub runtime: Option<String>,
+    /// For a native `kind = "runtime"` package: the runtime build its
+    /// payload is, `<runtime-name>/<release>+native.<abi digest>`. The
+    /// payload is that signed runtime bundle, and installing the package
+    /// installs the bundle for the apps that name it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provides: Option<String>,
+    /// Further runtime bundles, `<runtime-name>/<version>` each, that the
+    /// launcher mounts read-only at `/run/tilo-runtime/<version>` when they
+    /// are installed and verify. The app starts without a missing one and
+    /// offers to install it: the browser's web engine is one.
+    #[serde(
+        default,
+        rename = "optional-runtimes",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub optional_runtimes: Vec<String>,
     /// Targets the app is built and published for; absent means
     /// [`DEFAULT_PLATFORMS`]. Read it through [`Package::platforms`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +284,18 @@ pub struct Package {
 }
 
 impl Package {
+    /// The runtime build a native package binds: the one an app links, or
+    /// the one a runtime package provides. This is what a registry version's
+    /// `target.runtime` records.
+    #[must_use]
+    pub fn native_runtime_binding(&self) -> Option<&str> {
+        if self.kind == Kind::Runtime {
+            self.provides.as_deref()
+        } else {
+            self.runtime.as_deref()
+        }
+    }
+
     /// The targets the app is built and published for.
     #[must_use]
     pub fn platforms(&self) -> &[Platform] {
@@ -323,6 +351,12 @@ impl IsaRequirements {
             Arch::X86_64 => self.x86_64.map(IsaLevel::X86_64),
             Arch::AArch64 => self.aarch64.map(IsaLevel::AArch64),
         }
+    }
+
+    /// Whether no architecture is declared.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.x86_64.is_none() && self.aarch64.is_none()
     }
 }
 
@@ -611,7 +645,8 @@ pub enum ContinuityFacet {
 /// These schemas describe meaning, not a particular application. A browser,
 /// documentation viewer, or third-party knowledge app may therefore share a
 /// standard location schema without gaining permission to serialize arbitrary
-/// process state.
+/// process state. Each schema's payload shape, safety invariants and wire tag
+/// live in [`crate::continuity_schema`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContinuitySemanticSchema {
@@ -619,6 +654,7 @@ pub enum ContinuitySemanticSchema {
     PublicationPositionV1,
     MediaPositionV1,
     RealtimeSessionV1,
+    TextPositionV1,
 }
 
 impl TrustAttestation {
@@ -779,6 +815,19 @@ pub enum NetMode {
     Allowlist,
 }
 
+impl NetMode {
+    /// The manifest spelling.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Host => "host",
+            Self::DnsOnly => "dns-only",
+            Self::Allowlist => "allowlist",
+        }
+    }
+}
+
 /// `required@N`/`optional@N` — a declared dependency on a service protocol with a version pin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceReq {
@@ -830,6 +879,12 @@ impl ServiceReq {
             requirement,
             version,
         })
+    }
+
+    /// Whether the app cannot run without the service.
+    #[must_use]
+    pub fn is_required(&self) -> bool {
+        self.requirement == Requirement::Required
     }
 }
 
@@ -1100,20 +1155,53 @@ impl Manifest {
     /// Returns [`ManifestParseError::Toml`] if `s` is not valid TOML for
     /// this schema.
     pub fn from_toml_str(s: &str) -> Result<Self, ManifestParseError> {
+        let m: Manifest = toml::from_str(s).map_err(ManifestParseError::Toml)?;
+        Ok(m.normalized())
+    }
+
+    /// What every decode applies after serde: idempotent, so a manifest
+    /// that already went through [`Manifest::from_toml_str`] is unchanged.
+    pub(crate) fn normalized(mut self) -> Self {
         // TOML encodes [sandbox.services] as service-name → "required@1"
-        // string; the generic decode loses the key, so post-process it below.
-        let mut m: Manifest = toml::from_str(s).map_err(ManifestParseError::Toml)?;
-        // Patch each ServiceReq's `protocol` field with the map key that named it.
-        let services = std::mem::take(&mut m.sandbox.services);
-        m.sandbox.services = services
+        // string; the generic decode loses the key, so patch each
+        // ServiceReq's `protocol` field with the map key that named it.
+        let services = std::mem::take(&mut self.sandbox.services);
+        self.sandbox.services = services
             .into_iter()
             .map(|(name, mut req)| {
                 req.protocol.clone_from(&name);
                 (name, req)
             })
             .collect();
-        m.providers.normalize();
-        Ok(m)
+        self.providers.normalize();
+        self
+    }
+
+    /// The system interfaces this package cannot work without: each
+    /// `required@N` service, sorted by name. What a registry version records
+    /// as its target's `interfaces`, and what a device checks against the
+    /// versions its OS serves before installing or running the package.
+    #[must_use]
+    pub fn required_interfaces(&self) -> Vec<registry_types::InterfaceRequirement> {
+        self.sandbox
+            .services
+            .iter()
+            .filter(|(_, req)| req.requirement == Requirement::Required)
+            .map(|(name, req)| registry_types::InterfaceRequirement {
+                name: name.clone(),
+                version: req.version,
+            })
+            .collect()
+    }
+
+    /// [`Manifest::required_interfaces`] in the registry's wire form,
+    /// `<name>@<version>`.
+    #[must_use]
+    pub fn required_interface_wire(&self) -> Vec<String> {
+        self.required_interfaces()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
     }
 
     /// Re-encode to TOML; used for round-trip tests and `tilo-app-package inspect`.

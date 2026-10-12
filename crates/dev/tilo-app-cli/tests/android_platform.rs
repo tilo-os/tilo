@@ -138,6 +138,10 @@ while read -r name; do echo "entry:$name" >> "$archive"; done
         "class TiloActivity {}\n",
     ),
     ("checkout/crates/sdk/ui-core/assets/fonts/Inter.ttf", "font"),
+    (
+        "checkout/crates/sdk/ui-core/assets/fonts/manifest.toml",
+        "[[font]]\nscope = \"product\"\nfile = \"Inter.ttf\"\n",
+    ),
 ];
 
 struct Fixture {

@@ -28,6 +28,7 @@ NAMES = (
     "adsp_dtbs.elf", "qccdsp8380.mbn", "cdsp_dtbs.elf",
 )
 TARGET_REF = "code.tilo.so/tilo/tilo:board-fixture"
+LENOVO = json.loads((SCRIPT.parents[1] / "hardware/profiles/lenovo-83ed.json").read_text(encoding="utf-8"))
 
 
 def restart_fixture(test):
@@ -43,6 +44,45 @@ def restart_fixture(test):
 
 
 class HardwareProfileTest(unittest.TestCase):
+    def test_lenovo_wifi_default_explicitly_disables_unsafe_wowlan(self):
+        prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware,
+                                target_update_ref=TARGET_REF)
+        policy = self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf"
+        self.assertTrue(policy.is_file(), "Lenovo image must carry an explicit safe Wi-Fi wake default")
+        import configparser
+        config = configparser.ConfigParser()
+        config.read(policy)
+        section = config["connection-tilo-lenovo-wifi"]
+        self.assertEqual(section["match-device"], "driver:ath12k_wifi7_pci")
+        self.assertEqual(section["wifi.wake-on-wlan"], "0")
+        self.assertEqual(set(section), {"match-device", "wifi.wake-on-wlan"})
+
+    def test_wifi_wake_policy_is_board_bound_and_never_migrates_profiles(self):
+        definitions, data = self.definition()
+        data = data | {"schema_version": 2, "system_firmware": []}
+        for value in [0, 8, True, "0"]:
+            with self.subTest(other_board=value):
+                with self.assertRaisesRegex(ValueError, "Wi-Fi wake policy"):
+                    hardware_profile.validate_definition(data | {"wifi_wake_on_wlan": value})
+        for value in [8, True, "0", None]:
+            with self.subTest(lenovo=value):
+                with self.assertRaisesRegex(ValueError, "Wi-Fi wake policy"):
+                    hardware_profile.validate_definition(LENOVO | {"wifi_wake_on_wlan": value})
+        saved = self.root / "etc/NetworkManager/system-connections/owner.nmconnection"
+        saved.parent.mkdir(parents=True)
+        original = b"[wifi]\nwake-on-wlan=8\n[connection]\nautoconnect=true\n"
+        saved.write_bytes(original)
+        prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware,
+                                target_update_ref=TARGET_REF)
+        self.assertEqual(saved.read_bytes(), original)
+        # A fresh unrelated image gets no Lenovo policy.
+        restart_fixture(self)
+        definitions, data = self.definition()
+        prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent",
+                                definitions, target_update_ref=TARGET_REF)
+        self.assertNotIn("wifi_wake_on_wlan", json.loads((self.root / prepare.DEFINITION_PATH).read_text()))
+        self.assertFalse((self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf").exists())
+
     def test_current_dev_origin_requires_target_flavour_and_policy(self):
         from hardware_profile import install_update_origin, validate_target_imgref
         ref = "registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci"
@@ -96,6 +136,16 @@ class HardwareProfileTest(unittest.TestCase):
             path = self.system_firmware.parent / (name + ".xz")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"GPU firmware fixture")
+        # The rest of the profile's distro firmware (Wi-Fi, regulatory database)
+        # and its modular boot drivers, as the image's packages install them.
+        for name in LENOVO["system_firmware"]:
+            path = self.root / "usr/lib/firmware" / name
+            if not any(Path(f"{path}{suffix}").exists() for suffix in ("", ".xz", ".zst")):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                Path(f"{path}.xz").write_bytes(f"distro firmware fixture: {name}".encode())
+        for module in LENOVO["boot_modules"]:
+            (self.kernel / "kernel").mkdir(exist_ok=True)
+            (self.kernel / "kernel" / f"{module}.ko.zst").write_bytes(b"module")
         for name in NAMES:
             (self.firmware / name).write_bytes(f"firmware fixture: {name}".encode())
         self.manifest = {
@@ -157,13 +207,25 @@ class HardwareProfileTest(unittest.TestCase):
             for name in NAMES:
                 self.assertEqual((installed / name).read_bytes(), (self.firmware / name).read_bytes())
             dracut = self.root / "etc/dracut.conf.d/41-tilo-hardware.conf"
-            install_line = dracut.read_text().splitlines()[1]
+            install_line, drivers_line = dracut.read_text().splitlines()[1:]
             self.assertEqual(install_line, 'install_items+=" ' + " ".join(
                 f"/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/{name}" for name in NAMES
             ) + ' /usr/lib/firmware/qcom/a740_sqe.fw.xz'
               ' /usr/lib/firmware/qcom/gen70500_sqe.fw.xz'
               ' /usr/lib/firmware/qcom/gen70500_gmu.bin.xz'
-              ' /usr/lib/firmware/qcom/x1e80100/gen70500_zap.mbn.xz "')
+              ' /usr/lib/firmware/qcom/x1e80100/gen70500_zap.mbn.xz'
+              ' /usr/lib/firmware/ath12k/WCN7850/hw2.0/amss.bin.xz'
+              ' /usr/lib/firmware/ath12k/WCN7850/hw2.0/m3.bin.xz'
+              ' /usr/lib/firmware/ath12k/WCN7850/hw2.0/board-2.bin.xz'
+              ' /usr/lib/firmware/regulatory.db.xz'
+              ' /usr/lib/firmware/regulatory.db.p7s.xz "')
+            # Sibling unlock can join an unlock Wi-Fi network from the
+            # initramfs: the WCN7850's driver stack, its power sequencer and
+            # the PCIe pieces that power the radio up before ath12k probes.
+            self.assertEqual(drivers_line, 'add_drivers+=" ' + " ".join(LENOVO["boot_modules"]) + ' "')
+            for module in ("ath12k", "ath12k_wifi7", "mac80211", "cfg80211", "qrtr-mhi",
+                           "pwrseq-qcom-wcn", "pci-pwrctrl-pwrseq"):
+                self.assertIn(module, LENOVO["boot_modules"])
             parser = self.root / prepare.PARSER_PATH
             self.assertIn(b"FIELDS_V2", parser.read_bytes())
             self.assertNotIn(b"\r", parser.read_bytes())
@@ -178,6 +240,7 @@ class HardwareProfileTest(unittest.TestCase):
             kargs = self.root / prepare.KARGS_PATH
             self.assertEqual(tomllib.loads(kargs.read_text())["kargs"], ["systemd.tpm2_wait=0"])
             outputs = [profile_path, self.root / prepare.DEFINITION_PATH, parser, dracut, kargs,
+                       self.root / "usr/lib/NetworkManager/conf.d/30-tilo-lenovo-wifi.conf",
                        *(installed / name for name in NAMES)]
             self.assertEqual(self.ownership.call_count, len(outputs))
             for output in outputs:

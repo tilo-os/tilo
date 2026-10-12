@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! tilo-registry-server serve --port 8443 --identity <path>
-//! tilo-registry-server add-publisher --pubkey <hex> [--can-add-new] [--note ...]
+//! tilo-registry-server add-publisher --pubkey <hex> --namespace <ns> [--first-party] [--can-add-new] [--note ...]
 //! tilo-registry-server remove-publisher --pubkey <hex>
 //! tilo-registry-server list-publishers
 //! tilo-registry-server init --owner-pubkey <hex> --name <n> --description <d> --base-url <url>
@@ -12,11 +12,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -36,7 +32,7 @@ use tracing_subscriber::EnvFilter;
 use registry_server::{
     AppState, InspectionPolicy, ModerationService, PromotionJournal, PruneReport,
     PublisherAllowlist, PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage,
-    default_data_dir, inspect_bytes, run_server,
+    default_data_dir, run_server,
 };
 use registry_types::EntryAction;
 use registry_types::{
@@ -94,6 +90,12 @@ enum Cmd {
         /// The full .tapp to host.
         file: PathBuf,
     },
+    /// Write the compressed twin (`<blake3>.zst`, `<blake3>.tapp.zst`) of
+    /// every stored payload object and imported package that lacks one, and
+    /// print what was written. Objects stored from now on get theirs when
+    /// they are stored; run this once for those stored before. Safe to rerun
+    /// and to run while `serve` runs.
+    CompressPayloads,
     /// Bootstrap a fresh data-dir with a `handshake.toml`.
     /// Idempotent — writing over an existing file is not the
     /// intended flow; use `--overwrite` explicitly.
@@ -130,10 +132,16 @@ enum Cmd {
         #[arg(long, default_value = "")]
         note: String,
         /// Reverse-DNS namespace the publisher's package ids must lie in
-        /// (`com.example`, `io.github.<account>`); repeatable. Defaults to
-        /// `so.tilo`, Tilo's own.
-        #[arg(long = "namespace")]
+        /// (`com.example`, `io.github.<account>`); repeatable and required.
+        /// Tilo's own publishers are added with `--namespace so.tilo
+        /// --first-party`.
+        #[arg(long = "namespace", required = true)]
         namespaces: Vec<String>,
+        /// Confirm a grant of Tilo's own namespace `so.tilo` (or one inside
+        /// it). Required whenever such a namespace is named, so the
+        /// first-party grant is always deliberate.
+        #[arg(long)]
+        first_party: bool,
     },
     /// Remove an unreferenced publisher from the allowlist. Public entries,
     /// the current snapshot, and pending requests must be drained first.
@@ -187,10 +195,23 @@ enum Cmd {
         valid_for_seconds: u64,
     },
     /// Delete staged packages, thin packages and payload blobs that no
-    /// published, quarantined or pending entry references any more, and keep
-    /// remaining staged packages as their thin form and shared blobs.
-    /// Promotion does this after every publish.
-    PruneStorage,
+    /// published, quarantined or pending entry, retained snapshot or served
+    /// version index references any more, and keep remaining staged packages
+    /// as their thin form and shared blobs. Promotion does this after every
+    /// publish.
+    PruneStorage {
+        /// Report what would be deleted and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// With --dry-run, also report which published versions publishers
+        /// keeping this many releases per target would drop, and what
+        /// pruning would then delete.
+        #[arg(long, requires = "dry_run")]
+        keep_releases: Option<usize>,
+        /// As --keep-releases, for pre-releases.
+        #[arg(long, requires = "dry_run")]
+        keep_prereleases: Option<usize>,
+    },
     /// Refresh the current catalogue expiry with the networkless delegated
     /// channel key. Refuses to overtake staged promotion work.
     SignDelegatedSnapshot {
@@ -244,11 +265,20 @@ enum ApplicationsCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Show one application and the review id for an exact decision.
+    Show {
+        pubkey: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check the proofs again and allowlist the key for their namespaces.
     Approve {
         pubkey: String,
         #[arg(long)]
         reviewer: String,
+        /// Review id from applications show; refuse a changed application.
+        #[arg(long)]
+        review_id: Option<String>,
     },
     /// Turn an application down; the key's allowlist row is untouched.
     Reject {
@@ -257,6 +287,9 @@ enum ApplicationsCommand {
         reviewer: String,
         #[arg(long)]
         reason: String,
+        /// Review id from applications show; refuse a changed application.
+        #[arg(long)]
+        review_id: Option<String>,
     },
 }
 
@@ -284,6 +317,9 @@ enum ReviewCommand {
         reason: String,
         #[arg(long, hide = true)]
         allow_insecure_local: bool,
+        /// Review id from review show; refuse a replaced request.
+        #[arg(long)]
+        review_id: Option<String>,
     },
     /// Reject a request while retaining an audit record.
     Reject {
@@ -292,6 +328,9 @@ enum ReviewCommand {
         reviewer: String,
         #[arg(long)]
         reason: String,
+        /// Review id from review show; refuse a replaced request.
+        #[arg(long)]
+        review_id: Option<String>,
     },
     /// Immediately hide a public entry while retaining a recoverable copy.
     Quarantine {
@@ -317,7 +356,9 @@ fn main() -> anyhow::Result<()> {
 
 #[allow(clippy::too_many_lines, reason = "one dispatch arm per subcommand")]
 async fn serve_cli() -> anyhow::Result<()> {
+    // Commands print their JSON result on stdout; logs go to stderr.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
@@ -335,6 +376,11 @@ async fn serve_cli() -> anyhow::Result<()> {
             cors_origins,
         } => cmd_serve(storage, bind, port, cors_origins).await,
         Cmd::ImportArtifact { file } => cmd_import_artifact(&storage, &file),
+        Cmd::CompressPayloads => {
+            let report = storage.compress_stored_objects()?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
         Cmd::Init {
             owner_pubkey,
             name,
@@ -354,7 +400,17 @@ async fn serve_cli() -> anyhow::Result<()> {
             can_add_new,
             note,
             namespaces,
-        } => cmd_add_publisher(&storage, &pubkey, can_add_new, note, namespaces),
+            first_party,
+        } => cmd_add_publisher(
+            &storage,
+            &pubkey,
+            can_add_new,
+            note,
+            NamespaceGrant {
+                namespaces,
+                first_party,
+            },
+        ),
         Cmd::RemovePublisher { pubkey } => cmd_remove_publisher(&storage, &pubkey),
         Cmd::ListPublishers => cmd_list_publishers(&storage),
         Cmd::AuthorizeChannel {
@@ -399,7 +455,17 @@ async fn serve_cli() -> anyhow::Result<()> {
             &reason,
             valid_for_seconds,
         ),
-        Cmd::PruneStorage => cmd_prune_storage(&storage),
+        Cmd::PruneStorage {
+            dry_run,
+            keep_releases,
+            keep_prereleases,
+        } => {
+            if dry_run {
+                cmd_preview_prune(&storage, keep_releases, keep_prereleases)
+            } else {
+                cmd_prune_storage(&storage)
+            }
+        }
         Cmd::SignDelegatedSnapshot {
             channel_key_file,
             valid_for_seconds,
@@ -615,7 +681,13 @@ fn collect_submission_artifacts(
         // advertised URL stops serving them. They pass the same inspection.
         let inspection =
             if let Some(bytes) = storage.find_staged_artifact(&version.tapp_blake3_hex)? {
-                inspect_bytes(&pending.change.entry, version, &bytes)?
+                registry_server::inspect_stored_bytes(
+                    storage,
+                    &pending.change.entry,
+                    version,
+                    &bytes,
+                    Some(policy),
+                )?
             } else {
                 let (inspection, bytes) = registry_server::review_version_bytes(
                     storage,
@@ -748,9 +820,12 @@ fn cmd_sign_delegated_snapshot(
     let identity = storage.load_identity()?;
     let writer = storage.lock_snapshot()?;
     recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
-    if storage.load_promotion_transaction()?.is_some() || storage.load_staged_promotion()?.is_some()
-    {
-        anyhow::bail!("staged first-party promotion must publish before a delegated refresh");
+    // A collected batch has not changed the public catalogue. Refreshing only
+    // the current entries keeps it available while an incomplete batch waits
+    // for its runtime. An active transaction owns a candidate/sequence and
+    // must complete before any independent snapshot can advance that sequence.
+    if storage.load_promotion_transaction()?.is_some() {
+        anyhow::bail!("active first-party promotion must publish before a delegated refresh");
     }
     let authorization = storage
         .load_channel_authorization()?
@@ -912,7 +987,13 @@ fn cmd_publish_staged_first_party(
                 );
             };
             let bytes = storage.load_staged_artifact(&artifact.blake3_hex)?;
-            let _inspection = inspect_bytes(&pending.change.entry, version, &bytes)?;
+            let _inspection = registry_server::inspect_stored_bytes(
+                storage,
+                &pending.change.entry,
+                version,
+                &bytes,
+                None,
+            )?;
         }
     }
     let expected_artifacts: usize = staged
@@ -936,6 +1017,10 @@ fn cmd_publish_staged_first_party(
             &identity.owner_pubkey_hex,
             journal.candidate_snapshot.issued_at_unix,
         )?;
+        validate_new_native_runtimes(
+            &journal.candidate_snapshot.entries,
+            writer.current()?.as_ref(),
+        )?;
         journal
     } else {
         let current = writer.current()?;
@@ -951,6 +1036,7 @@ fn cmd_publish_staged_first_party(
             .as_ref()
             .map_or_else(Vec::new, |snapshot| snapshot.entries.clone());
         apply_staged_changes(&mut entries, &staged.submissions)?;
+        validate_new_native_runtimes(&entries, current.as_ref())?;
         if entries.len() > authorization.max_snapshot_entries {
             anyhow::bail!("candidate exceeds delegated entry bound");
         }
@@ -1018,6 +1104,8 @@ fn compact_after_prune(
         "staged_artifacts": pruned.staged_artifacts,
         "thin_packages": pruned.thin_packages,
         "payload_blobs": pruned.payload_blobs,
+        "payload_twins": pruned.payload_twins,
+        "bytes": pruned.bytes,
         "compacted_staged_artifacts": compacted,
     }))
 }
@@ -1031,6 +1119,28 @@ fn cmd_prune_storage(storage: &Storage) -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::json!({"status": "pruned", "pruned": pruned, "history": history})
+    );
+    Ok(())
+}
+
+fn cmd_preview_prune(
+    storage: &Storage,
+    keep_releases: Option<usize>,
+    keep_prereleases: Option<usize>,
+) -> anyhow::Result<()> {
+    let retention = (keep_releases.is_some() || keep_prereleases.is_some()).then(|| {
+        let default = registry_types::retention::RetentionPolicy::default();
+        registry_types::retention::RetentionPolicy {
+            releases: keep_releases.unwrap_or(default.releases),
+            prereleases: keep_prereleases.unwrap_or(default.prereleases),
+        }
+    });
+    let writer = storage.lock_snapshot()?;
+    let preview = writer.preview_prune(retention.as_ref())?;
+    drop(writer);
+    println!(
+        "{}",
+        serde_json::json!({"status": "dry-run", "preview": preview})
     );
     Ok(())
 }
@@ -1100,6 +1210,53 @@ fn apply_staged_changes(
         }
     }
     entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
+    Ok(())
+}
+
+/// A new thin app must be installable from the same registry. Collection can
+/// stage an app before its runtime arrives, or while that runtime's artifacts
+/// are unavailable; accepting the app submission does not prove its runtime is
+/// offered. Check the complete candidate before signing or reserving a journal.
+/// Retained versions keep their history when old runtimes leave under retention.
+fn validate_new_native_runtimes(
+    entries: &[registry_types::RegistryEntry],
+    previous: Option<&SignedRegistrySnapshot>,
+) -> anyhow::Result<()> {
+    for entry in entries {
+        if registry_types::is_runtime_package_id(&entry.package_id) {
+            continue;
+        }
+        let retained = previous.and_then(|snapshot| {
+            snapshot
+                .entries
+                .iter()
+                .find(|old| old.package_id == entry.package_id)
+        });
+        for version in &entry.versions {
+            if version.target.native_runtime().is_none()
+                || retained.is_some_and(|old| old.versions.contains(version))
+            {
+                continue;
+            }
+            let offered = entries.iter().any(|provider| {
+                registry_types::is_runtime_package_id(&provider.package_id)
+                    && provider.versions.iter().any(|provided| {
+                        provided.target.platform == version.target.platform
+                            && provided.target.architecture == version.target.architecture
+                            && provided.target.runtime == version.target.runtime
+                    })
+            });
+            if !offered {
+                anyhow::bail!(
+                    "{}@{} ({}) has no offered native runtime {}; keep the app pending until its runtime is collected",
+                    entry.package_id,
+                    version.version,
+                    version.target.architecture,
+                    version.target.runtime.as_deref().unwrap_or_default(),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1420,6 +1577,7 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
+                        "review_id": pending.review_id()?,
                         "submission": pending,
                         "verified_packages": inspection,
                     }))?
@@ -1448,29 +1606,30 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             reviewer,
             reason,
             allow_insecure_local,
+            review_id,
         } => {
-            let pending = require_pending(&moderation, &package_id)?;
-            let reviewed = fetch_for_decision(storage, &pending, allow_insecure_local)?;
-            let allowlist = storage.load_allowlist()?;
-            let record = moderation.approve(&pending, reviewer, reason, unix_now(), &allowlist)?;
-            // Serve the reviewed bytes as blobs and thin packages, so clients
-            // fetch only what they lack.
-            // An approved upload becomes the artifact its version's URL names.
-            for (_inspection, bytes) in &reviewed {
-                storage.save_payload_blobs(bytes)?;
-                let digest = blake3::hash(bytes).to_hex().to_string();
-                if storage.load_upload(&digest)?.is_some() {
-                    storage.import_artifact(bytes)?;
-                }
-            }
+            let pending = require_reviewed_pending(&moderation, &package_id, review_id.as_deref())?;
+            let record = registry_server::submission_review::approve(
+                storage,
+                &pending,
+                &reviewer,
+                &reason,
+                unix_now(),
+                InspectionPolicy {
+                    allow_insecure_local,
+                    ..InspectionPolicy::default()
+                },
+            )?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Reject {
             package_id,
             reviewer,
             reason,
+            review_id,
         } => {
-            let record = moderation.reject(&package_id, reviewer, reason, unix_now())?;
+            let pending = require_reviewed_pending(&moderation, &package_id, review_id.as_deref())?;
+            let record = moderation.reject_reviewed(&pending, reviewer, reason, unix_now())?;
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
         ReviewCommand::Quarantine {
@@ -1509,19 +1668,30 @@ fn require_pending(
         .ok_or_else(|| anyhow::anyhow!("no pending submission for {package_id}"))
 }
 
+fn require_reviewed_pending(
+    moderation: &ModerationService,
+    package_id: &str,
+    review_id: Option<&str>,
+) -> anyhow::Result<registry_server::PendingSubmission> {
+    let pending = require_pending(moderation, package_id)?;
+    if let Some(review_id) = review_id
+        && pending.review_id()? != review_id
+    {
+        return Err(registry_server::ModerationError::PendingChanged(package_id.into()).into());
+    }
+    Ok(pending)
+}
+
 fn fetch_for_decision(
     storage: &Storage,
     pending: &registry_server::PendingSubmission,
     allow_insecure_local: bool,
 ) -> anyhow::Result<Vec<(registry_server::InspectedVersion, Vec<u8>)>> {
-    if pending.change.action == EntryAction::Delete {
-        return Ok(Vec::new());
-    }
     let policy = InspectionPolicy {
         allow_insecure_local,
         ..InspectionPolicy::default()
     };
-    registry_server::review_entry_bytes(storage, &pending.change.entry, policy).map_err(Into::into)
+    registry_server::submission_review::inspect(storage, pending, policy)
 }
 
 fn cmd_import_artifact(storage: &Storage, file: &std::path::Path) -> anyhow::Result<()> {
@@ -1564,6 +1734,7 @@ async fn cmd_serve(
         allow.publishers.len(),
         storage.publishers_path().display()
     );
+    allow.warn_rows_without_namespaces();
     if !cors_origins.is_empty() {
         info!("cross-origin GET reads allowed for {cors_origins:?}");
     }
@@ -1633,23 +1804,52 @@ fn cmd_init(
     Ok(())
 }
 
+/// The namespaces `add-publisher` grants, and whether the operator confirmed
+/// that a grant of Tilo's own namespace is meant.
+struct NamespaceGrant {
+    namespaces: Vec<String>,
+    first_party: bool,
+}
+
+impl NamespaceGrant {
+    /// The granted namespaces, once each is valid and any first-party one is
+    /// confirmed. An empty list is refused: a row that owns nothing is never
+    /// what `add-publisher` was asked for.
+    fn validated(self) -> anyhow::Result<Vec<String>> {
+        use registry_types::namespace::{TILO_NAMESPACE, namespace_owns, valid_namespace};
+        if self.namespaces.is_empty() {
+            anyhow::bail!(
+                "name at least one --namespace the publisher's package ids must lie in, such as com.example"
+            );
+        }
+        if let Some(bad) = self
+            .namespaces
+            .iter()
+            .find(|namespace| !valid_namespace(namespace))
+        {
+            anyhow::bail!("{bad:?} is not a reverse-DNS namespace such as com.example");
+        }
+        if let Some(first_party) = self.namespaces.iter().find(|namespace| {
+            namespace.as_str() == TILO_NAMESPACE || namespace_owns(TILO_NAMESPACE, namespace)
+        }) && !self.first_party
+        {
+            anyhow::bail!(
+                "{first_party:?} is Tilo's own namespace; pass --first-party to confirm this key publishes first-party apps"
+            );
+        }
+        Ok(self.namespaces)
+    }
+}
+
 /// `Cmd::AddPublisher` — add or replace one allowlist row.
 fn cmd_add_publisher(
     storage: &Storage,
     pubkey: &str,
     can_add_new: bool,
     note: String,
-    mut namespaces: Vec<String>,
+    grant: NamespaceGrant,
 ) -> anyhow::Result<()> {
-    if namespaces.is_empty() {
-        namespaces.push(registry_types::namespace::TILO_NAMESPACE.to_owned());
-    }
-    if let Some(bad) = namespaces
-        .iter()
-        .find(|namespace| !registry_types::namespace::valid_namespace(namespace))
-    {
-        anyhow::bail!("{bad:?} is not a reverse-DNS namespace such as com.example");
-    }
+    let namespaces = grant.validated()?;
     let transaction = storage.lock_snapshot()?;
     refuse_active_promotion(storage)?;
     let mut allow: PublisherAllowlist = storage
@@ -1761,10 +1961,41 @@ fn cmd_applications(storage: &Storage, command: ApplicationsCommand) -> anyhow::
                 }
             }
         }
-        ApplicationsCommand::Approve { pubkey, reviewer } => {
-            let (_, row) = applications::approve(
+        ApplicationsCommand::Show { pubkey, json } => {
+            let stored = storage
+                .load_publisher_application(&pubkey)?
+                .ok_or_else(|| applications::ApplicationFailure::Unknown(pubkey.clone()))?;
+            let review_id = stored.review_id()?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "review_id": review_id, "application": stored,
+                    }))?
+                );
+            } else {
+                println!(
+                    "{}  {:?}  {}",
+                    pubkey,
+                    stored.status,
+                    stored.namespaces().join(", ")
+                );
+                println!("review id: {review_id}");
+                println!(
+                    "contact: {}\nnote: {}",
+                    stored.application.contact, stored.application.note
+                );
+            }
+        }
+        ApplicationsCommand::Approve {
+            pubkey,
+            reviewer,
+            review_id,
+        } => {
+            let candidate = reviewed_application(storage, &pubkey, review_id.as_deref())?;
+            let (_, row) = applications::approve_reviewed(
                 storage,
-                &pubkey,
+                &candidate,
                 &reviewer,
                 unix_now(),
                 &NetworkProofs::default(),
@@ -1779,12 +2010,34 @@ fn cmd_applications(storage: &Storage, command: ApplicationsCommand) -> anyhow::
             pubkey,
             reviewer,
             reason,
+            review_id,
         } => {
-            applications::reject(storage, &pubkey, &reviewer, &reason, unix_now())?;
+            let candidate = reviewed_application(storage, &pubkey, review_id.as_deref())?;
+            applications::reject_reviewed(storage, &candidate, &reviewer, &reason, unix_now())?;
             info!("rejected the application from {pubkey}");
         }
     }
     Ok(())
+}
+
+fn reviewed_application(
+    storage: &Storage,
+    pubkey: &str,
+    review_id: Option<&str>,
+) -> anyhow::Result<registry_server::applications::StoredApplication> {
+    use registry_server::applications::{ApplicationFailure, ApplicationStatus};
+    let stored = storage
+        .load_publisher_application(pubkey)?
+        .ok_or_else(|| ApplicationFailure::Unknown(pubkey.to_owned()))?;
+    if stored.status != ApplicationStatus::Pending {
+        return Err(ApplicationFailure::NotPending(pubkey.to_owned()).into());
+    }
+    if let Some(expected) = review_id
+        && expected != stored.review_id()?
+    {
+        return Err(ApplicationFailure::Changed(pubkey.to_owned()).into());
+    }
+    Ok(stored)
 }
 
 fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
@@ -1795,6 +2048,7 @@ fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
         .to_toml()
         .map_err(|e| anyhow::anyhow!("encode allowlist: {e}"))?;
     print!("{s}");
+    allow.warn_rows_without_namespaces();
     Ok(())
 }
 
@@ -1869,6 +2123,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: architecture.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             };
             let shared_bytes = b"same verified tapp".to_vec();
             let digest = blake3::hash(&shared_bytes).to_hex().to_string();
@@ -2050,6 +2305,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: isa.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             };
             let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
             let mut entry = publisher_entry(&key);
@@ -2141,6 +2397,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 1,
@@ -2194,7 +2451,17 @@ mod tests {
             base_url: "http://127.0.0.1".into(),
         };
         storage.save_identity(&identity).unwrap();
-        cmd_add_publisher(&storage, &publisher_hex, true, String::new(), Vec::new()).unwrap();
+        cmd_add_publisher(
+            &storage,
+            &publisher_hex,
+            true,
+            String::new(),
+            NamespaceGrant {
+                namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
+                first_party: true,
+            },
+        )
+        .unwrap();
         let entry = publisher_entry(&publisher);
         storage.save_entry(&entry).unwrap();
 

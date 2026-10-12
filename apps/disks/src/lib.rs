@@ -1,10 +1,10 @@
 //! Disks — Tilo native disk utility, built on the `ui` toolkit.
 //!
-//! A drive list on the left, and a detail pane with a proportional
-//! partition map, filesystem usage bars and a SMART health summary on
-//! the right. Topology is probed from `lsblk` + `smartctl` in a live
-//! window; screenshots use a curated sample machine so they are fully
-//! populated offline.
+//! A drive list in the sidebar, and a detail page with a proportional
+//! partition map, filesystem usage and a SMART health summary beside it.
+//! Topology is probed from `lsblk` + `smartctl` in a live window;
+//! screenshots use a curated sample machine so they are fully populated
+//! offline.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -20,22 +20,20 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
 pub mod app;
-pub mod doc;
+pub mod locales;
+pub mod map;
 pub mod model;
 pub mod ops;
 pub mod probe;
 pub mod resource;
+pub mod view;
 
 pub use app::DisksApp;
 pub use model::{Drive, DriveKind, Partition, SmartInfo, Topology};

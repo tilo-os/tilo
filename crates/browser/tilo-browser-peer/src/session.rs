@@ -284,6 +284,7 @@ enum Command {
     Join(u64),
     Publish(DocumentRoute, Vec<Vec<u8>>),
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
+    InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
     OpenRoute(DocumentRoute),
     PinGovernor(String, [u8; 32]),
     LiveJoin(u64),
@@ -407,6 +408,24 @@ fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
     shared
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Apply `change` to the status, bump its generation and wake the watchers
+/// once the lock is released.
+fn change_status(shared: &Mutex<Shared>, change: impl FnOnce(&mut PeerStatus)) {
+    let wakes = {
+        let mut shared = lock(shared);
+        let before = (shared.status.phase, shared.status.rooms.clone());
+        change(&mut shared.status);
+        if before != (shared.status.phase, shared.status.rooms.clone()) {
+            shared.semantic_generation = shared.semantic_generation.saturating_add(1);
+        }
+        shared.status.generation = shared.status.generation.wrapping_add(1);
+        shared.wakes.clone()
+    };
+    for wake in &wakes {
+        wake();
+    }
 }
 
 /// Add `failure`, replacing the one it supersedes: a session failure
@@ -548,6 +567,25 @@ impl PeerHandle {
         cipher: Box<dyn ContentCipher>,
     ) -> Result<(), String> {
         self.send(Command::InstallCipher(route, cipher))
+    }
+
+    /// Hold `keys` as `route`'s channel keys, exactly as if the channel's
+    /// steward had admitted this session to it: documents held for them
+    /// open, the route's status stops awaiting keys, and edits held for them
+    /// go out sealed. For an application endpoint of the device that
+    /// stewards the channel, which hands it the keys it already holds
+    /// ([`channel_crypto::ChannelSteward::content_keys`]); any other session
+    /// is admitted by the steward over the channel itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn install_channel_keys(
+        &self,
+        route: DocumentRoute,
+        keys: channel_crypto::ChannelContentKeys,
+    ) -> Result<(), String> {
+        self.send(Command::InstallChannelKeys(route, keys))
     }
 
     /// Take part in `route`'s encrypted channel: when a steward governs it,
@@ -819,19 +857,7 @@ impl PeerHandle {
     }
 
     fn change(&self, change: impl FnOnce(&mut PeerStatus)) {
-        let wakes = {
-            let mut shared = lock(&self.shared);
-            let before = (shared.status.phase, shared.status.rooms.clone());
-            change(&mut shared.status);
-            if before != (shared.status.phase, shared.status.rooms.clone()) {
-                shared.semantic_generation = shared.semantic_generation.saturating_add(1);
-            }
-            shared.status.generation = shared.status.generation.wrapping_add(1);
-            shared.wakes.clone()
-        };
-        for wake in &wakes {
-            wake();
-        }
+        change_status(&self.shared, change);
     }
 
     /// Record the page store's durability of `route`. A failed write is the
@@ -845,7 +871,7 @@ impl PeerHandle {
                     Failure {
                         code: "storage-transaction-failed",
                         message: "Changes could not be saved on this device.".into(),
-                        at_ms: crate::clock::now_ms(),
+                        at_ms: tilo_clock::unix_now_ms(),
                         subject: FailureSubject::Storage,
                     },
                 );
@@ -891,7 +917,7 @@ impl PeerHandle {
                 Failure {
                     code,
                     message,
-                    at_ms: crate::clock::now_ms(),
+                    at_ms: tilo_clock::unix_now_ms(),
                     subject,
                 },
             );
@@ -1065,6 +1091,7 @@ impl Task {
             StoredChannels::Current(saved) => channels.restore(saved),
             StoredChannels::Legacy(legacy) => channels.restore_legacy(legacy),
         }
+        channels.restore_requests(saved.requests);
         Self {
             config,
             signer,
@@ -1207,19 +1234,7 @@ impl Task {
     }
 
     fn update(&self, change: impl FnOnce(&mut PeerStatus)) {
-        let wakes = {
-            let mut shared = lock(&self.shared);
-            let before = (shared.status.phase, shared.status.rooms.clone());
-            change(&mut shared.status);
-            if before != (shared.status.phase, shared.status.rooms.clone()) {
-                shared.semantic_generation = shared.semantic_generation.saturating_add(1);
-            }
-            shared.status.generation = shared.status.generation.wrapping_add(1);
-            shared.wakes.clone()
-        };
-        for wake in &wakes {
-            wake();
-        }
+        change_status(&self.shared, change);
     }
 
     fn emit(&self, event: &PeerEvent) {
@@ -1254,7 +1269,7 @@ impl Task {
                 Failure {
                     code,
                     message,
-                    at_ms: crate::clock::now_ms(),
+                    at_ms: tilo_clock::unix_now_ms(),
                     subject,
                 },
             );
@@ -1292,7 +1307,7 @@ impl Task {
     /// A timeout is reported once per subscription.
     fn check_admission(&mut self) {
         let status = self.status();
-        match admission_state(&status, self.admission_since, crate::clock::now_ms()) {
+        match admission_state(&status, self.admission_since, tilo_clock::unix_now_ms()) {
             Admission::Admitted => {
                 self.admission_since = None;
                 if status
@@ -1362,7 +1377,7 @@ impl Task {
         let mut attempt: u32 = 0;
         let mut refusals: u32 = 0;
         loop {
-            if self.config.cert.is_expired_at(crate::clock::now_ns()) {
+            if self.config.cert.is_expired_at(tilo_clock::unix_now_ns()) {
                 self.fail("certificate-expired", "This browser's certificate expired.");
                 self.update(|status| status.phase = TransportPhase::Failed);
                 if !self.wait_for_reconnect(&mut commands).await {
@@ -1424,7 +1439,8 @@ impl Task {
                 status.phase = TransportPhase::Offline;
                 status.authenticated = false;
                 status.attempt = attempt;
-                status.next_attempt_at_ms = Some(crate::clock::now_ms().saturating_add(delay_ms));
+                status.next_attempt_at_ms =
+                    Some(tilo_clock::unix_now_ms().saturating_add(delay_ms));
             });
             let sleep = n0_future::time::sleep(delay);
             tokio::pin!(sleep);
@@ -1489,7 +1505,7 @@ impl Task {
             status.phase = TransportPhase::Connected;
             status.authenticated = true;
             status.attempt = 0;
-            status.last_contact_at_ms = Some(crate::clock::now_ms());
+            status.last_contact_at_ms = Some(tilo_clock::unix_now_ms());
             status.failures.retain(|failure| {
                 !failure.code.starts_with("transport") && !failure.code.starts_with("certificate")
             });
@@ -1497,7 +1513,7 @@ impl Task {
                 *ready = false;
             }
         });
-        self.admission_since = Some(crate::clock::now_ms());
+        self.admission_since = Some(tilo_clock::unix_now_ms());
         let mut ping = n0_future::time::interval(PING_INTERVAL);
         let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
         let mut heartbeat = n0_future::time::interval(tilo_relay_protocol::voice::HEARTBEAT);
@@ -1524,7 +1540,7 @@ impl Task {
                         if !self.resubscribe(&client) {
                             return Exit::Lost("host session saturated".into());
                         }
-                        self.admission_since = Some(crate::clock::now_ms());
+                        self.admission_since = Some(tilo_clock::unix_now_ms());
                     }
                     Some(command) => {
                         if !self.apply(command, Some(&client)).await {
@@ -1565,7 +1581,7 @@ impl Task {
                     self.check_admission();
                 }
                 _ = channel_tick.tick() => {
-                    let changes = self.channels.tick(crate::clock::now_ms());
+                    let changes = self.channels.tick(tilo_clock::unix_now_ms());
                     self.absorb(changes);
                 }
                 _ = heartbeat.tick() => {
@@ -1587,7 +1603,7 @@ impl Task {
                 self.rooms.insert(workspace_id);
                 if client.is_some() {
                     self.admission_since
-                        .get_or_insert_with(crate::clock::now_ms);
+                        .get_or_insert_with(tilo_clock::unix_now_ms);
                 }
                 self.update(|status| {
                     status.rooms.entry(workspace_id).or_insert(false);
@@ -1609,22 +1625,7 @@ impl Task {
                 true
             }
             Command::RemoteAction(workspace_id, to, frame) => {
-                if let Some(client) = client {
-                    let _ = client.send(Envelope::RemoteAction {
-                        workspace_id,
-                        version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-                        to_device_public_key: to,
-                        from_device_public_key: self.config.cert.device_public_key,
-                        from_user_public_key: self.config.cert.user_public_key,
-                        frame,
-                    });
-                } else {
-                    self.emit(&PeerEvent::RemoteActionUndeliverable {
-                        workspace_id,
-                        to,
-                        reason: "not connected to the host".into(),
-                    });
-                }
+                self.publish_remote_action(workspace_id, to, frame, client);
                 true
             }
             Command::InstallCipher(route, cipher) => {
@@ -1632,16 +1633,25 @@ impl Task {
                 self.release_live(&route, client);
                 true
             }
+            Command::InstallChannelKeys(route, keys) => {
+                // Settled with the next channel changes, the same way as
+                // keys the channel's own governance hands this session.
+                self.absorb(crate::channels::Changes {
+                    keys: vec![(route, keys)],
+                    outgoing: Vec::new(),
+                });
+                true
+            }
             Command::OpenRoute(route) => {
-                let changes = self.channels.open(&route, crate::clock::now_ms());
+                let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
                 self.absorb(changes);
                 true
             }
             Command::PinGovernor(room, governor) => {
                 self.invalidate_semantic();
-                let changes = self
-                    .channels
-                    .pin_governor(&room, governor, crate::clock::now_ms());
+                let changes =
+                    self.channels
+                        .pin_governor(&room, governor, tilo_clock::unix_now_ms());
                 self.absorb(changes);
                 true
             }
@@ -1678,6 +1688,31 @@ impl Task {
             }
             // Handled by the caller's loop.
             Command::Reconnect | Command::Refresh | Command::Close => true,
+        }
+    }
+
+    fn publish_remote_action(
+        &self,
+        workspace_id: u64,
+        to: [u8; 32],
+        frame: Vec<u8>,
+        client: Option<&Link>,
+    ) {
+        if let Some(client) = client {
+            let _ = client.send(Envelope::RemoteAction {
+                workspace_id,
+                version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                to_device_public_key: to,
+                from_device_public_key: self.config.cert.device_public_key,
+                from_user_public_key: self.config.cert.user_public_key,
+                frame,
+            });
+        } else {
+            self.emit(&PeerEvent::RemoteActionUndeliverable {
+                workspace_id,
+                to,
+                reason: "not connected to the host".into(),
+            });
         }
     }
 
@@ -2049,7 +2084,7 @@ impl Task {
         if !ready {
             return None;
         }
-        let now_ns = crate::clock::now_ms().checked_mul(1_000_000)?;
+        let now_ns = tilo_clock::unix_now_ms().checked_mul(1_000_000)?;
         let cipher = self.ciphers.get_mut(route)?;
         let mut receipt =
             self.channels
@@ -2072,7 +2107,7 @@ impl Task {
             self.fail("protocol-rejected", "A document names an invalid room.");
             return true;
         };
-        let changes = self.channels.open(&route, crate::clock::now_ms());
+        let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
         self.absorb(changes);
         if !self.ciphers.contains_key(&route) {
             // Never in the clear: the frames wait for this device's keys.
@@ -2082,7 +2117,7 @@ impl Task {
         }
         let mut delivered = true;
         for frame in frames {
-            let now = crate::clock::now_ns();
+            let now = tilo_clock::unix_now_ns();
             self.doc_seq = now.max(self.doc_seq.saturating_add(1));
             let Some(cipher) = self.ciphers.get_mut(&route) else {
                 self.fail("signature-rejected", "the route's channel keys went away");
@@ -2155,7 +2190,7 @@ impl Task {
     }
 
     fn inbound(&mut self, envelope: Envelope) {
-        let now = crate::clock::now_ms();
+        let now = tilo_clock::unix_now_ms();
         self.update(|status| status.last_contact_at_ms = Some(now));
         match envelope {
             Envelope::Ready { workspace_id, .. } => {
@@ -2257,7 +2292,7 @@ impl Task {
     /// One retained message from the host: channel governance, a member's
     /// certificate, or a document.
     fn inbound_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
-        let now = crate::clock::now_ms();
+        let now = tilo_clock::unix_now_ms();
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
             Ok(neighbour_wire::NeighbourMsg::IdentityHello {
                 cert, revocations, ..
@@ -2375,6 +2410,7 @@ impl Task {
         };
         let saved = SavedPeerChannels {
             channels,
+            requests: self.channels.pending_requests(),
             held: self
                 .held_outbound
                 .iter()
@@ -2472,6 +2508,24 @@ impl Task {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct SavedPeerChannels {
     channels: crate::channels::SavedChannels,
+    requests: Vec<collab_types::MlsAccessRequestV1>,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
+
+/// Version two retained channel membership and held edits but did not
+/// retain the pending access request that belongs to its member keys.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct V2SavedPeerChannels {
+    channels: crate::channels::SavedChannelsV2,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
+
+/// Version three also retained the access requests, before persistent
+/// semantic revocation knowledge was added in version four.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct V3SavedPeerChannels {
+    channels: crate::channels::SavedChannelsV2,
+    requests: Vec<collab_types::MlsAccessRequestV1>,
     held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
 }
 
@@ -2497,18 +2551,22 @@ impl Default for StoredChannels {
 #[derive(Default)]
 struct LoadedChannels {
     channels: StoredChannels,
+    requests: Vec<collab_types::MlsAccessRequestV1>,
     held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
 }
 
 /// Opens stored channel state that keeps its vault apart. State stored
 /// before starts with 32 random vault bytes instead, which match this only
 /// by a 2^-192 chance.
-const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v3";
-const SAVED_CHANNELS_V2_TAG: &[u8] = b"tilo.browser-channels.v2";
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SavedPeerChannelsV2 {
-    channels: crate::channels::SavedChannelsV2,
-    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v4";
+const V2_SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v2";
+const V3_SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v3";
+
+/// Storage must decode completely: an incompatible layout or trailing
+/// authority evidence is corruption, never permission to discard that evidence.
+fn decode_saved_channels<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
+    let (saved, remaining) = postcard::take_from_bytes(bytes).ok()?;
+    remaining.is_empty().then_some(saved)
 }
 
 impl SavedPeerChannels {
@@ -2520,22 +2578,33 @@ impl SavedPeerChannels {
 
     fn decode(bytes: &[u8]) -> Option<LoadedChannels> {
         if let Some(current) = bytes.strip_prefix(SAVED_CHANNELS_TAG) {
-            let saved: Self = postcard::from_bytes(current).ok()?;
+            let saved: Self = decode_saved_channels(current)?;
             return Some(LoadedChannels {
                 channels: StoredChannels::Current(saved.channels),
+                requests: saved.requests,
                 held: saved.held,
             });
         }
-        if let Some(previous) = bytes.strip_prefix(SAVED_CHANNELS_V2_TAG) {
-            let saved: SavedPeerChannelsV2 = postcard::from_bytes(previous).ok()?;
+        if let Some(v3) = bytes.strip_prefix(V3_SAVED_CHANNELS_TAG) {
+            let saved: V3SavedPeerChannels = decode_saved_channels(v3)?;
             return Some(LoadedChannels {
                 channels: StoredChannels::Current(saved.channels.into()),
+                requests: saved.requests,
                 held: saved.held,
             });
         }
-        let legacy: LegacySavedPeerChannels = postcard::from_bytes(bytes).ok()?;
+        if let Some(v2) = bytes.strip_prefix(V2_SAVED_CHANNELS_TAG) {
+            let saved: V2SavedPeerChannels = decode_saved_channels(v2)?;
+            return Some(LoadedChannels {
+                channels: StoredChannels::Current(saved.channels.into()),
+                requests: Vec::new(),
+                held: saved.held,
+            });
+        }
+        let legacy: LegacySavedPeerChannels = decode_saved_channels(bytes)?;
         Some(LoadedChannels {
             channels: StoredChannels::Legacy(legacy.channels),
+            requests: Vec::new(),
             held: legacy.held,
         })
     }
@@ -2587,7 +2656,7 @@ async fn sign_governance(
         Some(Envelope::Delta {
             workspace_id,
             author_device_public_key: device,
-            authored_at_ns: crate::clock::now_ns(),
+            authored_at_ns: tilo_clock::unix_now_ns(),
             delta: CoeditPayload::Checkpoint {
                 channel,
                 body: postcard::to_allocvec(&message).ok()?,
@@ -2679,7 +2748,7 @@ fn identity_hello(workspace_id: u64, cert: &DeviceCert) -> Option<Envelope> {
     Some(Envelope::Delta {
         workspace_id,
         author_device_public_key: cert.device_public_key,
-        authored_at_ns: crate::clock::now_ns(),
+        authored_at_ns: tilo_clock::unix_now_ns(),
         delta: CoeditPayload::Checkpoint { channel, body }.encode().ok()?,
         signature: [0; 64],
     })
@@ -2701,7 +2770,7 @@ fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
         workspace_id: entry.workspace_id,
         op: entry.op,
         author_device_public_key: cert.device_public_key,
-        authored_at_ns: crate::clock::now_ns(),
+        authored_at_ns: tilo_clock::unix_now_ns(),
         delta: payload.encode().unwrap_or_default(),
     }
 }
@@ -2714,7 +2783,7 @@ fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
 enum Link {
     Https(HttpsLink),
     #[cfg(feature = "iroh")]
-    Iroh(tilo_relay_client::RelayClient),
+    Iroh(tilo_relay_session::RelayClient),
 }
 
 impl Link {
@@ -2776,7 +2845,7 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
         .map(Link::Https),
         #[cfg(feature = "iroh")]
         Host::Iroh { addr, relay_url } => {
-            use tilo_relay_client::{ClientError, RelayClient};
+            use tilo_relay_session::{ClientError, RelayClient};
             let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal);
             if let Some(url) = relay_url {
                 builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));
@@ -2825,6 +2894,86 @@ async fn live_grant(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_pending_requests_and_held_edits_survive_reopen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let route = DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "room".into(),
+            record: "note".into(),
+        };
+        let request = collab_types::MlsAccessRequestV1::unsigned(
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record),
+            collab_types::Ed25519PublicKey::from_bytes([3; 32]),
+            vec![1, 2, 3],
+            7,
+        );
+        let saved = SavedPeerChannels {
+            channels: crate::channels::SavedChannels::default(),
+            requests: vec![request.clone()],
+            held: vec![(route, vec![b"before the reload".to_vec()])],
+        };
+        let decoded =
+            SavedPeerChannels::decode(&saved.encode()?).ok_or("stored state did not decode")?;
+        if postcard::to_stdvec(&decoded.requests)? != postcard::to_stdvec(&vec![request])? {
+            return Err("the pending access request changed on reopen".into());
+        }
+        if decoded.held != saved.held {
+            return Err("the held edit changed on reopen".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn version_two_keeps_held_edits_when_reopened() -> Result<(), Box<dyn std::error::Error>> {
+        let route = DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "room".into(),
+            record: "note".into(),
+        };
+        let saved = V2SavedPeerChannels {
+            channels: crate::channels::SavedChannelsV2 {
+                governors: Vec::new(),
+                members: Vec::new(),
+            },
+            held: vec![(route, vec![b"before the reload".to_vec()])],
+        };
+        let mut bytes = V2_SAVED_CHANNELS_TAG.to_vec();
+        postcard::to_io(&saved, &mut bytes)?;
+        let decoded = SavedPeerChannels::decode(&bytes).ok_or("version two did not decode")?;
+        if !decoded.requests.is_empty()
+            || decoded.held != saved.held
+            || !matches!(decoded.channels, StoredChannels::Current(_))
+        {
+            return Err("version two lost held edits or decoded as another version".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_state_keeps_held_edits_when_reopened() -> Result<(), Box<dyn std::error::Error>> {
+        let route = DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "room".into(),
+            record: "note".into(),
+        };
+        let channels = crate::channels::LegacySavedChannels {
+            vault: [4; 32],
+            governors: Vec::new(),
+            members: Vec::new(),
+        };
+        let held = vec![(route, vec![b"before the reload".to_vec()])];
+        let bytes = postcard::to_stdvec(&(channels, &held))?;
+        let decoded = SavedPeerChannels::decode(&bytes).ok_or("legacy state did not decode")?;
+        if !decoded.requests.is_empty()
+            || decoded.held != held
+            || !matches!(decoded.channels, StoredChannels::Legacy(_))
+        {
+            return Err("legacy state lost held edits or decoded as another version".into());
+        }
+        Ok(())
+    }
 
     pub(super) fn status(rooms: &[(u64, bool)]) -> PeerStatus {
         PeerStatus {

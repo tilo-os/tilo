@@ -11,7 +11,7 @@
 //! Escape reverts, and running out of time reverts.
 //!
 //! When the tool is known, a third button keeps the change and stops asking
-//! about that tool's risky changes ([`TrustedDisplayTools`]), which
+//! about that tool's risky changes ([`settings_store::display_tools::TrustedDisplayTools`]), which
 //! Settings › Displays can revoke.
 //!
 //! The Keep/Revert band is the one the Super+P sheet shows
@@ -20,7 +20,7 @@
 
 use std::time::{Duration, Instant};
 
-use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
+use settings_store::display_tools::DisplayTool;
 use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -36,6 +36,8 @@ use crate::shell::i18n::{t, t_args};
 use crate::shell::overlay_host::layers::{
     LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
 };
+use ui::TextRole;
+use ui::widget::ButtonRole;
 
 /// How often a shown prompt re-reads the transaction, so it follows the
 /// backend (applied elsewhere, restored on timeout) without per-frame I/O.
@@ -78,6 +80,13 @@ pub(crate) fn band_buttons(band: Rect) -> BandButtons {
     BandButtons { keep, revert }
 }
 
+/// State shared by the prompt and projection sheet's standard button faces.
+#[derive(Clone, Copy)]
+pub(crate) struct BandState {
+    pub focus: Option<BandFocus>,
+    pub disabled: bool,
+}
+
 /// Paint a Keep/Revert band into `band`: `title` over `status` on the left,
 /// Keep and Revert on the right.
 pub(crate) fn paint_keep_revert_band(
@@ -88,10 +97,10 @@ pub(crate) fn paint_keep_revert_band(
     band: Rect,
     title: &str,
     status: &str,
-    focus: Option<BandFocus>,
+    state: BandState,
 ) -> BandButtons {
     let colors = &theme.tokens.colors;
-    let type_scale = &theme.tokens.typography.scale;
+    let type_scale = &theme.tokens.typography;
     let radius = ui::chrome::ChromeRole::Control.radius(theme, band.height());
     scene.fill(
         Fill::NonZero,
@@ -101,22 +110,23 @@ pub(crate) fn paint_keep_revert_band(
         &RoundedRect::from_rect(band, radius),
     );
     let text_width = width_f32(band.width() - 190.0);
-    text_renderer.draw_text_weighted(
+    text_renderer.draw_style(
         scene,
         title,
-        type_scale.sm,
         colors.text_primary,
         transform.pre_translate((band.x0 + 14.0, band.y0 + 12.0).into()),
         Some(text_width),
-        TextWeight::Medium,
+        &type_scale
+            .style(TextRole::Caption)
+            .with_weight(TextWeight::Medium),
     );
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         status,
-        type_scale.xs,
         colors.text_dim,
         transform.pre_translate((band.x0 + 14.0, band.y0 + 42.0).into()),
         Some(text_width),
+        &type_scale.style(TextRole::Caption),
     );
     let BandButtons { keep, revert } = band_buttons(band);
     let keep_label = t("display-confirm-keep");
@@ -127,9 +137,9 @@ pub(crate) fn paint_keep_revert_band(
         text_renderer,
         theme,
         &ui::widget::ButtonFace::new(keep, &keep_label)
-            .style(ui::widget::ButtonStyle::Primary)
-            .text_size(type_scale.sm)
-            .focused(focus == Some(BandFocus::Keep)),
+            .role(ButtonRole::Primary)
+            .focused(state.focus == Some(BandFocus::Keep))
+            .disabled(state.disabled),
     );
     ui::widget::Button::paint(
         scene,
@@ -137,8 +147,8 @@ pub(crate) fn paint_keep_revert_band(
         text_renderer,
         theme,
         &ui::widget::ButtonFace::new(revert, &revert_label)
-            .text_size(type_scale.sm)
-            .focused(focus == Some(BandFocus::Revert)),
+            .focused(state.focus == Some(BandFocus::Revert))
+            .disabled(state.disabled),
     );
     BandButtons { keep, revert }
 }
@@ -195,6 +205,8 @@ struct Pending {
 #[derive(Default)]
 pub(crate) struct DisplayConfirmPrompt {
     pending: Option<Pending>,
+    answer: Option<crate::shell::display_persistence::PendingAnswer>,
+    notice: Option<String>,
     /// The theme's spacing and metrics as of the last paint, so hit-testing
     /// between paints uses the geometry that was drawn.
     spacing: ui::tokens::Spacing,
@@ -207,6 +219,8 @@ impl DisplayConfirmPrompt {
         let deadline_unix_ms = DisplayTransaction::load()
             .filter(|staged| staged.id == transaction)
             .and_then(|staged| staged.deadline_unix_ms);
+        self.answer = None;
+        self.notice = None;
         self.pending = Some(Pending {
             transaction,
             tool,
@@ -229,6 +243,25 @@ impl DisplayConfirmPrompt {
     /// reverted or replaced), and revert it when its time is up. Returns
     /// whether the prompt closed.
     pub(crate) fn poll(&mut self, now: Instant, force: bool) -> bool {
+        if let Some(answer) = self.answer.as_ref() {
+            match answer.poll() {
+                Ok(None) => return false,
+                Ok(Some(())) => {
+                    self.answer = None;
+                    self.notice = None;
+                    self.pending = None;
+                    return true;
+                }
+                Err(error) => {
+                    self.answer = None;
+                    self.notice = Some(t_args(
+                        "display-confirm-answer-failed",
+                        &[("reason", ArgValue::Text(error.to_string()))],
+                    ));
+                    tracing::warn!(%error, "display prompt: could not record the answer");
+                }
+            }
+        }
         let Some(pending) = self.pending.as_mut() else {
             return false;
         };
@@ -240,17 +273,13 @@ impl DisplayConfirmPrompt {
             staged.id == pending.transaction
                 && staged.state == DisplayTransactionState::AwaitingConfirmation
         });
-        let Some(mut current) = current else {
+        let Some(current) = current else {
             self.pending = None;
             return true;
         };
         pending.deadline_unix_ms = current.deadline_unix_ms;
         if current.expired(tilo_clock::unix_now_ms()) {
-            if let Err(error) = current.request_revert() {
-                tracing::warn!(%error, "display prompt: could not restore the previous layout");
-            }
-            self.pending = None;
-            return true;
+            self.finish(crate::shell::display_persistence::Answer::Revert);
         }
         false
     }
@@ -264,34 +293,70 @@ impl DisplayConfirmPrompt {
     /// Keep the change: the backend commits it as the layout for these
     /// displays.
     pub(crate) fn keep(&mut self) {
-        self.finish(DisplayTransaction::request_confirmation);
+        self.finish(crate::shell::display_persistence::Answer::Keep);
     }
 
     /// Restore the previous layout now.
     pub(crate) fn revert(&mut self) {
-        self.finish(DisplayTransaction::request_revert);
+        self.finish(crate::shell::display_persistence::Answer::Revert);
     }
 
     /// Keep the change and every later one from the same tool.
     pub(crate) fn always_keep(&mut self) {
-        let Some(tool) = self.tool().cloned() else {
+        if self.answer.is_some() {
+            return;
+        }
+        let Some(pending) = self.pending.as_ref() else {
             return;
         };
-        if let Err(error) = TrustedDisplayTools::trust(tool) {
-            tracing::warn!(%error, "display prompt: could not remember the trusted tool");
-        }
-        self.keep();
+        let Some(tool) = pending.tool.clone() else {
+            return;
+        };
+        self.accept_queued_answer(crate::shell::display_persistence::answer_and_trust(
+            pending.transaction,
+            tool,
+        ));
     }
 
-    fn finish(&mut self, answer: fn(&mut DisplayTransaction) -> std::io::Result<()>) {
-        let Some(pending) = self.pending.take() else {
+    fn finish(&mut self, answer: crate::shell::display_persistence::Answer) {
+        if self.answer.is_some() {
+            return;
+        }
+        let Some(pending) = self.pending.as_ref() else {
             return;
         };
-        if let Some(mut staged) =
-            DisplayTransaction::load().filter(|staged| staged.id == pending.transaction)
-            && let Err(error) = answer(&mut staged)
-        {
-            tracing::warn!(%error, "display prompt: could not record the answer");
+        self.accept_queued_answer(crate::shell::display_persistence::answer_for(
+            answer,
+            Some(pending.transaction),
+        ));
+    }
+
+    fn accept_queued_answer(
+        &mut self,
+        queued: std::io::Result<crate::shell::display_persistence::PendingAnswer>,
+    ) {
+        match queued {
+            Ok(answer) => {
+                self.answer = Some(answer);
+                self.notice = None;
+            }
+            Err(error) => {
+                self.notice = Some(t_args(
+                    "display-confirm-answer-failed",
+                    &[("reason", ArgValue::Text(error.to_string()))],
+                ));
+                tracing::warn!(%error, "display prompt: could not queue the answer");
+            }
+        }
+    }
+
+    fn status(&self) -> String {
+        if self.answer.is_some() {
+            t("display-confirm-answer-pending")
+        } else if let Some(notice) = self.notice.as_ref() {
+            notice.clone()
+        } else {
+            countdown_status(self.seconds_left(tilo_clock::unix_now_ms()))
         }
     }
 
@@ -348,6 +413,15 @@ impl DisplayConfirmPrompt {
         let Some(focus) = self.pending.as_ref().map(|pending| pending.focus) else {
             return false;
         };
+        if self.answer.is_some() {
+            return matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::Touch(_)
+            );
+        }
         match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -484,7 +558,7 @@ impl DisplayConfirmPrompt {
 
         let pending = self.pending.as_ref()?;
         let card = self.cards(outputs).into_iter().next();
-        let status = countdown_status(self.seconds_left(tilo_clock::unix_now_ms()));
+        let status = self.status();
         let mut dialog = AccessNode::new(Role::Dialog)
             .with_name(self.title())
             .with_description(format!(
@@ -513,7 +587,11 @@ impl DisplayConfirmPrompt {
                 AccessNode::new(Role::Button)
                     .with_name(name)
                     .with_bounds(bounds.unwrap_or_default())
-                    .with_state(AccessState::new().focused(pending.focus == focus)),
+                    .with_state(
+                        AccessState::new()
+                            .focused(pending.focus == focus)
+                            .disabled(self.answer.is_some()),
+                    ),
             );
         }
         Some(dialog)
@@ -536,7 +614,7 @@ impl DisplayConfirmPrompt {
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
         let title = self.title();
-        let status = countdown_status(self.seconds_left(tilo_clock::unix_now_ms()));
+        let status = self.status();
         let always_label = self.always_label();
         let band_focus = match pending.focus {
             Focus::Keep => Some(BandFocus::Keep),
@@ -544,22 +622,7 @@ impl DisplayConfirmPrompt {
             Focus::AlwaysKeep => None,
         };
         for card in self.cards(outputs) {
-            let radius = ui::chrome::ChromeRole::Panel.radius(theme, card.card.height());
-            ui::chrome::shell::panel_shadow(scene, transform, card.card, radius, theme, 1.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ui::chrome::shell::panel_ground(theme),
-                None,
-                &RoundedRect::from_rect(card.card, radius),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::chrome::shell::panel_border(theme),
-                None,
-                &RoundedRect::from_rect(card.card, radius),
-            );
+            ui::chrome::shell::paint_panel(scene, transform, card.card, theme, 1.0);
             paint_keep_revert_band(
                 scene,
                 transform,
@@ -568,7 +631,10 @@ impl DisplayConfirmPrompt {
                 self.band_rect(card.card),
                 &title,
                 &status,
-                band_focus,
+                BandState {
+                    focus: band_focus,
+                    disabled: self.answer.is_some(),
+                },
             );
             if let Some(label) = always_label.as_deref() {
                 ui::widget::Button::paint(
@@ -577,8 +643,8 @@ impl DisplayConfirmPrompt {
                     text_renderer,
                     theme,
                     &ui::widget::ButtonFace::new(card.always_keep, label)
-                        .text_size(theme.tokens.typography.scale.sm)
-                        .focused(pending.focus == Focus::AlwaysKeep),
+                        .focused(pending.focus == Focus::AlwaysKeep)
+                        .disabled(self.answer.is_some()),
                 );
             }
         }

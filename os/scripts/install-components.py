@@ -8,6 +8,10 @@ runs it to arrange the image's binaries, os/Containerfile.dev runs it with
 same invocation with `--dest <layer>/` assembles a development sysext layer, so
 none of them can place files differently.
 
+A `from = "@manifest/path"` entry copies a checked-in input relative to the
+manifest directory. It travels with its owning component on a development
+swap as well as in the image, independently of the Cargo output directory.
+
 Only the Python 3.11+ standard library is used, so it runs in the bare Fedora
 bootc base as well as on a developer host.
 """
@@ -15,6 +19,9 @@ bootc base as well as on a developer host.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import platform
+import subprocess
 import json
 import os
 import re
@@ -67,8 +74,7 @@ examples:
 
   # What the production Containerfile runs: every image file, one tree per
   # image layer under /image/<layer>/
-  install-components.py --from /out --from /out/optional \\
-      --dest /image --by-layer --all
+  install-components.py --from /out --dest /image --by-layer --all
 
   # List components, and what a swap needs: the systemd units to restart, a
   # reboot onto a new boot entry (the kernel), or for the other boot
@@ -86,7 +92,8 @@ class FileEntry:
     component: str
     to: str
     layer: str
-    source: str | None = None  # `from`; relative to --from, or absolute under --build-root
+    source: str | None = None  # `from`; build output, @manifest/ input, or absolute path
+    manifest_dir: Path | None = None  # root for explicitly manifest-relative inputs
     link: str | None = None
     mode: str | None = None
     tree: bool = False
@@ -181,7 +188,7 @@ def _check_image_path(path: str, where: str) -> None:
         raise ManifestError(f"{where}: `to` must be a normalized absolute image path, got {path!r}")
 
 
-def _parse_file(raw: object, component: str, default_layer: str | None, optional: bool, index: int) -> FileEntry:
+def _parse_file(raw: object, component: str, default_layer: str | None, optional: bool, index: int, manifest_dir: Path) -> FileEntry:
     where = f"component {component!r} file #{index + 1}"
     if not isinstance(raw, dict):
         raise ManifestError(f"{where}: must be a table like {{ from = ..., to = ... }}")
@@ -197,6 +204,12 @@ def _parse_file(raw: object, component: str, default_layer: str | None, optional
         raise ManifestError(f"{where}: exactly one of `from` or `link` is required")
     if source is not None and (not isinstance(source, str) or not source or ".." in PurePosixPath(source).parts):
         raise ManifestError(f"{where}: `from` must be a build output path without `..`")
+    if source is not None and source.startswith("@manifest/"):
+        relative = source.removeprefix("@manifest/")
+        if not relative or relative.startswith("/") or str(PurePosixPath(relative)) != relative.rstrip("/"):
+            raise ManifestError(f"{where}: @manifest/ must name a normalized relative input")
+    if source is not None and source.startswith("@asset/") and source != "@asset/cosign-v2.5.2":
+        raise ManifestError(f"{where}: unknown reviewed native asset")
     if link is not None and (not isinstance(link, str) or not link or link.startswith("/")):
         raise ManifestError(f"{where}: `link` must be a relative symlink target")
     tree = raw.get("tree", False)
@@ -220,7 +233,8 @@ def _parse_file(raw: object, component: str, default_layer: str | None, optional
     file_optional = raw.get("optional", optional)
     if not isinstance(file_optional, bool):
         raise ManifestError(f"{where}: `optional` must be true or false")
-    return FileEntry(component=component, to=to, layer=layer, source=source, link=link,
+    return FileEntry(component=component, to=to, layer=layer, source=source,
+                     manifest_dir=manifest_dir, link=link,
                      mode=mode, tree=tree, optional=file_optional)
 
 
@@ -298,7 +312,7 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
         if not isinstance(raw_files, list) or (not raw_files and kind != "boot"):
             # Boot components whose install is not manifest-driven yet may omit files.
             raise ManifestError(f"{where}: `files` must list at least one {{ from, to, mode }} entry")
-        files = tuple(_parse_file(f, name, layer, optional, i) for i, f in enumerate(raw_files))
+        files = tuple(_parse_file(f, name, layer, optional, i, path.resolve().parent) for i, f in enumerate(raw_files))
         dev_layers = {entry.layer for entry in files if entry.dev_only}
         if dev_layers and len(dev_layers) != len({entry.layer for entry in files}):
             raise ManifestError(f"{where}: mixes dev-only layers ({', '.join(sorted(dev_layers))}) with "
@@ -358,9 +372,53 @@ def select(manifest: Manifest, names: list[str], everything: bool, layers: list[
     return chosen
 
 
+def native_cosign(manifest_dir: Path, copied: Path | None = None) -> Path:
+    """Resolve the reviewed native verifier; cache bytes never establish trust."""
+    machine = platform.machine()
+    targets = {"x86_64": ("amd64", 62), "aarch64": ("arm64", 183)}
+    if machine not in targets:
+        raise ManifestError("unsupported native Cosign architecture")
+    suffix, elf_machine = targets[machine]
+    name = f"cosign-v2.5.2-linux-{suffix}"
+    pins = manifest_dir / "external-assets/github-assets.tsv"
+    matches = [line.split("\t")[0] for line in pins.read_text().splitlines()
+               if not line.startswith("#") and len(line.split("\t")) == 3
+               and line.split("\t")[1] == name]
+    if len(matches) != 1 or not re.fullmatch(r"[0-9a-f]{64}", matches[0]):
+        raise ManifestError("missing or ambiguous reviewed Cosign pin")
+    cache = Path(os.environ.get("TILO_GITHUB_ASSET_CACHE", manifest_dir / "external-assets/cache"))
+    candidate = copied if copied is not None else cache / name
+    if not candidate.exists():
+        fetch = manifest_dir / "dev/cache-github-assets.sh"
+        if not fetch.is_file():
+            raise ManifestError("reviewed Cosign input is absent from the image build context")
+        subprocess.run(["bash", str(fetch), name], check=True, timeout=300)
+    if candidate.is_symlink() or not candidate.is_file():
+        raise ManifestError("reviewed Cosign input must be a regular cache file")
+    digest = hashlib.sha256()
+    with candidate.open("rb") as handle:
+        header = handle.read(20)
+        digest.update(header)
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != matches[0]:
+        raise ManifestError("reviewed Cosign checksum mismatch")
+    if (header[:6] != b"\x7fELF\x02\x01" or len(header) != 20
+            or int.from_bytes(header[18:20], "little") != elf_machine):
+        raise ManifestError("reviewed Cosign is not the native ELF executable")
+    return candidate
+
+
 def resolve_source(entry: FileEntry, from_dirs: list[Path], build_root: Path | None) -> Path | None:
     assert entry.source is not None
     relative = entry.source.rstrip("/")
+    if relative == "@asset/cosign-v2.5.2":
+        assert entry.manifest_dir is not None
+        return native_cosign(entry.manifest_dir)
+    if relative.startswith("@manifest/"):
+        assert entry.manifest_dir is not None
+        candidate = entry.manifest_dir / relative.removeprefix("@manifest/")
+        return candidate if candidate.exists() or candidate.is_symlink() else None
     if entry.source.startswith("/"):
         if build_root is None:
             raise ManifestError(
@@ -437,6 +495,9 @@ def install(entries: list[FileEntry], from_dirs: list[Path], build_root: Path | 
                 raise ManifestError(f"component {entry.component!r}: {source} is a directory; mark the entry `tree = true`")
             temporary = target.with_name(f".{target.name}.tmp")
             shutil.copy2(source, temporary, follow_symlinks=True)
+            if entry.source == "@asset/cosign-v2.5.2":
+                assert entry.manifest_dir is not None
+                native_cosign(entry.manifest_dir, temporary)
             temporary.chmod(int(str(entry.mode), 8))
             os.replace(temporary, target)
         log(f"file  {entry.to}  <- {source}  [{entry.component}]")

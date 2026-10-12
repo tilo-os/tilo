@@ -452,6 +452,7 @@ def decide_part(part: Part, components: Iterable[Component], base: Base,
     A component the base already ships needs nothing. A component following a
     base package the base does not have never applies to it.
     """
+    components = list(components)
     applicable = [c for c in components if c.part == part.name and c.applies_to(base.arch)
                   and c.name not in base.installed]
     supported = [c for c in applicable if c.follows is None or c.follows in base.installed]
@@ -477,6 +478,16 @@ def decide_part(part: Part, components: Iterable[Component], base: Base,
             details.append(f"{component.name}: no build is published.")
     if not chosen:
         return PartDecision("waiting", (), " ".join([part.waiting, *details]), {})
+    names = {candidate.name for candidate in chosen}
+    if ("gstreamer1-plugin-openh264" in names
+            and "openh264" not in names and "openh264" not in base.installed):
+        return PartDecision("waiting", (),
+                            "OpenH264 is waiting for Cisco's codec library; the compatibility stub cannot encode or decode video.", {})
+    # A component already supplied by the base is still a runtime dependency.
+    # Pin it so retaining this part across an OS update cannot silently remove it.
+    for component in components:
+        if component.part == part.name and component.applies_to(base.arch) and component.name in base.installed:
+            requires[component.name] = base.installed[component.name].epochnum_evr
     message = " ".join(["Not yet available for this release:", *details]) if details else ""
     return PartDecision("available", tuple(sorted(chosen, key=lambda n: n.name)), message,
                         dict(sorted(requires.items())))
@@ -560,6 +571,15 @@ def publication_content(manifest: dict) -> dict:
 
 def same_publication(old: dict, new: dict) -> bool:
     return publication_content(old) == publication_content(new)
+
+
+def qualification_digest(manifest: dict) -> str:
+    """Bind reviewed artifacts, constraints and image; ignore only clock fields."""
+    content = json.loads(json.dumps(manifest))
+    content.pop("revision", None)
+    content.pop("created", None)
+    encoded = json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def check_manifest(manifest: dict) -> list[str]:
@@ -885,6 +905,11 @@ def command_check(args) -> int:
         for problem in problems:
             print(f"{args.manifest}: {problem}", file=sys.stderr)
         return 1
+    expected = getattr(args, "expected_content_sha256", None)
+    if expected and (not HEX64.fullmatch(expected) or qualification_digest(manifest) != expected):
+        print("resolved manifest differs from the reviewed qualification content; refusing to sign or publish",
+              file=sys.stderr)
+        return 1
     base = manifest["base"]
     print(manifest["id"], base["architecture"], base["packages_sha256"], manifest["revision"])
     return 0
@@ -894,6 +919,14 @@ def command_same(args) -> int:
     old = json.loads(Path(args.old).read_bytes())
     new = json.loads(Path(args.new).read_bytes())
     return 0 if same_publication(old, new) else 1
+
+
+def command_content_sha256(args) -> int:
+    manifest = json.loads(Path(args.manifest).read_bytes())
+    if check_manifest(manifest):
+        raise ResolveError("cannot hash an invalid manifest for qualification")
+    print(qualification_digest(manifest))
+    return 0
 
 
 def main(argv: list[str]) -> int:
@@ -907,11 +940,15 @@ def main(argv: list[str]) -> int:
     commands.add_parser("fingerprint").set_defaults(handler=command_fingerprint)
     check_cmd = commands.add_parser("check")
     check_cmd.add_argument("manifest")
+    check_cmd.add_argument("--expected-content-sha256")
     check_cmd.set_defaults(handler=command_check)
     same_cmd = commands.add_parser("same")
     same_cmd.add_argument("old")
     same_cmd.add_argument("new")
     same_cmd.set_defaults(handler=command_same)
+    digest_cmd = commands.add_parser("content-sha256")
+    digest_cmd.add_argument("manifest")
+    digest_cmd.set_defaults(handler=command_content_sha256)
     args = parser.parse_args(argv)
     try:
         return args.handler(args)

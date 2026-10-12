@@ -116,7 +116,7 @@ pub enum Update {
         channel: Box<Channel>,
         uploads: Vec<Video>,
     },
-    /// Which data source is currently answering (drives the top-bar pill).
+    /// Which data source is currently answering (drives the header status badge).
     Status {
         live: bool,
         label: String,
@@ -812,6 +812,16 @@ impl Worker {
     pub fn poll(&self) -> Vec<Update> {
         self.rx.try_iter().take(MAX_UPDATES_PER_POLL).collect()
     }
+
+    /// A worker that fetches nothing: its results are what the returned
+    /// sender sends. For a test that lands a result at a moment it chooses.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn scripted() -> (Self, SyncSender<Update>) {
+        let (tx, _requests) = std::sync::mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
+        let (results, rx) = std::sync::mpsc::sync_channel::<Update>(UPDATE_QUEUE_CAPACITY);
+        (Self { tx, rx }, results)
+    }
 }
 
 /// Short `host…` label for a resolved URL, for the status log.
@@ -1001,12 +1011,12 @@ fn feed_trending(
         fetch(live, offline, Query::Trending, false, up_tx)
         && !vs.is_empty()
     {
-        return Some((vs, "live · trending".into()));
+        return Some((vs, "live trending".into()));
     }
     // Compose the popular feed from whichever backend carries creator avatars —
     // rustypipe when present (its items include the avatar), else the primary.
     let search_backend: Option<&dyn YtBackend> = enrich.or(live);
-    live_popular_feed(search_backend, up_tx).map(|vs| (vs, "live · popular".into()))
+    live_popular_feed(search_backend, up_tx).map(|vs| (vs, "live popular".into()))
 }
 
 /// Compose a "popular right now" home feed: for each broad topic, ask the
@@ -1226,7 +1236,7 @@ async fn invidious_json(
     query: &[(&str, &str)],
 ) -> anyhow::Result<serde_json::Value> {
     let mut last = anyhow::anyhow!("no Invidious instance answered");
-    for instance in crate::backend::proxy::instances() {
+    for instance in tilo_invidious::instances() {
         let url = format!("{}{path}", instance.trim_end_matches('/'));
         match get_json(client, &url, query).await {
             Ok(Some(value)) if value.get("error").is_none() => return Ok(value),

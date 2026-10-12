@@ -10,9 +10,11 @@
 )]
 
 use std::collections::BTreeMap;
+use ui::num::f32_of_f64;
+use ui::num::f64_of_usize;
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, JsonSchema};
+use ui::tilo_resource::{self, Id, Identified, JsonSchema, Keyed, Model};
 use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 
 /// The largest artwork side, in units.
@@ -45,16 +47,25 @@ impl Default for Ground {
 /// One layer of the artwork.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "shown, held still, an inverted mask and clipped are independent settings"
+    reason = "shown, held still, an inverted or unlinked mask and clipped are independent settings"
 )]
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Model)]
 pub struct Layer {
+    #[model(atom, readonly)]
     pub id: String,
+    /// Name
+    #[model(label)]
     pub name: String,
+    /// Organisational folder; empty for an ungrouped layer. It does not
+    /// change stacking, clipping or how the layers composite.
+    #[model(atom)]
+    pub group: String,
     /// Fractional position among layers; later is on top.
+    #[model(atom, readonly)]
     pub order: String,
     /// The medium preset that paints this layer's marks, or empty for plain
     /// vector art.
+    #[model(atom)]
     pub medium: String,
     pub opacity: f64,
     pub visible: bool,
@@ -68,6 +79,7 @@ pub struct Layer {
     /// The layer this layer masks, or empty for an ordinary layer. A mask's
     /// marks are drawn in greys: where it is light that layer shows, where
     /// it is dark it is hidden. Hiding the mask turns it off.
+    #[model(atom, readonly)]
     pub mask_of: String,
     /// A mask's grey before any mark, `0..=1`: 1 shows all of its layer,
     /// 0 hides all of it.
@@ -76,6 +88,20 @@ pub struct Layer {
     pub invert: bool,
     /// Clipped to the layer below: it shows only where that layer has paint.
     pub clip: bool,
+    /// A mask that stays put when its layer's marks move. Linked, it moves
+    /// with them whenever they all move as one, as the layer's content.
+    pub unlinked: bool,
+}
+
+impl Identified for Layer {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+
+    /// Bottom to top.
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.order.cmp(&other.order)
+    }
 }
 
 impl Layer {
@@ -88,13 +114,27 @@ impl Layer {
 /// The area selected for the next edit: a region of the artwork, kept with
 /// it like the reference picture and never drawn into it. Fills, masks and
 /// copies take its shape; its feather softens their edge.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Selection {
     /// SVG path data in artwork units, filled non-zero.
     pub d: String,
     /// How far its edge fades, in units.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub feather: f64,
+    /// Its edge refined to the picture: how much of each pixel near it is
+    /// in, where a path can only say in or out (strands of fur and hair).
+    /// A mask made of the selection draws it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte: Option<Matte>,
+}
+
+/// A selection's soft edge: a picture, white where selected and as see-through
+/// as each pixel is out, laid over the artwork at `rect`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Matte {
+    pub src: String,
+    /// `[x, y, w, h]`.
+    pub rect: [f64; 4],
 }
 
 impl Selection {
@@ -160,32 +200,37 @@ pub enum Shape {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
-    /// A brush stroke: a smooth curve through `points`, `size` wide.
-    /// Points are `[x, y]` or `[x, y, pressure]`; a handful of points is
-    /// enough, the stroke is smoothed through them.
+    /// A brush stroke as `paint` lays one: a smooth curve through `points`
+    /// (`[x, y]` or `[x, y, pressure]`), `size` wide; forks, dabs and hatch
+    /// as there.
     Stroke {
         points: Vec<StrokePoint>,
         size: f64,
-        /// A limb that lifts to a point and forks this many times (1-6)
-        /// into ever thinner twigs: a branch or bare tree in one stroke.
+        // Its forms are described once, on `paint`'s strokes: an agent reads
+        // them there, and `draw` names this shape after it.
+        //
+        // A limb that lifts to a point and forks this many times (1-6) into
+        // ever thinner twigs.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         forks: Option<u32>,
-        /// With `forks`: how widely the twigs splay, in degrees (default 35).
+        // With `forks`: how widely the twigs splay, in degrees (default 35).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spread: Option<f64>,
-        /// Instead of one line, this many short dabs (1-600) of `size`
-        /// scattered along the points: foliage, flowers, broken light.
+        // Instead of one line, this many short dabs (1-600) of `size`
+        // scattered along the points.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dabs: Option<u32>,
-        /// With `dabs`: how far they stray either side of the path, in units
-        /// (default twice `size`).
+        // With `dabs`: how far they stray either side of the path, in units
+        // (default twice `size`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scatter: Option<f64>,
-        /// With `dabs`: how long each is, in units (about `size` when
-        /// absent); much longer than `size`, each is a flick that lifts to
-        /// a point, as grass is painted.
+        // With `dabs`: how long each is, in units (about `size` when absent).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dab_length: Option<f64>,
+        // Instead of one line, lines this many units apart across the area
+        // the points enclose, at the mark's angle (default 45).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hatch: Option<f64>,
     },
     /// A PNG, JPEG or WebP in the frame `x, y, width, height`.
     Image {
@@ -225,6 +270,9 @@ pub struct Gradient {
 /// How a mark is coloured and, on a painted layer, how it is painted.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Style {
+    /// Enlarge image pixels with nearest-neighbor sampling.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pixelated: bool,
     /// Fill colour: `#rrggbb`, `#rrggbbaa` or `pigment:<name>` from the
     /// layer medium's palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -378,7 +426,7 @@ pub struct Shadow {
 
 /// A picture to work from, laid over the artwork like tracing paper. It is
 /// not part of the artwork: exports never show it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Reference {
     /// The picture's content address.
     pub image: String,
@@ -405,25 +453,45 @@ impl Style {
 }
 
 /// A mark as stored: its geometry, style and placement.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Model)]
 pub struct Mark {
+    #[model(atom, readonly)]
     pub id: String,
+    #[model(atom)]
     pub layer: String,
     /// Fractional position within its layer; later is on top.
+    #[model(atom, readonly)]
     pub order: String,
+    /// Name
+    #[model(label)]
     pub name: String,
     pub shape: Shape,
     pub style: Style,
     /// An affine transform `[a, b, c, d, e, f]` applied to the geometry.
     pub transform: Option<[f64; 6]>,
     /// The group the mark belongs to, or empty.
+    #[model(atom)]
     pub group: String,
     /// The mark whose shape this mark is cut to, or empty.
+    #[model(atom)]
     pub clip: String,
     /// SVG path data of the area the mark is kept inside (the selection's
     /// shape when it was laid), in the units of its geometry so it travels
     /// with it, or empty.
+    #[model(atom, readonly)]
     pub area: String,
+}
+
+impl Identified for Mark {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
+
+    /// Bottom to top within a layer; [`Artwork::settle`] stacks the
+    /// layers.
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.order.cmp(&other.order)
+    }
 }
 
 /// The stored body of a mark: everything that is replaced together.
@@ -476,16 +544,19 @@ impl Mark {
 }
 
 /// The whole artwork as views and actions read it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Model)]
 pub struct Artwork {
+    /// Title
+    #[model(label)]
     pub title: String,
     pub width: f64,
     pub height: f64,
     pub ground: Ground,
     /// Bottom to top.
-    pub layers: Vec<Layer>,
-    /// Bottom to top within each layer, layers bottom to top.
-    pub marks: Vec<Mark>,
+    pub layers: Keyed<Layer>,
+    /// Bottom to top within each layer, layers bottom to top (see
+    /// [`Artwork::settle`]).
+    pub marks: Keyed<Mark>,
     /// Media presets saved in this artwork, by id.
     pub media: BTreeMap<String, crate::media::MediumSpec>,
     pub reference: Option<Reference>,
@@ -499,12 +570,111 @@ impl Default for Artwork {
             width: 1200.0,
             height: 900.0,
             ground: Ground::default(),
-            layers: Vec::new(),
-            marks: Vec::new(),
+            layers: Keyed::new(),
+            marks: Keyed::new(),
             media: BTreeMap::new(),
             reference: None,
             selection: None,
         }
+    }
+}
+
+tilo_resource::json_model!(
+    Ground,
+    Shape,
+    Style,
+    Adjust,
+    Reference,
+    Selection,
+    crate::media::MediumSpec
+);
+
+/// A blank rectangle: what a mark is before it is given a shape.
+impl Default for Shape {
+    fn default() -> Self {
+        Self::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+            radius: 0.0,
+        }
+    }
+}
+
+impl Artwork {
+    /// The artwork as `doc` holds it, stacked (see [`Self::settle`]).
+    ///
+    /// # Errors
+    /// Returns why the document does not hold an artwork.
+    pub fn from_doc(doc: &tilo_resource::Doc) -> Result<Self, tilo_resource::ModelError> {
+        let mut art = <Self as tilo_resource::Fields>::read_fields(doc, &ui::automerge::ROOT)?;
+        art.settle();
+        Ok(art)
+    }
+
+    /// Stack the marks as they are drawn: layers bottom to top, each
+    /// layer's marks bottom to top. A mark whose layer is gone (removed
+    /// while someone drew on it) is not part of the artwork.
+    pub fn settle(&mut self) {
+        // A document no one has started yet (a viewer joining before the
+        // artwork's first change reached it) is the blank default size.
+        let blank = Self::default();
+        if self.width <= 0.0 || self.height <= 0.0 {
+            (self.width, self.height) = (blank.width, blank.height);
+        }
+        let rank: std::collections::HashMap<&str, usize> = self
+            .layers
+            .iter()
+            .enumerate()
+            .map(|(at, layer)| (layer.id.as_str(), at))
+            .collect();
+        let mut marks: Vec<(usize, Mark)> = std::mem::take(&mut *self.marks)
+            .into_iter()
+            .filter_map(|mark| Some((*rank.get(mark.layer.as_str())?, mark)))
+            .collect();
+        marks.sort_by(|(a_rank, a), (b_rank, b)| {
+            a_rank
+                .cmp(b_rank)
+                .then_with(|| a.order.cmp(&b.order))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        *self.marks = marks.into_iter().map(|(_, mark)| mark).collect();
+    }
+
+    /// This artwork, stacked.
+    #[must_use]
+    pub fn settled(&self) -> Self {
+        let mut art = self.clone();
+        art.settle();
+        art
+    }
+
+    /// Add `mark`, or replace the mark with its id.
+    pub fn put_mark(&mut self, mark: Mark) {
+        match self.marks.iter_mut().find(|held| held.id == mark.id) {
+            Some(held) => *held = mark,
+            None => self.marks.push(mark),
+        }
+    }
+
+    /// Add `layer`, or replace the layer with its id.
+    pub fn put_layer(&mut self, layer: Layer) {
+        match self.layers.iter_mut().find(|held| held.id == layer.id) {
+            Some(held) => *held = layer,
+            None => self.layers.push(layer),
+        }
+    }
+
+    /// Remove the mark `id`, if there is one.
+    pub fn remove_mark(&mut self, id: &str) {
+        self.marks.retain(|mark| mark.id != id);
+    }
+
+    /// Remove the layer `id`, if there is one; its marks stay until
+    /// removed too.
+    pub fn drop_layer(&mut self, id: &str) {
+        self.layers.retain(|layer| layer.id != id);
     }
 }
 
@@ -578,11 +748,17 @@ impl Artwork {
     /// tools that outline erasers pick them; [`Self::mark_at`] passes
     /// through them.
     pub fn pick_at(&self, point: Point) -> Option<&Mark> {
+        self.pick_near(point, 0.0)
+    }
+
+    /// [`Self::pick_at`] forgiving a pointer `slop` artwork units off a
+    /// line or a stroke: a hand's few pixels at the zoom it is shown at.
+    pub fn pick_near(&self, point: Point, slop: f64) -> Option<&Mark> {
         self.marks.iter().rev().find(|mark| {
             self.layer(&mark.layer)
                 .is_some_and(|layer| layer.visible && !layer.locked && !layer.is_mask())
                 && (mark.inked() || mark.erases())
-                && mark.hit(point)
+                && mark.hit_within(point, slop)
                 && self.clipped_in(mark, point)
         })
     }
@@ -731,6 +907,7 @@ impl Shape {
             dabs: None,
             scatter: None,
             dab_length: None,
+            hatch: None,
         }
     }
 
@@ -841,6 +1018,8 @@ impl Shape {
             dabs,
             scatter,
             dab_length,
+            hatch,
+            points,
             ..
         } = self
         else {
@@ -848,8 +1027,17 @@ impl Shape {
         };
         let units =
             |value: &Option<f64>| value.is_some_and(|value| !(0.0..=MAX_SIDE).contains(&value));
-        if forks.is_some() && dabs.is_some() {
-            Some("a stroke either forks or breaks into dabs, not both".into())
+        if [forks.is_some(), dabs.is_some(), hatch.is_some()]
+            .iter()
+            .filter(|given| **given)
+            .count()
+            > 1
+        {
+            Some("a stroke forks, breaks into dabs or hatches an area: one of them".into())
+        } else if hatch.is_some_and(|hatch| !(0.5..=MAX_SIDE).contains(&hatch)) {
+            Some("hatch is 0.5 or more units between lines".into())
+        } else if hatch.is_some() && points.len() < 3 {
+            Some("a hatched stroke's points enclose an area: give 3 or more".into())
         } else if forks.is_some_and(|forks| !(1..=6).contains(&forks)) {
             Some("forks is 1 to 6".into())
         } else if spread.is_some_and(|spread| !(5.0..=90.0).contains(&spread)) {
@@ -1004,6 +1192,7 @@ impl Shape {
                 dabs,
                 scatter,
                 dab_length,
+                hatch,
             } => Self::Stroke {
                 points: points
                     .iter()
@@ -1024,6 +1213,7 @@ impl Shape {
                 dabs: *dabs,
                 scatter: *scatter,
                 dab_length: *dab_length,
+                hatch: *hatch,
             },
         }
     }
@@ -1038,32 +1228,31 @@ impl Shape {
             dabs,
             scatter,
             dab_length,
+            hatch,
             ..
         } = self
         else {
             return None;
         };
+        if let Some(spacing) = hatch {
+            return Some(tilo_wet_media::Form::Hatch {
+                spacing: f32_of_f64(*spacing),
+                angle: f32_of_f64(angle.unwrap_or(45.0)),
+            });
+        }
         if let Some(forks) = forks {
             return Some(tilo_wet_media::Form::Branch {
                 forks: *forks,
-                spread: narrow(spread.unwrap_or(35.0)),
+                spread: f32_of_f64(spread.unwrap_or(35.0)),
             });
         }
         dabs.map(|count| tilo_wet_media::Form::Dabs {
             count,
-            scatter: narrow(scatter.unwrap_or(size * 2.0)),
-            length: narrow(dab_length.unwrap_or(0.0)),
-            angle: angle.map(narrow),
+            scatter: f32_of_f64(scatter.unwrap_or(size * 2.0)),
+            length: f32_of_f64(dab_length.unwrap_or(0.0)),
+            angle: angle.map(f32_of_f64),
         })
     }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "stroke geometry is bounded by the document's size limits"
-)]
-fn narrow(value: f64) -> f32 {
-    value as f32
 }
 
 impl Shape {
@@ -1151,6 +1340,7 @@ impl Shape {
                 dabs,
                 scatter,
                 dab_length,
+                hatch,
             } if uniform => Self::Stroke {
                 points: points
                     .iter()
@@ -1168,6 +1358,7 @@ impl Shape {
                 dabs: *dabs,
                 scatter: scatter.map(|scatter| scatter * sx),
                 dab_length: dab_length.map(|length| length * sx),
+                hatch: hatch.map(|spacing| spacing * sx),
             },
             Self::Text { .. } | Self::Stroke { .. } => return None,
         })
@@ -1206,10 +1397,6 @@ pub fn path_data(path: &BezPath) -> String {
     parts.join(" ")
 }
 
-fn count(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 impl Shape {
     /// The box a text's lines take, estimated from its characters: what
     /// selection, hit-testing and `inspect` use without shaping it.
@@ -1243,7 +1430,7 @@ impl Shape {
             } + tracking.unwrap_or(0.0) / 1000.0);
         let lines: Vec<f64> = text
             .split('\n')
-            .map(|line| advance * count(line.chars().count()))
+            .map(|line| advance * f64_of_usize(line.chars().count()))
             .collect();
         let natural = lines.iter().copied().fold(0.0, f64::max);
         let (rows, wide) = match width {
@@ -1254,7 +1441,7 @@ impl Shape {
                     .sum::<f64>(),
                 *width,
             ),
-            None => (count(lines.len()), natural),
+            None => (f64_of_usize(lines.len()), natural),
         };
         let left = match (width, align.as_deref()) {
             (None, Some("center")) => x - wide / 2.0,
@@ -1302,7 +1489,7 @@ impl Mark {
     /// none of its own to pick.
     pub fn erases(&self) -> bool {
         matches!(self.shape, Shape::Stroke { .. })
-            && crate::brushes::Preset::of(&self.style) == crate::brushes::Preset::Eraser
+            && crate::brushes::Preset::of(&self.style).erases()
     }
 
     /// The area the mark is kept inside, in artwork units, if it has one.
@@ -1403,6 +1590,11 @@ impl Mark {
                 dab_length,
                 ..
             } => size * 2.0 + scatter.unwrap_or(size * 2.0) + dab_length.unwrap_or(0.0) * 1.4,
+            Shape::Stroke {
+                size,
+                hatch: Some(spacing),
+                ..
+            } => size * 0.5 + spacing * 0.5,
             Shape::Stroke { size, .. } => size * 0.5,
             _ => self.style.stroke_width * 0.5,
         };
@@ -1412,7 +1604,14 @@ impl Mark {
     /// Whether `point` lands on the mark: inside a filled shape, or near a
     /// line or stroke.
     pub fn hit(&self, point: Point) -> bool {
-        if !self.bounds().contains(point) {
+        self.hit_within(point, 0.0)
+    }
+
+    /// [`Self::hit`] with lines and strokes reaching `slop` artwork units
+    /// further, so a thin line is not missed by a hair at a far zoom.
+    pub fn hit_within(&self, point: Point, slop: f64) -> bool {
+        let slop = slop.max(0.0);
+        if !self.bounds().inflate(slop, slop).contains(point) {
             return false;
         }
         let local = self.affine().inverse() * point;
@@ -1422,10 +1621,27 @@ impl Mark {
             | Shape::Ellipse { .. }
             | Shape::Image { .. } => self.shape.path().contains(local),
             Shape::Polygon { .. } | Shape::Path { .. } if self.shape.closed() => {
-                self.shape.path().contains(local) || self.near_outline(local, 4.0)
+                self.shape.path().contains(local) || self.near_outline(local, 4.0_f64.max(slop))
             }
-            Shape::Stroke { size, .. } => self.near_outline(local, size * 0.5 + 2.0),
-            _ => self.near_outline(local, self.style.stroke_width * 0.5 + 4.0),
+            Shape::Stroke {
+                hatch: Some(_),
+                points,
+                ..
+            } => Shape::Polygon {
+                points: points
+                    .iter()
+                    .map(|point| {
+                        [
+                            point.first().copied().unwrap_or(0.0),
+                            point.get(1).copied().unwrap_or(0.0),
+                        ]
+                    })
+                    .collect(),
+            }
+            .path()
+            .contains(local),
+            Shape::Stroke { size, .. } => self.near_outline(local, size * 0.5 + 2.0_f64.max(slop)),
+            _ => self.near_outline(local, self.style.stroke_width * 0.5 + 4.0_f64.max(slop)),
         }
     }
 

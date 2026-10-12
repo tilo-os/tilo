@@ -9,6 +9,8 @@
 #include "site_info.h"
 #include "navigation_history.h"
 #include "page_automation.h"
+#include "agent_log.h"
+#include "paint_snapshot.h"
 #include "fullscreen_state.h"
 #include "credential_document.h"
 #include "credential_consent.h"
@@ -222,7 +224,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void OnRenderProcessTerminated(CefRefPtr<CefBrowser>,TerminationStatus,int,const CefString&) override {
     InvalidateCredentials();
     fullscreen_.ResetForRendererTermination();
+    // Publish the lifecycle invalidation before terminal outcomes: a consumer
+    // may admit recovery immediately after observing its owned completion.
     Event("renderer_terminated");
+    if(navigation_owner_)NavigationOutcome(*navigation_owner_,browser_->GetMainFrame()->GetURL(),"Renderer terminated");
+    for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),browser_->GetMainFrame()->GetURL(),"Renderer terminated");
+    pending_navigation_.clear();navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;navigation_aborting_=false;bootstrap_settled_=true;
   }
   void OnFrameCreated(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame) override { SendFilters(frame);SendScripts(frame); }
   void GetViewRect(CefRefPtr<CefBrowser>,CefRect& rect) override { rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height()); }
@@ -236,11 +243,51 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     site_clear_=new tilo::SiteClear(browser,[this](int request,const std::string& origin,uint64_t generation,bool success,const std::string& message){SiteResult(request,origin,generation,"clear",success,message);});site_clear_->Attach();
     document_scripts_=new tilo::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
     document_scripts_->Attach();
+    // Register before releasing navigation. A late private context must not
+    // infer idle composition from the absence of an event it could not observe.
+    composition_scripts_=new tilo::DocumentScripts(browser,[this] { ScheduleNavigation(); },
+        [this] { StringEvent("error","message","Private composition observer registration failed");CloseHost(); },
+        "tilo-private-text-input");
+    composition_scripts_->Attach();
+    composition_scripts_->Configure(R"JS(globalThis.__tiloTextComposition = (() => {
+      let trusted = false, synthetic = false, unknown = false;
+      let root = null;
+      // An initial about:blank iframe can retain its Window when it navigates.
+      // Observe the native load on that Window, then bind its current Document.
+      // A late context or a document.open-removed listener remains unknown.
+      const observer = new MutationObserver(records => {
+        for (const record of records) {
+          for (const node of record.removedNodes) if (node === root) unknown = true;
+        }
+        if (root !== document.documentElement) unknown = true;
+        if (unknown) { root = null; observer.disconnect(); }
+      });
+      const loaded = event => {
+        if (!event.isTrusted || unknown || !['http:', 'https:'].includes(location.protocol)) return;
+        root = document.documentElement;
+        if (!root) return;
+        observer.observe(document, {childList: true});
+        removeEventListener('DOMContentLoaded', loaded);
+      };
+      addEventListener('DOMContentLoaded', loaded);
+      addEventListener('compositionstart', event => {
+        if (event.isTrusted) trusted = true; else synthetic = true;
+      }, true);
+      addEventListener('compositionend', event => {
+        // Page-generated end events cannot clear actual native composition.
+        if (event.isTrusted) trusted = false; else synthetic = false;
+      }, true);
+      return Object.freeze({active: () => unknown || !root || root !== document.documentElement || trusted || synthetic});
+    })())JS");
     navigation_history_=new tilo::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
     page_automation_=new tilo::PageAutomation(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);},
         [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);});
     page_automation_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    agent_log_=new tilo::AgentLog(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
+    agent_log_->Attach();
+    paint_snapshot_=new tilo::PaintSnapshot(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
+    paint_snapshot_->Attach();
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
@@ -258,22 +305,28 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     navigation_history_=nullptr;
     if(page_automation_)page_automation_->Detach();
     page_automation_=nullptr;
+    if(agent_log_)agent_log_->Detach();
+    agent_log_=nullptr;
+    if(paint_snapshot_)paint_snapshot_->Detach();
+    paint_snapshot_=nullptr;
     if(startup_diagnostics_)startup_diagnostics_->Detach();
     startup_diagnostics_=nullptr;
     if(document_scripts_)document_scripts_->Detach();
     document_scripts_=nullptr;
+    if(composition_scripts_)composition_scripts_->Detach();
+    composition_scripts_=nullptr;
     browser_=nullptr;
     download_owners.Destroy(id_);
     Event("closed");clients.erase(id_);PublishDownloadRuntime();
     if(closing && clients.empty())CefQuitMessageLoop();
   }
-  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool,bool) override {
-    if(frame->IsMain()) { TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
+  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool,bool redirect) override {
+    if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
   }
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
   }
-  void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { ++favicon_generation_;std::optional<std::pair<std::string,std::pair<uint64_t,bool>>> pending;if(pending_main_media_token_){const auto key=frame->GetIdentifier().ToString();auto found=media_frames_.find(key);if(found!=media_frames_.end() && found->second.first==*pending_main_media_token_)pending=std::make_pair(key,std::make_pair(found->second.first,false));}media_frames_.clear();if(pending)media_frames_.insert(*pending);pending_main_media_token_.reset();media_limit_reported_=false;last_media_playing_.reset();navigation_history_->Invalidate();StringEvent("uri","url",url);PublishMediaState(false); } }
+  void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || url==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(url.ToString()); } main_navigation_finished_=false;++favicon_generation_;std::optional<std::pair<std::string,std::pair<uint64_t,bool>>> pending;if(pending_main_media_token_){const auto key=frame->GetIdentifier().ToString();auto found=media_frames_.find(key);if(found!=media_frames_.end() && found->second.first==*pending_main_media_token_)pending=std::make_pair(key,std::make_pair(found->second.first,false));}media_frames_.clear();if(pending)media_frames_.insert(*pending);pending_main_media_token_.reset();media_limit_reported_=false;last_media_playing_.reset();navigation_history_->Invalidate();StringEvent("uri","url",url);PublishMediaState(false); } }
   void OnTitleChange(CefRefPtr<CefBrowser>,const CefString& title) override { StringEvent("title","title",title); }
   void OnFaviconURLChange(CefRefPtr<CefBrowser> browser,const std::vector<CefString>& urls) override {
     if(urls.empty() || urls.front().ToString().size()>8192) return;
@@ -287,20 +340,43 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     auto d=CefDictionaryValue::Create();d->SetString("page_url",page);d->SetInt("width",width);d->SetInt("height",height);d->SetString("png",CefBase64Encode(bytes.data(),bytes.size()));Event("favicon",d);
   }
   void OnLoadingProgressChange(CefRefPtr<CefBrowser>,double progress) override { auto d=CefDictionaryValue::Create();d->SetDouble("progress",progress);Event("progress",d); }
-  void OnLoadingStateChange(CefRefPtr<CefBrowser>,bool,bool back,bool forward) override { auto d=CefDictionaryValue::Create();d->SetBool("back",back);d->SetBool("forward",forward);Event("history",d); }
+  void CompleteMainNavigation(const std::string& uri,int status) {
+    // A failed frame may subsequently finish its error document. Publishing
+    // success there would overwrite the queued failure in the native bridge.
+    if(main_navigation_finished_ || (failed_main_navigation_ && *failed_main_navigation_==uri)) return;
+    main_navigation_finished_=true;
+    auto loaded=CefDictionaryValue::Create();loaded->SetString("url",uri);loaded->SetInt("status",status);Event("loaded",loaded);
+  }
+  void OnLoadingStateChange(CefRefPtr<CefBrowser> browser,bool loading,bool back,bool forward) override {
+    auto d=CefDictionaryValue::Create();d->SetBool("back",back);d->SetBool("forward",forward);Event("history",d);
+    if(loading) { navigation_busy_=true; main_navigation_finished_=false; failed_main_navigation_.reset(); return; }
+    // OnLoadEnd excludes same-document history; overall loading settles it.
+    CompleteMainNavigation(browser->GetMainFrame()->GetURL().ToString(),0);
+    if(!navigation_dispatched_ || navigation_started_ || navigation_aborting_) {
+      const auto uri=browser->GetMainFrame()->GetURL().ToString();
+      if(navigation_owner_) NavigationOutcome(*navigation_owner_,uri,navigation_error_);
+      navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;navigation_aborting_=false;bootstrap_settled_=true;navigation_urls_.clear();navigation_error_.reset();
+      ScheduleNavigation();
+    }
+  }
   void OnLoadStart(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,TransitionType) override {
     if(!frame->IsMain()) return;
+    main_navigation_finished_=false;
     InvalidateCredentials();
     TraceGeometry("load-start",id_);
     credential_committed_origin_=tilo::Origin(frame->GetURL());
   }
   void OnLoadEnd(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,int status) override {
-    if(!frame->IsMain()) return; if(startup_diagnostics_ && tilo::Origin(frame->GetURL()).starts_with("https://"))startup_diagnostics_->Loaded();OfferCredentialContext(frame);pending_main_media_token_.reset();PublishZoom();auto d=CefDictionaryValue::Create();d->SetString("url",frame->GetURL());d->SetInt("status",status);Event("loaded",d);SendScripts();
+    if(!frame->IsMain()) return;
+    if(startup_diagnostics_ && tilo::Origin(frame->GetURL()).starts_with("https://"))startup_diagnostics_->Loaded();
+    OfferCredentialContext(frame);pending_main_media_token_.reset();PublishZoom();
+    CompleteMainNavigation(frame->GetURL().ToString(),status);SendScripts();
     if(page_automation_)page_automation_->NavigationFinished();
   }
   void OnLoadError(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,ErrorCode code,const CefString& text,const CefString& url) override {
-    if(frame->IsMain()) InvalidateCredentials();
+    if(frame->IsMain()) { failed_main_navigation_=url.ToString(); InvalidateCredentials(); }
     if(!frame->IsMain()) return;
+    if(navigation_owner_ && navigation_started_ && navigation_urls_.count(url.ToString())) navigation_error_=text.ToString();
     if(code!=ERR_ABORTED) {auto d=CefDictionaryValue::Create();d->SetString("url",url);d->SetString("message",text);Event("error",d);}
     if(page_automation_)page_automation_->NavigationFinished();
   }
@@ -391,7 +467,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void SiteResult(int request,const std::string& origin,uint64_t generation,const std::string& action,bool success,const std::string& message) {
     auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("origin",origin);d->SetDouble("generation",generation);d->SetString("action",action);d->SetBool("success",success);d->SetString("message",message);Event("site_result",d);
   }
-  void SiteCommand(CefRefPtr<CefDictionaryValue> command) {
+  bool SiteCommand(CefRefPtr<CefDictionaryValue> command) {
     const auto origin=command->GetString("origin").ToString(),op=command->GetString("op").ToString();const int request=command->GetInt("request_id");
     auto document=request_filter->Document(browser_->GetIdentifier());const auto actual=tilo::Origin(browser_->GetMainFrame()->GetURL());
     const auto action=op=="site_status"?"status":command->GetString("action").ToString();
@@ -399,7 +475,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     // so chrome can finish the matching request instead of waiting for timeout.
     const auto reply_generation=op=="site_action"?static_cast<uint64_t>(Number(command,"generation")):(document?document->generation:0);
     if(origin.empty() || origin!=actual || !document || document->origin!=actual || (op=="site_action" && Number(command,"generation")!=document->generation)) {
-      SiteResult(request,origin,reply_generation,action,false,"Page changed; reopen site information");return;
+      SiteResult(request,origin,reply_generation,action,false,"Page changed; reopen site information");return false;
     }
     if(op=="site_action") {
       if(action=="reload") {
@@ -407,22 +483,22 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         // method rechecked the original scope. The UI thread cannot navigate
         // between that check and the ordinary reload command below.
         SiteResult(request,origin,document->generation,action,true,"Reloading this page");
-        auto reload=CefDictionaryValue::Create();reload->SetString("op","reload");Command(reload);return;
+        browser_->Reload();return true;
       }
       if(action=="clear") {
         if(site_clear_->Busy())SiteResult(request,origin,document->generation,action,false,"A storage clear is already running");
         else site_clear_->Clear(request,origin,document->generation);
-        return;
+        return false;
       }
       if(action=="revoke") {
         capabilities_->Close();auto context=browser_->GetHost()->GetRequestContext();for(const auto& permission:tilo::kSitePermissions)context->SetContentSetting(origin,origin,permission.type,CEF_CONTENT_SETTING_VALUE_BLOCK);
         SiteResult(request,origin,document->generation,action,true,"Permissions blocked. Reload to end existing media sessions.");
       } else if(action=="enable" || action=="disable") {
         auto origins=request_filter->Snapshot()->exceptions;if(action=="disable")origins.insert(origin);else origins.erase(origin);
-        if(origins.size()>1024) {SiteResult(request,origin,document->generation,action,false,"Site exception limit reached");return;}
+        if(origins.size()>1024) {SiteResult(request,origin,document->generation,action,false,"Site exception limit reached");return false;}
         request_filter->Exceptions(origins);PublishFilters();SiteResult(request,origin,document->generation,action,true,"Protection preference changed");
       }
-      return;
+      return false;
     }
     auto state=request_filter->Snapshot();auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("origin",actual);d->SetDouble("generation",document->generation);d->SetDouble("blocked",std::min<uint64_t>(document->blocked.load(),9007199254740991ULL));d->SetBool("global_enabled",state->enabled);d->SetBool("excepted",state->exceptions.count(actual));d->SetBool("effective",state->enabled && !state->exceptions.count(actual));
     auto entry=browser_->GetHost()->GetVisibleNavigationEntry();auto ssl=entry && tilo::Origin(entry->GetURL())==actual?entry->GetSSLStatus():nullptr;
@@ -431,6 +507,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     std::string subject,issuer;double expires=0;
     if(ssl)if(auto certificate=ssl->GetX509Certificate()){subject=certificate->GetSubject()->GetDisplayName();issuer=certificate->GetIssuer()->GetDisplayName();expires=certificate->GetValidExpiry().val;}
     d->SetString("subject",subject.substr(0,512));d->SetString("issuer",issuer.substr(0,512));d->SetDouble("expires",expires);d->SetDictionary("permissions",tilo::PermissionStatus(browser_->GetHost()->GetRequestContext(),actual));Event("site_status",d);
+    return false;
   }
   void SendScripts(CefRefPtr<CefFrame> frame=nullptr) {
     if(!frame) { if(!browser_) return;frame=browser_->GetMainFrame(); }
@@ -442,16 +519,55 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     auto scripts=scripts_;auto policy=request_filter->Snapshot();if(!blocking_scripts_.empty())scripts.push_back(tilo::BlockingScriptSource(blocking_scripts_,policy->enabled,policy->exceptions));return tilo::ScriptSource(scripts);
   }
   void UpdateScriptPolicy() {if(document_scripts_){document_scripts_->Configure(ScriptSource());SendScripts();}}
+  void NavigationOutcome(int request,const std::string& uri,const std::optional<std::string>& error) {
+    auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("url",uri);if(error)d->SetString("error",*error);Event("navigation_outcome",d);
+  }
+  void ScheduleNavigation() {
+    CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){self->FlushNavigation();},CefRefPtr<Client>(this)));
+  }
   void FlushNavigation() {
     TraceGeometry("navigation-flush",id_);
-    if(!document_scripts_ || document_scripts_->Busy()) return;
-    auto pending=std::move(pending_navigation_);pending_navigation_.clear();
-    for(auto& command:pending) Command(command);
+    if(!browser_ || closing || !document_scripts_ || document_scripts_->Busy() || !composition_scripts_ || composition_scripts_->Busy() || !bootstrap_settled_ || navigation_busy_ || pending_navigation_.empty()) return;
+    auto command=pending_navigation_.front();pending_navigation_.erase(pending_navigation_.begin());
+    navigation_dispatched_=true;navigation_started_=false;navigation_busy_=true;navigation_urls_.clear();navigation_error_.reset();
+    const bool scoped=command->GetString("op")=="scoped_navigation";
+    navigation_owner_=scoped?std::optional<int>(command->GetInt("request_id")):std::nullopt;
+    navigation_target_.clear();
+    std::string op=scoped?command->GetString("command").ToString():command->GetString("op").ToString();
+    auto frame=browser_->GetMainFrame();
+    if(op=="navigate") {navigation_target_=command->GetString("url");CefURLParts parts;if(CefParseURL(navigation_target_,parts))navigation_target_=CefString(&parts.spec).ToString();TraceGeometry("navigate-load-url",id_);frame->LoadURL(command->GetString("url"));}
+    else if(op=="back" && browser_->CanGoBack())browser_->GoBack();
+    else if(op=="forward" && browser_->CanGoForward())browser_->GoForward();
+    else if(op=="reload")browser_->Reload();
+    else if(op=="site_action" && SiteCommand(command)) {}
+    else if(op=="history_entry" && navigation_history_->Navigate(scoped?command->GetInt("history_request_id"):command->GetInt("request_id"),command->GetInt("id"),[self=CefRefPtr<Client>(this),owner=navigation_owner_]{if(owner && self->navigation_owner_==owner)self->RefuseNavigation("History navigation was refused");})) {}
+    else { if(navigation_owner_)NavigationOutcome(*navigation_owner_,frame->GetURL(),"Navigation is unavailable");navigation_owner_.reset();navigation_dispatched_=false;navigation_busy_=false;ScheduleNavigation(); }
   }
   bool DeferNavigation(CefRefPtr<CefDictionaryValue> command) {
-    if(!document_scripts_->Busy())return false;
-    if(pending_navigation_.size()>=256) {StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();return true;}
-    TraceGeometry("navigation-queued",id_);pending_navigation_.push_back(command->Copy(false));return true;
+    if(pending_navigation_.size()>=256) {if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),browser_->GetMainFrame()->GetURL(),"Navigation queue exhausted");else {StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();}return true;}
+    TraceGeometry("navigation-queued",id_);pending_navigation_.push_back(command->Copy(false));
+    // An explicit replacement stops the old lifecycle; its remaining callbacks
+    // finish without owning the newly queued operation.
+    if(bootstrap_settled_ && navigation_busy_) {
+      if(navigation_owner_)NavigationOutcome(*navigation_owner_,browser_->GetMainFrame()->GetURL(),"Navigation was superseded");
+      navigation_owner_.reset();AbortNavigation();
+    }
+    ScheduleNavigation();return true;
+  }
+  void RefuseNavigation(const std::string& error) {
+    if(navigation_owner_)NavigationOutcome(*navigation_owner_,browser_->GetMainFrame()->GetURL(),error);
+    navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;ScheduleNavigation();
+  }
+  void AbortNavigation() {
+    navigation_aborting_=true;browser_->StopLoad();
+    CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){
+      if(!self->browser_ || !self->navigation_aborting_ || self->browser_->IsLoading())return;
+      self->navigation_aborting_=false;self->navigation_busy_=false;self->navigation_dispatched_=false;self->navigation_started_=false;self->ScheduleNavigation();
+    },CefRefPtr<Client>(this)));
+  }
+  void CancelNavigation(int request) {
+    std::erase_if(pending_navigation_,[request](const auto& command){return command->GetString("op")=="scoped_navigation" && command->GetInt("request_id")==request;});
+    if(navigation_owner_==request) {navigation_owner_.reset();AbortNavigation();}
   }
   void Command(CefRefPtr<CefDictionaryValue> d) {
     CEF_REQUIRE_UI_THREAD();
@@ -459,6 +575,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(op=="shutdown") { CloseHost();return; }
     if(!browser_ || closing) return;
     if(transfer_owner_) {if(d->GetString("op")=="close_tab" && !downloads->Detach(id_)) CloseNative();return;}
+    if(op=="cancel_navigation") {CancelNavigation(d->GetInt("request_id"));return;}
+    if(op=="scoped_navigation" && d->GetInt("request_id")<=0) {CloseHost();return;}
     if(op=="site_status" || op=="site_action") {
       // Preserve the full scoped command across registration, rather than
       // queueing a generic reload that could act on a later document.
@@ -467,7 +585,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     if(op=="site_exceptions") {std::set<std::string> origins;auto list=d->GetList("origins");for(size_t i=0;i<list->GetSize();++i)origins.insert(list->GetString(i));request_filter->Exceptions(origins);PublishFilters();return;}
     if(op=="audio_muted") { browser_->GetHost()->SetAudioMuted(d->GetBool("muted"));auto state=CefDictionaryValue::Create();state->SetBool("muted",browser_->GetHost()->IsAudioMuted());Event("audio_muted",state);return; }
-    if((op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") && DeferNavigation(d))return;
+    if((op=="scoped_navigation" || op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") && DeferNavigation(d))return;
     auto host=browser_->GetHost();auto frame=browser_->GetMainFrame();
     if(op=="visibility") {
       const bool was_visible=visible_;
@@ -489,7 +607,21 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
     }
     else if(op=="credential_action") {CredentialCommand(d);}
-    else if(op=="page") page_automation_->Request(d);
+    else if(op=="text_input") {
+      if(!visible_ && d->GetString("action")!="cancel_text_input") {
+        auto fields=CefDictionaryValue::Create();fields->SetInt("request_id",d->GetInt("request_id"));
+        fields->SetBool("ok",false);fields->SetString("code","unavailable");
+        fields->SetString("message","The browser view is hidden");Event("text_input_result",fields);
+      } else page_automation_->Request(d);
+    }
+    else if(op=="page") {
+      // Whatever an agent reads or does next, its logs start here.
+      const auto action=d->GetString("action").ToString();
+      if(action=="console" || action=="network") agent_log_->Request(d);
+      else { agent_log_->Activate();page_automation_->Request(d); }
+    }
+    else if(op=="paint_capture") paint_snapshot_->Capture(d);
+    else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="try_close_tab") {DetachVisible();}
     else if(op=="close_tab") {CloseNative();}
     else if(op=="navigate") {TraceGeometry("navigate-load-url",id_);frame->LoadURL(d->GetString("url"));}
@@ -498,7 +630,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="back") browser_->GoBack();
     else if(op=="forward") browser_->GoForward();
     else if(op=="reload") browser_->Reload();
-    else if(op=="stop") browser_->StopLoad();
+    else if(op=="stop") {
+      for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),frame->GetURL(),"Navigation was stopped");
+      pending_navigation_.clear();
+      if(navigation_owner_)NavigationOutcome(*navigation_owner_,frame->GetURL(),"Navigation was stopped");
+      navigation_owner_.reset();AbortNavigation();
+    }
     else if(op=="exit_fullscreen") host->ExitFullscreen(true);
     else if(op=="find") {
       if(finding_) { if(pending_find_.size()<64) pending_find_.push_back(d->Copy(false)); }
@@ -530,6 +667,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         int flag=type==MBT_RIGHT?EVENTFLAG_RIGHT_MOUSE_BUTTON:type==MBT_MIDDLE?EVENTFLAG_MIDDLE_MOUSE_BUTTON:EVENTFLAG_LEFT_MOUSE_BUTTON;
         if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_|key_modifiers_;host->SendMouseClickEvent(event,type,!down,1); }
     } else if(op=="modifiers") key_modifiers_=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
+    else if(op=="edit_history") {
+      auto frame=browser_->GetFocusedFrame();
+      if(frame) { if(d->GetString("direction")=="undo") frame->Undo();else frame->Redo(); }
+    }
     else if(op=="key") Key(d);
     else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
     else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"));
@@ -902,11 +1043,20 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   uint64_t credential_generation_=0;
   bool credential_generation_exhausted_=false;
   std::string credential_committed_origin_;
+  bool main_navigation_finished_=false;
+  bool bootstrap_settled_=false,navigation_busy_=true,navigation_dispatched_=false,navigation_started_=false,navigation_aborting_=false;
+  std::string navigation_target_;
+  std::optional<int> navigation_owner_;
+  std::optional<std::string> navigation_error_;
+  std::set<std::string> navigation_urls_;
+  std::optional<std::string> failed_main_navigation_;
   CefRefPtr<tilo::NavigationHistory> navigation_history_;
   CefRefPtr<tilo::PageAutomation> page_automation_;
+  CefRefPtr<tilo::AgentLog> agent_log_;
+  CefRefPtr<tilo::PaintSnapshot> paint_snapshot_;
   CefRefPtr<tilo::Capabilities> capabilities_;
   CefRefPtr<tilo::StartupDiagnostics> startup_diagnostics_;
-  CefRefPtr<tilo::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
+  CefRefPtr<tilo::DocumentScripts> document_scripts_,composition_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
   CefRefPtr<tilo::SiteClear> site_clear_;
   int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
@@ -943,12 +1093,32 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   const auto op=d->GetString("op");int id=d->HasKey("tab")?d->GetInt("tab"):1;
   if(op=="shutdown") {CloseHost();return;}
   if(op=="create_tab") {CreateTab(id);return;}
+  if(op=="download_start") {
+    auto found=clients.find(id);
+    if(downloads->Accepting() && found!=clients.end() && found->second->accepts_downloads())
+      found->second->browser_->GetHost()->StartDownload(d->GetString("url"));
+    return;
+  }
   if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"));return; }
   if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
   if(op=="download_cancel_all") {downloads->CancelAll();return;}
   if(op=="download_retry") {auto found=clients.find(id);if(found!=clients.end() && found->second->accepts_downloads())downloads->Retry(d->GetInt("id"),found->second->browser_);return;}
   if(op=="resize") TraceGeometry("resize-dispatch",id,d->GetInt("width"),d->GetInt("height"),Number(d,"scale_factor"));
   auto found=clients.find(id);if(found!=clients.end()) found->second->Command(d);
+}
+#if defined(OS_LINUX)
+// Whether this machine has a GPU render node the browser could use.
+bool HasRenderNode() {
+  for(int node=128;node<136;++node)
+    if(access(("/dev/dri/renderD"+std::to_string(node)).c_str(),R_OK|W_OK)==0) return true;
+  return false;
+}
+#endif
+// Add `feature` to a comma-separated feature switch, keeping any already set.
+void AddFeature(CefRefPtr<CefCommandLine> command_line,const char* name,const std::string& feature) {
+  std::string value=command_line->HasSwitch(name)?command_line->GetSwitchValue(name).ToString():std::string();
+  if((","+value+",").find(","+feature+",")!=std::string::npos) return;
+  command_line->AppendSwitchWithValue(name,value.empty()?feature:value+","+feature);
 }
 class App final : public CefApp,public CefBrowserProcessHandler {
  public:
@@ -957,11 +1127,29 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     // The Rust application owns browser onboarding; Chromium's first-run UI
     // cannot be completed in an offscreen embedding and can stall Linux init.
     if(process_type.empty()) command_line->AppendSwitch("no-first-run");
+    // The process budget: the browser and its storage service, then one
+    // renderer per site. Tabs of one site share a renderer while different
+    // sites stay isolated; no spare renderer waits for a tab that may never
+    // open; the network service and GPU work run inside the browser process
+    // (a product decision: fewer processes over their separate sandboxes).
+    if(process_type.empty()) {
+      for(const char* flag:{"process-per-site","in-process-gpu"})
+        if(!command_line->HasSwitch(flag)) command_line->AppendSwitch(flag);
+      AddFeature(command_line,"enable-features","NetworkServiceInProcess2");
+      AddFeature(command_line,"disable-features","SpareRendererForSitePerProcess");
+    }
 #if defined(OS_LINUX)
     // Every frame is rendered offscreen, yet Chromium's default Linux platform
     // exits unless it reaches an X server, and a Tilo app sandbox has none.
     if(process_type.empty() && !std::getenv("DISPLAY") && !command_line->HasSwitch("ozone-platform"))
       command_line->AppendSwitchWithValue("ozone-platform","headless");
+    // Without a GPU (a hosting server running agents), in-process GPU work
+    // fails EGL and takes the browser down: compose in software instead, and
+    // trade caches for memory as Chromium does on low-end devices.
+    if(process_type.empty() && !HasRenderNode()) {
+      for(const char* flag:{"disable-gpu","enable-low-end-device-mode"})
+        if(!command_line->HasSwitch(flag)) command_line->AppendSwitch(flag);
+    }
 #endif
   }
   void OnContextInitialized() override {
@@ -997,7 +1185,24 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="visibility") return type("visible",VTYPE_BOOL);
   if(op=="audio_muted") return type("muted",VTYPE_BOOL);
   if(op=="navigation_history" || op=="history_entry") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && (op=="navigation_history" ? (!d->HasKey("direction") || (type("direction",VTYPE_STRING) && (d->GetString("direction")=="back" || d->GetString("direction")=="forward"))) : (type("id",VTYPE_INT) && d->GetInt("id")>0));
+  if(op=="scoped_navigation" || op=="cancel_navigation") {
+    if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0)return false;
+    const auto command=d->GetString("command").ToString();
+    if(op=="scoped_navigation" && (!type("command",VTYPE_STRING) || (command!="navigate" && command!="back" && command!="forward" && command!="reload" && command!="history_entry")))return false;
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id" && !(op=="scoped_navigation" && (key=="command" || (command=="navigate" && key=="url") || (command=="history_entry" && (key=="history_request_id" || key=="id")))))return false;
+    if(command=="navigate")return type("url",VTYPE_STRING) && !d->GetString("url").empty() && d->GetString("url").length()<=8192;
+    if(command=="history_entry")return type("history_request_id",VTYPE_INT) && d->GetInt("history_request_id")>0 && type("id",VTYPE_INT) && d->GetInt("id")>0;
+    return true;
+  }
   if(op=="navigate") return type("url",VTYPE_STRING) && !d->GetString("url").empty();
+  if(op=="download_start") {
+    if(!type("url",VTYPE_STRING))return false;
+    CefURLParts parts;
+    if(!CefParseURL(d->GetString("url"),parts))return false;
+    const auto scheme=CefString(&parts.scheme).ToString();
+    return (scheme=="https" || scheme=="http") && !CefString(&parts.host).empty();
+  }
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
   if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
@@ -1014,6 +1219,12 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(op=="scroll") return number("dx") && number("dy") && std::abs(Number(d,"dx"))<=1000000 && std::abs(Number(d,"dy"))<=1000000;
     if(op=="mouse_button") { auto b=d->GetString("button");return type("down",VTYPE_BOOL) && (b=="left" || b=="middle" || b=="right"); }
     return true;
+  }
+  if(op=="edit_history") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="direction")return false;
+    return type("direction",VTYPE_STRING) &&
+      (d->GetString("direction")=="undo" || d->GetString("direction")=="redo");
   }
   if(op=="key") return type("key",VTYPE_STRING) && type("down",VTYPE_BOOL);
   if(op=="scripts" || op=="blocking_scripts") {
@@ -1050,12 +1261,36 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(op=="site_status")return true;
     const auto action=d->GetString("action");return number("generation") && tilo::ValidDocumentGeneration(Number(d,"generation")) && (action=="clear" || action=="revoke" || action=="enable" || action=="disable" || action=="reload");
   }
+  if(op=="text_input") {
+    if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
+    const auto action=d->GetString("action").ToString();
+    if(action!="prepare_text_input" && action!="start_text_input" && action!="check_text_input" && action!="commit_text_input" && action!="cancel_text_input" && action!="undo_text_input" && action!="redo_text_input")return false;
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id" && key!="action" && key!="lease" && key!="text" && key!="expires_ms" && key!="history_scope" && key!="native_caret")return false;
+    if(d->HasKey("native_caret") && (!type("native_caret",VTYPE_BOOL) || action!="prepare_text_input"))return false;
+    if(action!="prepare_text_input") {
+      if(!type("lease",VTYPE_STRING))return false;
+      const auto lease=d->GetString("lease").ToString();
+      if(lease.size()!=32 || !std::all_of(lease.begin(),lease.end(),[](char c){return (c>='0' && c<='9') || (c>='a' && c<='f');}))return false;
+    }
+    if(d->HasKey("history_scope") && (!type("history_scope",VTYPE_STRING) || (action!="undo_text_input" && action!="redo_text_input") || d->GetString("history_scope")!="page"))return false;
+    if(d->HasKey("expires_ms") && (!number("expires_ms") || Number(d,"expires_ms")<=0 || !std::isfinite(Number(d,"expires_ms"))))return false;
+    return action!="commit_text_input" || (type("text",VTYPE_STRING) && !d->GetString("text").empty() && d->GetString("text").ToString().size()<=4096);
+  }
   if(op=="page") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
     const auto action=d->GetString("action").ToString();
-    if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="press" && action!="submit")return false;
+    if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="press" && action!="submit" &&
+       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network")return false;
+    const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
+      action=="console" || action=="network";
     if(d->HasKey("element") ? !type("element",VTYPE_STRING) || d->GetString("element").empty() || d->GetString("element").length()>64
-                            : action!="outline" && action!="press")return false;
+                            : !elementless)return false;
+    for(const char* flag:{"cross_origin","secret"})if(d->HasKey(flag) && !type(flag,VTYPE_BOOL))return false;
+    if(action=="at" && (!number("x") || !number("y") || Number(d,"x")<0 || Number(d,"y")<0 || Number(d,"x")>100000 || Number(d,"y")>100000))return false;
+    if(action=="settle" && (!type("quiet_ms",VTYPE_INT) || !type("timeout_ms",VTYPE_INT) || d->GetInt("quiet_ms")<50 ||
+       d->GetInt("timeout_ms")<d->GetInt("quiet_ms") || d->GetInt("timeout_ms")>20000))return false;
+    if((action=="console" || action=="network") && (!number("since") || Number(d,"since")<0))return false;
     if(action=="fill" && (!type("text",VTYPE_STRING) || d->GetString("text").length()>65536))return false;
     if(action=="select") {
       if(!type("values",VTYPE_LIST))return false;auto values=d->GetList("values");
@@ -1068,6 +1303,13 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     }
     return true;
   }
+  if(op=="paint_capture") {
+    if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("styles",VTYPE_LIST))return false;
+    auto styles=d->GetList("styles");if(!styles->GetSize() || styles->GetSize()>64)return false;
+    for(size_t i=0;i<styles->GetSize();++i)if(styles->GetType(i)!=VTYPE_STRING || styles->GetString(i).empty() || styles->GetString(i).length()>64)return false;
+    return true;
+  }
+  if(op=="paint_resource") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && type("url",VTYPE_STRING) && !d->GetString("url").empty() && d->GetString("url").length()<=1048576;
   if(op=="filter_rules") return type("rules",VTYPE_STRING) && (type("enabled",VTYPE_BOOL) || type("enabled",VTYPE_NULL));
   return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="download_cancel_all" || op=="shutdown";
 }

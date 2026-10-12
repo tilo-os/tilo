@@ -4,6 +4,9 @@
 //! inside the state file ([`TreeStore`]), so every owner publication also
 //! binds an enrolled slot, projects the room into the tree and exports the
 //! resulting file-system capabilities under the same writer lock.
+#[cfg(test)]
+mod frame_loop_tests;
+mod local_filesystem_consents;
 pub(crate) mod publication;
 #[cfg(test)]
 mod publication_tests;
@@ -11,27 +14,41 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(crate) use tests::test_enrolled_owner;
+pub(crate) use tests::{test_enrolled_owner, tree_of};
 
 use super::{
     persist,
     state::{RoomId, WorkspaceId, WorkspaceTreeHandle},
 };
 pub use store::NativeStateRuntime;
+pub(crate) use store::NativeStateWitness;
 pub use tilo_joined_room::NativeAuthorityStorage;
 use tilo_joined_room::{Change, Store};
 pub(crate) use tilo_joined_room::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner};
 #[cfg(test)]
 pub(crate) use tilo_joined_room::{NativeBootstrap, PendingEnrollmentId, PendingEnrollmentStatus};
 
+#[cfg(test)]
+thread_local! {
+    /// Owner publications this thread made, so a test can weigh what each costs.
+    static PUBLICATIONS_ON_THIS_THREAD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The owner's record as one field of the state file, written through the
 /// state file's single writer.
 struct TreeStore {
     tree: WorkspaceTreeHandle,
     runtime: NativeStateRuntime,
+    history: tilo_joined_room::HistoryContent,
 }
 
 impl Store for TreeStore {
+    fn put_history(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
+        self.history.put(bytes)
+    }
+    fn read_history(&self, hash: [u8; 32]) -> Result<Vec<u8>, String> {
+        self.history.read(hash)
+    }
     fn healthy(&self) -> bool {
         self.runtime.healthy()
     }
@@ -54,9 +71,17 @@ impl Store for TreeStore {
         change: Change<'_>,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
+        #[cfg(test)]
+        PUBLICATIONS_ON_THIS_THREAD.with(|count| count.set(count.get().saturating_add(1)));
         let mut tree = self.tree.write();
-        store::preflight(&*tree, store::MAX_STATE_BYTES).map_err(|e| e.to_string())?;
-        let mut candidate = tree.clone();
+        let path = tree
+            .persist_path
+            .clone()
+            .ok_or("native owner state-file path removed")?;
+        // Everything but the documents: encoded once below, and installed
+        // with the live documents moved into it only once it is published.
+        let mut candidate = tree.clone_without_documents();
+        let mut bound = false;
         if let Change::Room {
             room,
             bind: Some(target),
@@ -73,21 +98,19 @@ impl Store for TreeStore {
             if candidate.room_of(target.workspace) != Some(room) {
                 return Err("enrollment local slot cannot be bound".into());
             }
+            bound = true;
         }
         candidate.native_authority = next.clone();
         if let Change::Room { room, peer, .. } = change {
             candidate.project_native_room(room, peer);
         }
+        // The encode is bounded: an oversized candidate is refused here.
         let bytes = persist::encode_tree(&candidate).map_err(|e| e.to_string())?;
-        let path = tree
-            .persist_path
-            .as_ref()
-            .ok_or("native owner state-file path removed")?;
         let sequence = tree.native_runtime.next_sequence();
         let published = tree
             .native_runtime
             .publish(
-                path,
+                &path,
                 &tree.native_authority,
                 &candidate.native_authority,
                 &bytes,
@@ -99,17 +122,24 @@ impl Store for TreeStore {
         if published == store::Publication::Superseded {
             return Err("native owner publication was superseded".into());
         }
+        candidate.adopt_documents_of(&mut tree);
+        if bound {
+            // The binding mirrored the room into the candidate's placeholder
+            // document; record it in the live one.
+            candidate.seed_doc_from_cache();
+        }
         match change {
             Change::Pending => {
-                persist::save_doc_for(&candidate, path, &bytes, sequence);
                 install();
                 *tree = candidate;
+                persist::save_document(&tree, &path);
             }
             Change::Room { .. } => {
                 install();
                 *tree = candidate;
                 // Only the acknowledged final admitted projection reaches authority exports.
                 tree.export_fs_capabilities();
+                crate::shell::launcher::action_authority::Export::of(&tree).submit();
             }
         }
         Ok(())
@@ -153,6 +183,7 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
         std::sync::Arc::new(TreeStore {
             tree: tree.clone(),
             runtime: native.native_runtime.clone(),
+            history: tilo_joined_room::HistoryContent::for_state_file(&path),
         }),
         native.native_authority.clone(),
         std::time::SystemTime::now(),
@@ -183,4 +214,9 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
     native.native_runtime.attach(&owner, &tree);
     native.export_fs_capabilities();
     Ok(owner)
+}
+
+#[cfg(test)]
+pub(crate) fn test_tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
+    tests::tree_of(owner)
 }

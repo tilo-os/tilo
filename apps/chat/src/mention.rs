@@ -3,7 +3,7 @@
 //! A mention is **not** a string that happens to start with `@`. It is a
 //! resolved pointer to one participant of the room, minted when the message is
 //! authored and stored in the shared CRDT next to the body (see
-//! [`crate::doc`]). That is what lets anything else — the person mentioned, an
+//! [`crate::record`]). That is what lets anything else — the person mentioned, an
 //! agent watching the room, a notification badge, a search index — ask a
 //! message *who it mentions* without re-parsing prose and re-guessing which
 //! "@ada" meant which Ada.

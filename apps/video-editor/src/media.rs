@@ -29,6 +29,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use ui::tilo_resource;
 
 /// Root of the Tilo P2P FUSE filesystem. Every collaborator mounts the same
 /// logical tree here, so a workspace-relative media path resolves to the
@@ -47,7 +48,7 @@ pub const KEPT_PREFIX: &str = "tilo-kept";
 /// Whether a media reference's *content* is available locally yet. The CRDT
 /// always carries the reference (so the clip can be laid out, trimmed and
 /// drawn from metadata); the bytes are a separate, lazily-hydrated concern.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, tilo_resource::Model)]
 pub enum Hydration {
     /// Path + metadata are known (replicated via the CRDT) but the bytes
     /// have not been fetched from the FUSE yet. The timeline still renders
@@ -120,6 +121,30 @@ pub fn project_anchor() -> Option<PathBuf> {
     PROJECT_ANCHOR.lock().ok().and_then(|s| s.clone())
 }
 
+/// Where a screenshot's sample media lives in place of the workspace mount;
+/// see [`serve_sample_media`].
+static SAMPLE_MEDIA: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// The stand-ins for the demo project's sources bundled with the crate
+/// (`sample-media/`).
+pub fn bundled_sample_media() -> PathBuf {
+    Path::new(env!("OUT_DIR")).join("sample-media")
+}
+
+/// Resolve relative media under `dir` before anywhere else: a capture of the
+/// demo project serves the bundled stand-ins ([`bundled_sample_media`]), so
+/// its sources resolve to local bytes without a live workspace mount. `None`
+/// stops it.
+pub fn serve_sample_media(dir: Option<PathBuf>) {
+    if let Ok(mut slot) = SAMPLE_MEDIA.lock() {
+        *slot = dir;
+    }
+}
+
+fn sample_media() -> Option<PathBuf> {
+    SAMPLE_MEDIA.lock().ok().and_then(|s| s.clone())
+}
+
 /// Resolve a media `path` to an absolute [`MediaSource`], reporting whether its
 /// bytes are hydrated.
 ///
@@ -127,10 +152,10 @@ pub fn project_anchor() -> Option<PathBuf> {
 ///   0. **Absolute path** — a `path` that is already absolute (an imported
 ///      local file, or a path already under the mount) is used verbatim. This
 ///      is how a portal-imported file outside the workspace reaches the decoder.
-///   1. **Bundled sample** — otherwise, if `$TILO_VE_MEDIA_DIR/<path>` exists,
-///      use it. `--shots` sets `TILO_VE_MEDIA_DIR` to the crate's `sample-media/`
-///      directory so headless captures decode real bytes deterministically
-///      without a live FUSE mount.
+///   1. **Sample media** — otherwise, if a capture serves sample media
+///      ([`serve_sample_media`]) and `<dir>/<path>` exists, use it, so
+///      headless captures read real bytes deterministically without a live
+///      FUSE mount.
 ///   2. **FUSE mount** — `/var/workspace/<path>`, when it is really there.
 ///      A workspace reference is what the CRDT replicates, so the mount is
 ///      asked before anything local: two peers must resolve the same
@@ -161,9 +186,9 @@ pub fn resolve(path: &str) -> MediaSource {
             hydration,
         };
     }
-    // 1. Bundled / dev override.
-    if let Some(dir) = std::env::var_os("TILO_VE_MEDIA_DIR") {
-        let candidate = Path::new(&dir).join(path);
+    // 1. A capture's sample media.
+    if let Some(dir) = sample_media() {
+        let candidate = dir.join(path);
         if candidate.exists() {
             return MediaSource {
                 abs_path: candidate,
@@ -237,13 +262,12 @@ mod tests {
             assert_eq!(workspace_path("Drone.mov"), "media/Drone.mov");
         }
         // Case `resolve_reports_projected_or_local_via_the_seam`:
-        // Both env-sensitive cases live in one test so there's no inter-test
-        // race over the shared `TILO_VE_MEDIA_DIR` process env var. The serial
-        // group additionally keeps it off the project anchor, which is the
-        // other piece of process-wide state `resolve` reads.
+        // Both cases live in one test so there's no inter-test race over the
+        // process-wide sample media. The serial group additionally keeps it
+        // off the project anchor, which is the other piece of process-wide
+        // state `resolve` reads.
         {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_VE_MEDIA_DIR");
+            serve_sample_media(None);
             // 1. A path that cannot exist on this host resolves as Projected —
             //    the reference is valid, the bytes simply are not hydrated.
             let src = resolve("media/definitely-not-here-42.mov");
@@ -257,20 +281,19 @@ mod tests {
             let name = format!("tilo-ve-seam-{}.bin", std::process::id());
             let f = dir.join(&name);
             std::fs::write(&f, b"x").unwrap();
-            env.set("TILO_VE_MEDIA_DIR", &dir);
+            serve_sample_media(Some(dir));
             let local = resolve(&name);
             assert_eq!(local.hydration, Hydration::Local);
             assert!(local.is_decodable());
             assert_eq!(local.abs_path, f);
-            env.remove("TILO_VE_MEDIA_DIR");
+            serve_sample_media(None);
             std::fs::remove_file(&f).ok();
         }
         // Case `a_relative_path_resolves_beside_the_project_and_then_in_the_working_directory`:
         // The two relative-path anchors, in one test so nothing races over the
         // shared process-wide anchor or the working directory.
         {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_VE_MEDIA_DIR");
+            serve_sample_media(None);
             let root = std::env::temp_dir().join(format!("tilo-ve-anchor-{}", std::process::id()));
             let nested = root.join("footage");
             std::fs::create_dir_all(&nested).expect("make the fixture tree");

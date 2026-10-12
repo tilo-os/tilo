@@ -13,7 +13,7 @@ fn control_bounds(node: &AccessNode, target: &str) -> Option<KurboRect> {
 }
 
 fn frame(app: &mut App) {
-    app.root_widget.sync(&mut app.state.doc, &app.state.root);
+    app.root_widget.sync(&app.state.doc, &app.state.root);
     app.init_layout();
     run_layout_pass(
         app,

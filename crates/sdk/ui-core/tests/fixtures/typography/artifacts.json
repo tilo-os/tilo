@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "file": "dark-display-1-text-1.png",
+      "sha256": "67e787b967c8b33906dc449b6c881f86a0cdf2f7acab892e940dd8ec0c364335",
+      "bytes": 412491,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/67e787b967c8b33906dc449b6c881f86a0cdf2f7acab892e940dd8ec0c364335/dark-display-1-text-1.png"
+    },
+    {
+      "file": "dark-display-1_25-text-1.png",
+      "sha256": "50df52dc2fd8534beacf16fe7393331e84e25def8ede89fec9b0f4cecdbf3c89",
+      "bytes": 546636,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/50df52dc2fd8534beacf16fe7393331e84e25def8ede89fec9b0f4cecdbf3c89/dark-display-1_25-text-1.png"
+    },
+    {
+      "file": "dark-display-1_5-text-1_25.png",
+      "sha256": "0298d4ac9638d09321ea3b902bca8ab2e40691654ff20497c8cefaa92ea9d7fb",
+      "bytes": 887602,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/0298d4ac9638d09321ea3b902bca8ab2e40691654ff20497c8cefaa92ea9d7fb/dark-display-1_5-text-1_25.png"
+    },
+    {
+      "file": "light-display-1-text-1.png",
+      "sha256": "a855d21367a4f532a1e5d70a4426cfc1137cc71f49799b824534e0ecb3dfbb28",
+      "bytes": 419109,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/a855d21367a4f532a1e5d70a4426cfc1137cc71f49799b824534e0ecb3dfbb28/light-display-1-text-1.png"
+    },
+    {
+      "file": "light-display-1_25-text-1.png",
+      "sha256": "3e442cfaf7acc5332b3e0a581b3aa5caa1e9e1956d9197e45969892541c92b9b",
+      "bytes": 552320,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/3e442cfaf7acc5332b3e0a581b3aa5caa1e9e1956d9197e45969892541c92b9b/light-display-1_25-text-1.png"
+    },
+    {
+      "file": "light-display-1_5-text-1_25.png",
+      "sha256": "365caf567ba23ef0459bcb83de65e51cf94fa2603aaf460619156fe59674f672",
+      "bytes": 900013,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/365caf567ba23ef0459bcb83de65e51cf94fa2603aaf460619156fe59674f672/light-display-1_5-text-1_25.png"
+    }
+  ]
+}

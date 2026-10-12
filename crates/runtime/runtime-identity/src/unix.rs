@@ -5,11 +5,10 @@
 //! signature, but private shares stay in the host session. `TILO_USER_IDENTITY`
 //! remains a compatibility path for non-sandboxed development only.
 //!
-//! The on-disk file is the JSON emitted by the identity-flow's
-//! `IdentityRecord::to_json_bytes` (see `crates/sdk/ui-core/src/widget/identity_flow`). This
-//! crate keeps a minimal local copy of the schema (`ondisk::IdentityRecord`)
-//! rather than depending on `ui`, which is heavy and depends on this SDK
-//! layer transitively — a dep the other way would form a cycle. Both sides
+//! The on-disk file is the JSON emitted by
+//! `tilo_identity_ceremony::IdentityRecord::to_json_bytes`. This crate keeps
+//! a minimal local copy of the schema (`ondisk::IdentityRecord`) rather than
+//! depending on the ceremony crate. Both sides
 //! bump the version tag together on a breaking schema change.
 //!
 //! In 1-of-1 (single-device) mode this crate signs locally via
@@ -33,11 +32,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -229,7 +224,7 @@ fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> 
 /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set to an
 /// absolute path.
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
-    if let Some(config) = xdg_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
+    if let Some(config) = tilo_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
         return Ok(config.join("tilo").join("identity"));
     }
     Err(io::Error::new(
@@ -297,19 +292,12 @@ impl IdentityLock {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(dir.join(LOCK_FILE))?;
-        let mut meta = file.metadata()?;
+        let meta = file.metadata()?;
         if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity lifecycle lock must be a private user-owned regular file",
             ));
-        }
-        // Older releases created this non-secret advisory file under a
-        // shared-group umask. Tighten an otherwise valid, user-owned lock in
-        // place so the security check does not strand upgraded identities.
-        if meta.permissions().mode() & 0o077 != 0 {
-            file.set_permissions(fs::Permissions::from_mode(0o600))?;
-            meta = file.metadata()?;
         }
         if meta.permissions().mode() & 0o077 != 0 {
             return Err(io::Error::new(
@@ -360,12 +348,26 @@ fn read_private_selector(path: &std::path::Path) -> io::Result<String> {
 
 /// Inspect all valid records without exposing their signing shares.
 ///
+/// Listing never writes: it takes no lock and creates or re-modes nothing.
+/// Every writer replaces a record by rename, so each record is read whole. A
+/// store that does not exist yet lists nothing.
+///
 /// # Errors
 ///
-/// Returns an error if the lifecycle lock can't be acquired, or `dir` can't
-/// be read.
+/// Returns an error if `dir` is not a real directory owned by this user, or
+/// can't be read.
 pub fn list_identities(dir: &std::path::Path) -> io::Result<Vec<IdentitySummary>> {
-    let _lock = IdentityLock::acquire(dir)?;
+    let meta = match fs::symlink_metadata(dir) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    if !meta.file_type().is_dir() || meta.uid() != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "identity root must be a real directory owned by the current user",
+        ));
+    }
     list_identities_unlocked(dir)
 }
 
@@ -474,8 +476,9 @@ fn import_identity_unlocked(
         ));
     }
     // Stage the legacy bytes only after validation, then immediately migrate
-    // under the same lock. A crash leaves a valid v1 record that the next
-    // launch can retry; it never leaves half a v2 record.
+    // under the same lock. A crash leaves a valid v1 record that sign-in or
+    // Settings secures (a launch refuses it); it never leaves half a v2
+    // record.
     write_private_atomic(&path, bytes)?;
     let secured = match provider {
         Some(provider) => secure_record_with_provider_unlocked(dir, &path, provider),
@@ -497,8 +500,9 @@ fn import_identity_unlocked(
     Ok(path)
 }
 
-/// Migrate one legacy identity into broker-only storage. Idempotent and safe
-/// to call at every launch.
+/// Move one record's inline key into its secret provider. Idempotent. Only
+/// provisioning and Settings secure records; an app launch reads them through
+/// [`load_for_launch`] and never writes the store.
 ///
 /// # Errors
 ///
@@ -548,12 +552,6 @@ fn secure_record_unlocked(
             )
         })?;
         let provider = secure_store::provider_for(dir, reference)?;
-        if !secure_store::FILE_FALLBACK
-            && provider.protection() == KeyProtection::BrokerFile
-            && preferred.protection() == KeyProtection::SecretService
-        {
-            return move_secret_unlocked(dir, path, provider.as_ref(), preferred.as_ref());
-        }
         let secret = provider.load(&reference.locator)?;
         identity_from_record(record, Some(secret.as_slice()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -584,7 +582,7 @@ fn secure_record_unlocked(
 fn tracing_warning_for_secret_service(error: &io::Error) {
     // This crate deliberately has no tracing dependency. Keep the fallback
     // observable to Settings via KeyProtection rather than writing a possibly
-    // sensitive backend error to stderr from every app launch.
+    // sensitive backend error to stderr from every sign-in.
     let _ = error;
 }
 
@@ -662,48 +660,6 @@ fn secure_record_with_provider_unlocked(
         return Err(error);
     }
     Ok(provider.protection())
-}
-
-/// Move a secured record's secret from `from` into `to`, once: stored there
-/// and read back, the record republished to reference it, and only then
-/// removed from `from`, unless another record still references it there.
-/// Any failure leaves the record on `from`, and is returned.
-fn move_secret_unlocked(
-    dir: &std::path::Path,
-    path: &std::path::Path,
-    from: &dyn SecretProvider,
-    to: &dyn SecretProvider,
-) -> io::Result<KeyProtection> {
-    let mut record = read_record(path)?;
-    let old = record.secret_ref.clone().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "secured identity has no secret reference",
-        )
-    })?;
-    let secret = from.load(&old.locator)?;
-    identity_from_record(read_record(path)?, Some(secret.as_slice()))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    to.store(&old.locator, secret.as_slice())?;
-    record.secret_ref = Some(SecretReference {
-        backend: to.backend_id().to_string(),
-        locator: old.locator.clone(),
-    });
-    let metadata = serde_json::to_vec_pretty(&record)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    write_private_atomic(path, &metadata)?;
-    let shared = list_identities_unlocked(dir)?.iter().any(|other| {
-        identity_path(dir, &other.id)
-            .ok()
-            .filter(|other_path| other_path != path)
-            .and_then(|other_path| read_record(&other_path).ok())
-            .and_then(|other_record| other_record.secret_ref)
-            .is_some_and(|other_ref| other_ref == old)
-    });
-    if !shared {
-        from.remove(&old.locator)?;
-    }
-    Ok(to.protection())
 }
 
 /// Select which identity the launcher brokers into newly started apps.
@@ -793,7 +749,7 @@ pub fn remove_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
 }
 
 /// Wire-format types the loader deserialises from disk, mirroring
-/// `ui::widget::identity_flow::IdentityRecord`; unknown fields are ignored.
+/// `tilo_identity_ceremony::IdentityRecord`; unknown fields are ignored.
 mod ondisk {
     use std::fmt;
 
@@ -921,6 +877,9 @@ enum LoadFailure {
     JsonMalformed(serde_json::Error),
     UnknownSchemaVersion(u32),
     SecuredRecordNeedsProvider,
+    /// A store record still carries its signing key inline: it was never
+    /// secured by provisioning.
+    KeyNotSecured,
     SecretSizeMismatch {
         got: usize,
     },
@@ -942,6 +901,11 @@ impl std::fmt::Display for LoadFailure {
             Self::SecuredRecordNeedsProvider => {
                 write!(f, "secured identity record needs its host secret provider")
             }
+            Self::KeyNotSecured => write!(
+                f,
+                "this identity's signing key is not secured yet, so apps cannot use it; \
+                 choose \"Protect now\" for it in Settings > Users, then open the app again"
+            ),
             Self::SecretSizeMismatch { got } => {
                 write!(f, "identity secret_bytes must be 32 bytes, got {got}")
             }
@@ -969,6 +933,7 @@ impl LoadFailure {
             LoadFailure::JsonMalformed(_)
             | LoadFailure::UnknownSchemaVersion(_)
             | LoadFailure::SecuredRecordNeedsProvider
+            | LoadFailure::KeyNotSecured
             | LoadFailure::SecretSizeMismatch { .. }
             | LoadFailure::PublicKeyMismatch { .. } => io::ErrorKind::InvalidData,
         };
@@ -1216,6 +1181,30 @@ impl SigningIdentity {
         }
     }
 
+    /// The person's secret-sync key: an X25519 key derived from the root,
+    /// which secrets every device of the person must open (disk-unlock
+    /// sibling halves) are sealed to. Only a single-device root held by
+    /// this process derives it; the root itself never leaves.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable::ConnectionFailed`] for a threshold share or a
+    /// broker connection, which hold no root to derive from.
+    pub fn secret_sync_key(&self) -> Result<tilo_seal::SecretKey, NotAvailable> {
+        match &self.source {
+            SigningSource::Local(Some(sk)) => {
+                let seed = Zeroizing::new(sk.to_bytes());
+                let derived =
+                    Zeroizing::new(blake3::derive_key("tilo secret-sync key v1", seed.as_ref()));
+                Ok(tilo_seal::SecretKey::from_bytes(*derived))
+            }
+            _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "the secret-sync key needs the person's root on this device",
+            ))),
+        }
+    }
+
     /// Ask the workspace identity broker to sign one named app action. The
     /// shell binds the package and workspace before the app inherits this
     /// connection, then evaluates the exact action capability.
@@ -1398,18 +1387,48 @@ pub fn load() -> Result<SigningIdentity, NotAvailable> {
     load_from_path(PathBuf::from(path_str))
 }
 
-fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvailable> {
-    let identity = shared_service_connection(fd)?;
-    Ok(SigningIdentity {
+/// The public fields of the identity [`load`] would return. A record named
+/// by [`IDENTITY_ENV_VAR`] is read without contacting its secret provider,
+/// so a caller that only shows who this is never waits on (or prompts for)
+/// the system secret store.
+///
+/// # Errors
+///
+/// As [`load`].
+pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
+    if runtime_portal::service_fd(IDENTITY_SERVICE).is_none()
+        && std::env::var_os(broker::BROKER_ENV_VAR).is_none()
+    {
+        let path = env::var(IDENTITY_ENV_VAR).map_err(|_| NotAvailable::ServiceFdMissing)?;
+        if path.is_empty() {
+            return Err(NotAvailable::ServiceFdMissing);
+        }
+        return load_metadata_from_path(std::path::Path::new(&path));
+    }
+    let identity = load()?;
+    Ok(IdentityMetadata {
         display_name: identity.display_name().to_owned(),
         avatar_color: identity.avatar_color(),
         group_public_key: identity.group_public_key(),
-        signing_public_key: identity.signing_public_key(),
-        device_certificate: identity.device_certificate().map(<[u8]>::to_vec),
         threshold: identity.threshold(),
         total_shares: identity.total_shares(),
         share_index: identity.share_index(),
-        single_device: identity.is_single_device(),
+    })
+}
+
+fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvailable> {
+    let identity = shared_service_connection(fd)?;
+    let metadata = identity.metadata();
+    Ok(SigningIdentity {
+        display_name: metadata.display_name().to_owned(),
+        avatar_color: metadata.avatar_color(),
+        group_public_key: metadata.group_public_key(),
+        signing_public_key: metadata.signing_public_key(),
+        device_certificate: metadata.device_certificate().map(<[u8]>::to_vec),
+        threshold: metadata.threshold(),
+        total_shares: metadata.total_shares(),
+        share_index: metadata.share_index(),
+        single_device: metadata.is_single_device(),
         source: SigningSource::ActionBroker(identity),
     })
 }
@@ -1464,7 +1483,13 @@ fn shared_service_connection(
 pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
     let bytes =
         read_record_bytes(&path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
-    let record = parse_record(&bytes)?;
+    load_record(&path, parse_record(&bytes)?)
+}
+
+fn load_record(
+    path: &std::path::Path,
+    record: ondisk::IdentityRecord,
+) -> Result<SigningIdentity, NotAvailable> {
     if record.schema_version == 1 {
         return identity_from_record(record, None);
     }
@@ -1488,6 +1513,28 @@ pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
         .load(&reference.locator)
         .map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
     identity_from_record(record, Some(secret.as_slice()))
+}
+
+/// Load a record from the identity store for an app launch, strictly
+/// read-only.
+///
+/// The record must already be in the form provisioning leaves it: a secured
+/// record whose key its secret provider holds, or a joined device's public
+/// record. One still carrying its key inline is refused, never rewritten:
+/// securing it belongs to provisioning and Settings, not to a launch.
+///
+/// # Errors
+///
+/// As [`load_from_path`], and [`NotAvailable::ConnectionFailed`] naming
+/// Settings when the record's key is not secured.
+pub fn load_for_launch(path: &std::path::Path) -> Result<SigningIdentity, NotAvailable> {
+    let bytes =
+        read_record_bytes(path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
+    let record = parse_record(&bytes)?;
+    if record.protection() == KeyProtection::LegacyPlaintext {
+        return Err(LoadFailure::KeyNotSecured.into_not_available());
+    }
+    load_record(path, record)
 }
 
 /// Read the public presentation and quorum fields of a private identity
@@ -1514,38 +1561,6 @@ pub fn load_metadata_from_path(path: &std::path::Path) -> Result<IdentityMetadat
         total_shares: identity.total_shares,
         share_index: identity.share_index,
     })
-}
-
-/// Load a secured record through an explicitly installed hardware provider.
-/// The metadata backend id must match; this prevents silently downgrading a
-/// TPM-labelled identity to a software key.
-///
-/// # Errors
-///
-/// Returns [`NotAvailable::ConnectionFailed`] if the file can't be read or
-/// is malformed, the record has no secret reference, the reference names a
-/// different provider than `provider`, or the secret can't be loaded.
-pub fn load_from_path_with_provider(
-    path: &std::path::Path,
-    provider: &dyn SecretProvider,
-) -> Result<SigningIdentity, NotAvailable> {
-    let bytes =
-        read_record_bytes(path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
-    let record = parse_record(&bytes)?;
-    let reference = record
-        .secret_ref
-        .as_ref()
-        .ok_or_else(|| LoadFailure::SecuredRecordNeedsProvider.into_not_available())?;
-    if reference.backend != provider.backend_id() {
-        return Err(NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "identity record uses a different secret provider",
-        )));
-    }
-    let secret = provider
-        .load(&reference.locator)
-        .map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
-    identity_from_record(record, Some(secret.as_slice()))
 }
 
 /// Same as [`load`] but parses from an in-memory byte slice.
@@ -1870,26 +1885,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn identity_files_stay_owner_only() {
-        // phase: legacy_group_writable_lifecycle_lock_is_tightened
+        // phase: a_shared_lifecycle_lock_is_refused_and_listing_takes_none
         {
             let dir = tempfile::tempdir().expect("identity directory");
             let lock = dir.path().join(LOCK_FILE);
-            fs::write(&lock, []).expect("legacy lock");
-            fs::set_permissions(&lock, fs::Permissions::from_mode(0o660)).expect("legacy mode");
+            fs::write(&lock, []).expect("shared lock");
+            fs::set_permissions(&lock, fs::Permissions::from_mode(0o660)).expect("shared mode");
 
+            assert!(import_identity(dir.path(), "personal", &record_bytes("Ada", 25)).is_err());
+            assert_eq!(list_identities(dir.path()).expect("list").len(), 0);
+            assert_eq!(
+                fs::metadata(&lock).expect("lock").permissions().mode() & 0o777,
+                0o660,
+                "listing never touches the lock"
+            );
             assert!(
-                list_identities(dir.path())
-                    .expect("upgrade lock")
+                list_identities(&dir.path().join("missing"))
+                    .unwrap()
                     .is_empty()
             );
-            assert_eq!(
-                fs::metadata(lock)
-                    .expect("lock metadata")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
+            assert!(!dir.path().join("missing").exists());
         }
         // phase: imported_secrets_and_selector_are_private
         {
@@ -1993,6 +2008,57 @@ mod tests {
             .remove(IDENTITY_ENV_VAR)
             .remove(broker::BROKER_ENV_VAR);
         scoped
+    }
+
+    /// The compositor's broker thread asked who this person is for every
+    /// presence frame an app sent. For an identity kept in a desktop's
+    /// Secret Service that loaded the signing secret over D-Bus from inside
+    /// the broker's runtime, which aborted the session.
+    #[test]
+    #[serial_test::serial(identity_env)]
+    fn who_this_is_never_reaches_for_the_signing_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let in_store = secure_store::SecretServiceProvider::with_store(
+            tilo_secrets::SecretStore::memory("so.tilo.identity"),
+        );
+        let path = import_identity_with_provider(
+            dir.path(),
+            "personal",
+            &record_bytes("Ada", 31),
+            &in_store,
+        )
+        .unwrap();
+        let record = read_record(&path).unwrap();
+        assert_eq!(
+            record
+                .secret_ref
+                .as_ref()
+                .map(|reference| reference.backend.as_str()),
+            Some("secret-service-v1"),
+            "the record names the Secret Service, as on a desktop that has one"
+        );
+
+        let mut env = clear_env();
+        env.set(IDENTITY_ENV_VAR, &path).set(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", dir.path().join("no-bus").display()),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (metadata, full) = runtime.block_on(async { (load_metadata(), load()) });
+        let metadata = metadata.expect("the public fields answer without the store");
+        assert_eq!(metadata.display_name, "Ada");
+        assert_eq!(
+            metadata.group_public_key,
+            SigningKey::from_bytes(&[31; 32]).verifying_key().to_bytes()
+        );
+        assert!(
+            full.is_err(),
+            "the signing secret needs the (absent) store, and says so"
+        );
+        drop(env);
     }
 
     #[test]
@@ -2443,52 +2509,6 @@ mod tests {
     }
 
     #[test]
-    fn a_broker_file_secret_moves_into_the_system_store_once_or_not_at_all() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("personal.json");
-        let file = BrokerFileProvider::new(dir.path());
-        write_private_atomic(&path, &record_bytes("Ada", 74)).unwrap();
-        secure_identity_with_provider(dir.path(), "personal", &file).unwrap();
-        let locator = hex::encode(SigningKey::from_bytes(&[74; 32]).verifying_key().to_bytes());
-
-        let refusing = SecretServiceFixture::new(dir.path(), true);
-        assert!(move_secret_unlocked(dir.path(), &path, &file, &refusing).is_err());
-        assert_published_identity_keeps_secret(&path, &file, 74);
-
-        let keyring = SecretServiceFixture::new(dir.path(), false);
-        assert_eq!(
-            move_secret_unlocked(dir.path(), &path, &file, &keyring).unwrap(),
-            KeyProtection::SecretService
-        );
-        assert_published_identity_keeps_secret(&path, &keyring, 74);
-        assert_eq!(
-            file.load(&locator).unwrap_err().kind(),
-            io::ErrorKind::NotFound,
-            "the broker file stayed behind"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_moves_broker_file_identities_into_the_keychain_when_secured() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("personal.json");
-        let file = BrokerFileProvider::new(dir.path());
-        write_private_atomic(&path, &record_bytes("Ada", 75)).unwrap();
-        secure_identity_with_provider(dir.path(), "personal", &file).unwrap();
-        assert_eq!(
-            with_preferred_secret_service(false, || secure_identity(dir.path(), "personal"))
-                .unwrap(),
-            KeyProtection::SecretService
-        );
-        assert_published_identity_keeps_secret(
-            &path,
-            &SecretServiceFixture::new(dir.path(), false),
-            75,
-        );
-    }
-
-    #[test]
     fn secure_record_publication_cleanup_before_publish_removes_new_secret() {
         use tilo_files::native::atomic::PublicationState;
         use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
@@ -2710,6 +2730,28 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_refuses_an_unsecured_record_without_rewriting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_private_dir(dir.path()).unwrap();
+        let bytes = record_bytes("Ada", 27);
+        let path = dir.path().join("primary.json");
+        write_private_atomic(&path, &bytes).unwrap();
+
+        let Err(error) = load_for_launch(&path) else {
+            panic!("an inline key must be refused");
+        };
+        assert!(error.to_string().contains("Settings > Users"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(!dir.path().join("secrets").exists());
+        assert!(!dir.path().join(LOCK_FILE).exists());
+
+        // Once secured, the same record launches.
+        secure_identity_with_provider(dir.path(), "primary", &BrokerFileProvider::new(dir.path()))
+            .unwrap();
+        assert!(load_for_launch(&path).unwrap().sign(b"secured").is_ok());
+    }
+
+    #[test]
     fn the_identity_store_keeps_explicit_safe_records() {
         // phase: multi_identity_store_has_explicit_active_record
         {
@@ -2767,7 +2809,7 @@ mod tests {
             let path = dir.path().join("identity-joined.json");
             write_private_atomic(&path, &bytes).unwrap();
 
-            // An app launch secures the selected record before brokering it.
+            // Sign-in and Settings may secure the selected record again.
             for _ in 0..2 {
                 assert_eq!(
                     secure_identity(dir.path(), "identity-joined").unwrap(),

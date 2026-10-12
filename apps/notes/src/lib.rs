@@ -6,9 +6,9 @@
 
 //! Library root for the notes app.
 //!
-//! The binary in `main.rs` is a thin shim that wires the [`NotesApp`]
-//! widget up to a `ui::App`. Everything else — data model, storage,
-//! widgets — lives here so we can test each layer in isolation.
+//! The binary in `main.rs` runs [`NotesShell`] on the framework. Everything
+//! else — data model, actions, widgets — lives here so we can test each
+//! layer in isolation.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -28,11 +28,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -40,39 +36,44 @@
 
 pub mod actions;
 pub mod app;
-pub mod capture;
-pub mod component;
-mod continuation;
-pub mod framework_history;
-pub mod production;
-pub mod resource;
-pub use component::definition;
-pub mod doc;
+#[cfg(test)]
+mod cpu_profile;
+pub mod effect;
 mod files;
-pub mod hosting;
-pub mod legacy_import;
 pub mod main_panel;
 pub mod markdown;
 pub mod metadata;
 pub mod model;
+pub mod note_header;
 pub mod notebook;
+pub mod read;
+pub mod resource;
 pub use ui::num;
-pub mod search_provider;
+pub mod scenario;
+pub mod search;
 pub mod shortcuts_overlay;
-pub mod shots;
 pub mod sidebar;
 pub mod status_bar;
-pub mod storage;
 
 pub use app::NotesApp;
-pub use app::WELCOME_BODY;
+pub use effect::NotesEffect;
 pub use main_panel::MainPanel;
 pub use model::{PageId, PageMeta, Workspace, WorkspaceData};
-pub use resource::{Notebook, NotesShell};
+pub use notebook::Notebook;
+pub use resource::NotesShell;
 pub use shortcuts_overlay::ShortcutsOverlay;
-pub use status_bar::{StatusBarState, StatusModel};
+pub use status_bar::{SaveStatus, StatusBarState, StatusModel};
 
 #[cfg(test)]
 extern crate self as notes;
 
 pub mod local_view;
+
+/// The app's toolkit definition, which every host that mounts Notes (the
+/// web desktop, an agent's participant host, a desktop test) instantiates.
+#[must_use]
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::built_in_definition!(NotesShell)
+}
+
+mod columns;

@@ -15,7 +15,7 @@ fn main() -> ExitCode {
     // Receipts go to the worktree's target/, or a per-user dir outside one.
     let base = worktree.as_ref().map_or_else(
         || {
-            xdg_paths::data_local_dir()
+            tilo_paths::data_local_dir()
                 .unwrap_or_else(|| cwd.clone())
                 .join("tilo-vm")
         },
@@ -26,6 +26,7 @@ fn main() -> ExitCode {
     let keep_receipt = writes_receipt(cli.command.as_ref());
     let mut app = App {
         json: json_mode,
+        target: cli.target,
         // External tools (os/dev/vm.sh, cargo) run from the worktree root.
         runner: SystemRunner {
             cwd: worktree.as_ref().map(|w| w.root.clone()),
@@ -34,6 +35,7 @@ fn main() -> ExitCode {
         registry_path: tilo_vm::config::registry_path(),
         receipt,
         warnings: Vec::new(),
+        peer: None,
     };
     let outcome = app.run(cli.command);
     let App {

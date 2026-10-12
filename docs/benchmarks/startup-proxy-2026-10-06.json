@@ -1,0 +1,556 @@
+{
+  "date": "2026-10-06",
+  "base_commit": "d534036ea8ba0929a0fdbca5fb1f4a13c1bcf301",
+  "fixture": "existing Fedora EPYC measurement host; real private dbus-daemon and xdg-dbus-proxy; no user bus",
+  "command": "$CARGO run --locked -p launcher --release --example dbus_proxy_startup -j8",
+  "endpoint": "elapsed spawn to production guard returned, with a real UnixStream connect verified per sample; teardown excluded",
+  "order": "40 baseline samples, then 40 candidate samples; same checkout, compiler profile, helper and host; no cold filesystem cache guarantee",
+  "dbus_proxy": {
+    "before": {
+      "samples_us": [
+        21512,
+        20159,
+        20175,
+        20167,
+        20203,
+        20157,
+        20152,
+        20154,
+        20159,
+        20160,
+        20166,
+        20163,
+        20232,
+        20155,
+        20146,
+        20161,
+        20217,
+        20502,
+        20228,
+        20157,
+        20173,
+        20196,
+        20244,
+        20159,
+        20176,
+        20137,
+        20155,
+        20166,
+        20157,
+        20142,
+        20167,
+        20165,
+        20159,
+        20164,
+        20144,
+        20159,
+        20160,
+        20157,
+        20162,
+        20173
+      ],
+      "median_us": 20161.5,
+      "p95_nearest_rank_us": 20244,
+      "minimum_us": 20137,
+      "maximum_us": 21512
+    },
+    "after": {
+      "samples_us": [
+        2695,
+        3410,
+        4966,
+        5927,
+        2551,
+        3042,
+        2986,
+        2804,
+        2352,
+        2148,
+        3077,
+        2167,
+        2393,
+        2232,
+        2171,
+        2184,
+        2079,
+        1777,
+        2000,
+        1684,
+        1822,
+        1540,
+        1714,
+        1468,
+        1259,
+        1984,
+        1377,
+        1962,
+        1352,
+        2320,
+        1406,
+        1968,
+        1268,
+        1969,
+        1806,
+        1332,
+        1581,
+        1533,
+        1398,
+        1601
+      ],
+      "median_us": 1976.5,
+      "p95_nearest_rank_us": 3410,
+      "minimum_us": 1259,
+      "maximum_us": 5927
+    }
+  },
+  "not_measured": [
+    "whole app time to first frame",
+    "power-on to input-ready greeter on this candidate",
+    "physical GPU or Yoga performance"
+  ],
+  "rejected_font_parallelism": {
+    "samples": [
+      {
+        "run": 0,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 29377
+      },
+      {
+        "run": 0,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 19616
+      },
+      {
+        "run": 1,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 19958
+      },
+      {
+        "run": 1,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 29345
+      },
+      {
+        "run": 2,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 30985
+      },
+      {
+        "run": 2,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 20001
+      },
+      {
+        "run": 3,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 19633
+      },
+      {
+        "run": 3,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 29436
+      },
+      {
+        "run": 4,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 29242
+      },
+      {
+        "run": 4,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 19507
+      },
+      {
+        "run": 5,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 19492
+      },
+      {
+        "run": 5,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 29465
+      },
+      {
+        "run": 6,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 29287
+      },
+      {
+        "run": 6,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 19560
+      },
+      {
+        "run": 7,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 19884
+      },
+      {
+        "run": 7,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 29344
+      },
+      {
+        "run": 8,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 29512
+      },
+      {
+        "run": 8,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 20875
+      },
+      {
+        "run": 9,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 19904
+      },
+      {
+        "run": 9,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 29464
+      },
+      {
+        "run": 10,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 29317
+      },
+      {
+        "run": 10,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 20098
+      },
+      {
+        "run": 11,
+        "parallel": true,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 19611
+      },
+      {
+        "run": 11,
+        "parallel": false,
+        "files": 36,
+        "bytes": 54891768,
+        "elapsed_us": 29292
+      }
+    ],
+    "fixture_source_sha256": "f8c51d29fe2f1dd9c810716c4a4a2d1ce20d5e671b019c9ff3870b3bdec8f9c4",
+    "scope": "native release synthetic fixture on existing EPYC builder; no physical-device result",
+    "production_change": false
+  },
+  "rejected_cpu_coarse_renderer": {
+    "samples": [
+      {
+        "cpu_coarse": false,
+        "init_us": 84285,
+        "first_render_us": 1017633,
+        "total_us": 1106068,
+        "steady_20_us": 13244,
+        "pixels_checked": 65536
+      },
+      {
+        "cpu_coarse": true,
+        "init_us": 48149,
+        "first_render_us": 384035,
+        "total_us": 436220,
+        "steady_20_us": 36584,
+        "pixels_checked": 65536
+      },
+      {
+        "cpu_coarse": true,
+        "init_us": 49524,
+        "first_render_us": 380692,
+        "total_us": 434337,
+        "steady_20_us": 35772,
+        "pixels_checked": 65536
+      },
+      {
+        "cpu_coarse": false,
+        "init_us": 79464,
+        "first_render_us": 1015071,
+        "total_us": 1098800,
+        "steady_20_us": 13521,
+        "pixels_checked": 65536
+      },
+      {
+        "cpu_coarse": false,
+        "init_us": 79396,
+        "first_render_us": 1068553,
+        "total_us": 1151627,
+        "steady_20_us": 16376,
+        "pixels_checked": 65536
+      },
+      {
+        "cpu_coarse": true,
+        "init_us": 49023,
+        "first_render_us": 382474,
+        "total_us": 435082,
+        "steady_20_us": 35615,
+        "pixels_checked": 65536
+      },
+      {
+        "cpu_coarse": true,
+        "init_us": 74261,
+        "first_render_us": 528468,
+        "total_us": 607241,
+        "steady_20_us": 42003,
+        "pixels_checked": 65536
+      },
+      {
+        "cpu_coarse": false,
+        "init_us": 82623,
+        "first_render_us": 1075132,
+        "total_us": 1161503,
+        "steady_20_us": 13422,
+        "pixels_checked": 65536
+      },
+      {
+        "cpu_coarse": false,
+        "init_us": 81041,
+        "first_render_us": 1103815,
+        "total_us": 1188891,
+        "steady_20_us": 16185,
+        "pixels_checked": 65536
+      },
+      {
+        "cpu_coarse": true,
+        "init_us": 48449,
+        "first_render_us": 401626,
+        "total_us": 454088,
+        "steady_20_us": 37030,
+        "pixels_checked": 65536
+      },
+      {
+        "cpu_coarse": true,
+        "init_us": 47803,
+        "first_render_us": 399735,
+        "total_us": 451020,
+        "steady_20_us": 40916,
+        "pixels_checked": 65536
+      },
+      {
+        "cpu_coarse": false,
+        "init_us": 83588,
+        "first_render_us": 1080255,
+        "total_us": 1168360,
+        "steady_20_us": 16033,
+        "pixels_checked": 65536
+      }
+    ],
+    "scope": "native release synthetic fixture on existing EPYC builder; no physical-device result",
+    "production_change": false
+  },
+  "rejected_late_pipeline_cache": {
+    "samples": [
+      {
+        "mode": "publish",
+        "cpu_coarse": false,
+        "init_us": 80398,
+        "first_render_us": 1018420,
+        "total_us": 1102206,
+        "steady_20_us": 13123,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "early",
+        "cpu_coarse": false,
+        "init_us": 82779,
+        "first_render_us": 1026096,
+        "total_us": 1112442,
+        "steady_20_us": 15928,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "late",
+        "cpu_coarse": false,
+        "init_us": 79679,
+        "first_render_us": 1022492,
+        "total_us": 1105703,
+        "steady_20_us": 13301,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "gpu",
+        "cpu_coarse": false,
+        "init_us": 80788,
+        "first_render_us": 1011124,
+        "total_us": 1095512,
+        "steady_20_us": 13363,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "gpu",
+        "cpu_coarse": false,
+        "init_us": 79106,
+        "first_render_us": 1025902,
+        "total_us": 1108549,
+        "steady_20_us": 15194,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "late",
+        "cpu_coarse": false,
+        "init_us": 80697,
+        "first_render_us": 1017712,
+        "total_us": 1102578,
+        "steady_20_us": 12671,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "early",
+        "cpu_coarse": false,
+        "init_us": 80391,
+        "first_render_us": 1019794,
+        "total_us": 1104069,
+        "steady_20_us": 15481,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "early",
+        "cpu_coarse": false,
+        "init_us": 79531,
+        "first_render_us": 1029220,
+        "total_us": 1113178,
+        "steady_20_us": 15557,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "late",
+        "cpu_coarse": false,
+        "init_us": 78785,
+        "first_render_us": 1012531,
+        "total_us": 1094901,
+        "steady_20_us": 12359,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "gpu",
+        "cpu_coarse": false,
+        "init_us": 80880,
+        "first_render_us": 1061444,
+        "total_us": 1146444,
+        "steady_20_us": 13465,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "gpu",
+        "cpu_coarse": false,
+        "init_us": 79744,
+        "first_render_us": 1022589,
+        "total_us": 1106588,
+        "steady_20_us": 13310,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "late",
+        "cpu_coarse": false,
+        "init_us": 80086,
+        "first_render_us": 1015853,
+        "total_us": 1099340,
+        "steady_20_us": 15616,
+        "pixels_checked": 65536
+      },
+      {
+        "mode": "early",
+        "cpu_coarse": false,
+        "init_us": 79699,
+        "first_render_us": 1010492,
+        "total_us": 1093787,
+        "steady_20_us": 12461,
+        "pixels_checked": 65536
+      }
+    ],
+    "early_cache_bytes": 96,
+    "late_cache_bytes": 96,
+    "scope": "llvmpipe, fresh private Mesa shader-cache directory per child, four alternating samples per mode, every pixel checked",
+    "production_change": false,
+    "adapter": {
+      "name": "llvmpipe (LLVM 22.1.8, 256 bits)",
+      "driver": "Mesa 26.2.3",
+      "type": "Cpu",
+      "backend": "Vulkan"
+    }
+  },
+  "identity_helper_negative_control": {
+    "result": "failed exactly on forbidden warmup; original linux_main with candidate regression",
+    "warmup_env": {
+      "TILO_STARTUP_WARM": "1",
+      "TILO_STARTUP_WARM_VELLO": "1"
+    },
+    "metrics": {
+      "origin_epoch_ms": 1791315921285,
+      "events": [
+        {
+          "name": "main-start",
+          "ns": 2310
+        },
+        {
+          "name": "warmup-spawn",
+          "ns": 13891762
+        },
+        {
+          "name": "warmup-fonts",
+          "ns": 14122234
+        },
+        {
+          "name": "warmup-fonts-end",
+          "ns": 323199165
+        },
+        {
+          "name": "warmup-vello",
+          "ns": 323375916
+        },
+        {
+          "name": "warmup-vello-end",
+          "ns": 1464768015
+        }
+      ]
+    },
+    "timing_scope": "background warmup spans, not helper elapsed-time or OS boot improvement"
+  }
+}

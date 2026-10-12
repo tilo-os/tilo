@@ -1,13 +1,14 @@
 //! Pure data model for the Camera app.
 //!
-//! Everything here is plain data + pure logic — no rendering, no CRDT, no
-//! IO. The CRDT bridge lives in [`crate::doc`]; the widget in
+//! Everything here is plain data + pure logic — no rendering, no document,
+//! no IO. The record lives in [`crate::record`]; the widget in
 //! [`crate::app`]. Keeping the model pure makes it unit-testable without a
 //! GPU or an event loop.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, JsonSchema, Model};
 
 /// Top-level screen / mode the app is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,8 +79,9 @@ impl CaptureMode {
 }
 
 /// Which physical camera is selected.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Facing {
+    #[default]
     Back,
     Front,
     Wide,
@@ -94,13 +96,6 @@ impl Facing {
             Facing::Back => "Rear",
             Facing::Front => "Front",
             Facing::Wide => "Ultra-wide",
-        }
-    }
-    pub fn short(self) -> &'static str {
-        match self {
-            Facing::Back => "1×",
-            Facing::Front => "Front",
-            Facing::Wide => "0.5×",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -249,13 +244,13 @@ impl PhotoFormat {
     }
 }
 
-/// User-tunable capture settings. Lives in the CRDT (see [`crate::doc`]).
+/// User-tunable capture settings, as the settings screen shows them. They
+/// are kept as two settings: [`CapturePreferences`] follow the person,
+/// [`CameraDevicePreferences`] belong to this device's cameras.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each field is an independent user-facing toggle persisted flat in the CRDT; \
-              grouping them into sub-structs would fragment doc.rs's read/write and app.rs's \
-              settings UI for no behavioral benefit"
+    reason = "each field is an independent user-facing toggle shown flat on the settings screen"
 )]
 pub struct Settings {
     pub resolution: Resolution,
@@ -285,8 +280,94 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// The settings screen's values from the person's and this device's.
+    pub fn from_parts(person: CapturePreferences, device: CameraDevicePreferences) -> Self {
+        Self {
+            resolution: device.resolution,
+            photo_format: person.photo_format,
+            timer: person.timer,
+            grid: person.grid,
+            level: person.level,
+            mirror_front: person.mirror_front,
+            geotag: person.geotag,
+            hdr: person.hdr,
+            default_facing: device.default_facing,
+        }
+    }
+
+    /// The choices that follow the person.
+    pub fn person(&self) -> CapturePreferences {
+        CapturePreferences {
+            photo_format: self.photo_format,
+            timer: self.timer,
+            grid: self.grid,
+            level: self.level,
+            mirror_front: self.mirror_front,
+            geotag: self.geotag,
+            hdr: self.hdr,
+        }
+    }
+
+    /// The choices about this device's cameras.
+    pub fn device(&self) -> CameraDevicePreferences {
+        CameraDevicePreferences {
+            resolution: self.resolution,
+            default_facing: self.default_facing,
+        }
+    }
+}
+
+/// How the person likes to take pictures: the same on each of their
+/// devices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent user-facing toggle"
+)]
+pub struct CapturePreferences {
+    pub photo_format: PhotoFormat,
+    pub timer: Timer,
+    pub grid: bool,
+    pub level: bool,
+    pub mirror_front: bool,
+    pub geotag: bool,
+    pub hdr: bool,
+}
+
+impl Default for CapturePreferences {
+    fn default() -> Self {
+        Settings::default().person()
+    }
+}
+
+impl ui::storage::SettingsSchema for CapturePreferences {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+}
+
+/// Choices about this device's own cameras: which resolutions and lenses
+/// exist differs from one device to the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CameraDevicePreferences {
+    pub resolution: Resolution,
+    pub default_facing: Facing,
+}
+
+impl Default for CameraDevicePreferences {
+    fn default() -> Self {
+        Settings::default().device()
+    }
+}
+
+impl ui::storage::SettingsSchema for CameraDevicePreferences {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
+
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum CaptureKind {
+    #[default]
     Photo,
     Video,
 }
@@ -341,9 +422,11 @@ impl Capture {
 /// One entry in the scan history — the raw decoded text plus when it was
 /// seen. The [`CodeKind`] and display summary are derived on demand via
 /// [`classify`], so only the ground-truth payload is persisted.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScanEntry {
+    /// What the code said.
     pub raw: String,
+    /// When it was scanned, in Unix seconds.
     pub ts: i64,
 }
 
@@ -384,33 +467,53 @@ impl CodeKind {
         }
     }
 
-    /// Contextual action labels offered for this payload, primary first.
+    /// The actions offered for this payload, primary first. Each names
+    /// exactly what it does.
     pub fn actions(&self) -> Vec<&'static str> {
         match self {
-            CodeKind::Url => vec!["Open link", "Copy", "Share"],
-            CodeKind::Wifi { .. } => vec!["Connect", "Copy password", "Save"],
-            CodeKind::Contact { .. } => vec!["Add contact", "Call", "Copy"],
-            CodeKind::Email => vec!["Compose", "Copy"],
-            CodeKind::Phone => vec!["Call", "Copy"],
-            CodeKind::Geo => vec!["Open map", "Copy"],
-            CodeKind::Text => vec!["Copy", "Search"],
+            CodeKind::Url => vec!["Open link", "Copy link"],
+            CodeKind::Wifi { .. } => vec!["Copy password", "Copy network name"],
+            CodeKind::Contact { phone, .. } if !phone.is_empty() => {
+                vec!["Call", "Copy contact"]
+            }
+            CodeKind::Contact { .. } => vec!["Copy contact"],
+            CodeKind::Email => vec!["Write email", "Copy address"],
+            CodeKind::Phone => vec!["Call", "Copy number"],
+            CodeKind::Geo => vec!["Open map", "Copy location"],
+            CodeKind::Text => vec!["Copy text"],
         }
     }
 
-    /// A short, friendly one-line summary of the payload.
+    /// The payload's one main fact: a network name, a person, an address.
     pub fn summary(&self, raw: &str) -> String {
+        let without = |scheme: &str| {
+            raw.get(..scheme.len())
+                .filter(|head| head.eq_ignore_ascii_case(scheme))
+                .and_then(|_| raw.get(scheme.len()..))
+                .unwrap_or(raw)
+                .to_owned()
+        };
         match self {
-            CodeKind::Wifi { ssid, auth, .. } => {
-                format!("\"{ssid}\"  ·  {auth}")
+            CodeKind::Wifi { ssid, .. } => ssid.clone(),
+            CodeKind::Contact { name, .. } => name.clone(),
+            CodeKind::Email => without("mailto:"),
+            CodeKind::Phone => without("tel:"),
+            CodeKind::Geo => without("geo:").replace(',', ", "),
+            CodeKind::Url | CodeKind::Text => raw.to_string(),
+        }
+    }
+
+    /// What kind of payload it is, with the one detail that tells two of a
+    /// kind apart.
+    pub fn description(&self) -> String {
+        match self {
+            CodeKind::Wifi { auth, .. } if !auth.is_empty() && auth != "nopass" => {
+                format!("Wi-Fi network, {auth}")
             }
-            CodeKind::Contact { name, phone, .. } => {
-                if phone.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{name}  ·  {phone}")
-                }
+            CodeKind::Contact { phone, .. } if !phone.is_empty() => {
+                format!("Contact, {phone}")
             }
-            _ => raw.to_string(),
+            other => other.title().to_owned(),
         }
     }
 }
@@ -623,7 +726,7 @@ mod tests {
         // Phase `actions_match_kind`.
         {
             assert_eq!(classify("https://x").actions()[0], "Open link");
-            assert_eq!(classify("WIFI:S:x;;").actions()[0], "Connect");
+            assert_eq!(classify("WIFI:S:x;;").actions()[0], "Copy password");
             assert_eq!(classify("tel:+15550100").actions()[0], "Call");
         }
     }

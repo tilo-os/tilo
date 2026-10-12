@@ -6,12 +6,11 @@
 //! table into the form input routing matches against and answers every
 //! routing question about it: client-input routing withholds these chords
 //! from a focused app ([`crate::shell::input_policy::shell_owns_chord`]), the
-//! session-lock pre-router accepts the lock alias, the `GlobalShortcuts`
-//! portal refuses to grant them to an app, and
+//! `GlobalShortcuts` portal refuses to grant them to an app, and
 //! `docs/shell-navigation-keyboard-map.md` carries a rendering of the table
 //! that a test keeps identical.
 //!
-//! Editable navigation and search bindings live in
+//! Editable navigation, search and lock bindings live in
 //! `settings_store::hardware::ShortcutConfig`, never here: listing a default
 //! here would keep blocking it after the user rebinds the action.
 
@@ -35,8 +34,6 @@ pub enum FixedChordAction {
     AddTab,
     DuplicateTab,
     OpenTerminal,
-    GlobalSearch,
-    LockSession,
     WorkspaceWheel,
     DisplayLayout,
     CaptureScreenshot,
@@ -63,8 +60,6 @@ impl FixedChordAction {
             "fixed-add-tab" => Self::AddTab,
             "fixed-duplicate-tab" => Self::DuplicateTab,
             "fixed-open-terminal" => Self::OpenTerminal,
-            "fixed-global-search" => Self::GlobalSearch,
-            "fixed-lock" => Self::LockSession,
             "fixed-workspace-wheel" => Self::WorkspaceWheel,
             "fixed-display-layout" => Self::DisplayLayout,
             "fixed-capture-screenshot" => Self::CaptureScreenshot,
@@ -324,8 +319,6 @@ mod tests {
             FixedChordAction::AddTab,
             FixedChordAction::DuplicateTab,
             FixedChordAction::OpenTerminal,
-            FixedChordAction::GlobalSearch,
-            FixedChordAction::LockSession,
             FixedChordAction::WorkspaceWheel,
             FixedChordAction::DisplayLayout,
             FixedChordAction::CaptureScreenshot,
@@ -444,10 +437,10 @@ mod tests {
     #[test]
     fn lookup_is_exact_about_modifiers() {
         assert_eq!(
-            fixed_action(ChordKey::Char('l'), SUPER),
-            Some(FixedChordAction::LockSession)
+            fixed_action(ChordKey::Char('w'), SUPER),
+            Some(FixedChordAction::CloseTab)
         );
-        assert_eq!(fixed_action(ChordKey::Char('l'), SUPER_SHIFT), None);
+        assert_eq!(fixed_action(ChordKey::Char('w'), SUPER_SHIFT), None);
         assert_eq!(
             fixed_action(ChordKey::Tab, ALT_SHIFT),
             Some(FixedChordAction::SwitchWindowsBackwards)

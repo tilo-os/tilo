@@ -14,14 +14,17 @@ mod history;
 mod log;
 mod model;
 mod persistence;
+mod reader;
 mod stack;
 
-pub use center::{CenterLayout, CenterOutcome, NotificationCenter, RowControl};
+pub use center::{CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, RowControl};
 pub use history::{
     HistoryActivation, HistoryRow, RowIdentity, accessible_description, group_key, group_label,
     history_rows, relative_time, source_label,
 };
 pub use log::{CLEAR_UNDO_WINDOW, NotificationLog};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub use model::ScheduledNotificationTarget;
 pub use model::{
     ContinuityNotificationId, DEFAULT_DISMISS_AFTER, MAX_HISTORY, MAX_NOTIFICATIONS, Notification,
     NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS, RemoteNotificationRoute,
@@ -47,6 +50,18 @@ pub trait NotificationHost {
     fn quiet_status(&self) -> Option<String> {
         None
     }
+
+    /// Host-owned choices for this notification. The shared banner draws
+    /// at most two using the shared toast control; default activation remains
+    /// the body of the card. Empty when no live host action is available.
+    fn actions_for(&self, _notification: &Notification) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// Invoke one choice returned by `actions_for`, through the same host
+    /// operation exposed to automation. The host preserves the card until
+    /// durable completion and reports a refusal instead of silently removing it.
+    fn invoke_action(&self, _id: u64, _key: &str) {}
 
     /// The person closed live banner `id`.
     fn dismiss(&self, id: u64);
@@ -86,4 +101,44 @@ pub trait NotificationHost {
     /// Viewer-local centre state (selection, folding, scrolling) changed and
     /// the host should repaint.
     fn changed(&self) {}
+}
+
+/// Host calendar-alarm actions, in the desktop's language.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn alarm_action_labels() -> Vec<(String, String)> {
+    vec![
+        (
+            "dismiss".into(),
+            crate::i18n::t("notification-alarm-dismiss"),
+        ),
+        ("snooze".into(), crate::i18n::t("notification-alarm-snooze")),
+    ]
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn alarm_action_failed_label() -> String {
+    crate::i18n::t("notification-alarm-action-failed")
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn alarm_action_retry_label() -> String {
+    crate::i18n::t("notification-alarm-action-retry")
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn alarm_action_title(action: &str, title: &str) -> String {
+    crate::i18n::t_args(
+        "notification-alarm-action-title",
+        &[("action", action.into()), ("title", title.into())],
+    )
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn alarm_action_subtitle() -> String {
+    crate::i18n::t("notification-alarm-action-subtitle")
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn alarm_snoozed_label() -> String {
+    crate::i18n::t("notification-alarm-snoozed")
 }

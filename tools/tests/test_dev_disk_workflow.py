@@ -327,6 +327,10 @@ class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
                 gate.index("native-atspi-smoke.sh lock"),
                 gate.index('./os/dev/check-dev-vm.sh --arch'),
             )
+            # The slow-frame sign-in ends the session, so it comes last.
+            slow = gate.index("./os/dev/test-slow-frame-launch.sh")
+            self.assertLess(gate.index("./os/tests/booted_app_update.sh"), slow)
+            self.assertLess(slow, gate.index("          else\n", slow))
             self.assertIn('qemu-img create -f qcow2 -F qcow2 -b "$DEV_OUTPUT/qcow2/disk.qcow2" "$TILO_DISK"', gate)
         with self.subTest(phase='the lane publishes its own architecture'):
             publish = step(self.lane, "Publish this architecture's dev image and disk")

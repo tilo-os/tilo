@@ -1,485 +1,464 @@
-//! Feeds as a [`tilo_resource::Resource`]: one action vocabulary, one publish
-//! path for the library.
+//! The library's verbs, the places derived from it, and the app.
 //!
-//! Document mutations (`new-folder`, `add-subscription`, per-folder / per-feed /
-//! per-article ops) live on this resource via [`Resource::declarations`] /
-//! [`Resource::bound_actions`] / [`Resource::children`]. OPML import/export and
-//! refresh are Effects / Views in [`Resource::local_operations`]. Hosted
-//! [`PublishesResources::resources`] stays empty — never a second hand-built
-//! `feeds.reader` root beside [`tilo_resource::publish`].
+//! Plain fields change through the built-in field edits every path offers
+//! (`Library::paths().articles.item(&id).starred.set(true)`): reading,
+//! starring, tagging, renaming a feed or a folder, moving a feed and folding
+//! a folder. The methods below are the operations that are more than
+//! setting a field. Tags are derived from the articles and are published as
+//! places that reveal what they label.
+//!
+//! Refreshing and OPML import/export change nothing by themselves: they are
+//! the reader's [`FeedsEffect`]s, whose results reach the library as verbs
+//! (what a refresh fetched lands through [`Library::refreshed`]). How articles
+//! read (text size, face, paper) is the person's [`ReadSettings`], a personal
+//! setting the reader's effects change.
 
-use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{
-    ActionParam, ActionSpec, EncodedAction, OperationKind, PROMPTED_PARAM, ParamType,
-    Resource as PublishedResource,
+use std::rc::Rc;
+
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Effected, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
+use ui::i18n::EmbeddedCatalog;
+use ui::tilo_resource::{self, ActionCx, Derived, Effect, Id, Invoke, Refusal, resource};
 use ui::widget::Element;
-use uuid::Uuid;
 
-use crate::actions::{
-    FEEDS_ACTION_TYPE, FeedsAction, add_folder_action, add_subscription_action,
-    bound_reader_actions, publish_children, reader_effect_specs, register,
-    resource_ctx_from_library,
-};
 use crate::app::FeedsApp;
-use crate::doc::FeedsDoc;
-use crate::model::{ReadSettings, Store};
+use crate::model::{
+    Article, Feed, Fetched, Filter, Folder, Library, Outline, ReadFont, ReadSettings, ReadTheme,
+    tag_key,
+};
 
-/// Stable id for the published reader root.
-pub const READER_RESOURCE_ID: &str = "feeds.reader";
+/// The reader's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[
+    ("en-US", include_str!("../locales/en-US.ftl")),
+    ("de-DE", include_str!("../locales/de-DE.ftl")),
+];
 
-/// Shared library projection: subscriptions plus durable reading settings.
-#[derive(Clone, Debug, Default)]
-pub struct FeedsState {
-    pub store: Store,
-    pub settings: ReadSettings,
+/// The reader's messages, in every host that mounts it.
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+
+/// How many tags the library publishes as places.
+pub const MAX_TAG_PLACES: usize = 32;
+
+#[resource(kind = "feeds.library", label = "Feeds", children = Library::places)]
+impl Library {
+    /// Add a subscription.
+    ///
+    /// Subscribes to a feed's address. It is titled with its address until a
+    /// refresh brings its real title and articles.
+    #[action]
+    pub fn add_subscription(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Feed URL")] url: String,
+        #[param("The folder to file it in; none for the top of the sidebar")] folder: Option<Id>,
+    ) -> Result<(), Refusal> {
+        let url = url.trim();
+        if url.is_empty() {
+            return Err(Refusal::new("a subscription needs an address"));
+        }
+        if self.feed_at(url).is_some() {
+            return Err(Refusal::new("already subscribed to that address"));
+        }
+        if folder.as_ref().is_some_and(|id| !self.folders.contains(id)) {
+            return Err(Refusal::new("no such folder"));
+        }
+        self.feeds.push(cx.id(), Feed::subscribing(url, folder));
+        Ok(())
+    }
+
+    /// Unsubscribe.
+    ///
+    /// Removes the subscription and every article it brought in.
+    #[action(destructive, item = feeds)]
+    pub fn unsubscribe(&mut self, feed: &Id) -> Result<(), Refusal> {
+        if !self.feeds.contains(feed) {
+            return Err(Refusal::new("no such subscription"));
+        }
+        self.remove_feed(feed);
+        Ok(())
+    }
+
+    /// Mark all of a subscription's articles as read.
+    #[action(housekeeping, item = feeds)]
+    pub fn mark_feed_read(&mut self, feed: &Id) -> Result<(), Refusal> {
+        if !self.feeds.contains(feed) {
+            return Err(Refusal::new("no such subscription"));
+        }
+        self.mark_all_read(&Filter::Feed(feed.clone()));
+        Ok(())
+    }
+
+    /// Mark all articles as read.
+    #[action(housekeeping)]
+    pub fn mark_everything_read(&mut self) {
+        self.mark_all_read(&Filter::All);
+    }
+
+    /// New folder.
+    #[action]
+    pub fn new_folder(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Name")] name: String,
+    ) -> Result<(), Refusal> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Refusal::new("a folder needs a name"));
+        }
+        self.folders.push(cx.id(), Folder::named(name));
+        Ok(())
+    }
+
+    /// Delete folder.
+    ///
+    /// Its subscriptions stay, at the top of the sidebar.
+    #[action(destructive, item = folders)]
+    pub fn delete_folder(&mut self, folder: &Id) -> Result<(), Refusal> {
+        self.folders
+            .remove(folder)
+            .ok_or_else(|| Refusal::new("no such folder"))?;
+        for (_, feed) in self.feeds.iter_mut() {
+            if feed.folder.as_ref() == Some(folder) {
+                feed.folder = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Subscribe to what an OPML file lists.
+    ///
+    /// Every address the library does not have yet, in the folders the file
+    /// names (made where missing): one step, which one undo takes back.
+    #[action]
+    pub fn import_subscriptions(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The subscriptions the file lists")] outlines: Vec<Outline>,
+    ) {
+        self.import(&outlines, || cx.id());
+    }
+
+    /// Bring in what a refresh fetched for one subscription.
+    ///
+    /// The articles it does not hold yet, its title as the feed names
+    /// itself, and the certificate a Gemini server presented the first time.
+    /// Content from the feed, not anyone's edit: no undo takes it back.
+    #[action(external)]
+    pub fn refreshed(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The articles it lists")] articles: Vec<Fetched>,
+        #[param("The subscription")] feed: Id,
+        #[param("The title the feed gives itself")] title: Option<String>,
+        #[param("The certificate a Gemini server presented")] certificate_pin: Option<String>,
+    ) -> Result<(), Refusal> {
+        let subscription = self
+            .feeds
+            .get_mut(&feed)
+            .ok_or_else(|| Refusal::new("no such subscription"))?;
+        if let Some(title) = title.filter(|title| !title.trim().is_empty()) {
+            subscription.title = title;
+        }
+        if subscription.certificate_pin.is_none() {
+            subscription.certificate_pin = certificate_pin;
+        }
+        for article in articles {
+            if !self.has_article(&feed, &article.url, &article.title) {
+                self.articles
+                    .push(cx.id(), Article::fetched(feed.clone(), article));
+            }
+        }
+        Ok(())
+    }
 }
 
-/// The feeds reader resource.
-pub struct Feeds;
-
-impl Resource for Feeds {
-    const KIND: &'static str = "feeds.reader";
-    const LABEL: &'static str = "Feeds";
-    const ACTION_TYPE: &'static str = FEEDS_ACTION_TYPE;
-
-    type State = FeedsState;
-    type Action = FeedsAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
+impl Library {
+    /// Subscribe to every address `outlines` lists that the library does
+    /// not have yet, in the folders they name (made where missing), with
+    /// ids from `mint`. Returns how many subscriptions it added.
+    pub fn import(&mut self, outlines: &[Outline], mut mint: impl FnMut() -> Id) -> usize {
+        let mut added = 0;
+        for outline in outlines {
+            let url = outline.url.trim();
+            if url.is_empty() || self.feed_at(url).is_some() {
+                continue;
+            }
+            let folder = outline
+                .folder
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(|name| {
+                    let existing = self
+                        .folders
+                        .iter()
+                        .find(|(_, folder)| folder.name == name)
+                        .map(|(id, _)| id.clone());
+                    existing.unwrap_or_else(|| self.folders.push(mint(), Folder::named(name)))
+                });
+            let title = outline.title.trim();
+            let mut feed = Feed::subscribing(url, folder);
+            if !title.is_empty() {
+                title.clone_into(&mut feed.title);
+            }
+            if !outline.site_url.trim().is_empty() {
+                outline.site_url.trim().clone_into(&mut feed.site_url);
+            }
+            self.feeds.push(mint(), feed);
+            added += 1;
+        }
+        added
     }
 
-    fn read(doc: &Doc) -> Result<FeedsState, ModelError> {
-        Ok(FeedsState {
-            store: FeedsDoc::load(doc),
-            settings: FeedsDoc::read_settings(doc),
-        })
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        // Prompted creates also appear as bound ActionSpecs with live next-order
-        // values; keeping named declarations here makes the door discoverable
-        // without a full library snapshot (agents / APPLY path).
-        vec![
-            ActionDecl::new(
-                "add-subscription",
-                "Add subscription",
-                vec![ActionParam::required(
-                    PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Feed URL",
-                )],
-                |args, _| {
-                    let url = args.text(PROMPTED_PARAM).unwrap_or_default();
-                    Ok(add_subscription_action(Uuid::new_v4(), url, None, 0))
-                },
-            )
-            .describe("Subscribe to a feed URL."),
-            ActionDecl::new(
-                "new-folder",
-                "New folder",
-                vec![ActionParam::required(
-                    PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Name",
-                )],
-                |args, _| {
-                    let name = args.text(PROMPTED_PARAM).unwrap_or_default();
-                    Ok(add_folder_action(Uuid::new_v4(), name, 0))
-                },
-            )
-            .describe("Create a subscription folder."),
-        ]
-    }
-
-    fn bound_actions(state: &FeedsState) -> Vec<ActionSpec> {
-        // Live next-order / unread payloads. Nested folder/feed/article Document
-        // ops ride [`Self::children`].
-        bound_reader_actions(&resource_ctx_from_library(&state.store, state.settings))
+    /// The places derived from the articles: each tag reveals the articles
+    /// it labels.
+    fn places(&self) -> Vec<Derived<Self>> {
+        self.tags_limited(MAX_TAG_PLACES)
             .into_iter()
-            .filter(|spec| {
-                // declarations already publish add-subscription / new-folder by
-                // name; keep mark-all-read here (needs unread ids from state).
-                spec.id == "mark-all-read"
-            })
+            .map(Self::tag_place)
             .collect()
     }
 
-    fn children(state: &FeedsState) -> Vec<PublishedResource> {
-        publish_children(&resource_ctx_from_library(&state.store, state.settings))
+    /// The tag `tag` as a place.
+    pub fn tag_place(tag: String) -> Derived<Self> {
+        Derived::new(format!("#{tag}"))
+            .of_kind("tag")
+            .identified(format!("tag:{tag}"))
+            .with_effect(&FeedsEffect::RevealTag { tag })
     }
+}
 
-    fn local_operations() -> Vec<ActionSpec> {
-        // No live subscription count here — host refresh still refuses an empty
-        // library at invoke time. Standalone provide_resources binds availability.
-        reader_effect_specs(true)
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
-    }
-
-    fn search(state: &FeedsState) -> Vec<SearchEntry> {
-        let feeds = state.store.feeds.iter().map(|feed| SearchEntry {
-            anchor: Some(format!("feeds.subscription:{}", feed.id)),
-            title: feed.title.clone(),
-            text: feed.url.clone(),
-            action: None,
-        });
-        let articles = state.store.articles.iter().map(|article| SearchEntry {
-            anchor: Some(format!("feeds.article:{}", article.id)),
-            title: article.title.clone(),
-            text: article.summary.clone(),
-            action: None,
-        });
-        feeds.chain(articles).collect()
-    }
+/// What the reader does that changes no document by itself; what it brings
+/// in reaches the library as its verbs.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "feeds.effects")]
+pub enum FeedsEffect {
+    /// Refresh all subscriptions.
+    #[effect(job)]
+    RefreshAll,
+    /// Import OPML…
+    #[effect(device_only)]
+    ImportOpml,
+    /// Export OPML…
+    #[effect(kind = "read", device_only)]
+    ExportOpml,
+    /// Reveal tagged articles
+    #[effect(view, row, idempotent)]
+    RevealTag { tag: String },
+    /// Increase reader text size
+    ///
+    /// A reading preference of this person, which follows them to their
+    /// other devices.
+    #[effect(kind = "read")]
+    ReaderTextLarger,
+    /// Decrease reader text size
+    ///
+    /// A reading preference of this person, which follows them to their
+    /// other devices.
+    #[effect(kind = "read")]
+    ReaderTextSmaller,
+    /// Use reader font
+    ///
+    /// A reading preference of this person, which follows them to their
+    /// other devices.
+    #[effect(kind = "read", idempotent)]
+    ReaderFont {
+        #[param("Reader font", choices = ["sans", "serif", "mono"])]
+        font: String,
+    },
+    /// Use reader paper
+    ///
+    /// A reading preference of this person, which follows them to their
+    /// other devices.
+    #[effect(kind = "read", idempotent)]
+    ReaderPaper {
+        #[param("Reader paper", choices = ["light", "sepia", "dark"])]
+        paper: String,
+    },
 }
 
 /// Framework app.
 pub struct FeedsShell;
 
+/// Scenarios that show the reader in a narrow, phone-sized window.
+const NARROW_SCENARIOS: [&str; 2] = ["sidebar-open", "detail"];
+
 impl ResourceApp for FeedsShell {
-    type Resource = Feeds;
+    type Resource = Library;
     const ID: &'static str = "so.tilo.feeds";
     const TITLE: &'static str = "Feeds";
     const ICON: Option<&'static str> = Some("feeds");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+
+    fn view(cx: &mut ViewCx<Library>) -> Element {
+        let app = FeedsApp::new();
+        // A picked search hit (or an agent's `open`) shows its item.
+        cx.on_open_item(app.opener());
+        cx.surface(app)
     }
 
-    fn view(cx: &mut ViewCx<Feeds>) -> Element {
-        cx.surface(FeedsApp::new())
-    }
-}
-
-impl ResourceSurface<Feeds> for FeedsApp {
-    fn present(&mut self, state: &std::rc::Rc<FeedsState>) {
-        // Adopt the shared library projection only — never wipe a local library
-        // that has not been published yet.
-        self.adopt_resource_state(state);
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
     }
 
-    fn attach(&mut self, cx: SurfaceCx<Feeds>) {
-        self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Feeds>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Feeds>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
+    fn scenarios() -> &'static [&'static str] {
+        &[
+            "sidebar-open",
+            "detail",
+            "empty",
+            "reader-settings",
+            "refresh",
+            "long-titles",
+            "context-menu",
+            "post-import",
+            "add-subscription",
+            "tags",
+        ]
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &FeedsAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[allow(
-        dead_code,
-        reason = "parity with sibling ActionSinks; useful when asserting hosted dispatch"
-    )]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario.is_some_and(|name| NARROW_SCENARIOS.contains(&name)) {
+            (560, 800)
         } else {
-            self.local.last_dispatched()
+            (1280, 800)
         }
     }
 
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+    /// The bundled sample library, subscribed and fetched, under every
+    /// scenario but the first-run `empty` one.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Library>> {
+        if name == Some("empty") {
+            return Vec::new();
+        }
+        let library = crate::sample::store();
+        let paths = Library::paths();
+        let edits = whole(&library);
+        let mut invokes: Vec<Invoke<Library>> = edits
+            .iter()
+            .filter_map(|edit| Invoke::edit(edit).ok())
+            .collect();
+        match name.unwrap_or_default() {
+            // Titles long enough that the sidebar elides them to one line
+            // with a fade instead of wrapping into the next row.
+            "long-titles" => invokes.extend(
+                library
+                    .feeds
+                    .ids()
+                    .zip([
+                        "International Space Station Daily Operations & Mission Updates",
+                        "The Exhaustively Comprehensive Front-End Engineering Weekly Digest",
+                    ])
+                    .filter_map(|(id, title)| {
+                        Invoke::edit(&paths.feeds.item(id).title.replace(title)).ok()
+                    }),
+            ),
+            // The sidebar right after an OPML import folded new folders and
+            // feeds in.
+            "post-import" => invokes.push(Library::IMPORT_SUBSCRIPTIONS.with(
+                crate::opml::outlines(&crate::opml::parse(crate::opml::sample_opml())),
+            )),
+            _ => {}
+        }
+        invokes
     }
 }
 
-/// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
-pub fn provide_resources(state: &FeedsState) -> Vec<PublishedResource> {
-    vec![ui::tilo_resource::publish::<Feeds>(
-        READER_RESOURCE_ID,
-        "Feeds",
-        state,
-    )]
+impl ResourceSurface<Library, FeedsEffect> for FeedsApp {
+    fn present(&mut self, state: &Rc<Library>) {
+        self.present_library(Rc::clone(state));
+    }
+
+    fn attach(&mut self, cx: SurfaceCx<Library>) {
+        self.attach_dispatcher(cx.dispatcher());
+        self.follow_read_settings(cx.settings::<ReadSettings>());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
+
+    fn effect(&mut self, effect: FeedsEffect, cx: &mut EffectCx<Library, Self>) -> EffectAnswer {
+        match effect {
+            FeedsEffect::RefreshAll => {
+                if let Some((_, reason)) = self.refresh_unavailable() {
+                    return Err(reason.into());
+                }
+                self.refresh_for(cx.reply());
+                Ok(Effected::Pending)
+            }
+            FeedsEffect::ImportOpml => {
+                self.request_import();
+                Ok(Effected::done())
+            }
+            FeedsEffect::ExportOpml => {
+                self.export_opml();
+                Ok(Effected::done())
+            }
+            FeedsEffect::RevealTag { tag } => {
+                self.reveal_tag(&tag)?;
+                Ok(Effected::done())
+            }
+            FeedsEffect::ReaderTextLarger => {
+                self.change_read_settings(|s| s.adjust_text_percent(1))?;
+                Ok(Effected::done())
+            }
+            FeedsEffect::ReaderTextSmaller => {
+                self.change_read_settings(|s| s.adjust_text_percent(-1))?;
+                Ok(Effected::done())
+            }
+            FeedsEffect::ReaderFont { font } => {
+                let font = ReadFont::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.as_str() == font)
+                    .ok_or_else(|| format!("no reader font {font:?}: sans, serif or mono"))?;
+                self.change_read_settings(|s| s.font = font)?;
+                Ok(Effected::done())
+            }
+            FeedsEffect::ReaderPaper { paper } => {
+                let theme = ReadTheme::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.as_str() == paper)
+                    .ok_or_else(|| format!("no reader paper {paper:?}: light, sepia or dark"))?;
+                self.change_read_settings(|s| s.theme = theme)?;
+                Ok(Effected::done())
+            }
+        }
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.refresh_unavailable()
+            .map(|(code, reason)| EffectStatus::unavailable(FeedsEffect::REFRESH_ALL, code, reason))
+            .into_iter()
+            .collect()
+    }
+}
+
+/// The field edits that put every folder, subscription and article of
+/// `library` into an empty one, under their ids.
+pub(crate) fn whole(library: &Library) -> Vec<tilo_resource::Edit<Library>> {
+    let paths = Library::paths();
+    let folders = library
+        .folders
+        .iter()
+        .enumerate()
+        .map(|(at, (id, folder))| paths.folders.insert_as(id, at, folder));
+    let feeds = library
+        .feeds
+        .iter()
+        .enumerate()
+        .map(|(at, (id, feed))| paths.feeds.insert_as(id, at, feed));
+    let articles = library
+        .articles
+        .iter()
+        .enumerate()
+        .map(|(at, (id, article))| paths.articles.insert_as(id, at, article));
+    folders.chain(feeds).chain(articles).collect()
+}
+
+/// The filter that shows the articles tagged `tag`.
+pub(crate) fn tag_filter(tag: &str) -> Filter {
+    Filter::Tag(tag_key(tag))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use ui::tilo_actions::Action;
-    use ui::widget::Widget;
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one assertion covers publish ownership and hosted extras"
-    )]
-    fn resource_publish_owns_library_door_and_hosted_keeps_no_second_tree() {
-        let mut doc = AutoCommit::new();
-        let folder_id = Uuid::from_u128(0xFEED_0001);
-        let feed_id = Uuid::from_u128(0xFEED_0002);
-        let article_id = Uuid::from_u128(0xFEED_0003);
-        add_folder_action(folder_id, "News", 0)
-            .apply(&mut doc)
-            .unwrap();
-        add_subscription_action(feed_id, "https://example.test/feed.xml", Some(folder_id), 0)
-            .apply(&mut doc)
-            .unwrap();
-        FeedsAction::UpsertFetched {
-            feeds: vec![crate::model::Feed {
-                id: feed_id,
-                title: "Example".into(),
-                url: "https://example.test/feed.xml".into(),
-                site_url: "https://example.test/".into(),
-                folder: Some(folder_id),
-                order: 0,
-                kind: crate::model::FeedKind::Rss,
-            }],
-            articles: vec![crate::model::Article {
-                id: article_id,
-                feed_id,
-                title: "Hello".into(),
-                url: "https://example.test/hello".into(),
-                summary: "hi".into(),
-                author: String::new(),
-                published: 0,
-                read: false,
-                starred: false,
-                tags: Vec::new(),
-                blocks: Vec::new(),
-            }],
-        }
-        .apply(&mut doc)
-        .unwrap();
-        doc.commit();
-
-        let state = Feeds::read(&doc).expect("seeded feeds state");
-        let published = ui::tilo_resource::publish::<Feeds>(READER_RESOURCE_ID, "Feeds", &state);
-        assert_eq!(published.kind, "feeds.reader");
-        for id in [
-            "add-subscription",
-            "new-folder",
-            "mark-all-read",
-            "import-opml",
-            "export-opml",
-            "refresh-all",
-        ] {
-            assert!(
-                published.actions.iter().any(|action| action.id == id),
-                "{id} must be on the framework resource"
-            );
-        }
-        assert!(
-            published
-                .children
-                .iter()
-                .any(|child| child.kind == "feeds.folder"
-                    && child.actions.iter().any(|action| action.id == "rename")),
-            "folder children keep rename Document ops"
-        );
-        let feed_child = published
-            .children
-            .iter()
-            .find(|child| child.kind == "feeds.subscription")
-            .expect("subscription child on the published door");
-        for id in ["open", "rename", "mark-read", "move", "unsubscribe"] {
-            assert!(
-                feed_child.actions.iter().any(|action| action.id == id),
-                "{id} must be on the published subscription child"
-            );
-        }
-        let article_child = feed_child
-            .children
-            .iter()
-            .find(|child| child.kind == "feeds.article")
-            .expect("article nested under subscription");
-        for id in ["open", "read", "star", "set-tags"] {
-            assert!(
-                article_child.actions.iter().any(|action| action.id == id),
-                "{id} must be on the published article child"
-            );
-        }
-
-        let mut app = FeedsApp::new_demo();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "feeds.reader");
-        assert!(
-            standalone[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "new-folder"),
-            "standalone reader keeps New folder"
-        );
-        assert!(
-            standalone[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "add-subscription"),
-            "standalone reader keeps Add subscription"
-        );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras.is_empty(),
-            "hosted must not republish feeds.reader beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
-
-        let door = provide_resources(&state);
-        assert_eq!(door[0].kind, "feeds.reader");
-        assert!(
-            door[0]
-                .actions
-                .iter()
-                .any(|action| action.id == "new-folder")
-        );
-        assert!(
-            door[0]
-                .children
-                .iter()
-                .any(|child| child.id.as_str() == crate::actions::feed_resource_id(feed_id)),
-            "publish children carry per-feed document ops"
-        );
-
-        // Empty present must not wipe a local library that has not been published.
-        let mut local = FeedsApp::new_demo();
-        let mut local_doc = AutoCommit::new();
-        local.sync(&mut local_doc, &ui::automerge::ROOT);
-        let before = local.store_feed_ids().len();
-        assert!(before > 0, "demo app starts with a local library");
-        local.adopt_resource_state(&FeedsState::default());
-        assert_eq!(
-            local.store_feed_ids().len(),
-            before,
-            "adopting an empty projection must not clear unpublished feeds"
-        );
-    }
-
-    /// What a refresh fetched reaches every collaborator but is nobody's
-    /// undo step, while an OPML import is one step.
-    #[test]
-    fn fetched_rows_are_no_undo_step_and_an_import_is_one() {
-        use crate::actions::{add_subscription_action, rename_feed_action};
-        use crate::model::{Article, Feed, FeedKind, Folder};
-        use ui::framework::testing::TestApp;
-        use ui::tilo_resource::Invoke;
-
-        let apply = |action: &FeedsAction| Invoke::<Feeds>::apply(action).unwrap();
-        let mut app = TestApp::<FeedsShell>::new().unwrap();
-        let feed_id = Uuid::from_u128(0xFEED_0010);
-        app.invoke(apply(&add_subscription_action(
-            feed_id,
-            "https://example.test/feed.xml",
-            None,
-            0,
-        )))
-        .unwrap();
-        app.invoke(apply(&rename_feed_action(feed_id, "Mine")))
-            .unwrap();
-        app.invoke(apply(&FeedsAction::UpsertFetched {
-            feeds: Vec::new(),
-            articles: vec![Article {
-                id: Uuid::from_u128(0xFEED_0011),
-                feed_id,
-                title: "Fetched".into(),
-                url: "https://example.test/fetched".into(),
-                summary: String::new(),
-                author: String::new(),
-                published: 0,
-                read: false,
-                starred: false,
-                tags: Vec::new(),
-                blocks: Vec::new(),
-            }],
-        }))
-        .unwrap();
-        assert_eq!(app.state().store.articles.len(), 1);
-
-        // Undo takes back the rename, past the fetched article, which stays.
-        assert!(app.undo());
-        let state = app.state();
-        assert_ne!(state.store.feeds[0].title, "Mine");
-        assert_eq!(state.store.articles.len(), 1);
-
-        // The subscriptions an import added go in one step.
-        let folder = Folder {
-            id: Uuid::from_u128(0xFEED_0020),
-            name: "Reading".into(),
-            order: 0,
-            collapsed: false,
-        };
-        let imported = |n: u128, url: &str| Feed {
-            id: Uuid::from_u128(n),
-            title: url.into(),
-            url: url.into(),
-            site_url: url.into(),
-            folder: Some(folder.id),
-            order: 0,
-            kind: FeedKind::Rss,
-        };
-        app.invoke(apply(&FeedsAction::ImportSubscriptions {
-            folders: vec![folder.clone()],
-            feeds: vec![
-                imported(0xFEED_0021, "https://a.test/rss"),
-                imported(0xFEED_0022, "https://b.test/rss"),
-            ],
-        }))
-        .unwrap();
-        assert_eq!(app.state().store.feeds.len(), 3);
-        assert_eq!(app.state().store.folders.len(), 1);
-        assert!(app.undo());
-        assert_eq!(app.state().store.feeds.len(), 1);
-        assert!(app.state().store.folders.is_empty());
-    }
-}
+mod tests;

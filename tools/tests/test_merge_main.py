@@ -4,6 +4,9 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
+
+from git_fixture import isolated_git_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / ".forgejo/actions/merge-main/merge-main.sh"
@@ -11,6 +14,9 @@ SCRIPT = ROOT / ".forgejo/actions/merge-main/merge-main.sh"
 
 class MergeMain(unittest.TestCase):
     def setUp(self):
+        environment = mock.patch.dict(os.environ, isolated_git_environment(), clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)

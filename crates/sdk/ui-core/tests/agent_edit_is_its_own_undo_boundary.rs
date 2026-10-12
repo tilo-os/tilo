@@ -21,7 +21,7 @@
 )]
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ROOT, ReadDoc};
+use automerge::{ROOT, ReadDoc};
 use tilo_ui::widget::{AppModel, ModelPath};
 
 use crate::support::typed_collab::TypedBroker;
@@ -50,16 +50,24 @@ impl AgentTarget {
 }
 
 impl Widget for AgentTarget {
-    fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
+    fn apply_room_action(
+        &mut self,
+        doc: &mut tilo_ui::widget::Edits<'_>,
+        type_id: &str,
+        payload: &[u8],
+    ) -> bool {
         if type_id != AGENT_ACTION {
             return false;
         }
-        doc.put(&ROOT, "agent", String::from_utf8_lossy(payload).to_string())
-            .expect("write the agent's edit");
+        crate::support::application::write_fixture_string(
+            doc,
+            "agent",
+            &String::from_utf8_lossy(payload),
+        );
         true
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.inner.sync(state, path);
     }
     fn build_layout(
@@ -159,7 +167,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
         // And presses Ctrl+Z once. This is verbatim what the keybinding calls.
         let state = app.state_mut_for_test();
         state
-            .undo_as(Some(&me), None, None)
+            .undo_as(Some(&me), None, None, None)
             .expect("the keystroke is undoable");
 
         assert!(
@@ -185,8 +193,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
         let entry = app
             .state_mut_for_test()
             .peek_last_undo()
-            .expect("the agent's action is on the undo stack at all")
-            .clone();
+            .expect("the agent's action is on the undo stack at all");
         assert_eq!(
             entry.author,
             Some(UserId(AGENT.into())),
@@ -196,7 +203,7 @@ fn an_agent_edit_is_its_own_attributed_undo_boundary() {
         // And it is reversible under that name.
         let state = app.state_mut_for_test();
         state
-            .undo_as(Some(&UserId(AGENT.into())), None, None)
+            .undo_as(Some(&UserId(AGENT.into())), None, None, None)
             .expect("the agent's own action can be reverted as the agent");
         assert!(
             state.doc.get(&ROOT, "agent").unwrap().is_none(),

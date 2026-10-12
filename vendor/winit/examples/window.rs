@@ -104,13 +104,13 @@ impl Application {
         // we use 32px, since it seems to work well enough in most cases. Be careful about
         // going too high, or you'll be bitten by the low-quality downscaling built into the
         // WM.
-        let icon = load_icon(include_bytes!("data/icon.png"));
+        let icon = load_icon(include_bytes!(concat!(env!("OUT_DIR"), "/icon.png")));
 
         info!("Loading cursor assets");
         let custom_cursors = vec![
-            event_loop.create_custom_cursor(decode_cursor(include_bytes!("data/cross.png"))),
-            event_loop.create_custom_cursor(decode_cursor(include_bytes!("data/cross2.png"))),
-            event_loop.create_custom_cursor(decode_cursor(include_bytes!("data/gradient.png"))),
+            event_loop.create_custom_cursor(decode_cursor(include_bytes!(concat!(env!("OUT_DIR"), "/cross.png")))),
+            event_loop.create_custom_cursor(decode_cursor(include_bytes!(concat!(env!("OUT_DIR"), "/cross2.png")))),
+            event_loop.create_custom_cursor(decode_cursor(include_bytes!(concat!(env!("OUT_DIR"), "/gradient.png")))),
         ];
 
         Self {
@@ -468,6 +468,7 @@ impl ApplicationHandler<UserEvent> for Application {
                 info!("Smart zoom");
             },
             WindowEvent::TouchpadPressure { .. }
+            | WindowEvent::PenSample { .. }
             | WindowEvent::HoveredFileCancelled
             | WindowEvent::KeyboardInput { .. }
             | WindowEvent::CursorEntered { .. }

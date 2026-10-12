@@ -7,6 +7,9 @@ os/external-assets/kernel-cache/
 # OEM firmware is staged locally for an explicit hardware image, never committed.
 os/hardware/firmware/*
 !os/hardware/firmware/.gitkeep
+!os/hardware/firmware/generic/
+os/hardware/firmware/generic/*
+!os/hardware/firmware/generic/.gitkeep
 os/tilo-desktop
 **/target/
 # rpmbuild's _topdir for the host session package (dist/rpm/build-rpm.sh):
@@ -88,3 +91,8 @@ __pycache__/
 # Generated audit output; keep written design and review explanations.
 /docs/superpowers/audits/**/*.log
 /docs/superpowers/audits/**/*.json
+
+# Android acceptance receipts, logs and captures are PR/CI artifacts.
+/docs/verification/android-arity/
+/docs/verification/android-mediation/
+/docs/verification/android-integration/

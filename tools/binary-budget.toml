@@ -1,10 +1,12 @@
-# Release binary size budgets, in MiB. tools/check-binary-size.sh fails a
-# build that exceeds one.
+# Static-link guard: release binary sizes, in MiB. tools/check-binary-size.sh
+# fails a build that exceeds one.
 #
-# These are static release builds. The ~2 MB figure in the README is the
-# thin build (examples/packaging/hello/build-thin.sh), where the SDK is a
-# shared library from the runtime bundle rather than linked into each
-# binary. That number is not what this file measures.
+# These are static release builds, which link the SDK into every binary. This
+# file is NOT the app-size KPI. The ~2 MB figure in the README is the signed
+# thin tapp a person downloads, where the SDK is a shared library in the runtime
+# bundle. That figure is gated per app and per fleet by
+# tools/perf/tapp-size-budget/ (docs/measurements/app-package-size.md). These
+# budgets only catch a binary that suddenly links far more than it used to.
 #
 # Budgets include headroom; raising one is an intentional reviewed change.
 

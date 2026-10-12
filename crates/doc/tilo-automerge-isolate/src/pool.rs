@@ -75,7 +75,14 @@ impl Pool {
         let key = Key::of(doc);
         let slot = self.route(&key);
         let mut worker = lock(self.slots.get(slot).ok_or(Rejected::Crashed)?);
-        let mut next = Base::Cached;
+        let mut next = if key.complete_heads().is_some() {
+            Base::Cached
+        } else {
+            // Missing dependency hashes do not identify the queued changes.
+            #[cfg(test)]
+            self.full_rebuilds.fetch_add(1, Ordering::Relaxed);
+            Base::Full(full_save(doc))
+        };
         loop {
             let (prepare, trusted) = match &next {
                 Base::Cached => (Prepare::Cached, 0),
@@ -166,7 +173,9 @@ impl Pool {
     }
 
     fn remember(&self, key: Key, slot: usize) {
-        lock(&self.routes).insert(key, slot);
+        if key.complete_heads().is_some() {
+            lock(&self.routes).insert(key, slot);
+        }
     }
 
     /// Send `request` to the worker in `slot`, starting one if there is
@@ -568,6 +577,90 @@ mod tests {
         let saved = doc.save();
         let reply = worker.call(Request::Load { incoming: &saved }.encode(), STARTUP);
         assert!(matches!(reply, Ok(Reply::Applied(Applied::Changed(true)))));
+    }
+
+    #[test]
+    fn incomplete_keys_never_authorize_a_cached_worker_queue() {
+        let worker = Worker::spawn(&limits()).unwrap();
+        let mut base = AutoCommit::new();
+        base.put(automerge::ROOT, "seed", "committed").unwrap();
+        base.commit();
+        let dependency = base.get_heads();
+        let committed = full_save(&mut base);
+        let mut queued = Vec::new();
+        for value in ["first original queue", "different original queue"] {
+            let mut branch = base.fork();
+            branch.put(automerge::ROOT, "queued", value).unwrap();
+            branch.commit();
+            let orphan = branch.save_after(&dependency);
+            let mut doc = AutoCommit::new();
+            // Locally generated valid bytes: this prepares the caller's state,
+            // not a substitute for the actual confined-worker request below.
+            assert_eq!(
+                engine::apply_trusted(&mut doc, &orphan, Dependencies::RetainOrphans),
+                Ok(Applied::Changed(false))
+            );
+            assert_eq!(doc.get_missing_deps(&[]), dependency);
+            let saved = full_save(&mut doc);
+            assert!(matches!(
+                worker.call(Request::Load { incoming: &saved }.encode(), STARTUP),
+                Ok(Reply::Applied(Applied::Changed(true)))
+            ));
+            queued.push((doc, saved));
+        }
+        assert_ne!(queued[0].1, queued[1].1, "different queued changes");
+        let key = Key::of(&mut queued[0].0);
+        assert_eq!(key, Key::of(&mut queued[1].0));
+        assert!(key.complete_heads().is_none());
+        // Before the bypass this raw response is Applied: the worker used the
+        // second queue under the first queue's identical incomplete key. Do
+        // not apply in the caller, where independent decoding masks that error.
+        let reply = worker.call(
+            Request::Apply {
+                key: key.clone(),
+                dependencies: Dependencies::RequireComplete,
+                prepare: Prepare::Cached,
+                incoming: &committed,
+            }
+            .encode(),
+            STARTUP,
+        );
+        assert!(
+            matches!(reply, Ok(Reply::Uncached(ref keys)) if keys.iter().all(|key| key.complete_heads().is_some())),
+            "an incomplete state cannot authorize cached worker acceptance"
+        );
+        // Sending the actual retained queue resolves its dependency and may
+        // cache the resulting COMPLETE state under its exact applied heads.
+        assert!(matches!(
+            worker.call(
+                Request::Apply {
+                    key,
+                    dependencies: Dependencies::RequireComplete,
+                    prepare: Prepare::Full(&queued[0].1),
+                    incoming: &committed,
+                }
+                .encode(),
+                STARTUP,
+            ),
+            Ok(Reply::Applied(Applied::Changed(true)))
+        ));
+        assert_eq!(
+            engine::apply_trusted(&mut queued[0].0, &committed, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+        assert!(matches!(
+            worker.call(
+                Request::Apply {
+                    key: Key::of(&mut queued[0].0),
+                    dependencies: Dependencies::RequireComplete,
+                    prepare: Prepare::Cached,
+                    incoming: &[],
+                }
+                .encode(),
+                STARTUP,
+            ),
+            Ok(Reply::Applied(Applied::Changed(false)))
+        ));
     }
 
     #[test]

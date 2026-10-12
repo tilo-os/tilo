@@ -1,10 +1,10 @@
 //! From a task to the app actions that carry it out.
 //!
-//! A [`Planner`] turns a task into [`Step`]s, each one action an app
-//! publishes or one input to an on-screen control. The planner sees only
-//! inert descriptors ([`PlanContext`]); it can name an action or a control
-//! but never perform one, and the participant checks every step against the
-//! delegation and the app's door before it runs.
+//! A [`Planner`] turns a task into [`Step`]s, each one operation a record
+//! publishes. The planner sees only inert descriptors ([`PlanContext`]); it
+//! can name an operation but never perform one, and the participant checks
+//! every step against the delegation and the resource's door before it
+//! runs.
 //!
 //! [`DirectPlanner`] reads steps written out in the task itself (JSON), for
 //! scripts, tests and callers that already know the actions.
@@ -13,25 +13,16 @@
 
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_browser_peer::DocumentRoute;
-use ui::headless::{Control, ControlInput};
 
 /// What one step does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StepAction {
-    /// Invoke a published action: one the app declared, or a projected
-    /// control's (`ui:<node>#activate`).
+    /// Invoke an operation the record publishes.
     Invoke {
         /// The action.
         address: ActionAddress,
         /// Its typed arguments.
         arguments: serde_json::Map<String, serde_json::Value>,
-    },
-    /// Operate an on-screen control as a person's input does.
-    Operate {
-        /// The control's semantic id.
-        control: String,
-        /// What to do to it.
-        input: ControlInput,
     },
     /// Open the step's app on a new record.
     Open,
@@ -60,9 +51,6 @@ impl Step {
             StepAction::Invoke { address, .. } => {
                 (address.resource.clone(), address.action.clone())
             }
-            StepAction::Operate { control, input } => {
-                (control_resource(control), input_name(input).to_owned())
-            }
             StepAction::Open => (format!("app.{}", self.app), "open".to_owned()),
             StepAction::Continue(_) => (String::new(), "continue".to_owned()),
         }
@@ -71,18 +59,27 @@ impl Step {
 
 /// What a planner may look at.
 pub struct PlanContext {
-    /// Records the agent has open, with every action each publishes.
+    /// Records the agent has open, with every operation each publishes.
     pub open: Vec<(DocumentRoute, Vec<ActionDescriptor>)>,
-    /// The on-screen controls of each open record.
-    pub controls: Vec<(DocumentRoute, Vec<Control>)>,
     /// Records of the room the agent has seen but not opened.
     pub known: Vec<DocumentRoute>,
     /// Apps the agent may open.
     pub apps: Vec<String>,
 }
 
-/// Turns a task into steps.
-pub trait Planner {
+/// Steps written out in `task` itself (one JSON step or an array of them),
+/// which every planner takes as written: `None` when the task is not JSON
+/// steps and needs planning.
+#[must_use]
+pub fn written_steps(task: &str, context: &PlanContext) -> Option<Result<Vec<Step>, String>> {
+    let value = serde_json::from_str::<serde_json::Value>(task).ok()?;
+    (value.is_array() || value.is_object()).then(|| steps_from_json(&value, context))
+}
+
+/// Turns a task into steps. A planner runs on a thread of its own, beside
+/// the agent's loop, so it may block (a model call) without holding the
+/// agent's session back.
+pub trait Planner: Send {
     /// The steps for `task`, or why there are none.
     ///
     /// # Errors
@@ -93,13 +90,8 @@ pub trait Planner {
 
 /// Reads the steps from the task: one JSON object or an array of them.
 ///
-/// - `{"app", "record"?, "resource" | "control", "action", "arguments"?}`
-///   invokes a published action. `control` names a control by its semantic
-///   id (what a person sees and clicks), `resource` an app-declared
-///   resource.
-/// - `{"app", "record"?, "control", "input", "text"? | "value"? | "dx"?,
-///   "dy"?}` operates a control directly; `input` is one of
-///   [`INPUT_NAMES`].
+/// `{"app", "record"?, "resource", "action", "arguments"?}` invokes an
+/// operation the record publishes on `resource`.
 #[derive(Default)]
 pub struct DirectPlanner;
 
@@ -128,37 +120,6 @@ pub fn steps_from_json(
     items.iter().map(|item| step(item, context)).collect()
 }
 
-/// The control inputs a step may name.
-pub const INPUT_NAMES: &[&str] = &[
-    "press",
-    "focus",
-    "set-value",
-    "type",
-    "scroll",
-    "toggle",
-    "increment",
-    "decrement",
-    "expand",
-    "collapse",
-];
-
-/// The name a step and the task log give `input`.
-#[must_use]
-pub const fn input_name(input: &ControlInput) -> &'static str {
-    match input {
-        ControlInput::Press => "press",
-        ControlInput::Focus => "focus",
-        ControlInput::SetValue(_) => "set-value",
-        ControlInput::TypeText(_) => "type",
-        ControlInput::Scroll { .. } => "scroll",
-        ControlInput::Toggle => "toggle",
-        ControlInput::Increment => "increment",
-        ControlInput::Decrement => "decrement",
-        ControlInput::Expand => "expand",
-        ControlInput::Collapse => "collapse",
-    }
-}
-
 fn step(item: &serde_json::Value, context: &PlanContext) -> Result<Step, String> {
     let text = |key: &str| item.get(key).and_then(serde_json::Value::as_str);
     let app = text("app").ok_or("a step names its app")?.to_owned();
@@ -166,44 +127,10 @@ fn step(item: &serde_json::Value, context: &PlanContext) -> Result<Step, String>
         return Err(format!("{app} cannot be opened by this agent"));
     }
     let record = text("record").map(str::to_owned);
-    if let Some(input) = text("input") {
-        let control = text("control")
-            .ok_or("a step with an input names its control")?
-            .to_owned();
-        let number = |key: &str| item.get(key).and_then(serde_json::Value::as_f64);
-        let string = |key: &str| {
-            text(key)
-                .map(str::to_owned)
-                .ok_or_else(|| format!("a {input} step carries \"{key}\""))
-        };
-        let input = match input {
-            "press" => ControlInput::Press,
-            "focus" => ControlInput::Focus,
-            "set-value" => ControlInput::SetValue(string("value")?),
-            "type" => ControlInput::TypeText(string("text")?),
-            "scroll" => ControlInput::Scroll {
-                dx: number("dx").unwrap_or(0.0),
-                dy: number("dy").unwrap_or(0.0),
-            },
-            "toggle" => ControlInput::Toggle,
-            "increment" => ControlInput::Increment,
-            "decrement" => ControlInput::Decrement,
-            "expand" => ControlInput::Expand,
-            "collapse" => ControlInput::Collapse,
-            other => return Err(format!("{other} is not a control input")),
-        };
-        return Ok(Step {
-            app,
-            record,
-            action: StepAction::Operate { control, input },
-        });
-    }
     let action = text("action").ok_or("a step names its action")?;
-    let resource = match (text("resource"), text("control")) {
-        (Some(resource), None) => resource.to_owned(),
-        (None, Some(control)) => control_resource(control),
-        _ => return Err("a step names either a resource or a control".into()),
-    };
+    let resource = text("resource")
+        .ok_or("a step names its resource")?
+        .to_owned();
     let arguments = match item.get("arguments") {
         None => serde_json::Map::new(),
         Some(serde_json::Value::Object(arguments)) => arguments.clone(),
@@ -219,16 +146,6 @@ fn step(item: &serde_json::Value, context: &PlanContext) -> Result<Step, String>
     })
 }
 
-/// The resource id the semantic tree gives the control `node`.
-#[must_use]
-pub fn control_resource(node: &str) -> String {
-    format!(
-        "{}{}",
-        crate::apps::SEMANTIC_RESOURCE_PREFIX,
-        percent_encoding::utf8_percent_encode(node, percent_encoding::NON_ALPHANUMERIC)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,51 +153,39 @@ mod tests {
     fn context() -> PlanContext {
         PlanContext {
             open: Vec::new(),
-            controls: Vec::new(),
             known: Vec::new(),
             apps: vec!["so.tilo.scratchpad".into()],
         }
     }
 
     #[test]
-    fn steps_name_controls_or_declared_resources() {
+    fn steps_name_published_operations() {
         let steps = DirectPlanner
             .plan(
-                r#"[{"app":"so.tilo.scratchpad","control":"note-editor","action":"set-value","arguments":{"value":"hi"}},
-                    {"app":"so.tilo.scratchpad","record":"r1","resource":"scratchpad.note","action":"edit"},
-                    {"app":"so.tilo.scratchpad","control":"note-editor","input":"type","text":"more"}]"#,
+                r#"[{"app":"so.tilo.scratchpad","resource":"scratchpad.note","action":"edit","arguments":{"text":"hi"}},
+                    {"app":"so.tilo.scratchpad","record":"r1","resource":"scratchpad.note","action":"edit"}]"#,
                 &context(),
             )
             .unwrap();
-        let StepAction::Invoke { address, .. } = &steps[0].action else {
+        let StepAction::Invoke { address, arguments } = &steps[0].action else {
             panic!("{:?}", steps[0]);
         };
-        assert_eq!(address.resource, "ui:note%2Deditor");
-        assert_eq!(
-            crate::apps::semantic_node(&address.resource).as_deref(),
-            Some("note-editor")
-        );
+        assert_eq!(address.resource, "scratchpad.note");
+        assert_eq!(arguments["text"], "hi");
         assert_eq!(steps[1].record.as_deref(), Some("r1"));
         assert_eq!(
-            steps[2].action,
-            StepAction::Operate {
-                control: "note-editor".into(),
-                input: ControlInput::TypeText("more".into())
-            }
-        );
-        assert_eq!(
-            steps[2].log_names(),
-            ("ui:note%2Deditor".into(), "type".into())
+            steps[1].log_names(),
+            ("scratchpad.note".into(), "edit".into())
         );
         assert!(DirectPlanner.plan("tidy up", &context()).is_err());
         assert!(
             DirectPlanner
                 .plan(
-                    r#"{"app":"so.tilo.scratchpad","control":"x","input":"type"}"#,
+                    r#"{"app":"so.tilo.scratchpad","action":"edit"}"#,
                     &context()
                 )
                 .is_err(),
-            "typing needs text"
+            "a step names its resource"
         );
         assert!(
             DirectPlanner

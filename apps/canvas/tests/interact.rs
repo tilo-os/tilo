@@ -8,10 +8,37 @@
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
+mod support;
+
 use canvas::model::{Mark, Shape};
 use canvas::{App, Artwork};
-use ui::prelude::{Invoke, TestApp};
+use ui::prelude::TestApp;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
+
+#[test]
+fn fit_from_a_focused_brush_field_restores_pointer_artwork_coordinates() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    desk.key("Ctrl+1");
+    desk.app
+        .harness()
+        .perform_named("canvas-brush-colour", &ui::a11y::Action::Focus)
+        .unwrap();
+    desk.key("Ctrl+0");
+    let before = desk.art().marks.len();
+    desk.drag((100.0, 100.0), (250.0, 100.0));
+    let art = desk.art();
+    assert_eq!(art.marks.len(), before + 1);
+    let Shape::Stroke { points, .. } = &art.marks.last().unwrap().shape else {
+        panic!("the pointer should lay a brush stroke");
+    };
+    let first = points.first().unwrap();
+    let last = points.last().unwrap();
+    assert!((first[0] - 100.0).abs() < 1.0, "{points:?}");
+    assert!((first[1] - 100.0).abs() < 1.0, "{points:?}");
+    assert!((last[0] - 250.0).abs() < 1.0, "{points:?}");
+    assert!((last[1] - 100.0).abs() < 1.0, "{points:?}");
+}
 
 /// The app with the vector sample drawn, the canvas focused, and where the
 /// artwork lies on screen.
@@ -24,6 +51,37 @@ struct Desk {
     shots: Option<std::path::PathBuf>,
 }
 
+#[test]
+fn an_artwork_swatch_loads_the_brush_and_the_pointer_uses_that_paint() {
+    for colour in ["#010203", "#01020380"] {
+        let mut desk = Desk::open();
+        desk.app.call("draw", serde_json::json!({"marks":[{
+            "id":"custom-paint", "shape":{"kind":"rect","x":400,"y":300,"width":20,"height":20},
+            "fill":colour
+        }]})).unwrap();
+        desk.key("b");
+        let palette = desk.app.harness().targets()["canvas-artwork-colours"];
+        // First document swatch; pointer through the shared picker.
+        desk.app
+            .harness()
+            .click_at(palette.x0 + 14.0, palette.y0 + 14.0);
+        let before = desk.art().marks.len();
+        desk.drag((100.0, 100.0), (200.0, 100.0));
+        assert_eq!(desk.art().marks.len(), before + 1);
+        assert_eq!(
+            desk.art().marks.last().unwrap().style.stroke.as_deref(),
+            Some(colour)
+        );
+        assert!(desk.app.undo(), "one gesture is one framework undo step");
+        assert_eq!(desk.art().marks.len(), before);
+        assert!(desk.app.redo());
+        assert_eq!(
+            desk.art().marks.last().unwrap().style.stroke.as_deref(),
+            Some(colour)
+        );
+    }
+}
+
 impl Desk {
     fn open() -> Self {
         // A double click is two clicks within the session's interval; a
@@ -31,8 +89,7 @@ impl Desk {
         ui::gesture::set_multi_click_interval(std::time::Duration::from_secs(10));
         let mut app = TestApp::<App>::new().expect("the app opens");
         for action in canvas::sample::shapes() {
-            app.invoke(Invoke::apply(&action).unwrap())
-                .expect("the sample draws");
+            app.invoke(action).expect("the sample draws");
         }
         let canvas = app
             .harness()
@@ -75,7 +132,18 @@ impl Desk {
     }
 
     fn key(&mut self, key: &str) {
-        self.app.harness().key(key);
+        if let Some((modifier, key)) = key.split_once('+')
+            && matches!(
+                modifier.to_ascii_lowercase().as_str(),
+                "ctrl" | "shift" | "alt"
+            )
+        {
+            self.hold(&[modifier]);
+            self.app.harness().key(key);
+            self.hold(&[]);
+        } else {
+            self.app.harness().key(key);
+        }
     }
 
     fn hold(&mut self, keys: &[&str]) {
@@ -128,7 +196,7 @@ impl Desk {
         self.app.harness().set_theme(ui::Theme::light());
         self.app
             .harness()
-            .render_window_png(&dir.join(format!("{name}.png")));
+            .render_png(&dir.join(format!("{name}.png")));
     }
 }
 
@@ -656,8 +724,8 @@ fn zoom_keys_change_how_far_a_drag_goes() {
     desk.hold(&["ctrl"]);
     desk.key("a");
     desk.hold(&[]);
-    desk.key("+");
-    desk.key("+");
+    desk.key("=");
+    desk.key("=");
     let zoom = desk.zoom * 1.25 * 1.25;
     let centre = desk.canvas.center();
     desk.hold(&["ctrl"]);
@@ -787,7 +855,7 @@ fn a_mask_is_painted_from_its_picture_in_the_layers_row() {
     let mut desk = Desk::open();
     let layer = desk.art().top_layer().unwrap().id.clone();
     desk.app
-        .invoke(canvas::ArtworkResource::SET_LAYER_MASK.with((layer.clone(), "reveal".into())))
+        .invoke(canvas::Artwork::SET_LAYER_MASK.with((layer.clone(), "reveal".into())))
         .expect("a mask is added");
     let mask = desk.art().mask_of(&layer).unwrap().id.clone();
     let targets = desk.app.harness().targets();
@@ -834,4 +902,552 @@ fn a_mask_is_painted_from_its_picture_in_the_layers_row() {
         .click_named("canvas-paint-layer")
         .expect("back to the layer from the strip");
     assert_eq!(stroke(&mut desk), layer);
+}
+
+/// Picked marks line up from the strip over the canvas, each step one
+/// edit; a single picked mark lines up on the artwork.
+#[test]
+fn the_strip_lines_picked_marks_up() {
+    let mut desk = Desk::open();
+    desk.click(270.0, 240.0);
+    desk.hold(&["shift"]);
+    desk.click(760.0, 600.0);
+    desk.hold(&[]);
+    desk.app
+        .harness()
+        .click_named("canvas-align-top")
+        .expect("the strip offers lining up their tops");
+    let art = desk.art();
+    let top = |id: &str| art.visible_bounds(art.mark(id).unwrap()).y0;
+    assert!(
+        near(top("card"), top("leaf"), 1e-6),
+        "{} {}",
+        top("card"),
+        top("leaf")
+    );
+    desk.shot("align-strip");
+    // The strip's button has the focus now; the canvas's keys still act
+    // on what is picked.
+    let before = desk.art().marks.len();
+    desk.key("Delete");
+    assert_eq!(
+        desk.art().marks.len(),
+        before - 2,
+        "Delete removes the picked marks"
+    );
+    assert!(desk.app.undo());
+    assert!(desk.app.undo(), "lining up is one step");
+
+    desk.key("Escape");
+    desk.click(270.0, 240.0);
+    desk.app
+        .harness()
+        .click_named("canvas-align-center")
+        .expect("one picked mark lines up on the artwork");
+    let art = desk.art();
+    let card = art.visible_bounds(art.mark("card").unwrap());
+    assert!(
+        near(card.center().x, art.width / 2.0, 1e-6),
+        "{} {}",
+        card.center().x,
+        art.width / 2.0
+    );
+}
+
+/// A click a few pixels off a thin line still picks it, however far out
+/// the artwork is zoomed.
+#[test]
+fn a_click_just_off_a_thin_line_picks_it() {
+    let mut desk = Desk::open();
+    assert!(desk.zoom < 0.8, "the test needs a far zoom: {}", desk.zoom);
+    desk.key("l");
+    desk.drag((100.0, 870.0), (900.0, 870.0));
+    let line = desk.art().marks.last().cloned().expect("a line is drawn");
+    assert!(matches!(line.shape, Shape::Line { .. }), "{:?}", line.shape);
+    desk.key("Escape");
+    desk.key("v");
+    desk.click(40.0, 40.0);
+    // Three and a half screen pixels past the line's edge.
+    let off = line.style.stroke_width / 2.0 + 3.5 / desk.zoom;
+    desk.click(500.0, 870.0 - off);
+    desk.key("Delete");
+    assert!(
+        desk.art().mark(&line.id).is_none(),
+        "the click picked the line"
+    );
+}
+
+/// `[` and `]` make the brush smaller and larger.
+#[test]
+fn brackets_resize_the_brush() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    let laid = |desk: &mut Desk, y: f64| {
+        desk.drag((100.0, y), (300.0, y + 10.0));
+        match desk.art().marks.last().map(|mark| mark.shape.clone()) {
+            Some(Shape::Stroke { size, .. }) => size,
+            other => panic!("a stroke is laid, not {other:?}"),
+        }
+    };
+    let before = laid(&mut desk, 850.0);
+    for _ in 0..6 {
+        desk.key("]");
+    }
+    desk.pointer(500.0, 600.0);
+    desk.shot("brush-footprint");
+    desk.key("]");
+    desk.key("]");
+    let larger = laid(&mut desk, 865.0);
+    desk.key("[");
+    let smaller = laid(&mut desk, 880.0);
+    assert!(
+        larger > before && smaller < larger,
+        "{before} {larger} {smaller}"
+    );
+}
+
+/// The strip grows, shrinks and softens the selection by a step seen at
+/// the zoom it is shown at, one edit each.
+#[test]
+fn the_strip_refines_the_selection() {
+    let mut desk = Desk::open();
+    desk.key("m");
+    desk.drag((100.0, 400.0), (300.0, 500.0));
+    let width = |desk: &Desk| {
+        desk.art()
+            .selection
+            .as_ref()
+            .expect("an area is selected")
+            .region()
+            .bounds()
+            .expect("it has an extent")
+            .width()
+    };
+    let before = width(&desk);
+    desk.app
+        .harness()
+        .click_named("canvas-area-grow")
+        .expect("the strip offers growing it");
+    let grown = width(&desk);
+    // Four screen pixels each side.
+    assert!(
+        near(grown - before, 8.0 / desk.zoom, 0.5),
+        "{before} {grown}"
+    );
+    desk.app
+        .harness()
+        .click_named("canvas-area-feather")
+        .expect("the strip offers softening it");
+    let feather = desk.art().selection.as_ref().unwrap().feather;
+    assert!(near(feather, 8.0 / desk.zoom, 1e-6), "{feather}");
+}
+
+#[test]
+fn area_tools_show_subject_controls_while_a_mark_stays_selected() {
+    let mut desk = Desk::open();
+    desk.click(270.0, 240.0);
+    let selected = desk
+        .app
+        .call("inspect", serde_json::json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected["selected"], serde_json::json!(["card"]));
+    for key in ["m", "o", "q", "w"] {
+        desk.key(key);
+        assert!(
+            desk.app
+                .harness()
+                .targets()
+                .contains_key("canvas-select-subject"),
+            "{key} must expose its controls without an extra deselect"
+        );
+        assert!(
+            desk.app.harness().resources().iter().any(|resource| {
+                resource.kind == "canvas.artwork"
+                    && resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "find-area")
+            }),
+            "the same control must be reachable through actions"
+        );
+        let current = desk
+            .app
+            .call("inspect", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(current["selected"], selected["selected"]);
+    }
+    desk.key("v");
+    assert!(
+        !desk
+            .app
+            .harness()
+            .targets()
+            .contains_key("canvas-select-subject")
+    );
+    let current = desk
+        .app
+        .call("inspect", serde_json::json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(current["selected"], selected["selected"]);
+}
+
+#[test]
+fn object_tree_selects_an_occluded_object_for_an_exact_edit() {
+    let mut desk = Desk::open();
+    desk.app.call("draw",serde_json::json!({"marks":[
+        {"id":"covered","name":"Hidden rectangle","shape":{"kind":"rect","x":10,"y":10,"width":100,"height":100},"fill":"#010203"},
+        {"id":"cover","shape":{"kind":"rect","x":0,"y":0,"width":200,"height":200},"fill":"#ffffff"}
+    ]})).unwrap();
+    desk.app
+        .harness()
+        .perform_semantic_named(
+            "canvas-dock",
+            Some("canvas-dock:segment:1"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    let snapshot = desk.app.harness().inspection();
+    let target = support::named_bounds(&snapshot.root, "Hidden rectangle")
+        .expect("the covered object is listed");
+    desk.app
+        .harness()
+        .click_at(target.center().x, target.center().y);
+    desk.key("ArrowRight");
+    let Shape::Rect { x, .. } = desk.mark("covered").shape else {
+        panic!("rectangle");
+    };
+    assert_eq!(
+        x, 11.0,
+        "tree selection reaches the production nudge action"
+    );
+    let Shape::Rect { x, .. } = desk.mark("cover").shape else {
+        panic!("rectangle");
+    };
+    assert_eq!(x, 0.0, "the covering object is untouched");
+    assert!(desk.app.undo());
+    let Shape::Rect { x, .. } = desk.mark("covered").shape else {
+        panic!("rectangle");
+    };
+    assert_eq!(x, 10.0);
+}
+
+#[test]
+fn pixel_pinch_zoom_keeps_the_cell_under_the_pointer() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    desk.app
+        .harness()
+        .perform_semantic_named(
+            "canvas-workspace",
+            Some("canvas-workspace:segment:3"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    desk.key("Ctrl+1");
+    desk.key("=");
+    let focal = (desk.canvas.center().x + 60.0, desk.canvas.center().y + 45.0);
+    desk.app.harness().send(&WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: ui::winit::dpi::PhysicalPosition::new(focal.0, focal.1),
+    });
+    // Both axes overflow at 2x: no centering or scroll-edge clamp can move the anchor.
+    // Paint, zoom, and paint again at the same screen point.
+    desk.app.harness().click_at(focal.0, focal.1);
+    let first = desk.art().marks.last().unwrap().shape.clone();
+    desk.app.harness().send(&WindowEvent::PinchGesture {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        delta: 0.25,
+        phase: ui::winit::event::TouchPhase::Moved,
+    });
+    desk.app.harness().click_at(focal.0, focal.1);
+    let after = desk.art().marks.last().unwrap().shape.clone();
+    assert_eq!(
+        first, after,
+        "the same cell stays under the zoom focal point"
+    );
+}
+
+#[test]
+fn a_large_pixel_sheet_fits_below_actual_size_and_paints_in_artwork_cells() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call(
+        "new-artwork",
+        serde_json::json!({"width":4096,"height":4096}),
+    )
+    .unwrap();
+    app.harness()
+        .perform_semantic_named(
+            "canvas-workspace",
+            Some("canvas-workspace:segment:3"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.harness().key("Ctrl+0");
+    let canvas = app.harness().targets()["canvas"];
+    let center = canvas.center();
+    for x in [center.x - 30.0, center.x + 30.0] {
+        app.harness().click_at(x, center.y);
+    }
+    let art = app.state();
+    assert_eq!(art.marks.len(), 2);
+    let coordinate = |mark: &Mark| {
+        let Shape::Stroke { points, .. } = &mark.shape else {
+            panic!("pixel stroke");
+        };
+        points[0][0]
+    };
+    let cells = coordinate(&art.marks[1]) - coordinate(&art.marks[0]);
+    assert!(
+        cells >= 120.0,
+        "Fit must reduce the sheet below 100%: {cells} cells across 60 screen pixels"
+    );
+    assert!(
+        (cells / 60.0 - (cells / 60.0).round()).abs() < 1e-6,
+        "pixel reductions are reciprocal whole-cell steps"
+    );
+}
+
+#[test]
+fn opening_a_differently_sized_artwork_fits_after_manual_pixel_zoom() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call("new-artwork", serde_json::json!({"width":128,"height":128}))
+        .unwrap();
+    app.harness()
+        .perform_semantic_named(
+            "canvas-workspace",
+            Some("canvas-workspace:segment:3"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.harness().key("Ctrl+1");
+    app.harness().key("+");
+    app.harness().key("+");
+    app.call(
+        "new-artwork",
+        serde_json::json!({"width":4096,"height":4096}),
+    )
+    .unwrap();
+    let saved = app
+        .call("save-artwork", serde_json::json!({}))
+        .unwrap()
+        .unwrap();
+    app.call("new-artwork", serde_json::json!({"width":128,"height":128}))
+        .unwrap();
+    app.harness().key("Ctrl+1");
+    app.harness().key("+");
+    app.call("open-artwork", serde_json::json!({"file":saved["content"]}))
+        .unwrap();
+    let canvas = app.harness().targets()["canvas"];
+    app.harness()
+        .click_at(canvas.center().x + 30.0, canvas.center().y);
+    let art = app.state();
+    let Shape::Stroke { points, .. } = &art.marks[0].shape else {
+        panic!("pixel stroke");
+    };
+    assert!(
+        points[0][0] > 2100.0,
+        "new artwork is fitted, not painted through the old 2x zoom: {:?}",
+        points[0]
+    );
+}
+
+#[test]
+fn pixel_pinch_follows_small_deltas_instead_of_jumping_whole_zoom_levels() {
+    small_pixel_zoom_deltas(false);
+}
+
+#[test]
+fn pixel_trackpad_wheel_follows_small_deltas_instead_of_jumping_whole_zoom_levels() {
+    small_pixel_zoom_deltas(true);
+}
+
+fn small_pixel_zoom_deltas(wheel: bool) {
+    let mut desk = Desk::open();
+    desk.app
+        .harness()
+        .perform_semantic_named(
+            "canvas-workspace",
+            Some("canvas-workspace:segment:3"),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    desk.key("Ctrl+1");
+    desk.key("=");
+    let canvas = *desk
+        .app
+        .harness()
+        .targets()
+        .get("canvas")
+        .expect("the canvas is visible");
+    let focal = canvas.center();
+    desk.app.harness().click_at(focal.x, focal.y);
+    let anchor = desk.art().marks.last().unwrap().shape.clone();
+    if wheel {
+        desk.hold(&["ctrl"]);
+    }
+    for _ in 0..20 {
+        let event = if wheel {
+            WindowEvent::MouseWheel {
+                device_id: ui::winit::event::DeviceId::dummy(),
+                delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+                    ui::winit::dpi::PhysicalPosition::new(0.0, 2.4),
+                ),
+                phase: ui::winit::event::TouchPhase::Moved,
+            }
+        } else {
+            WindowEvent::PinchGesture {
+                device_id: ui::winit::event::DeviceId::dummy(),
+                delta: 0.01,
+                phase: ui::winit::event::TouchPhase::Moved,
+            }
+        };
+        desk.app.harness().send(&event);
+    }
+    desk.hold(&[]);
+    desk.app.harness().click_at(focal.x, focal.y);
+    assert_eq!(
+        desk.art().marks.last().unwrap().shape,
+        anchor,
+        "small deltas preserve the focal cell"
+    );
+    desk.app.harness().click_at(focal.x + 100.0, focal.y);
+    let art = desk.art();
+    let x = |shape: &Shape| match shape {
+        Shape::Stroke { points, .. } => points.first().and_then(|point| point.first()).copied(),
+        _ => None,
+    };
+    let span = x(&art.marks.last().unwrap().shape).expect("a pixel stroke")
+        - x(&anchor).expect("a pixel anchor stroke");
+    assert!(
+        (40.0..=43.0).contains(&span),
+        "twenty 1% inputs should enlarge 2x to about 2.44x, not jump through twenty integer scales: {span}"
+    );
+}
+
+#[test]
+fn mouse_wheel_zoom_requests_frames_until_the_motion_settles() {
+    // This measures zoom motion, not startup image jobs on a shared worker pool.
+    // Keep the real animation clock and the existing two-second motion bound.
+    let pumped = ui::background::Pumped::new();
+    let _entered = pumped.background().enter();
+    let mut desk = Desk::open();
+    desk.app
+        .call("set-artwork", serde_json::json!({"texture":"smooth"}))
+        .unwrap();
+    pumped.run_pending();
+    desk.key("Ctrl+1");
+    desk.key("=");
+    let canvas = desk.app.harness().targets()["canvas"];
+    let focal = canvas.center();
+    desk.app.harness().send(&WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: ui::winit::dpi::PhysicalPosition::new(focal.x, focal.y),
+    });
+    desk.hold(&["ctrl"]);
+    // Observe scheduling at the actual input boundary. `scroll` also paints,
+    // which can legitimately outlast the 130 ms interpolation on a busy host.
+    assert!(
+        desk.app
+            .harness()
+            .dispatch_to_root(&WindowEvent::MouseWheel {
+                device_id: ui::winit::event::DeviceId::dummy(),
+                delta: ui::winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+                phase: ui::winit::event::TouchPhase::Moved,
+            })
+    );
+    assert!(
+        desk.app.harness().frame_schedule().needs_animation_frame,
+        "one wheel notch schedules intermediate frames without further input"
+    );
+    desk.hold(&[]);
+    assert!(
+        desk.app
+            .harness()
+            .settle_for_capture(tilo_test_env::hang_bound()),
+        "the shared motion driver settles"
+    );
+    assert!(
+        !desk.app.harness().frame_schedule().needs_animation_frame,
+        "zoom stops scheduling frames after settling"
+    );
+}
+
+#[test]
+fn enabling_reduced_motion_finishes_an_in_flight_wheel_zoom() {
+    fn has_label(node: &ui::headless::InspectionNode, name: &str) -> bool {
+        node.semantics
+            .as_ref()
+            .is_some_and(|semantic| semantic.name.as_deref() == Some(name))
+            || node.children.iter().any(|child| has_label(child, name))
+    }
+    // Drive icon/background completions deterministically; this exercises
+    // motion policy, not the shared runner's worker scheduling latency.
+    let pumped = ui::background::Pumped::new();
+    let _entered = pumped.background().enter();
+    let mut desk = Desk::open();
+    // A smooth ground keeps scheduling demand focused on zoom policy.
+    desk.app
+        .call("set-artwork", serde_json::json!({"texture":"smooth"}))
+        .unwrap();
+    desk.app.harness().resize((1280, 900)).unwrap();
+    pumped.run_pending();
+    desk.key("Ctrl+1");
+    desk.key("=");
+    let canvas = desk.app.harness().targets()["canvas"];
+    desk.app.harness().send(&WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: ui::winit::dpi::PhysicalPosition::new(canvas.center().x, canvas.center().y),
+    });
+    desk.hold(&["ctrl"]);
+    // Inspect the actual wheel handler before the host's next layout/draw.
+    // `scroll` also paints that frame, whose cost may exceed the ordinary
+    // 130 ms interpolation on a busy runner. The pumped executor controls
+    // background work, not the toolkit's real monotonic animation clock.
+    assert!(
+        desk.app
+            .harness()
+            .dispatch_to_root(&WindowEvent::MouseWheel {
+                device_id: ui::winit::event::DeviceId::dummy(),
+                delta: ui::winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+                phase: ui::winit::event::TouchPhase::Moved,
+            })
+    );
+    assert!(desk.app.harness().frame_schedule().needs_animation_frame);
+    let mut theme = ui::Theme::dark();
+    theme.reduce_motion = true;
+    desk.app.harness().set_theme(theme);
+    desk.hold(&[]);
+    assert!(
+        has_label(&desk.app.harness().inspection().root, "154%"),
+        "reduced motion immediately reaches the wheel's target zoom"
+    );
+    pumped.run_pending();
+    assert!(
+        desk.app
+            .harness()
+            .settle_for_capture(tilo_test_env::hang_bound()),
+        "the window settles: {:?}; image loads in flight: {}",
+        desk.app.harness().frame_requesters(),
+        ui::image_store::loads_in_flight()
+    );
+    desk.hold(&["ctrl"]);
+    desk.app.harness().scroll(0.0, 1.0);
+    desk.hold(&[]);
+    assert!(
+        has_label(&desk.app.harness().inspection().root, "190%"),
+        "subsequent wheel input immediately reaches its target zoom"
+    );
+    pumped.run_pending();
+    assert!(
+        desk.app
+            .harness()
+            .settle_for_capture(tilo_test_env::hang_bound())
+    );
+    assert!(
+        !desk.app.harness().frame_schedule().needs_animation_frame,
+        "reduced-motion wheel zoom completes without scheduling interpolation frames"
+    );
 }

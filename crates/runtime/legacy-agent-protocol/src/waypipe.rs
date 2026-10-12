@@ -47,6 +47,18 @@ pub fn client_argv(waypipe: &str, port: u32) -> Vec<String> {
     ]
 }
 
+/// `waypipe -s <path> client`: the host side when the guest's vsock is
+/// mapped onto Unix sockets (see [`crate::link::AgentLink::Hybrid`]).
+#[must_use]
+pub fn client_argv_unix(waypipe: &str, path: &std::path::Path) -> Vec<String> {
+    vec![
+        waypipe.to_string(),
+        "-s".to_string(),
+        path.display().to_string(),
+        "client".to_string(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,6 +97,10 @@ mod tests {
             assert_eq!(server_argv("waypipe", port, &[])[3], format!("2:{port}"));
             assert_ne!(host_port_for_uid(1000), host_port_for_uid(1001));
             assert!(host_port_for_uid(0) >= 1024);
+            assert_eq!(
+                client_argv_unix("waypipe", std::path::Path::new("/run/v.sock_7111")),
+                ["waypipe", "-s", "/run/v.sock_7111", "client"]
+            );
         }
     }
 }

@@ -62,7 +62,7 @@ pub(super) fn helper(root: &Path, route: &str, denied: bool) -> Result<()> {
                     finished = Some(json!({"id": invocation.0.to_string(), "update": update}));
                 } else {
                     manager.send(CollabRequest::RemoteAction {
-                        message: RemoteActionMessage::Observe { invocation },
+                        message: RemoteActionMessage::observe(invocation),
                     });
                 }
             }
@@ -85,6 +85,7 @@ fn invoke_request(
 ) -> Result<InvokeRequest> {
     let field = |name: &'static str| request.get(name).ok_or_else(|| format!("missing {name}"));
     Ok(InvokeRequest {
+        on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {
             provider: field("peer")?.as_u64().ok_or("missing peer")?.to_string(),
@@ -102,6 +103,7 @@ fn invoke_request(
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     })
 }
 
@@ -202,11 +204,11 @@ pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
         .workspaces
         .first_mut()
         .ok_or("default workspace tree has no workspace")?;
-    workspace.grant_capability(shell::shell::state::CapOverride::membership(
-        shell::shell::state::Subject::agent(READER),
-        workspace.room.to_string(),
-        shell::shell::state::Verb::Read,
-    ));
+    workspace.admit_agent_preset(
+        READER,
+        tilo_action_policy::roles::AgentPreset::Observer,
+        &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
+    );
     shell::shell::persist::save_tree_to(&tree, &state_path)?;
     let session = Session::start(root)?;
     let captured = Arc::new(Mutex::new(Vec::new()));

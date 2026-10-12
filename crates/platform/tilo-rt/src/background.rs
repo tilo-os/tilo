@@ -96,10 +96,6 @@ impl Background {
         Self(Arc::new(executor))
     }
 
-    pub fn from_arc(executor: Arc<dyn Executor>) -> Self {
-        Self(executor)
-    }
-
     /// The executor entered on this thread, or the process-wide
     /// [`ThreadPool`] when none is.
     pub fn current() -> Self {
@@ -414,6 +410,7 @@ impl Executor for ThreadPool {
         reason = "the pool's lock stays held across the spawn so the thread count and queue agree"
     )]
     fn spawn(&self, name: &'static str, job: Job) -> Result<(), Unsupported> {
+        crate::panic_boundary::abort_outside_boundaries_in_release();
         let mut state = lock(&self.shared.state);
         state.queue.push_back((name, job));
         if state.idle >= state.queue.len() || state.threads >= self.shared.max_threads {

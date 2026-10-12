@@ -855,7 +855,9 @@ async fn screencast_start_provisions_the_selected_streams_and_restores_without_r
             if let Some(ws) = t.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) {
                 // Removing the ordinary capability proves this second request is
                 // using the separately app-bound portal restore authority.
-                ws.revoke_matching(|c| matches!(&c.subject, Subject::Principal(Principal::App(_))));
+                ws.revoke_sandbox_matching(|c| {
+                    matches!(&c.subject, Subject::Principal(Principal::App(_)))
+                });
             }
         }
 
@@ -1246,7 +1248,7 @@ async fn settings_serve_the_gnome_interface_keys_and_signal_changes() {
     let settings = ctx.desktop_services.settings.clone();
     shell::portal::settings::spawn_signal_emitter(server.clone(), settings.subscribe());
     let light = LegacyAppearance::from_settings_text(
-        r#"{"appearance": {"theme": "Light", "text_scale": 1.5}}"#,
+        r#"{"appearance": {"mode": "light", "text_scale": 1.5}}"#,
         false,
     );
     for (namespace, key, value) in light.portal_settings() {
@@ -1296,7 +1298,7 @@ async fn settings_serve_the_gnome_interface_keys_and_signal_changes() {
         .await
         .expect("subscribe SettingChanged");
     let reduced_motion = LegacyAppearance::from_settings_text(
-        r#"{"appearance": {"theme": "Light", "text_scale": 1.5, "reduce_motion": true}}"#,
+        r#"{"appearance": {"mode": "light", "text_scale": 1.5, "reduce_motion": true}}"#,
         false,
     );
     for (namespace, key, value) in reduced_motion.portal_settings() {

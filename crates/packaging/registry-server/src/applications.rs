@@ -16,8 +16,11 @@ use registry_types::application::{
     proof_matches, proof_token, well_known_url,
 };
 use registry_types::namespace::Forge;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub use registry_types::application::{
+    ApplicationStatus, ProofMethod, StoredApplication, VerifiedClaim,
+};
 
 use crate::allowlist::PublisherRow;
 use crate::storage::{Storage, StorageError};
@@ -139,58 +142,6 @@ impl ProofSource for NetworkProofs {
     }
 }
 
-/// How a namespace was proven.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProofMethod {
-    DnsTxt,
-    WellKnown,
-    Forge,
-}
-
-/// One namespace the registry saw proven, and where.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VerifiedClaim {
-    pub namespace: String,
-    pub method: ProofMethod,
-    pub location: String,
-    pub checked_at_unix: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ApplicationStatus {
-    Pending,
-    Approved,
-    Rejected,
-}
-
-/// An application as the registry keeps it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoredApplication {
-    pub application: PublisherApplication,
-    pub verified: Vec<VerifiedClaim>,
-    pub status: ApplicationStatus,
-    pub received_at_unix: u64,
-    #[serde(default)]
-    pub decided_at_unix: Option<u64>,
-    #[serde(default)]
-    pub reviewer: Option<String>,
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-impl StoredApplication {
-    /// The namespaces the application proved.
-    #[must_use]
-    pub fn namespaces(&self) -> Vec<String> {
-        self.verified
-            .iter()
-            .map(|claim| claim.namespace.clone())
-            .collect()
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum ApplicationRejection {
     #[error(transparent)]
@@ -306,6 +257,8 @@ pub enum ApplicationFailure {
     Unknown(String),
     #[error("the application from {0} is not pending")]
     NotPending(String),
+    #[error("the application from {0} changed during review; refresh and review it again")]
+    Changed(String),
     #[error(
         "a first-party promotion transaction requires recovery; run publish-staged-first-party"
     )]
@@ -363,9 +316,28 @@ pub fn approve(
     now: u64,
     proofs: &dyn ProofSource,
 ) -> Result<(StoredApplication, PublisherRow), ApplicationFailure> {
-    let mut stored = pending(storage, pubkey_hex)?;
-    stored.verified = check_proofs(&stored.application, now, proofs)?;
+    let candidate = pending(storage, pubkey_hex)?;
+    approve_reviewed(storage, &candidate, reviewer, now, proofs)
+}
+
+/// Approve exactly the application a reviewer inspected. Proofs are checked
+/// again, and the pending snapshot is compared under the transaction lock
+/// before either the allowlist or application record changes.
+///
+/// # Errors
+/// Returns a stale-review error when the publisher replaced the application,
+/// or the existing validation/storage error. No decision is applied then.
+pub fn approve_reviewed(
+    storage: &Storage,
+    candidate: &StoredApplication,
+    reviewer: &str,
+    now: u64,
+    proofs: &dyn ProofSource,
+) -> Result<(StoredApplication, PublisherRow), ApplicationFailure> {
+    let verified = check_proofs(&candidate.application, now, proofs)?;
     let _lock = storage.lock_snapshot()?;
+    let mut stored = current_review(storage, candidate)?;
+    stored.verified = verified;
     if storage.load_promotion_transaction()?.is_some() {
         return Err(ApplicationFailure::PromotionActive);
     }
@@ -373,7 +345,10 @@ pub fn approve(
     let mut namespaces = allowlist
         .publishers
         .iter()
-        .find(|row| row.pubkey_hex.eq_ignore_ascii_case(pubkey_hex))
+        .find(|row| {
+            row.pubkey_hex
+                .eq_ignore_ascii_case(&stored.application.pubkey_hex)
+        })
         .map(|row| row.namespaces.clone())
         .unwrap_or_default();
     for namespace in stored.namespaces() {
@@ -407,14 +382,45 @@ pub fn reject(
     reason: &str,
     now: u64,
 ) -> Result<StoredApplication, ApplicationFailure> {
-    let mut stored = pending(storage, pubkey_hex)?;
+    let candidate = pending(storage, pubkey_hex)?;
+    reject_reviewed(storage, &candidate, reviewer, reason, now)
+}
+
+/// Reject exactly the pending application a reviewer inspected, retaining
+/// its feedback without overwriting a replacement application.
+///
+/// # Errors
+/// Returns a stale-review error when the application changed, or the
+/// existing validation/storage error. No decision is applied then.
+pub fn reject_reviewed(
+    storage: &Storage,
+    candidate: &StoredApplication,
+    reviewer: &str,
+    reason: &str,
+    now: u64,
+) -> Result<StoredApplication, ApplicationFailure> {
     let _lock = storage.lock_snapshot()?;
+    let mut stored = current_review(storage, candidate)?;
     stored.status = ApplicationStatus::Rejected;
     stored.decided_at_unix = Some(now);
     stored.reviewer = Some(reviewer.to_owned());
     stored.reason = Some(reason.to_owned());
     storage.save_publisher_application(&stored)?;
     Ok(stored)
+}
+
+/// Called while holding the snapshot lock shared with application submission.
+fn current_review(
+    storage: &Storage,
+    candidate: &StoredApplication,
+) -> Result<StoredApplication, ApplicationFailure> {
+    let current = pending(storage, &candidate.application.pubkey_hex)?;
+    if current != *candidate {
+        return Err(ApplicationFailure::Changed(
+            candidate.application.pubkey_hex.clone(),
+        ));
+    }
+    Ok(current)
 }
 
 fn pending(storage: &Storage, pubkey_hex: &str) -> Result<StoredApplication, ApplicationFailure> {
@@ -467,6 +473,158 @@ pub(crate) mod tests {
         };
         application.sign(key);
         application
+    }
+
+    fn review_fixture() -> (tempfile::TempDir, Storage, StoredApplication, FixedProofs) {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = Storage::open(directory.path()).unwrap();
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let application = signed(
+            &key,
+            vec![NamespaceClaim::Domain {
+                domain: "example.com".into(),
+            }],
+            100,
+        );
+        let mut proofs = FixedProofs::default();
+        let token = proof_token(&application.pubkey_hex);
+        for domain in ["example.com", "example.org"] {
+            proofs.txt.insert(dns_txt_name(domain), vec![token.clone()]);
+        }
+        let reviewed = submit(&storage, application, 100, &proofs).unwrap();
+        (directory, storage, reviewed, proofs)
+    }
+
+    fn replacement(reviewed: &StoredApplication) -> PublisherApplication {
+        let mut application = reviewed.application.clone();
+        application.claims = vec![NamespaceClaim::Domain {
+            domain: "example.org".into(),
+        }];
+        application.note = "Updated application".into();
+        application.submitted_at_unix = 101;
+        application.sign(&SigningKey::from_bytes(&[9; 32]));
+        application
+    }
+
+    /// A publisher resubmits through the production API while the owner is
+    /// checking the old application's namespace proof.
+    struct ReplacingProofs<'a> {
+        storage: &'a Storage,
+        replacement: &'a PublisherApplication,
+        proofs: &'a FixedProofs,
+        replaced: std::cell::Cell<bool>,
+    }
+
+    impl ProofSource for ReplacingProofs<'_> {
+        fn txt_records(&self, name: &str) -> Result<Vec<String>, String> {
+            if !self.replaced.replace(true) {
+                submit(
+                    self.storage,
+                    self.replacement.clone(),
+                    self.replacement.submitted_at_unix,
+                    self.proofs,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            self.proofs.txt_records(name)
+        }
+
+        fn https_text(&self, url: &str) -> Result<String, String> {
+            self.proofs.https_text(url)
+        }
+    }
+
+    #[test]
+    fn a_replacement_during_proof_checks_is_not_overwritten_by_approval() {
+        let (_directory, storage, reviewed, proofs) = review_fixture();
+        let replacement = replacement(&reviewed);
+        let racing = ReplacingProofs {
+            storage: &storage,
+            replacement: &replacement,
+            proofs: &proofs,
+            replaced: std::cell::Cell::new(false),
+        };
+        let decision = approve(
+            &storage,
+            &reviewed.application.pubkey_hex,
+            "owner",
+            102,
+            &racing,
+        );
+        assert!(
+            racing.replaced.get(),
+            "the production resubmission ran during review"
+        );
+        assert!(
+            matches!(decision, Err(ApplicationFailure::Changed(_))),
+            "{decision:?}"
+        );
+        assert!(storage.load_allowlist().unwrap().publishers.is_empty());
+        let current = pending(&storage, &reviewed.application.pubkey_hex).unwrap();
+        assert_eq!(current.application, replacement);
+        assert_eq!(current.status, ApplicationStatus::Pending);
+        assert!(current.reviewer.is_none());
+    }
+
+    #[test]
+    fn a_displayed_application_cannot_decide_a_newer_submission() {
+        let (_directory, storage, reviewed, proofs) = review_fixture();
+        let replacement = submit(&storage, replacement(&reviewed), 101, &proofs).unwrap();
+        assert!(matches!(
+            approve_reviewed(&storage, &reviewed, "owner", 102, &proofs),
+            Err(ApplicationFailure::Changed(_))
+        ));
+        assert!(matches!(
+            reject_reviewed(
+                &storage,
+                &reviewed,
+                "owner",
+                "Feedback for the old request",
+                102
+            ),
+            Err(ApplicationFailure::Changed(_))
+        ));
+        assert_eq!(
+            pending(&storage, &reviewed.application.pubkey_hex).unwrap(),
+            replacement
+        );
+        assert!(storage.load_allowlist().unwrap().publishers.is_empty());
+
+        let rejected =
+            reject_reviewed(&storage, &replacement, "owner", "Describe your app", 103).unwrap();
+        assert_eq!(rejected.status, ApplicationStatus::Rejected);
+        assert_eq!(rejected.reason.as_deref(), Some("Describe your app"));
+        assert_eq!(rejected.reviewer.as_deref(), Some("owner"));
+        assert_eq!(rejected.application, replacement.application);
+    }
+
+    #[test]
+    fn an_unchanged_review_still_rechecks_proofs_and_approves_exact_namespaces() {
+        let (_directory, storage, reviewed, proofs) = review_fixture();
+        assert!(
+            approve_reviewed(&storage, &reviewed, "owner", 101, &FixedProofs::default()).is_err()
+        );
+        assert_eq!(
+            pending(&storage, &reviewed.application.pubkey_hex).unwrap(),
+            reviewed
+        );
+        assert!(storage.load_allowlist().unwrap().publishers.is_empty());
+        let (approved, row) = approve_reviewed(&storage, &reviewed, "owner", 102, &proofs).unwrap();
+        assert_eq!(approved.status, ApplicationStatus::Approved);
+        assert_eq!(approved.application, reviewed.application);
+        assert_eq!(row.namespaces, ["com.example"]);
+        assert_eq!(approved.verified.first().unwrap().checked_at_unix, 102);
+        assert!(matches!(
+            reject_reviewed(&storage, &reviewed, "owner", "Stale rejection", 103),
+            Err(ApplicationFailure::NotPending(_))
+        ));
+        assert_eq!(
+            storage
+                .load_publisher_application(&row.pubkey_hex)
+                .unwrap()
+                .unwrap(),
+            approved
+        );
     }
 
     #[test]

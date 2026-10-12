@@ -83,6 +83,30 @@ impl Opened {
     pub fn launched(&self) -> bool {
         matches!(self, Opened::Launched { .. } | Opened::HostLaunched { .. })
     }
+
+    /// The typed result an open action answers with: what happened and
+    /// which application holds the document now. `tab` is the focused tab
+    /// when the document was already open.
+    pub fn to_value(&self, path: &Path) -> serde_json::Value {
+        match self {
+            Opened::Launched { app } => serde_json::json!({
+                "opened": "launched",
+                "path": path,
+                "app": app.package_id,
+            }),
+            Opened::Focused { app, tab } => serde_json::json!({
+                "opened": "focused",
+                "path": path,
+                "app": app.package_id,
+                "tab": tab,
+            }),
+            Opened::HostLaunched { app } => serde_json::json!({
+                "opened": "host-launched",
+                "path": path,
+                "app": app.desktop_id,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -362,7 +386,12 @@ fn open_package(
     let workspace = {
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
-        tree.workspace_after_opening_app(&app.package_id)
+        let workspace = tree.workspace_after_opening_app(&app.package_id);
+        // The document's new read grant must reach the accepted-policy
+        // publication before the launch gate checks its immutable snapshot.
+        // Queue here; the launch worker waits without blocking the frame.
+        tree.queue_save();
+        workspace
     };
     let launched = workspace.map(|workspace| {
         launcher::launch_document_in_workspace(&app.package_id, &workspace, Some(path))
@@ -684,7 +713,7 @@ pub fn continuation_file_reference_for_surface(
         .path
         .clone();
     drop(open);
-    let record_id = xattr::get(&path, "user.tilo.record-id")
+    let record_id = xattr::get(&path, fs_protocol::RECORD_ID_XATTR)
         .ok()
         .flatten()
         .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
@@ -701,13 +730,13 @@ pub fn continuation_file_reference_for_surface(
             .find(|record| record.path == *path)
             .map(|record| *record.record_id.as_bytes())
         })?;
-    let content_hash = xattr::get(&path, "user.tilo.content-hash")
+    let content_hash = xattr::get(&path, fs_protocol::CONTENT_HASH_XATTR)
         .ok()
         .flatten()
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
     // FUSE exposes preview bytes, never a path. Persist only their hash so
     // the receiver can request/cache its own projected thumbnail.
-    let thumbnail_hash = xattr::get(&path, "user.tilo.thumb")
+    let thumbnail_hash = xattr::get(&path, fs_protocol::THUMB_XATTR)
         .ok()
         .flatten()
         .map(|bytes| *blake3::hash(&bytes).as_bytes());
@@ -906,9 +935,7 @@ mod tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
-    use parking_lot::RwLock;
     use std::fmt::Write as _;
-    use std::sync::Arc;
 
     /// A registry + manifest pair so `launcher::installed_apps()`
     /// enumerates a package declaring `[providers].ext`.
@@ -923,10 +950,14 @@ mod tests {
             .join(", ");
         std::fs::write(
             &manifest_path,
-            format!(
-                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
-                 version = \"1.0.0\"\n[entrypoint]\nbin = \"bin/app\"\n\
-                 type = \"gui\"\n[providers]\nmime = []\next = [{ext_list}]\n"
+            crate::shell::test_support::canonical_manifest(
+                &format!(
+                    "id = \"{package_id}\"\nname = \"{name}\"\nversion = \"1.0.0\"\nkind = \"app\""
+                ),
+                &format!(
+                    "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
+                     [providers]\nmime = []\next = [{ext_list}]\n"
+                ),
             ),
         )
         .unwrap();
@@ -943,7 +974,8 @@ mod tests {
     }
 
     fn chrome_with_workspace() -> Chrome {
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::bootstrap_demo()));
+        let handle: WorkspaceTreeHandle =
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_demo());
         ChromeState::new_with_handle(handle)
     }
 
@@ -1041,7 +1073,7 @@ mod tests {
             });
             xattr::set(
                 root.path(),
-                file_explorer::model::RECORD_INDEX_XATTR,
+                fs_protocol::projection::RECORD_INDEX_XATTR,
                 &serde_json::to_vec(&projection).unwrap(),
             )
             .unwrap();
@@ -1075,9 +1107,9 @@ mod tests {
             let record = [0x71; 16];
             let content = [0x42; 32];
             let thumbnail = b"projected thumbnail";
-            xattr::set(&path, "user.tilo.record-id", &record).unwrap();
-            xattr::set(&path, "user.tilo.content-hash", &content).unwrap();
-            xattr::set(&path, "user.tilo.thumb", thumbnail).unwrap();
+            xattr::set(&path, fs_protocol::RECORD_ID_XATTR, &record).unwrap();
+            xattr::set(&path, fs_protocol::CONTENT_HASH_XATTR, &content).unwrap();
+            xattr::set(&path, fs_protocol::THUMB_XATTR, thumbnail).unwrap();
             let uuid = uuid::Uuid::from_bytes(record);
             let exact = serde_json::json!({
                 "schema_version": 2,
@@ -1092,7 +1124,7 @@ mod tests {
                 root.path(),
                 format!(
                     "{}{}",
-                    file_explorer::model::RECORD_INDEX_BY_ID_XATTR_PREFIX,
+                    fs_protocol::projection::RECORD_INDEX_BY_ID_XATTR_PREFIX,
                     uuid
                 ),
                 &serde_json::to_vec(&exact).unwrap(),
@@ -1107,8 +1139,8 @@ mod tests {
 
             // A change after capture must not make the record unopenable: the
             // FileRecordId, rather than stale content/preview hashes, routes it.
-            xattr::set(&path, "user.tilo.content-hash", &[0x43; 32]).unwrap();
-            xattr::set(&path, "user.tilo.thumb", b"fresh preview").unwrap();
+            xattr::set(&path, fs_protocol::CONTENT_HASH_XATTR, &[0x43; 32]).unwrap();
+            xattr::set(&path, fs_protocol::THUMB_XATTR, b"fresh preview").unwrap();
 
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_WORKSPACE_ROOTS", root.path());
@@ -1203,11 +1235,27 @@ mod tests {
                 );
             }
 
-            let started: Vec<String> = launcher::drain_events()
-                .into_iter()
-                .filter(|e| matches!(e.kind, launcher::LaunchEventKind::Started { .. }))
-                .map(|e| e.package_id)
-                .collect();
+            // A child can write its recording log before the launch thread
+            // publishes Started. Observe the production event queue separately;
+            // seeing argv is not evidence that every event has arrived.
+            let deadline = std::time::Instant::now() + HANG_BOUND;
+            let mut started = Vec::new();
+            loop {
+                started.extend(
+                    launcher::drain_events()
+                        .into_iter()
+                        .filter(|e| matches!(e.kind, launcher::LaunchEventKind::Started { .. }))
+                        .map(|e| e.package_id),
+                );
+                if cases
+                    .iter()
+                    .all(|(_, package)| started.iter().any(|p| p == package))
+                    || std::time::Instant::now() >= deadline
+                {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
             for (_, package) in cases {
                 assert!(
                     started.iter().any(|p| p == package),
@@ -1329,7 +1377,7 @@ mod tests {
                     .desktop
                     .active_workspace()
                     .unwrap()
-                    .capabilities
+                    .sandbox
                     .is_empty(),
                 "a refused open must not leave a grant behind"
             );
@@ -1613,6 +1661,42 @@ mod tests {
         explicit_drop_placement_survives_launch_until_toplevel_adoption();
     }
 
+    /// Files as the shell mounts it on a session without startup inputs of
+    /// its own (a Linux session): its own component, starting at `files`,
+    /// opening documents through the shell's opener.
+    fn mounted_files(
+        profile: &std::path::Path,
+        files: &std::path::Path,
+    ) -> ui::headless::FrameHarness {
+        let mut apps =
+            crate::shell::in_process::InProcessApps::at(&profile.join("profile"), "fixture-person")
+                .unwrap();
+        let startup = file_explorer::StartupInputs {
+            initial_dir: files.to_path_buf(),
+            workspace_roots: Vec::new(),
+            record_roots: Vec::new(),
+            remote_accounts: Vec::new(),
+            trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
+        };
+        let component = apps
+            .mount(
+                file_explorer::definition(),
+                "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc",
+                9,
+                ui::record::RecordId::room_default(),
+                |context| context.lend(startup),
+            )
+            .unwrap();
+        let mut harness = ui::headless::FrameHarness::from_component(
+            component,
+            (1000, 700),
+            ui::application::ComponentRunnerInputs::from_native_process(),
+        )
+        .unwrap();
+        harness.relayout();
+        harness
+    }
+
     #[test]
     #[serial_test::serial(process_env)]
     #[allow(
@@ -1640,16 +1724,9 @@ mod tests {
             let chrome = chrome_with_workspace();
             crate::shell::install_document_opener(&chrome);
 
-            let mut explorer = file_explorer::FileExplorerWidget::with_startup_inputs(
-                file_explorer::StartupInputs {
-                    initial_dir: files.clone(),
-                    workspace_roots: Vec::new(),
-                    record_roots: Vec::new(),
-                    remote_accounts: Vec::new(),
-                    trusted_humans:
-                        file_explorer::identity_directory::TrustedHumanDirectory::default(),
-                },
-            );
+            let mut harness = mounted_files(tmp.path(), &files);
+            let explorer =
+                file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
             explorer.navigate(files);
             let idx = explorer
                 .displayed_entries()
@@ -1679,7 +1756,7 @@ mod tests {
                 let ws = tree.desktop.active_workspace().unwrap();
                 let want = Subject::app("so.tilo.word-processor");
                 let scopes: Vec<Scope> = ws
-                    .capabilities
+                    .sandbox
                     .iter()
                     .filter(|c| c.subject == want && c.effect == Effect::Grant)
                     .map(|c| c.scope.clone())
@@ -1709,16 +1786,9 @@ mod tests {
             let chrome = chrome_with_workspace();
             crate::shell::install_document_opener(&chrome);
 
-            let mut explorer = file_explorer::FileExplorerWidget::with_startup_inputs(
-                file_explorer::StartupInputs {
-                    initial_dir: files.clone(),
-                    workspace_roots: Vec::new(),
-                    record_roots: Vec::new(),
-                    remote_accounts: Vec::new(),
-                    trusted_humans:
-                        file_explorer::identity_directory::TrustedHumanDirectory::default(),
-                },
-            );
+            let mut harness = mounted_files(tmp.path(), &files);
+            let explorer =
+                file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
             explorer.navigate(files);
             let idx = explorer
                 .displayed_entries()
@@ -1775,7 +1845,7 @@ mod tests {
                     .desktop
                     .active_workspace()
                     .unwrap()
-                    .capabilities
+                    .sandbox
                     .is_empty(),
                 "fixture precondition: the workspace starts with no grants"
             );
@@ -1787,7 +1857,7 @@ mod tests {
             let ws = tree.desktop.active_workspace().unwrap();
             let want_subject = Subject::app("so.tilo.word-processor");
             let granted: Vec<_> = ws
-                .capabilities
+                .sandbox
                 .iter()
                 .filter(|c| c.subject == want_subject && c.effect == Effect::Grant)
                 .collect();
@@ -1795,7 +1865,7 @@ mod tests {
                 granted.len(),
                 1,
                 "exactly one grant for the opening app: {:?}",
-                ws.capabilities
+                ws.sandbox
             );
             assert_eq!(
                 granted[0].scope,
@@ -1808,11 +1878,11 @@ mod tests {
             // would hand the app every other file beside it.
             let parent = doc_path.parent().unwrap().display().to_string();
             assert!(
-                !ws.capabilities
+                !ws.sandbox
                     .iter()
                     .any(|c| c.scope == Scope::FsPath(parent.clone())),
                 "the open widened the grant to {parent}: {:?}",
-                ws.capabilities
+                ws.sandbox
             );
             drop(tree);
             drop(st);

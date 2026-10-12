@@ -122,6 +122,57 @@ impl EncodedFrame {
     }
 }
 
+/// `SurfaceStreamStart::codec` of a page shared as a display list.
+pub const PAINT_CODEC: &str = ui::webview::paint::stream::wire::CODEC;
+
+/// What [`SharedFlatpakSession::assemble`] builds a session from.
+struct Started {
+    host_user_id: PeerId,
+    app_id: String,
+    surface_id: SurfaceId,
+    width: u32,
+    height: u32,
+    local_caps: CodecCapabilities,
+    metrics: Option<PeerSurfaceMetrics>,
+    paint: bool,
+}
+
+/// The encoder of a paint share: its frames come from the app already
+/// encoded, so it is never handed pixels and refuses any it is given.
+struct PaintPassthrough {
+    width: u32,
+    height: u32,
+}
+
+impl Encoder for PaintPassthrough {
+    fn kind(&self) -> EncoderKind {
+        EncoderKind::RoyaltyFreeSoftware
+    }
+    fn codec(&self) -> Codec {
+        Codec::H264
+    }
+    fn width(&self) -> u32 {
+        self.width
+    }
+    fn height(&self) -> u32 {
+        self.height
+    }
+    fn accepts_dmabuf(&self, _fourcc: u32, _modifier: u64) -> bool {
+        false
+    }
+    fn force_keyframe(&mut self) {}
+    fn encode(
+        &mut self,
+        _input: FrameInput<'_>,
+        _out: &mut Vec<u8>,
+    ) -> Result<crate::collab::encoder::FrameStats, EncoderError> {
+        Err(EncoderError::EncodeFailed {
+            kind: self.kind(),
+            detail: "paint_passthrough".into(),
+        })
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ShareError {
     #[error("encoder {choice:?} is not available in this build")]
@@ -222,6 +273,9 @@ pub struct SharedFlatpakSession {
     pub surface_id: SurfaceId,
     width: u32,
     height: u32,
+    /// The app streams the window's page as a display list; see
+    /// [`Self::start_paint`].
+    paint: bool,
     config: FlatpakShareConfig,
     encoder: Arc<Mutex<Box<dyn Encoder>>>,
     /// What the running encoder is, and why; replaced by [`Self::renegotiate`].
@@ -314,6 +368,81 @@ impl SharedFlatpakSession {
         if let Some(m) = &metrics {
             m.set_chosen_encoder(state.kind);
         }
+        Ok(Self::assemble(
+            Started {
+                host_user_id,
+                app_id: app_id.into(),
+                surface_id,
+                width,
+                height,
+                local_caps,
+                metrics,
+                paint: false,
+            },
+            config,
+            encoder,
+            state,
+        ))
+    }
+
+    /// A share of a window whose app streams its page as a display list
+    /// ([`PAINT_CODEC`]): the app hands over frames ([`Self::paint_message`]),
+    /// so nothing is captured or encoded and viewers draw the page themselves.
+    ///
+    /// # Errors
+    ///
+    /// [`ShareError::DimensionsExceeded`] for a window outside 1..=4096.
+    pub fn start_paint(
+        host_user_id: PeerId,
+        app_id: impl Into<String>,
+        surface_id: SurfaceId,
+        width: u32,
+        height: u32,
+        config: &FlatpakShareConfig,
+    ) -> Result<Self, ShareError> {
+        if width == 0 || height == 0 || width > 4096 || height > 4096 {
+            return Err(ShareError::DimensionsExceeded { width, height });
+        }
+        let encoder = PaintPassthrough { width, height };
+        let state = CodecState {
+            kind: encoder.kind(),
+            codec: encoder.codec(),
+            hdr: None,
+            encoded: (width, height),
+        };
+        Ok(Self::assemble(
+            Started {
+                host_user_id,
+                app_id: app_id.into(),
+                surface_id,
+                width,
+                height,
+                local_caps: CodecCapabilities::default(),
+                metrics: None,
+                paint: true,
+            },
+            config,
+            Box::new(encoder),
+            state,
+        ))
+    }
+
+    fn assemble(
+        started: Started,
+        config: &FlatpakShareConfig,
+        encoder: Box<dyn Encoder>,
+        state: CodecState,
+    ) -> Self {
+        let Started {
+            host_user_id,
+            app_id,
+            surface_id,
+            width,
+            height,
+            local_caps,
+            metrics,
+            paint,
+        } = started;
         // Software encoders cannot sustain more than the ceiling.
         let effective_fps = if state.kind.is_hardware() {
             config.target_fps.max(1)
@@ -334,12 +463,13 @@ impl SharedFlatpakSession {
             display_size(state.codec, state.encoded.0, state.encoded.1),
         );
 
-        Ok(Self {
+        Self {
             host_user_id,
-            app_id: app_id.into(),
+            app_id,
             surface_id,
             width,
             height,
+            paint,
             config: FlatpakShareConfig {
                 max_bitrate_kbps: config.max_bitrate_kbps,
                 target_fps: effective_fps,
@@ -359,7 +489,7 @@ impl SharedFlatpakSession {
             stream_sender,
             color_override: Arc::new(Mutex::new(None)),
             tab: 0,
-        })
+        }
     }
 
     /// Negotiate a codec for `receivers` and open its encoder. An HDR
@@ -425,6 +555,9 @@ impl SharedFlatpakSession {
     /// receivers rebuild their decoders. A negotiation that cannot open an
     /// encoder keeps the running one.
     pub fn renegotiate(&self, receivers: &[CodecCapabilities]) -> bool {
+        if self.paint {
+            return false;
+        }
         let Some((codec, hdr)) = choose(&self.config, &self.local_caps, receivers) else {
             return false;
         };
@@ -576,7 +709,11 @@ impl SharedFlatpakSession {
             Some((client_color, client_hdr)) => (Some(client_color), client_hdr.or(default_hdr)),
             None => (Some(default_color), default_hdr),
         };
-        let codec_label = state.codec.wire_label().to_string();
+        let codec_label = if self.paint {
+            PAINT_CODEC.to_string()
+        } else {
+            state.codec.wire_label().to_string()
+        };
         NeighbourMsg::SurfaceStreamStart {
             surface: self.surface_id,
             source_peer: self.host_user_id,
@@ -590,6 +727,21 @@ impl SharedFlatpakSession {
             hdr_static_metadata: hdr_static,
             bit_depth,
             tab: self.tab,
+        }
+    }
+
+    /// Whether the app streams this window's page ([`Self::start_paint`]).
+    pub fn is_paint(&self) -> bool {
+        self.paint
+    }
+
+    /// One frame of a paint share's stream, as the app encoded it.
+    pub fn paint_message(&self, payload: Vec<u8>) -> NeighbourMsg {
+        NeighbourMsg::SurfaceFrame {
+            surface: self.surface_id,
+            source_peer: self.host_user_id,
+            encoded_h264: payload,
+            ts: self.monotonic_ns_now(),
         }
     }
 
@@ -610,13 +762,22 @@ impl SharedFlatpakSession {
     /// allocation-free; a mismatch surfaces as
     /// `EncodeError::BufferSizeMismatch` on the next pump.
     pub fn deposit_captured_rgba(&self, rgba: Vec<u8>) {
+        self.stage(StagedKind::Rgba(rgba));
+    }
+
+    /// Replace any undrained deposit with `kind`, stamped now. A paint
+    /// share never takes captured frames.
+    fn stage(&self, kind: StagedKind) {
+        if self.paint {
+            return;
+        }
         let capture_ts_ns = self.monotonic_ns_now();
         let mut slot = self
             .staged_frame
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *slot = Some(StagedFrame {
-            kind: StagedKind::Rgba(rgba),
+            kind,
             capture_ts_ns,
         });
     }
@@ -628,15 +789,7 @@ impl SharedFlatpakSession {
     /// fallback picks up on the next commit.
     #[cfg(target_os = "linux")]
     pub fn deposit_captured_dmabuf(&self, dmabuf: Dmabuf) {
-        let capture_ts_ns = self.monotonic_ns_now();
-        let mut slot = self
-            .staged_frame
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *slot = Some(StagedFrame {
-            kind: StagedKind::Dmabuf(dmabuf),
-            capture_ts_ns,
-        });
+        self.stage(StagedKind::Dmabuf(dmabuf));
     }
 
     /// Pump one iteration of the encode loop. `None` covers throttled,
@@ -930,6 +1083,61 @@ fn display_size(codec: Codec, width: u32, height: u32) -> Option<(u16, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_paint_share_announces_its_codec_and_never_captures_or_encodes() {
+        let s = SharedFlatpakSession::start_paint(
+            0xBEEF,
+            "so.tilo.browser",
+            42,
+            800,
+            600,
+            &cfg_software(),
+        )
+        .expect("start");
+        assert!(s.is_paint());
+        match s.stream_start_msg() {
+            NeighbourMsg::SurfaceStreamStart {
+                codec,
+                width,
+                height,
+                app_id,
+                ..
+            } => {
+                assert_eq!(codec, PAINT_CODEC);
+                assert_eq!((width, height), (800, 600));
+                assert_eq!(app_id, "so.tilo.browser");
+            }
+            other => panic!("expected SurfaceStreamStart, got {other:?}"),
+        }
+        s.deposit_captured_rgba(vec![0; 800 * 600 * 4]);
+        assert!(
+            s.staged_due().is_none(),
+            "the window's pixels are never captured"
+        );
+        assert!(s.encode_next_frame(Instant::now()).is_none());
+        assert!(!s.renegotiate(&[CodecCapabilities::default()]));
+        match s.paint_message(vec![0, 1, 2]) {
+            NeighbourMsg::SurfaceFrame {
+                surface,
+                source_peer,
+                encoded_h264,
+                ..
+            } => {
+                assert_eq!(
+                    (surface, source_peer, encoded_h264),
+                    (42, 0xBEEF, vec![0, 1, 2])
+                );
+            }
+            other => panic!("expected SurfaceFrame, got {other:?}"),
+        }
+        s.add_viewer(9, false);
+        assert!(
+            s.accept_remote_input(9),
+            "viewers drive a painted window as any other"
+        );
+        assert!(SharedFlatpakSession::start_paint(1, "x", 1, 0, 600, &cfg_software()).is_err());
+    }
     use crate::network::streaming::test_support::RecordingSink;
 
     fn cfg_software() -> FlatpakShareConfig {

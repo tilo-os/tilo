@@ -70,7 +70,7 @@ open-handle and errno matrix is not yet a mandatory proven CI job.
 
 ## Required wire records
 
-Introduce `FileMutationTransactionV1`, signed once by the initiating certified
+Introduce `FileMutationTransaction`, signed once by the initiating certified
 device. Its canonical signed view contains:
 
 - schema and signature-domain versions;

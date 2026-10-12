@@ -8,15 +8,17 @@
 //! navigation. A host that draws the overview itself reads the same cards.
 
 use std::collections::HashMap;
+use ui::num::f64_of_usize;
 
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::{TabId, WorkspaceId};
+use ui::TextRole;
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::chrome::ChromeRole;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{AppModel, ModelPath, TaffyTreeExt as _, Widget};
 use vello::Scene;
@@ -44,15 +46,79 @@ pub enum OverviewPick {
 
 /// The panel's width at most, as the native shell's overview.
 const PANEL_WIDTH: f64 = 720.0;
-/// Room kept between the panel and the edges of what it covers.
-const MARGIN: f64 = 24.0;
-const PAD: f64 = 16.0;
-const HERE_HEIGHT: f64 = 88.0;
-const CAPTION_HEIGHT: f64 = 28.0;
-const WINDOW_ROW: f64 = 40.0;
-const ROOM_ROW: f64 = 62.0;
-const NEW_ROW: f64 = 44.0;
-const GAP: f64 = 8.0;
+
+/// The panel's density, resolved from the theme once per layout pass so
+/// hit-testing (which has no theme in hand) reads the numbers paint uses.
+/// Every height is a role's line plus spacing steps, so larger text grows
+/// the panel instead of overlapping its lines.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Metrics {
+    /// Room kept between the panel and the edges of what it covers (`s6`).
+    margin: f64,
+    /// Inner padding of the panel and of a row (`s4`).
+    pad: f64,
+    /// Gap between sections and between workspace rows (`s2`).
+    gap: f64,
+    /// Air between window rows (`s1`).
+    row_gap: f64,
+    /// The "you are here" block: its name line, `s1`, the access line and
+    /// `s3` above and below.
+    here_h: f64,
+    /// A section caption band: `s2` above the text, `s1` below it.
+    caption_h: f64,
+    caption_dy: f64,
+    /// One window row (or the "new workspace" row): a body line plus `s2`
+    /// above and below, never below the pointer-target floor.
+    window_h: f64,
+    /// One workspace row: a heading line, `s1`, a caption line and `s3`
+    /// above and below.
+    room_h: f64,
+    /// An app mark, and the step between the marks of the "here" block.
+    mark: f64,
+    mark_step: f64,
+    /// Inset of a row's leading mark and the gap from it to the label
+    /// (`s3`).
+    inset: f64,
+    /// The "You are here" chip's padding (`s3` across, `s1` down).
+    chip_pad_x: f64,
+    chip_pad_y: f64,
+}
+
+impl Metrics {
+    fn for_theme(theme: &Theme) -> Self {
+        let tokens = &theme.tokens;
+        let spacing = &tokens.spacing;
+        let lh = |role| f64::from(tokens.typography.style(role).line_height_px());
+        let s1 = f64::from(spacing.s1);
+        let s2 = f64::from(spacing.s2);
+        let s3 = f64::from(spacing.s3);
+        let mark = f64::from(tokens.metrics.icon_sm);
+        Self {
+            margin: f64::from(spacing.s6),
+            pad: f64::from(spacing.s4),
+            gap: s2,
+            row_gap: s1,
+            here_h: s3 + lh(TextRole::Title) + s1 + lh(TextRole::Body) + s3,
+            caption_h: s2 + lh(TextRole::Subheading) + s1,
+            caption_dy: s2,
+            window_h: (lh(TextRole::Body) + 2.0 * s2)
+                .max(f64::from(tokens.metrics.min_pointer_target)),
+            room_h: s3 + lh(TextRole::Heading) + s1 + lh(TextRole::Caption) + s3,
+            mark,
+            mark_step: mark + s2,
+            inset: s3,
+            chip_pad_x: s3,
+            chip_pad_y: s1,
+        }
+    }
+}
+
+impl Default for Metrics {
+    /// The default theme's density, for a panel not yet laid out.
+    fn default() -> Self {
+        Self::for_theme(&Theme::default())
+    }
+}
 /// Windows listed before the rest are counted instead.
 const MAX_WINDOWS: usize = 8;
 
@@ -88,6 +154,7 @@ pub struct OverviewPanel {
     pick: Option<OverviewPick>,
     /// The host may make workspaces.
     can_add: bool,
+    metrics: Metrics,
     dirty: bool,
 }
 
@@ -112,6 +179,7 @@ impl OverviewPanel {
             cursor: Point::ZERO,
             pick: None,
             can_add: true,
+            metrics: Metrics::default(),
             dirty: true,
         }
     }
@@ -188,11 +256,13 @@ impl OverviewPanel {
     }
 
     fn content_height(&self) -> f64 {
+        let m = self.metrics;
+        let window_step = m.window_h + m.row_gap;
         let windows = if self.windows.is_empty() {
-            WINDOW_ROW
+            window_step
         } else {
-            WINDOW_ROW
-                * small_f64(
+            window_step
+                * f64_of_usize(
                     self.windows
                         .len()
                         .saturating_add(usize::from(self.more_windows > 0)),
@@ -201,55 +271,60 @@ impl OverviewPanel {
         let rooms = if self.rooms.is_empty() {
             0.0
         } else {
-            CAPTION_HEIGHT + (ROOM_ROW + GAP) * small_f64(self.rooms.len())
+            m.caption_h + (m.room_h + m.gap) * f64_of_usize(self.rooms.len())
         };
-        let add = if self.can_add { NEW_ROW } else { 0.0 };
-        GAP + HERE_HEIGHT + GAP + CAPTION_HEIGHT + windows + GAP + rooms + add + PAD
+        let add = if self.can_add {
+            window_step + m.row_gap
+        } else {
+            0.0
+        };
+        m.gap + m.here_h + m.gap + m.caption_h + windows + m.gap + rooms + add + m.pad
     }
 
     /// Place the panel and its rows in `area`.
     fn layout_rows(&mut self) {
+        let m = self.metrics;
         let area = self.rect;
-        let width = (area.width() - 2.0 * MARGIN).clamp(0.0, PANEL_WIDTH);
+        let width = (area.width() - 2.0 * m.margin).clamp(0.0, PANEL_WIDTH);
         let height = self
             .content_height()
-            .min(area.height() - 2.0 * MARGIN)
+            .min(area.height() - 2.0 * m.margin)
             .max(0.0);
         let x0 = area.center().x - width / 2.0;
         let y0 = area.y0
             + ((area.height() - height) / 2.0)
-                .max(MARGIN)
+                .max(m.margin)
                 .min(area.height() / 4.0);
         self.panel = Rect::new(x0, y0, x0 + width, y0 + height);
-        let inner_x0 = x0 + PAD;
-        let inner_x1 = x0 + width - PAD;
+        let inner_x0 = x0 + m.pad;
+        let inner_x1 = x0 + width - m.pad;
         let mut rows = Vec::new();
-        let mut y = y0 + GAP + HERE_HEIGHT + GAP + CAPTION_HEIGHT;
+        let mut y = y0 + m.gap + m.here_h + m.gap + m.caption_h;
         for window in &self.windows {
             rows.push((
                 Target::Window(window.tab),
-                Rect::new(inner_x0, y, inner_x1, y + WINDOW_ROW - 4.0),
+                Rect::new(inner_x0, y, inner_x1, y + m.window_h),
             ));
-            y += WINDOW_ROW;
+            y += m.window_h + m.row_gap;
         }
         if self.windows.is_empty() || self.more_windows > 0 {
-            y += WINDOW_ROW;
+            y += m.window_h + m.row_gap;
         }
-        y += GAP;
+        y += m.gap;
         if !self.rooms.is_empty() {
-            y += CAPTION_HEIGHT;
+            y += m.caption_h;
             for room in &self.rooms {
                 rows.push((
                     Target::Workspace(room.id),
-                    Rect::new(inner_x0, y, inner_x1, y + ROOM_ROW),
+                    Rect::new(inner_x0, y, inner_x1, y + m.room_h),
                 ));
-                y += ROOM_ROW + GAP;
+                y += m.room_h + m.gap;
             }
         }
         if self.can_add {
             rows.push((
                 Target::NewWorkspace,
-                Rect::new(inner_x0, y, inner_x1, y + NEW_ROW - 4.0),
+                Rect::new(inner_x0, y, inner_x1, y + m.window_h),
             ));
         }
         // Rows past the panel's bottom are not reachable by pointer.
@@ -300,32 +375,14 @@ impl OverviewPanel {
         reason = "one immediate-mode pass over the panel's bounded rows; text widths are f32"
     )]
     fn paint(&self, scene: &mut Scene, transform: Affine, text: &mut TextRenderer, theme: &Theme) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let scale = text.text_scale();
-        let size = |s: f32| s / scale;
+        let colors = &theme.tokens.colors;
+        let m = self.metrics;
         ui::chrome::shell::fill_scrim(scene, transform, self.rect, 0.45, theme);
         let panel = self.panel;
         if panel.width() <= 0.0 || panel.height() <= 0.0 {
             return;
         }
-        let radius = ChromeRole::Panel.radius(theme, panel.height());
-        ui::chrome::shell::panel_shadow(scene, transform, panel, radius, theme, 1.0);
-        let shape = RoundedRect::from_rect(panel, radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::shell::panel_ground(theme),
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &shape,
-        );
+        let shape = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         // Everything inside stays inside the panel's outline.
         scene.push_layer(
             Fill::NonZero,
@@ -337,10 +394,10 @@ impl OverviewPanel {
 
         // Here: the workspace you are in.
         let here = Rect::new(
-            panel.x0 + GAP,
-            panel.y0 + GAP,
-            panel.x1 - GAP,
-            panel.y0 + GAP + HERE_HEIGHT,
+            panel.x0 + m.gap,
+            panel.y0 + m.gap,
+            panel.x1 - m.gap,
+            panel.y0 + m.gap + m.here_h,
         );
         let here_tier = ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true));
         let here_shape =
@@ -350,40 +407,37 @@ impl OverviewPanel {
             scene.stroke(&Stroke::new(1.0), transform, border, None, &here_shape);
         }
         if let Some(card) = &self.here {
-            let name_size = size(tokens.typography.scale.x2l);
+            let name_style = theme.text(TextRole::Title);
+            let chip_style = theme.text(TextRole::Caption);
+            let body = theme.text(TextRole::Body);
             let apps = card.apps();
-            let marks = small_f64(apps.len().min(6));
-            let marks_w = if marks > 0.0 { marks * 24.0 } else { 0.0 };
+            let marks = f64_of_usize(apps.len().min(6));
+            let marks_w = marks * m.mark_step;
             let chip_label = t("overview-panel-you-are-here");
-            let chip_size = size(tokens.typography.scale.xs);
-            let (chip_w, chip_h) =
-                text.measure_weighted(&chip_label, chip_size, None, TextWeight::Medium);
+            let (chip_w, chip_h) = text.measure_style(&chip_label, None, &chip_style);
+            let chip_w = f64::from(chip_w) + 2.0 * m.chip_pad_x;
             let name_room =
-                (here.width() - 2.0 * PAD - marks_w - f64::from(chip_w) - 40.0).max(40.0);
-            let name = text.elide_to_width_weighted(
-                &card.name,
-                name_size,
-                name_room as f32,
-                TextWeight::Semibold,
-            );
-            let (name_w, name_h) =
-                text.measure_weighted(&name, name_size, None, TextWeight::Semibold);
-            let name_x = here.x0 + PAD;
-            let name_y = here.y0 + 12.0;
-            text.draw_text_weighted(
+                (here.width() - 2.0 * m.pad - marks_w - chip_w - m.inset - m.pad).max(m.pad);
+            let name = text.elide_to_width_style(&card.name, name_room as f32, &name_style);
+            let (name_w, name_h) = text.measure_style(&name, None, &name_style);
+            let name_x = here.x0 + m.pad;
+            let name_y = here.y0 + m.inset;
+            text.draw_style(
                 scene,
                 &name,
-                name_size,
                 colors.text_primary,
                 transform.pre_translate((name_x, name_y).into()),
                 None,
-                TextWeight::Semibold,
+                &name_style,
             );
+            let name_mid = name_y + f64::from(name_h) / 2.0;
+            let chip_half = f64::from(chip_h) / 2.0 + m.chip_pad_y;
+            let chip_x0 = name_x + f64::from(name_w) + m.inset;
             let chip = Rect::new(
-                name_x + f64::from(name_w) + 12.0,
-                name_y + f64::from(name_h) / 2.0 - f64::from(chip_h) / 2.0 - 4.0,
-                name_x + f64::from(name_w) + 12.0 + f64::from(chip_w) + 20.0,
-                name_y + f64::from(name_h) / 2.0 + f64::from(chip_h) / 2.0 + 4.0,
+                chip_x0,
+                name_mid - chip_half,
+                chip_x0 + chip_w,
+                name_mid + chip_half,
             );
             let chip_shape = RoundedRect::from_rect(chip, chip.height() / 2.0);
             scene.stroke(
@@ -393,51 +447,56 @@ impl OverviewPanel {
                 None,
                 &chip_shape,
             );
-            text.draw_text_weighted(
+            text.draw_style(
                 scene,
                 &chip_label,
-                chip_size,
                 colors.text_primary,
-                transform.pre_translate((chip.x0 + 10.0, chip.y0 + 4.0).into()),
+                transform.pre_translate((chip.x0 + m.chip_pad_x, chip.y0 + m.chip_pad_y).into()),
                 None,
-                TextWeight::Medium,
+                &chip_style,
             );
-            let access = room_line(card);
-            text.draw_text(
+            let access = text.elide_to_width_style(
+                &room_line(card),
+                (here.width() - 2.0 * m.pad) as f32,
+                &body,
+            );
+            text.draw_style(
                 scene,
                 &access,
-                size(tokens.typography.scale.base),
                 colors.text_dim,
-                transform.pre_translate((name_x, name_y + f64::from(name_h) + 6.0).into()),
-                Some((here.width() - 2.0 * PAD) as f32),
+                transform.pre_translate((name_x, name_y + f64::from(name_h) + m.row_gap).into()),
+                None,
+                &body,
             );
-            let mut x = here.x1 - PAD - marks_w;
+            let mut x = here.x1 - m.pad - marks_w;
+            let mark_y = name_mid - m.mark / 2.0;
             for app in apps.into_iter().take(6) {
+                let x0 = x + (m.mark_step - m.mark) / 2.0;
                 ui::widget::draw_app_mark(
                     scene,
                     transform,
-                    Rect::new(x + 4.0, here.y0 + 16.0, x + 20.0, here.y0 + 32.0),
+                    Rect::new(x0, mark_y, x0 + m.mark, mark_y + m.mark),
                     app.icon.as_ref(),
                     app.kind,
                     colors.text_primary,
                 );
-                x += 24.0;
+                x += m.mark_step;
             }
         }
 
         // The windows of this workspace.
-        let caption_size = size(tokens.typography.scale.sm);
-        let mut y = here.y1 + GAP;
-        text.draw_text(
+        let caption = theme.text(TextRole::Subheading);
+        let mut y = here.y1 + m.gap;
+        text.draw_style(
             scene,
             &t("overview-panel-windows"),
-            caption_size,
             colors.text_tertiary,
-            transform.pre_translate((panel.x0 + PAD, y + 8.0).into()),
+            transform.pre_translate((panel.x0 + m.pad, y + m.caption_dy).into()),
             None,
+            &caption,
         );
-        y += CAPTION_HEIGHT;
-        let body_size = size(tokens.typography.scale.base);
+        y += m.caption_h;
+        let body = theme.text(TextRole::Body);
         let rows = self.rows.clone();
         for (index, (target, rect)) in rows.iter().enumerate() {
             let Target::Window(tab) = target else {
@@ -456,29 +515,40 @@ impl OverviewPanel {
                 self.selected == Some(index),
             );
             let mid = rect.center().y;
+            let mark_x = rect.x0 + m.inset;
             ui::widget::draw_app_mark(
                 scene,
                 transform,
-                Rect::new(rect.x0 + 10.0, mid - 8.0, rect.x0 + 26.0, mid + 8.0),
+                Rect::new(
+                    mark_x,
+                    mid - m.mark / 2.0,
+                    mark_x + m.mark,
+                    mid + m.mark / 2.0,
+                ),
                 window.app.icon.as_ref(),
                 window.app.kind,
                 colors.text_primary,
             );
-            let title = text.elide_to_width(&window.title, body_size, (rect.width() - 48.0) as f32);
-            let (_, h) = text.measure(&title, body_size, None);
-            text.draw_text(
+            let label_x = mark_x + m.mark + m.inset;
+            let title = text.elide_to_width_style(
+                &window.title,
+                (rect.x1 - m.inset - label_x) as f32,
+                &body,
+            );
+            let (_, h) = text.measure_style(&title, None, &body);
+            text.draw_style(
                 scene,
                 &title,
-                body_size,
                 if window.current {
                     colors.text_primary
                 } else {
                     colors.text_dim
                 },
-                transform.pre_translate((rect.x0 + 36.0, mid - f64::from(h) / 2.0).into()),
+                transform.pre_translate((label_x, mid - f64::from(h) / 2.0).into()),
                 None,
+                &body,
             );
-            y = rect.y1 + 4.0;
+            y = rect.y1 + m.row_gap;
         }
         if self.windows.is_empty() || self.more_windows > 0 {
             let note = if self.windows.is_empty() {
@@ -489,29 +559,38 @@ impl OverviewPanel {
                     &[("count", self.more_windows.into())],
                 )
             };
-            text.draw_text(
+            let (_, h) = text.measure_style(&note, None, &body);
+            text.draw_style(
                 scene,
                 &note,
-                body_size,
                 colors.text_dim,
-                transform.pre_translate((panel.x0 + PAD + 10.0, y + 10.0).into()),
+                transform.pre_translate(
+                    (
+                        panel.x0 + m.pad + m.inset,
+                        y + (m.window_h - f64::from(h)) / 2.0,
+                    )
+                        .into(),
+                ),
                 None,
+                &body,
             );
-            y += WINDOW_ROW;
+            y += m.window_h + m.row_gap;
         }
-        y += GAP;
+        y += m.gap;
 
         // Where else you can go.
         if !self.rooms.is_empty() {
-            text.draw_text(
+            text.draw_style(
                 scene,
                 &t("overview-panel-go-to"),
-                caption_size,
                 colors.text_tertiary,
-                transform.pre_translate((panel.x0 + PAD, y + 8.0).into()),
+                transform.pre_translate((panel.x0 + m.pad, y + m.caption_dy).into()),
                 None,
+                &caption,
             );
         }
+        let room_name = theme.text(TextRole::Heading);
+        let room_sub = theme.text(TextRole::Caption);
         for (index, (target, rect)) in rows.iter().enumerate() {
             match target {
                 Target::Workspace(id) => {
@@ -532,29 +611,28 @@ impl OverviewPanel {
                         self.row_state(index),
                         self.selected == Some(index),
                     );
-                    let name_size = size(tokens.typography.scale.lg);
-                    let name = text.elide_to_width_weighted(
-                        &room.name,
-                        name_size,
-                        (rect.width() - 2.0 * PAD) as f32,
-                        TextWeight::Semibold,
-                    );
-                    text.draw_text_weighted(
+                    let room_w = (rect.width() - 2.0 * m.pad) as f32;
+                    let name = text.elide_to_width_style(&room.name, room_w, &room_name);
+                    let (_, name_h) = text.measure_style(&name, None, &room_name);
+                    let name_y = rect.y0 + m.inset;
+                    text.draw_style(
                         scene,
                         &name,
-                        name_size,
                         colors.text_primary,
-                        transform.pre_translate((rect.x0 + PAD, rect.y0 + 10.0).into()),
+                        transform.pre_translate((rect.x0 + m.pad, name_y).into()),
                         None,
-                        TextWeight::Semibold,
+                        &room_name,
                     );
-                    text.draw_text(
+                    let line = text.elide_to_width_style(&room_line(room), room_w, &room_sub);
+                    text.draw_style(
                         scene,
-                        &room_line(room),
-                        caption_size,
+                        &line,
                         colors.text_dim,
-                        transform.pre_translate((rect.x0 + PAD, rect.y0 + 34.0).into()),
+                        transform.pre_translate(
+                            (rect.x0 + m.pad, name_y + f64::from(name_h) + m.row_gap).into(),
+                        ),
                         None,
+                        &room_sub,
                     );
                 }
                 Target::NewWorkspace => {
@@ -567,22 +645,29 @@ impl OverviewPanel {
                         self.selected == Some(index),
                     );
                     let mid = rect.center().y;
-                    Icon::Plus.draw_with_stroke(
+                    let mark_x = rect.x0 + m.inset;
+                    Icon::Plus.draw(
                         scene,
                         transform,
-                        Rect::new(rect.x0 + 14.0, mid - 7.0, rect.x0 + 28.0, mid + 7.0),
+                        Rect::new(
+                            mark_x,
+                            mid - m.mark / 2.0,
+                            mark_x + m.mark,
+                            mid + m.mark / 2.0,
+                        ),
                         colors.text_primary,
-                        1.6,
                     );
                     let label = t("overview-panel-new-workspace");
-                    let (_, h) = text.measure(&label, body_size, None);
-                    text.draw_text(
+                    let (_, h) = text.measure_style(&label, None, &body);
+                    text.draw_style(
                         scene,
                         &label,
-                        body_size,
                         colors.text_primary,
-                        transform.pre_translate((rect.x0 + 42.0, mid - f64::from(h) / 2.0).into()),
+                        transform.pre_translate(
+                            (mark_x + m.mark + m.inset, mid - f64::from(h) / 2.0).into(),
+                        ),
                         None,
+                        &body,
                     );
                 }
                 Target::Window(_) => {}
@@ -631,43 +716,37 @@ fn room_line(card: &RoomCard) -> String {
     }
 }
 
-fn small_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 impl Widget for OverviewPanel {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let metrics = Metrics::for_theme(theme);
+        if metrics != self.metrics {
+            self.metrics = metrics;
+            self.dirty = true;
+        }
+        let style = Style {
             size: taffy::Size {
                 width: percent(1.0_f32),
                 height: percent(1.0_f32),
             },
             ..Default::default()
-        });
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        let rect = ui::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.rect = rect;
             self.dirty = true;
         }
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         false
     }
 

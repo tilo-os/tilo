@@ -16,8 +16,10 @@
 #   2. The read-only identity gate the session wrapper runs at login passes.
 #   3. Startup never minted a second identity or rewrote the enrollment: no
 #      primary record, no root key on disk, the device certificate unchanged.
-#   4. An authored app (Notes) opens, and its launch leaves the public record
-#      as it was rather than giving it a secret it does not have.
+#   4. An authored app (Notes) opens, and its launch leaves the identity
+#      directory byte-for-byte as it was: the public record gains no secret
+#      it does not have, and nothing else there is written.
+#   5. A note typed there is saved, and Notes says "Saved".
 #
 # Usage: os/dev/test-joined-device-startup.sh DISK_QCOW2 [--out DIR] [--display gl|2d]
 #
@@ -63,6 +65,14 @@ collect() {
     > "$out/session-journal.txt" 2>&1 || true
   "$vm" ssh 'systemctl --failed --no-pager; systemctl --user --failed --no-pager' \
     > "$out/failed-units.txt" 2>&1 || true
+  # The compositor logs to the session's state directory, not the journal; it
+  # alone says why a session ended right after login.
+  "$vm" ssh 'cat "$HOME"/.local/state/tilo/session-logs/*.log' \
+    > "$out/compositor-session.log" 2>&1 || true
+  # A compositor killed by a signal leaves no stack in its own log; the
+  # kernel names the faulting thread and module.
+  "$vm" ssh 'journalctl -k -b --no-pager -o short-monotonic -n 400' \
+    > "$out/kernel-journal.txt" 2>&1 || true
   "$vm" ssh "ls -la $identity_dir /var/lib/tilo /var/lib/tilo/device /var/lib/tilo/device/certs \
     /var/lib/tilo/device-private /var/lib/tilo/user-identity; id" \
     > "$out/identity-layout.txt" 2>&1 || true
@@ -126,7 +136,12 @@ record="$("$vm" ssh "bash /tmp/tilo-join.sh $(printf '%q' "$TILO_PASS"); rm -f /
 note "joined record $record"
 "$vm" ssh "test ! -e $identity_dir/primary.json && test ! -e /var/lib/tilo/user-identity/privkey.bin" \
   || die "joining left a root identity on the device"
-cert_before="$("$vm" ssh 'sha256sum /var/lib/tilo/device/cert.bin')"
+# The person reads the device certificate as themselves, as their session
+# does to verify the device: it is public, whatever umask joining ran under.
+cert_before="$("$vm" ssh 'sha256sum /var/lib/tilo/device/cert.bin')" \
+  || die "joining left the device certificate unreadable to the person"
+"$vm" ssh 'set -- /var/lib/tilo/device/certs/*.bin && [ -e "$1" ] && cat -- "$@" >/dev/null' \
+  || die "joining left the per-identity certificates unreadable to the person"
 "$vm" ssh "ls -la $identity_dir /var/lib/tilo/device /var/lib/tilo/device-private /var/lib/tilo/user-identity" \
   > "$out/joined-layout.txt" 2>&1 || true
 
@@ -158,15 +173,48 @@ fi
 [ "$("$vm" ssh 'sha256sum /var/lib/tilo/device/cert.bin')" = "$cert_before" ] \
   || die "startup replaced the joined device's certificate"
 # An authored app starts on the joined device: its launch brokers the joined
-# identity, which holds no key of its own.
+# identity, which holds no key of its own, and only reads the identity store.
+identity_manifest="cd $identity_dir && find . -printf '%p %y %m %i %s %T@\n' | LC_ALL=C sort \
+  && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum"
+"$vm" ssh "$identity_manifest" > "$out/identity-before-notes.txt" \
+  || die "could not record the identity directory"
 "$vm" ssh '/usr/libexec/tilo/installed-atspi-apps.sh open Notes' > "$out/notes-open.txt" 2>&1 || {
   cat "$out/notes-open.txt" >&2
+  # A desktop that died under the launch leaves no app to find on the bus;
+  # say that, with the status the session wrapper recorded, rather than
+  # blame the app.
+  session_end="$("$vm" ssh 'grep -a "^tilo-flight-record-v1 end=" "$HOME/.local/state/tilo/session-logs/latest.log"' 2>/dev/null || true)"
+  [ -z "$session_end" ] || die "the desktop session ended while Notes opened: $session_end"
   die "Notes did not open on the joined device"
 }
+"$vm" ssh "$identity_manifest" > "$out/identity-after-notes.txt" \
+  || die "could not record the identity directory"
+diff -u "$out/identity-before-notes.txt" "$out/identity-after-notes.txt" >&2 \
+  || die "opening Notes wrote the identity directory"
 "$vm" shot joined-notes >/dev/null 2>&1 \
   && cp -f "$TILO_RUN/joined-notes.png" "$out/" 2>/dev/null || true
 "$vm" ssh "grep -q '\"schema_version\": 1' $(printf '%q' "$record")" \
   || die "launching an app rewrote the joined identity record to reference a secret"
+# Close that Notes again: the next one opens from the empty workspace's
+# launcher, as a person starting a note does.
+notes_pid="$(awk 'NF == 2 && $1 ~ /^:/ && $2 ~ /^[0-9]+$/ { pid = $2 } END { print pid }' "$out/notes-open.txt")"
+[[ "$notes_pid" =~ ^[0-9]+$ ]] || die "opening Notes named no process: $(cat "$out/notes-open.txt")"
+"$vm" ssh "kill $notes_pid; for _ in \$(seq 1 50); do kill -0 $notes_pid 2>/dev/null || exit 0; sleep 0.1; done; exit 1" \
+  || die "the Notes the launch check opened did not close"
+# A note written on the joined device is durable, and Notes says so: the
+# keyboard types it, and the save state reads "Saved", never "Not saved".
+joined_sentence='Written on the joined device.'
+"$vm" ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/joined-notes' \
+  > "$out/notes-type.txt" 2>&1 || {
+  cat "$out/notes-type.txt" >&2
+  die "Notes on the joined device opened no note to type into"
+}
+"$vm" type "$joined_sentence"
+"$vm" ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$joined_sentence' --state /tmp/joined-notes --status Saved" \
+  > "$out/notes-saved.txt" 2>&1 || {
+  cat "$out/notes-saved.txt" >&2
+  die "a note written on the joined device is not saved"
+}
 # Still the desktop once startup settles: nothing replaced it afterwards.
 "$vm" ssh /usr/libexec/tilo/native-atspi-smoke.sh established \
   || die "the joined device's desktop did not stay up"

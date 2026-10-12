@@ -76,7 +76,9 @@ Root-signed revocations received during the session are additive and scoped by
 root; a foreign root cannot revoke another root's certificate. Revocation
 knowledge is only as current as received evidence, not a fresh global attestation.
 Verified revocations and fail-closed overflow state persist in channel storage
-version3; version2 membership and held edits migrate without requesting access.
+version4; version2 membership and held edits and version3 pending admission
+requests migrate without requesting access. Version3 retains its existing
+pre-revocation layout; revocation evidence is added only in version4.
 A failed save blocks semantic reads and retries the same state. Present but
 undecodable saved authority blocks semantic reads and ordinary channel saves for
 the session, preserving the original bytes for explicit recovery. Invalid saved

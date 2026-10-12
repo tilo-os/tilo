@@ -32,12 +32,19 @@ pub trait LocalIdentitySource: Send + Sync {
 }
 
 static SOURCE: RwLock<Option<Arc<dyn LocalIdentitySource>>> = RwLock::new(None);
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Changes whenever the host replaces or revokes this process's identity.
+pub fn generation() -> u64 {
+    GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
 
 /// Make `source` the identity of this process, or restore the default
 /// (the native runtime identity with `local-daemons`, else none) with `None`.
 /// Readers see the change on their next [`load`].
 pub fn install_source(source: Option<Arc<dyn LocalIdentitySource>>) {
     *SOURCE.write().unwrap_or_else(PoisonError::into_inner) = source;
+    GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
 /// The local identity from the installed source, else the native runtime
@@ -92,18 +99,23 @@ impl LocalIdentitySource for RuntimeIdentity {
 #[cfg(feature = "local-daemons")]
 impl RuntimeIdentity {
     /// The launcher's identity, else (with `shell_config`) `primary.json`.
+    ///
+    /// Only the record's public fields are read: a name and colour never
+    /// reach for the signing secret, which on a desktop with a Secret
+    /// Service is a D-Bus round trip (and maybe an unlock prompt). The shell
+    /// asks on its broker and network runtimes for every presence frame.
     #[cfg(unix)]
     fn resolve(shell_config: bool) -> Option<LocalIdentity> {
-        let id = runtime_identity::load().ok().or_else(|| {
+        let id = runtime_identity::load_metadata().ok().or_else(|| {
             shell_config
                 .then(config_identity_path)
                 .flatten()
-                .and_then(|p| runtime_identity::load_from_path(p).ok())
+                .and_then(|p| runtime_identity::load_metadata_from_path(&p).ok())
         })?;
         Some(LocalIdentity {
-            group_public_key: id.group_public_key(),
-            display_name: id.display_name().to_string(),
-            avatar_color: id.avatar_color(),
+            group_public_key: id.group_public_key,
+            display_name: id.display_name,
+            avatar_color: id.avatar_color,
         })
     }
 

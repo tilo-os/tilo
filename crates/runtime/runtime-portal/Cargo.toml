@@ -34,13 +34,19 @@ capnp-rpc = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "io-util", "macros", "sync"] }
 tokio-util = { workspace = true, optional = true }
 thiserror.workspace = true
+# The `tools` service speaks newline-delimited JSON.
+serde.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 # `fcntl(F_GETFD)` probes whether a fd is open before handing it to tokio.
-rustix.workspace = true
+rustix = { workspace = true, features = ["net"] }
 # Service descriptors are Unix sockets; other hosts report `NotAvailable`.
 tokio = { workspace = true, optional = true, features = ["net"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+getrandom.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }

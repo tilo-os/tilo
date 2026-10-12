@@ -25,12 +25,7 @@ use tilo_pdf::{
 };
 
 fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name),
-    )
-    .expect("fixture")
+    std::fs::read(Path::new(env!("OUT_DIR")).join(name)).expect("fixture")
 }
 
 fn pdfium_present() -> bool {

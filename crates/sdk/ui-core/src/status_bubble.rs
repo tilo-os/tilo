@@ -1,22 +1,28 @@
-//! A transient floating **status bubble** — a small overlay pill that appears
-//! on a state change (a page turn, a zoom step) or while the pointer hovers
-//! its anchor, then quietly fades away, so a reader/editor surface need not
-//! spend a permanent strip of chrome on status it only occasionally needs.
+//! A transient floating **status bubble**: a small floating Panel that
+//! appears when a status changes (a page turn, a zoom step, a sync that
+//! finished) or while the pointer rests on its corner, then fades away.
 //!
-//! App-agnostic like [`crate::widget::TooltipHost`]: the app owns *what* it
-//! says and *where* it floats; the controller owns *when* it is visible and
-//! its fade, on an injected wall clock so it is unit-testable without an
-//! event loop.
+//! Transient by contract: it is shown on change and hides on its own. What a
+//! person needs to read at any time (the cursor's line and column, a word
+//! count, conflict counts) is persistent status and belongs in
+//! [`crate::chrome::status_bar`], which reserves its band. A capture never
+//! forces the bubble open; only a screenshot scenario that stages the change
+//! shows it.
+//!
+//! The bubble floats in the bottom-trailing corner of the area it reports
+//! on, one gutter in, clear of the content's leading edge. It owns its text,
+//! its timing and its paint; the app says what changed.
 
 use crate::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, Stroke, Vec2};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::peniko::{BlendMode, Fill};
 
 use crate::text_metrics::centered_text_top;
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 
 /// How long the bubble lingers after a poke (or after the pointer leaves its
 /// zone) before it fades out, absent any new activity.
@@ -33,6 +39,8 @@ pub struct StatusBubble {
     /// `None` while the pointer pins the bubble open.
     shown_at: Option<Instant>,
     hovered: bool,
+    /// What the bubble says; [`Self::show`] pokes when it changes.
+    text: String,
 }
 
 impl Default for StatusBubble {
@@ -47,6 +55,7 @@ impl StatusBubble {
             linger: DEFAULT_LINGER,
             shown_at: None,
             hovered: false,
+            text: String::new(),
         }
     }
 
@@ -105,6 +114,100 @@ impl StatusBubble {
         }
     }
 
+    /// Report the status. A change shows the bubble (and restarts its
+    /// linger); the same text again does nothing, so calling this every
+    /// frame is fine. Returns whether visibility changed.
+    pub fn show(&mut self, text: &str, now: Instant) -> bool {
+        if self.text == text {
+            return false;
+        }
+        text.clone_into(&mut self.text);
+        self.poke(now)
+    }
+
+    /// Change what the bubble says without showing it: a count that follows
+    /// the document reads current while the bubble shows, but does not
+    /// reopen it.
+    pub fn set_text(&mut self, text: &str) {
+        text.clone_into(&mut self.text);
+    }
+
+    /// What the bubble says.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The bubble's rect when it floats in `area`: the bottom-trailing
+    /// corner, `spacing.s4` in.
+    pub fn rect_in(&self, area: Rect, tr: &mut TextRenderer, theme: &Theme) -> Rect {
+        let (w, h) = pill_size(&self.text, tr, theme, 0.0);
+        let gutter = f64::from(theme.tokens.spacing.s4);
+        let x1 = area.x1 - gutter;
+        let y1 = area.y1 - gutter;
+        Rect::new((x1 - w).max(area.x0), (y1 - h).max(area.y0), x1, y1)
+    }
+
+    /// The pointer moved to `p`: resting on the bubble's corner (the
+    /// bubble plus a gutter around it) pins it open, leaving starts its
+    /// linger. Returns whether visibility changed.
+    pub fn pointer_moved(
+        &mut self,
+        area: Rect,
+        p: Point,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        now: Instant,
+    ) -> bool {
+        let gutter = f64::from(theme.tokens.spacing.s6);
+        let zone = self.rect_in(area, tr, theme).inflate(gutter, gutter);
+        self.set_hover(!self.text.is_empty() && zone.contains(p), now)
+    }
+
+    /// Paint the bubble in `area` at its current opacity; nothing while it
+    /// is hidden. Returns the painted rect.
+    pub fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        now: Instant,
+    ) -> Option<Rect> {
+        let alpha = self.alpha_in(theme, now);
+        if alpha <= 0.0 || self.text.is_empty() {
+            return None;
+        }
+        let rect = self.rect_in(area, tr, theme);
+        let faded = alpha < 1.0;
+        if faded {
+            let reach = f64::from(theme.tokens.elevation.floating.blur) * 2.0;
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                transform,
+                &rect.inflate(reach, reach),
+            );
+        }
+        draw_pill(scene, transform, tr, theme, rect, &self.text);
+        if faded {
+            scene.pop_layer();
+        }
+        Some(rect)
+    }
+
+    /// [`Self::alpha`] as `theme` shows it: under reduced motion the bubble
+    /// cuts in and out instead of fading.
+    pub fn alpha_in(&self, theme: &Theme, now: Instant) -> f32 {
+        let alpha = self.alpha(now);
+        if theme.reduce_motion && alpha > 0.0 {
+            1.0
+        } else {
+            alpha
+        }
+    }
+
     /// Hovered/hidden states need no frames.
     pub fn needs_frame(&self, now: Instant) -> bool {
         !self.hovered
@@ -114,49 +217,37 @@ impl StatusBubble {
     }
 }
 
-/// `control` is a leading+trailing glyph slot in px each (`0.0` for a
-/// plain label).
-///
-/// `text_size` is renderer-relative: the renderer applies the accessibility
-/// text scale, so pass a design size (`12.0`) or a theme token divided once
-/// through [`crate::text_metrics::renderer_type_size`] — never a raw
-/// `theme.tokens.typography.scale.*` value, which paints 4× at 200 %.
-pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64) -> (f64, f64) {
-    let (tw, th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
-    let pad_x = 14.0;
+/// The status pill's label: a `Label` in the theme.
+fn pill_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Label)
+}
+
+/// The pill's size for `text`. `control` is a leading+trailing slot in px
+/// each for a control inside the pill (`0.0` for a plain label).
+pub fn pill_size(text: &str, tr: &mut TextRenderer, theme: &Theme, control: f64) -> (f64, f64) {
+    let (tw, th) = tr.measure_style(text, None, &pill_style(theme));
+    let pad_x = f64::from(theme.tokens.spacing.s3);
     let w = f64::from(tw) + 2.0 * pad_x + 2.0 * control;
-    // `TextRenderer` applies the user's text scale to metrics, so the pill
-    // geometry must use the same effective font size.  Otherwise at 200% the
-    // glyphs extend through the lower edge of a 30px bubble.
-    let h = pill_height(text_size, tr.text_scale()).max(f64::from(th) + 12.0);
+    let h = pill_height(theme).max(f64::from(th) + 2.0 * pad_y(theme));
     (w, h)
 }
 
-/// Height shared by layout reservations and the rendered status pill.
-///
-/// This is the same renderer-relative `TextStyle` that
-/// [`TextRenderer::measure_weighted`] scales before measuring, plus the
-/// pill's vertical padding. Keeping this metric free of a renderer lets the
-/// layout pass reserve exactly the line box the later draw pass needs.
-pub fn pill_height(text_size: f32, text_scale: f32) -> f64 {
-    let text_scale = sanitized_text_scale(text_scale);
-    let style = TextStyle::new(text_size * text_scale).with_weight(TextWeight::Medium);
-    f64::from(style.line_height_px() + 12.0).max(30.0)
+/// Vertical padding of the pill's label.
+fn pad_y(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s1) * 1.5
 }
 
-/// Mirrors [`TextRenderer::set_text_scale`] so layout and renderer-relative
-/// status geometry handle invalid accessibility preferences identically.
-fn sanitized_text_scale(text_scale: f32) -> f32 {
-    if text_scale.is_finite() {
-        text_scale.clamp(0.5, 4.0)
-    } else {
-        1.0
-    }
+/// Height shared by layout reservations and the rendered pill: the label's
+/// line box plus the pill's vertical padding, never below a Small control.
+pub fn pill_height(theme: &Theme) -> f64 {
+    (f64::from(pill_style(theme).line_height_px()) + 2.0 * pad_y(theme))
+        .max(f64::from(theme.tokens.metrics.bar_control_height))
 }
 
-/// The caller sets opacity by wrapping this in a `scene.push_layer(...
-/// alpha ...)` using [`StatusBubble::alpha`]. `text_size` follows the
-/// [`pill_size`] contract: renderer-relative, scaled once by the renderer.
+/// Paint a bubble with `text` in `rect`: a floating Panel (the blurred
+/// material, one soft shadow) with the label centred. For a bubble that
+/// hosts controls beside its label; a plain status uses
+/// [`StatusBubble::paint`].
 pub fn draw_pill(
     scene: &mut Scene,
     transform: Affine,
@@ -164,55 +255,340 @@ pub fn draw_pill(
     theme: &Theme,
     rect: Rect,
     text: &str,
-    text_size: f32,
 ) {
-    let radius = rect.height() / 2.0;
-
-    crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
-
-    // Overlay fill under a rest edge derived from it (HIG §9.5): the
-    // declared `border_standard` this replaces is one fixed colour per theme
-    // and lands within rounding distance of the dark preset's overlay.
-    crate::surface::card(
-        scene,
-        transform,
-        rect,
-        radius,
-        theme.tokens.colors.surfaces.overlay,
-    );
-
-    let (tw, th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
+    crate::widget::floating_surface::paint(scene, transform, rect, theme);
+    let style = pill_style(theme);
+    let ink = theme
+        .on_ground(crate::chrome::panel_ground(theme))
+        .tokens
+        .colors
+        .text_primary;
+    let (tw, th) = tr.measure_style(text, None, &style);
     let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
     // Centre the measured line box, not the font size.
     let ty = centered_text_top(rect.y0, rect.height(), f64::from(th));
-    tr.draw_text_weighted(
+    tr.draw_style(
         scene,
         text,
-        text_size,
-        theme.tokens.colors.text_primary,
+        ink,
         transform.pre_translate(Vec2::new(tx, ty)),
         None,
-        TextWeight::Medium,
+        &style,
     );
 }
 
-pub fn draw_chevron(scene: &mut Scene, transform: Affine, r: Rect, color: Color, left: bool) {
-    use vello::kurbo::BezPath;
-    let cx = f64::midpoint(r.x0, r.x1);
-    let cy = f64::midpoint(r.y0, r.y1);
-    let dx = 3.5;
-    let dy = 5.0;
-    let mut p = BezPath::new();
-    if left {
-        p.move_to((cx + dx, cy - dy));
-        p.line_to((cx - dx, cy));
-        p.line_to((cx + dx, cy + dy));
-    } else {
-        p.move_to((cx - dx, cy - dy));
-        p.line_to((cx + dx, cy));
-        p.line_to((cx - dx, cy + dy));
+/// What a document's save state is, as the save status surface shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaveState {
+    /// Nothing to report (memory only, or nothing changed yet).
+    Idle,
+    /// A save is in flight.
+    Saving,
+    /// The last change is stored.
+    Saved,
+    /// The last save failed; the text says why.
+    Failed(String),
+}
+
+impl From<&crate::record::RecordSaveStatus> for SaveState {
+    fn from(status: &crate::record::RecordSaveStatus) -> Self {
+        use crate::record::RecordSaveStatus;
+        match status {
+            RecordSaveStatus::Saved => Self::Saved,
+            RecordSaveStatus::Saving => Self::Saving,
+            RecordSaveStatus::Failed(reason) => Self::Failed(reason.clone()),
+            RecordSaveStatus::MemoryOnly => Self::Idle,
+        }
     }
-    scene.stroke(&Stroke::new(1.8), transform, color, None, &p);
+}
+
+/// What a person did on the save status surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveAction {
+    /// "Try again" on a failed save.
+    Retry,
+    /// Dismissed the failure.
+    Dismiss,
+}
+
+/// A document's save status, on the framework's status surfaces (HIG §7c):
+/// "Saving…" and "Saved" are a change worth noticing once, so they show in
+/// the transient [`StatusBubble`]; a failed save is an error the person must
+/// act on, so it is an error toast (danger icon, the reason, a "Try again"
+/// action and a close button) that stays until the save succeeds or it is
+/// dismissed. An app reports the state and routes clicks; it never pins a
+/// bubble open or paints its own save pill.
+///
+/// Both float in the bottom-trailing corner of the area they report on,
+/// clear of its scroll bar gutter.
+#[derive(Clone, Debug, Default)]
+pub struct SaveStatusSurface {
+    bubble: StatusBubble,
+    state: Option<SaveState>,
+    /// What the saved bubble adds about the document ("142 words").
+    detail: Option<String>,
+    dismissed: bool,
+    hit: crate::widget::toast::ToastCardHit,
+    hover: Option<Point>,
+}
+
+impl SaveStatusSurface {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Report the save state. A change shows it; the same state again does
+    /// nothing, so calling this every frame is fine. Returns whether what
+    /// is shown changed.
+    pub fn set(&mut self, state: SaveState, now: Instant) -> bool {
+        if self.state.as_ref() == Some(&state) {
+            return false;
+        }
+        let was_failed = self.failure().is_some();
+        self.dismissed = false;
+        self.state = Some(state);
+        let text = self.bubble_label();
+        if !text.is_empty() {
+            self.bubble.show(&text, now);
+        }
+        was_failed != self.failure().is_some() || !text.is_empty()
+    }
+
+    /// What the bubble says for the current state: the state, and after
+    /// "Saved" the document's [`Self::set_detail`].
+    fn bubble_label(&self) -> String {
+        match &self.state {
+            Some(SaveState::Saving) => crate::i18n!("save-status-saving"),
+            Some(SaveState::Saved) => match &self.detail {
+                Some(detail) => format!("{}, {detail}", crate::i18n!("save-status-saved")),
+                None => crate::i18n!("save-status-saved"),
+            },
+            _ => String::new(),
+        }
+    }
+
+    /// Say something about the saved document after "Saved" (a note's
+    /// length). It reads current while the bubble shows and never reopens
+    /// it on its own.
+    pub fn set_detail(&mut self, detail: Option<String>) {
+        if self.detail == detail {
+            return;
+        }
+        self.detail = detail;
+        let text = self.bubble_label();
+        if !text.is_empty() {
+            self.bubble.set_text(&text);
+        }
+    }
+
+    /// Show the bubble again (another document opened under it). A
+    /// showing failure needs no reminder.
+    pub fn poke(&mut self, now: Instant) -> bool {
+        if self.failure().is_some() || self.bubble.text().is_empty() {
+            return false;
+        }
+        self.bubble.poke(now)
+    }
+
+    /// The pointer moved to `p` over `area`: resting on the bubble's corner
+    /// pins it open (see [`StatusBubble::pointer_moved`]). Returns whether
+    /// visibility changed.
+    pub fn hover_bubble(
+        &mut self,
+        area: Rect,
+        p: Point,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        now: Instant,
+    ) -> bool {
+        if self.failure().is_some() {
+            return false;
+        }
+        let corner = Self::corner(area, theme);
+        self.bubble.pointer_moved(corner, p, tr, theme, now)
+    }
+
+    /// The surface for assistive technology while a failure shows: the
+    /// reason, announced, with "Try again" and "Dismiss" buttons whose
+    /// action targets are `{target}.retry` and `{target}.dismiss`.
+    #[must_use]
+    pub fn accessibility(&self, target: &str) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Politeness, Role};
+        let reason = self.failure()?;
+        let button = |name: String, part: &str, rect: Rect| {
+            AccessNode::new(Role::Button)
+                .with_name(name)
+                .with_action_target(format!("{target}.{part}"))
+                .with_bounds(rect)
+        };
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(crate::i18n!("save-status-failed"))
+                .with_description(reason.to_owned())
+                .with_live(Politeness::Assertive)
+                .with_bounds(self.hit.card_rect)
+                .with_children(vec![
+                    button(
+                        crate::i18n!("save-status-retry"),
+                        "retry",
+                        self.hit.primary_action_rect,
+                    ),
+                    button(
+                        crate::i18n!("save-status-dismiss"),
+                        "dismiss",
+                        self.hit.secondary_action_rect,
+                    ),
+                ]),
+        )
+    }
+
+    /// Assistive technology activated `action_target` (one of
+    /// [`Self::accessibility`]'s buttons under `target`): the action it is.
+    pub fn perform(&mut self, target: &str, action_target: &str) -> Option<SaveAction> {
+        self.failure()?;
+        let part = action_target.strip_prefix(target)?.strip_prefix('.')?;
+        let action = match part {
+            "retry" => SaveAction::Retry,
+            "dismiss" => SaveAction::Dismiss,
+            _ => return None,
+        };
+        if action == SaveAction::Dismiss {
+            self.dismissed = true;
+        }
+        Some(action)
+    }
+
+    /// The reason of a failed save that is showing, if any.
+    #[must_use]
+    pub fn failure(&self) -> Option<&str> {
+        match &self.state {
+            Some(SaveState::Failed(reason)) if !self.dismissed => Some(reason.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Whether anything is showing at `now`.
+    #[must_use]
+    pub fn is_visible(&self, now: Instant) -> bool {
+        self.failure().is_some() || self.bubble.is_visible(now)
+    }
+
+    /// Frames are needed only while the bubble lingers or fades.
+    #[must_use]
+    pub fn needs_frame(&self, now: Instant) -> bool {
+        self.failure().is_none() && self.bubble.needs_frame(now)
+    }
+
+    /// Wake once to remove a transient, including when reduced motion disables fades.
+    /// Keep an overdue deadline until paint consumes it, so a parked host sees it.
+    #[must_use]
+    pub fn next_wake_deadline(&self) -> Option<Instant> {
+        if self.failure().is_some() || self.bubble.hovered || self.bubble.text.is_empty() {
+            return None;
+        }
+        self.bubble.shown_at?.checked_add(self.bubble.linger)
+    }
+
+    /// The pointer moved to `p`; returns whether the hover changed.
+    pub fn pointer_moved(&mut self, p: Point) -> bool {
+        let before = self.hovered_action();
+        self.hover = Some(p);
+        before != self.hovered_action()
+    }
+
+    fn hovered_action(&self) -> Option<SaveAction> {
+        let p = self.hover?;
+        self.failure()?;
+        if self.hit.primary_action_rect.contains(p) {
+            Some(SaveAction::Retry)
+        } else if self.hit.secondary_action_rect.contains(p) {
+            Some(SaveAction::Dismiss)
+        } else {
+            None
+        }
+    }
+
+    /// A click at `p`: the action it hits on a showing failure. Dismissing
+    /// hides the failure until the state changes again.
+    pub fn click(&mut self, p: Point) -> Option<SaveAction> {
+        self.hover = Some(p);
+        let action = self.hovered_action()?;
+        if action == SaveAction::Dismiss {
+            self.dismissed = true;
+        }
+        Some(action)
+    }
+
+    /// Whether `p` is on the failure card (so a host keeps the click).
+    #[must_use]
+    pub fn contains(&self, p: Point) -> bool {
+        self.failure().is_some() && self.hit.card_rect.contains(p)
+    }
+
+    /// The corner of `area` the surface floats in: `area` less its scroll
+    /// bar gutter on the trailing edge.
+    fn corner(area: Rect, theme: &Theme) -> Rect {
+        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        Rect::new(area.x0, area.y0, (area.x1 - gutter).max(area.x0), area.y1)
+    }
+
+    /// The failure card in `corner`: the reason's two lines over the action
+    /// row, a gutter in from the bottom-trailing corner.
+    fn failure_rect(corner: Rect, theme: &Theme) -> Rect {
+        let s = &theme.tokens.spacing;
+        let gutter = f64::from(s.s4);
+        let title = f64::from(theme.text(TextRole::Label).line_height_px());
+        let body = f64::from(theme.text(TextRole::Caption).line_height_px());
+        let actions = f64::from(theme.tokens.metrics.min_pointer_target);
+        let height = f64::from(s.s2) * 2.0 + title + body + f64::from(s.s2) + actions;
+        let width = f64::from(theme.tokens.metrics.panel_width_utility)
+            .min((corner.width() - 2.0 * gutter).max(0.0));
+        let x1 = corner.x1 - gutter;
+        let y1 = corner.y1 - gutter;
+        Rect::new(x1 - width, (y1 - height).max(corner.y0), x1, y1)
+    }
+
+    /// Paint what is showing in `area`; returns the painted rect.
+    pub fn paint(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        now: Instant,
+    ) -> Option<Rect> {
+        let corner = Self::corner(area, theme);
+        let Some(reason) = self.failure().map(str::to_owned) else {
+            self.hit = crate::widget::toast::ToastCardHit::default();
+            if !self.bubble.is_visible(now) {
+                self.bubble.shown_at = None;
+            }
+            return self.bubble.paint(scene, transform, tr, theme, corner, now);
+        };
+        let hovered = self.hovered_action();
+        let title = crate::i18n!("save-status-failed");
+        let retry = crate::i18n!("save-status-retry");
+        let dismiss = crate::i18n!("save-status-dismiss");
+        let card =
+            crate::widget::toast::ToastCard::new(&title, crate::widget::toast::ToastKind::Error)
+                .body(&reason)
+                .actions(
+                    &dismiss,
+                    crate::icons::Icon::X,
+                    hovered == Some(SaveAction::Dismiss),
+                    &retry,
+                    crate::icons::Icon::RotateCw,
+                    hovered == Some(SaveAction::Retry),
+                );
+        let rect = Self::failure_rect(corner, theme);
+        self.hit = crate::widget::toast::paint_card(scene, transform, tr, theme, rect, &card);
+        if self.hit.secondary_action_rect.is_zero_area() {
+            return None;
+        }
+        (!self.hit.card_rect.is_zero_area()).then_some(self.hit.card_rect)
+    }
 }
 
 #[cfg(test)]
@@ -224,17 +600,54 @@ mod tests {
         // Case `pill_reservation_matches_the_renderer_line_box_at_supported_scales`.
         {
             for scale in [1.0, 1.5, 2.0, 4.0] {
+                let theme = Theme::dark().with_text_scale(scale);
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
-                let (_, measured) = pill_size("Saved", &mut tr, 12.0, 0.0);
-                let reserved = pill_height(12.0, tr.text_scale());
-                assert_eq!(
-                    reserved, measured,
+                let (_, measured) = pill_size("Saved", &mut tr, &theme, 0.0);
+                let reserved = pill_height(&theme);
+                assert!(
+                    (reserved - measured).abs() < 1e-3,
                     "layout reservation must equal draw geometry at {scale}x"
                 );
             }
-            assert_eq!(pill_height(12.0, 1.0), 30.0);
-            assert_eq!(pill_height(12.0, 2.0), 42.0);
+            let small = f64::from(Theme::dark().tokens.metrics.bar_control_height);
+            assert!(pill_height(&Theme::dark()) >= small);
+            assert!(pill_height(&Theme::dark().with_text_scale(2.0)) > pill_height(&Theme::dark()));
+        }
+
+        // Case `show_reveals_on_a_change_only_and_floats_in_the_trailing_corner`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
+            let t0 = crate::time::now();
+            assert!(b.show("Saved", t0), "a new status shows the bubble");
+            let later = t0 + Duration::from_millis(1500);
+            assert!(!b.is_visible(later));
+            assert!(!b.show("Saved", later), "the same status does not reshow");
+            assert!(!b.is_visible(later));
+            assert!(b.show("Synced", later), "a change does");
+            let area = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let r = b.rect_in(area, &mut tr, &theme);
+            let gutter = f64::from(theme.tokens.spacing.s4);
+            assert!((r.x1 - (area.x1 - gutter)).abs() < 1e-9);
+            assert!((r.y1 - (area.y1 - gutter)).abs() < 1e-9);
+            let mut scene = Scene::new();
+            assert_eq!(
+                b.paint(&mut scene, Affine::IDENTITY, &mut tr, &theme, area, later),
+                Some(r)
+            );
+            let hidden = later + Duration::from_secs(5);
+            assert_eq!(
+                b.paint(&mut scene, Affine::IDENTITY, &mut tr, &theme, area, hidden),
+                None,
+                "a faded bubble paints nothing"
+            );
+            assert!(b.pointer_moved(area, r.center(), &mut tr, &theme, hidden));
+            assert!(
+                b.is_visible(hidden + Duration::from_secs(60)),
+                "hover pins it"
+            );
         }
 
         // Case `poke_reveals_then_fades_after_linger`.
@@ -257,6 +670,15 @@ mod tests {
             // Past the linger: gone.
             assert!(!b.is_visible(t0 + Duration::from_secs(1)));
             assert!(!b.needs_frame(t0 + Duration::from_secs(1)));
+            // Under reduced motion it cuts instead of fading.
+            let reduced = Theme {
+                reduce_motion: true,
+                ..Theme::dark()
+            };
+            let tail = t0 + Duration::from_millis(850);
+            assert!((b.alpha_in(&reduced, tail) - 1.0).abs() < 1e-6);
+            assert!(b.alpha_in(&reduced, t0 + Duration::from_secs(1)) <= 0.0);
+            assert!(b.alpha_in(&Theme::dark(), tail) < 1.0);
         }
 
         // Case `hover_pins_open_then_lingers_after_leave`.
@@ -300,5 +722,147 @@ mod tests {
             );
             assert!(!b.is_visible(t0 + Duration::from_millis(1950)));
         }
+    }
+
+    #[test]
+    fn reduced_motion_expiry_wakes_once_and_is_consumed_by_paint() {
+        crate::i18n::I18nManager::init("en-US");
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut tr = TextRenderer::new();
+        let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let now = Instant::now();
+        let mut surface = SaveStatusSurface::new();
+        surface.set(SaveState::Saved, now);
+        let deadline = surface.next_wake_deadline().expect("saved must expire");
+        let mut scene = Scene::new();
+        assert!(
+            surface
+                .paint(&mut scene, Affine::IDENTITY, &mut tr, &theme, area, now)
+                .is_some()
+        );
+        let overdue = deadline + Duration::from_millis(1);
+        assert_eq!(
+            surface.next_wake_deadline(),
+            Some(deadline),
+            "a parked host must still observe the due wake"
+        );
+        scene.reset();
+        assert!(
+            surface
+                .paint(&mut scene, Affine::IDENTITY, &mut tr, &theme, area, overdue)
+                .is_none()
+        );
+        assert!(
+            scene.encoding().is_empty(),
+            "the expired chip must leave the actual scene"
+        );
+        assert_eq!(
+            surface.next_wake_deadline(),
+            None,
+            "consumed expiry must not spin the host"
+        );
+        surface.set(SaveState::Failed("Disk full".into()), overdue);
+        assert_eq!(
+            surface.next_wake_deadline(),
+            None,
+            "a failure stays until an explicit action"
+        );
+    }
+
+    /// Saving and saved are transient bubble text; a failure is an error
+    /// card with "Try again" that stays until the save succeeds or it is
+    /// dismissed, painted in danger and never as the bubble.
+    #[test]
+    fn a_failed_save_is_an_error_with_an_action_and_success_is_transient() {
+        crate::i18n::I18nManager::init("en-US");
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let t0 = Instant::now();
+        let mut surface = SaveStatusSurface::new();
+        assert!(surface.set(SaveState::Saved, t0));
+        assert!(surface.failure().is_none() && surface.is_visible(t0));
+        let later = t0 + DEFAULT_LINGER + Duration::from_millis(10);
+        assert!(!surface.is_visible(later), "saved fades by itself");
+
+        assert!(surface.set(SaveState::Failed("Disk full".into()), later));
+        assert_eq!(surface.failure(), Some("Disk full"));
+        let much_later = later + DEFAULT_LINGER * 4;
+        assert!(surface.is_visible(much_later), "a failure stays");
+        assert!(!surface.needs_frame(much_later), "and asks for no frames");
+        let mut scene = Scene::new();
+        let card = surface
+            .paint(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                area,
+                much_later,
+            )
+            .expect("the failure is painted");
+        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        assert!(
+            card.x1 <= area.x1 - gutter,
+            "clear of the scroll bar gutter"
+        );
+        let retry = surface.hit.primary_action_rect;
+        assert!(!retry.is_zero_area(), "it offers Try again");
+        assert_eq!(surface.click(retry.center()), Some(SaveAction::Retry));
+        assert!(
+            surface.failure().is_some(),
+            "retrying keeps it until the state changes"
+        );
+        let dismiss = surface.hit.secondary_action_rect;
+        assert_eq!(surface.click(dismiss.center()), Some(SaveAction::Dismiss));
+        assert!(surface.failure().is_none(), "dismissed");
+        assert!(surface.set(SaveState::Saving, much_later));
+        assert!(surface.is_visible(much_later));
+    }
+
+    #[test]
+    fn the_saved_bubble_carries_a_quiet_detail_and_the_failure_its_actions() {
+        crate::i18n::I18nManager::init("en-US");
+        let t0 = Instant::now();
+        let mut surface = SaveStatusSurface::new();
+        surface.set_detail(Some("3 words".into()));
+        surface.set(SaveState::Saved, t0);
+        assert!(surface.bubble.text().ends_with(", 3 words"));
+        let later = t0 + DEFAULT_LINGER + Duration::from_millis(10);
+        surface.set_detail(Some("4 words".into()));
+        assert!(
+            surface.bubble.text().ends_with(", 4 words"),
+            "reads current"
+        );
+        assert!(
+            !surface.is_visible(later),
+            "but a new count does not reopen it"
+        );
+        assert!(surface.poke(later), "another page does");
+
+        assert!(
+            surface.accessibility("doc.save").is_none(),
+            "nothing to act on"
+        );
+        surface.set(SaveState::Failed("Disk full".into()), later);
+        assert!(!surface.poke(later), "a showing failure needs no reminder");
+        let node = surface.accessibility("doc.save").expect("the failure");
+        assert_eq!(node.description.as_deref(), Some("Disk full"));
+        let targets: Vec<_> = node
+            .children
+            .iter()
+            .filter_map(|child| child.action_target.clone())
+            .collect();
+        assert_eq!(targets, ["doc.save.retry", "doc.save.dismiss"]);
+        assert_eq!(surface.perform("doc.save", "other.retry"), None);
+        assert_eq!(
+            surface.perform("doc.save", "doc.save.retry"),
+            Some(SaveAction::Retry)
+        );
+        assert_eq!(
+            surface.perform("doc.save", "doc.save.dismiss"),
+            Some(SaveAction::Dismiss)
+        );
+        assert!(surface.failure().is_none());
     }
 }

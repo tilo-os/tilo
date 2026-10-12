@@ -6,7 +6,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree, WindowEvent};
+use tilo_app::headless::FrameHarness;
 use tilo_app::prelude::*;
+use tilo_app::winit::event::ElementState;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Playlist {
@@ -90,12 +93,15 @@ impl ResourceApp for PlaylistApp {
                     })
                     .with_id("dialog"),
                 ))
+                .push(Box::new(Text::from_state(&cx.save_status(), |status| {
+                    format!("Record {status:?}")
+                })))
                 .push(cx.surface(Staged::default())),
         )
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["details", "narrow"]
+        &["details", "narrow", "clicked"]
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
@@ -119,24 +125,32 @@ impl ResourceApp for PlaylistApp {
         fixture.version(
             "miles",
             MILES_AT_MS,
-            Playlist::ADD.with("Freddie Freeloader".into()),
+            Playlist::ADD.with("Freddie Freeloader"),
         );
-        fixture.version(
-            "bill",
-            BILL_AT_MS,
-            Playlist::ADD.with("Flamenco Sketches".into()),
-        );
+        fixture.version("bill", BILL_AT_MS, Playlist::ADD.with("Flamenco Sketches"));
         fixture.collaborator("miles", ResourceSelection::Item("second-take".into()));
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<Playlist>> {
         match name {
             Some("details") => vec![
-                Playlist::ADD.with("Blue in Green".into()),
-                Playlist::ADD.with("So What".into()),
+                Playlist::ADD.with("Blue in Green"),
+                Playlist::ADD.with("So What"),
             ],
             _ => Vec::new(),
         }
+    }
+
+    fn scenario_input(name: Option<&str>, input: &mut FrameHarness) -> Result<(), String> {
+        if name != Some("clicked") {
+            return Ok(());
+        }
+        let surface = *input
+            .targets()
+            .get("surface")
+            .ok_or("the surface is not laid out")?;
+        input.click_at(surface.center().x, surface.center().y);
+        Ok(())
     }
 }
 
@@ -160,7 +174,7 @@ impl Default for Staged {
     fn default() -> Self {
         let label = LocalState::new("Surface not staged".to_owned());
         Self {
-            inner: Text::from_state(&label, Clone::clone),
+            inner: Text::from_state(&label, Clone::clone).with_id("surface"),
             label,
             songs: 0,
             mode: None,
@@ -184,7 +198,7 @@ impl Widget for Staged {
         self.inner.apply_layout(taffy, node, origin);
     }
 
-    fn sync(&mut self, state: &mut tilo_app::widget::AppModel, path: &tilo_app::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_app::widget::AppModel, path: &tilo_app::widget::ModelPath) {
         if self.decoding > 0 {
             self.decoding = self.decoding.saturating_sub(1);
             if self.decoding == 0 {
@@ -197,6 +211,16 @@ impl Widget for Staged {
 
     fn has_pending_visual_work(&self) -> bool {
         self.decoding > 0
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut tilo_app::widget::EventCtx<'_>) {
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } = event
+        {
+            self.label.set(format!("{} · clicked", self.label.get()));
+        }
     }
 
     fn draw(
@@ -288,6 +312,8 @@ fn scenarios_stage_the_resource_then_the_views_deterministically() {
         );
         // View state is not resource state: only the actions were written.
         assert_eq!(app.state().songs.len(), 4);
+        // The staged edits are saved by the time the frame is taken.
+        assert!(frame.contains("Record Saved"), "{frame}");
     }
     // phase: a_plain_capture_stages_with_no_scenario
     {
@@ -309,6 +335,22 @@ fn scenarios_stage_the_resource_then_the_views_deterministically() {
         };
         assert_eq!(print(), print());
     }
+}
+
+#[test]
+fn a_scenarios_input_meets_the_staged_scene() {
+    let mut app = TestApp::<PlaylistApp>::capture(Some("clicked")).unwrap();
+    let frame = shown(&mut app);
+    // The click reached the surface through the window's event path, after
+    // the surface had staged.
+    assert!(
+        frame.contains("Surface staged with 0 songs in Some(Capture)"),
+        "{frame}"
+    );
+    assert!(frame.contains("· clicked"), "{frame}");
+    // A scenario without input is left as staged.
+    let mut plain = TestApp::<PlaylistApp>::capture(Some("narrow")).unwrap();
+    assert!(!shown(&mut plain).contains("clicked"));
 }
 
 #[test]

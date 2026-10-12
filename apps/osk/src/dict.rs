@@ -33,6 +33,15 @@ pub enum Language {
 }
 
 impl Language {
+    /// The language's ISO 639-1 code, under which what the keyboard learned
+    /// in it is kept.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::French => "fr",
+        }
+    }
+
     /// The language typed on the letter layout `name`: QWERTY types English
     /// and AZERTY French. `None` for layouts with no word data (symbols,
     /// dialpads).
@@ -233,12 +242,6 @@ impl Dictionary {
             Some(w) => w as f32 / self.max_weight as f32,
             None => 0.0,
         }
-    }
-
-    /// Normalise an arbitrary weight into 0..1 (for callers that already hold
-    /// a weight, e.g. the predictor blending prefix completions).
-    pub fn normalize_weight(&self, weight: u32) -> f32 {
-        weight as f32 / self.max_weight as f32
     }
 
     /// Iterate every entry whose word starts with `prefix` (case- and

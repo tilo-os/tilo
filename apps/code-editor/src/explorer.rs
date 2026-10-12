@@ -148,15 +148,10 @@ impl TreeModel for ProjectTree {
     }
 }
 
-/// Row decoration: a file-type icon, folders tinted with the accent while
-/// open, and labels in the secondary tone except for the file on screen.
+/// Row decoration: a file-type icon in quiet ink, and labels in the
+/// secondary tone except for the file on screen.
 fn decorate(model: &ProjectTree, row: TreeRowInfo, theme: &Theme) -> TreeRowDecoration {
-    let colors = &theme.tokens.colors;
-    let icon_color = if row.is_branch && row.expanded {
-        theme.tokens.syntax.keyword
-    } else {
-        colors.text_dim
-    };
+    let icon_color = theme.tokens.colors.text_dim;
     let tone = if row.current {
         TreeRowTone::Primary
     } else {
@@ -177,9 +172,7 @@ pub fn explorer(project: &Project, events: &ExplorerEvents) -> Explorer {
         .with_id("file_tree")
         .hide_root()
         .fill()
-        .with_heading(project.name.to_uppercase())
         .with_accessible_name(format!("{} files", project.name))
-        .with_ground(|theme| theme.tokens.colors.surfaces.raised)
         .click_activation(TreeClickActivation::SingleClick)
         .selection_follows_focus(true)
         .with_row_decoration(decorate)
@@ -204,7 +197,6 @@ pub fn refresh(view: &mut Explorer, project: &Project) {
         *model = ProjectTree::from_project(project);
     });
     view.restore_expanded(expanded_folders(project));
-    view.set_heading(Some(project.name.to_uppercase()));
 }
 
 /// Mark the file on screen: it carries the current-row rail and is the

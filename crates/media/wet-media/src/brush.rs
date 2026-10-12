@@ -38,9 +38,16 @@ pub struct Sample {
     pub distance: f32,
 }
 
+/// How far, in radians, a stroke turns at a point for that point to be a
+/// corner the stroke keeps sharp rather than a bend it curves through
+/// (70 degrees: a square's and a pentagon's corners, not a hexagon's).
+pub const CORNER: f32 = 70.0 * std::f32::consts::PI / 180.0;
+
 /// The stroke through `points` as samples `spacing` apart along a
 /// centripetal Catmull-Rom spline, so a handful of points makes a smooth
-/// curve and a sharp turn does not overshoot.
+/// curve and a sharp turn does not overshoot. At a point where the stroke
+/// turns by more than [`CORNER`] the curve breaks: it comes into the point
+/// and leaves it straight, so a square drawn as five points stays square.
 pub fn smooth(points: &[StrokePoint], spacing: f32) -> Vec<Sample> {
     let spacing = spacing.max(0.05);
     let points: Vec<StrokePoint> = points
@@ -73,22 +80,34 @@ pub fn smooth(points: &[StrokePoint], spacing: f32) -> Vec<Sample> {
     resample(&dense, spacing)
 }
 
-/// Points along the spline, a fraction of a unit apart.
+/// Points along the spline, a fraction of a unit apart; the spline starts
+/// afresh at each corner, as at the stroke's ends.
 fn densify(points: &[StrokePoint]) -> Vec<StrokePoint> {
     let mut dense = Vec::new();
     let count = points.len();
+    let corner = |index: usize| {
+        index > 0
+            && index.saturating_add(1) < count
+            && turn(
+                point(points, index.saturating_sub(1)),
+                point(points, index),
+                point(points, index.saturating_add(1)),
+            ) > CORNER
+    };
     for index in 0..count.saturating_sub(1) {
         let p1 = point(points, index);
         let p2 = point(points, index.saturating_add(1));
-        let p0 = if index == 0 {
+        let p0 = if index == 0 || corner(index) {
             reflect(p2, p1)
         } else {
             point(points, index.saturating_sub(1))
         };
-        let p3 = points
-            .get(index.saturating_add(2))
-            .copied()
-            .unwrap_or_else(|| reflect(p1, p2));
+        let p3 = if corner(index.saturating_add(1)) {
+            None
+        } else {
+            points.get(index.saturating_add(2)).copied()
+        }
+        .unwrap_or_else(|| reflect(p1, p2));
         let length = distance(p1, p2);
         let steps = crate::grid::cell((length * 2.0).ceil(), 4097).max(1);
         for step in 0..steps {
@@ -114,6 +133,17 @@ fn reflect(through: StrokePoint, from: StrokePoint) -> StrokePoint {
         y: 2.0 * from.y - through.y,
         pressure: from.pressure,
     }
+}
+
+/// How far, in radians, the path `a`, `b`, `c` turns at `b`: none when a
+/// step has no length.
+fn turn(a: StrokePoint, b: StrokePoint, c: StrokePoint) -> f32 {
+    let (ux, uy) = (b.x - a.x, b.y - a.y);
+    let (vx, vy) = (c.x - b.x, c.y - b.y);
+    if ux.hypot(uy) <= f32::EPSILON || vx.hypot(vy) <= f32::EPSILON {
+        return 0.0;
+    }
+    (ux * vy - uy * vx).atan2(ux * vx + uy * vy).abs()
 }
 
 fn distance(a: StrokePoint, b: StrokePoint) -> f32 {
@@ -305,5 +335,34 @@ mod tests {
         assert!(outline.len() > samples.len() * 2);
         assert_eq!(smooth(&points[..1], 1.0).len(), 1);
         assert!(smooth(&[], 1.0).is_empty());
+    }
+
+    #[test]
+    fn a_square_of_five_points_keeps_its_corners_and_straight_sides() {
+        let points = [
+            StrokePoint::new(0.0, 0.0, 1.0),
+            StrokePoint::new(100.0, 0.0, 1.0),
+            StrokePoint::new(100.0, 100.0, 1.0),
+            StrokePoint::new(0.0, 100.0, 1.0),
+            StrokePoint::new(0.0, 0.0, 1.0),
+        ];
+        let samples = smooth(&points, 0.5);
+        // Every sample lies on the square's sides: none bulges out or cuts in.
+        for sample in &samples {
+            let edge = sample
+                .x
+                .abs()
+                .min((sample.x - 100.0).abs())
+                .min(sample.y.abs())
+                .min((sample.y - 100.0).abs());
+            assert!(edge < 1e-3, "({}, {}) off the square", sample.x, sample.y);
+        }
+        for (x, y) in [(100.0, 0.0), (100.0, 100.0), (0.0, 100.0)] {
+            let near = samples
+                .iter()
+                .map(|sample| (sample.x - x).hypot(sample.y - y))
+                .fold(f32::MAX, f32::min);
+            assert!(near < 0.5, "corner ({x}, {y}) missed by {near}");
+        }
     }
 }

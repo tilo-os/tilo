@@ -9,7 +9,6 @@
 )]
 
 pub mod app;
-pub mod doc;
 pub mod resource;
 pub mod scan;
 

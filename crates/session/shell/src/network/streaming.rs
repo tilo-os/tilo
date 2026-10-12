@@ -850,7 +850,7 @@ mod tests {
             let display: Display<State> = Display::new().expect("wayland display");
             let mut state = State::new(event_loop.handle(), display.handle());
 
-            let kc: i32 = 30; // 'a' keycode
+            let kc: i32 = 30; // Linux evdev A maps to XKB keycode 38.
             assert!(
                 state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
                     keycode: kc,
@@ -860,10 +860,8 @@ mod tests {
             {
                 let kb = state.seat.get_keyboard().expect("keyboard on seat");
                 assert!(
-                    kb.pressed_keys()
-                        .iter()
-                        .any(|k| u32::from(*k) == u32::try_from(kc).unwrap_or(0)),
-                    "keycode did not reach the seat keyboard",
+                    kb.pressed_keys().iter().any(|k| u32::from(*k) == 38),
+                    "evdev A must reach the seat as XKB A",
                 );
             }
             let _ = state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
@@ -872,9 +870,7 @@ mod tests {
             });
             let kb = state.seat.get_keyboard().expect("keyboard on seat");
             assert!(
-                !kb.pressed_keys()
-                    .iter()
-                    .any(|k| u32::from(*k) == u32::try_from(kc).unwrap_or(0)),
+                !kb.pressed_keys().iter().any(|k| u32::from(*k) == 38),
                 "release must clear the pressed key",
             );
         }

@@ -59,17 +59,6 @@ impl MasteringDisplayColorVolume {
             min_display_mastering_luminance: 500,
         }
     }
-
-    /// DCI-P3 primaries — the "reasonable HDR" tier below BT.2020.
-    pub const fn hdr_dci_p3_1000_nits() -> Self {
-        Self {
-            // DCI-P3 R (0.680, 0.320), G (0.265, 0.690), B (0.150, 0.060).
-            display_primaries: [(34000, 16000), (13250, 34500), (7500, 3000)],
-            white_point: (15635, 16450),
-            max_display_mastering_luminance: 10_000_000,
-            min_display_mastering_luminance: 500,
-        }
-    }
 }
 
 /// CTA-861.3 content light level information.
@@ -93,15 +82,6 @@ impl ContentLightLevel {
         Self {
             max_content_light_level: 0,
             max_frame_average_light_level: 0,
-        }
-    }
-
-    /// Common default when we don't have per-content analysis: assume
-    /// the mastering display's peak.
-    pub const fn matches_mastering_1000_nits() -> Self {
-        Self {
-            max_content_light_level: 1000,
-            max_frame_average_light_level: 400,
         }
     }
 }

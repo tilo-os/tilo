@@ -1,0 +1,199 @@
+//! Which system interfaces this OS serves, and whether a package fits it.
+//!
+//! The image declares every version it serves of each system interface in
+//! [`SYSTEM_INTERFACES_FILE`]; a package requires interfaces through the
+//! `required@N` services of its manifest (see
+//! [`tilo_app_package::interfaces`]). A host without the declaration (a
+//! development machine, another distribution) judges nothing: every package
+//! fits it, and a missing service still fails at launch as it always did.
+
+use std::path::{Path, PathBuf};
+
+use tilo_app_package::Manifest;
+use tilo_app_package::interfaces::{InterfaceRequirement, ProvidedInterfaces, Unmet};
+
+use crate::dev_env::dev_override;
+
+/// Where the image declares the system interfaces it serves.
+pub const SYSTEM_INTERFACES_FILE: &str = "/usr/share/tilo/system-interfaces.toml";
+/// Names another declaration instead of [`SYSTEM_INTERFACES_FILE`], in
+/// builds that honour developer overrides ([`crate::dev_env::DEV_ENV_OVERRIDES`]).
+pub const SYSTEM_INTERFACES_ENV: &str = "TILO_SYSTEM_INTERFACES";
+
+#[derive(Debug, thiserror::Error)]
+pub enum InterfacesError {
+    #[error("reading {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{path} is not a system-interface declaration: {detail}")]
+    Parse { path: PathBuf, detail: String },
+}
+
+/// The declaration this session reads.
+pub fn system_interfaces_path() -> PathBuf {
+    dev_override(SYSTEM_INTERFACES_ENV)
+        .map_or_else(|| PathBuf::from(SYSTEM_INTERFACES_FILE), PathBuf::from)
+}
+
+/// The declaration at `path`; `None` when there is none.
+///
+/// # Errors
+///
+/// Returns an error when the file exists but cannot be read or parsed.
+pub fn read_interfaces(path: &Path) -> Result<Option<ProvidedInterfaces>, InterfacesError> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(InterfacesError::Read {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    parse_interfaces(&raw)
+        .map(Some)
+        .map_err(|detail| InterfacesError::Parse {
+            path: path.to_path_buf(),
+            detail,
+        })
+}
+
+/// Parse a declaration's TOML.
+///
+/// # Errors
+///
+/// Returns the reason when `raw` is not a declaration or names a malformed
+/// interface or version.
+pub fn parse_interfaces(raw: &str) -> Result<ProvidedInterfaces, String> {
+    let provided: ProvidedInterfaces = toml::from_str(raw).map_err(|error| error.to_string())?;
+    for (name, versions) in &provided.interfaces {
+        if versions.is_empty() {
+            return Err(format!("interface {name} lists no version"));
+        }
+        for version in versions {
+            InterfaceRequirement::new(name, *version).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(provided)
+}
+
+/// The interfaces this OS serves; `None` on a host that declares none.
+///
+/// A declaration that cannot be read is reported on stderr once and treated
+/// as absent: judging packages against a guess would refuse ones that work.
+#[allow(
+    clippy::print_stderr,
+    reason = "a one-time operator warning; the reader may run before tracing is initialised"
+)]
+pub fn system_interfaces() -> Option<ProvidedInterfaces> {
+    match read_interfaces(&system_interfaces_path()) {
+        Ok(provided) => provided,
+        Err(error) => {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| eprintln!("package-store: {error}"));
+            None
+        }
+    }
+}
+
+/// What `manifest` requires that `provided` does not serve. Empty when it
+/// fits, or when there is no declaration to judge by.
+pub fn unmet(provided: Option<&ProvidedInterfaces>, manifest: &Manifest) -> Vec<Unmet> {
+    provided.map_or_else(Vec::new, |provided| {
+        provided.unmet(&manifest.required_interfaces())
+    })
+}
+
+/// [`unmet`] for the manifest an installed row names. A manifest that
+/// cannot be read is not judged here; the launcher reports it on launch.
+pub fn unmet_at(provided: Option<&ProvidedInterfaces>, manifest_path: &Path) -> Vec<Unmet> {
+    let Some(provided) = provided else {
+        return Vec::new();
+    };
+    std::fs::read_to_string(manifest_path)
+        .ok()
+        .and_then(|raw| Manifest::from_toml_str(&raw).ok())
+        .map_or_else(Vec::new, |manifest| unmet(Some(provided), &manifest))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SETTINGS: &str = r#"
+[package]
+id = "so.tilo.settings"
+version = "2.0.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.services]
+collab = "optional@1"
+system = "required@2"
+"#;
+
+    #[test]
+    fn a_package_fits_the_versions_the_image_declares() {
+        let manifest = Manifest::from_toml_str(SETTINGS).unwrap();
+        let old_os = parse_interfaces("[interfaces]\nsystem = [1]\ncollab = [1]\n").unwrap();
+        let new_os = parse_interfaces("[interfaces]\nsystem = [1, 2]\n").unwrap();
+
+        let refused = unmet(Some(&old_os), &manifest);
+        assert_eq!(refused.len(), 1);
+        assert_eq!(
+            refused[0].to_string(),
+            "system@2 (this system provides system@1)"
+        );
+        // An optional service is not a requirement: collab is absent here.
+        assert!(unmet(Some(&new_os), &manifest).is_empty());
+        // A host that declares nothing judges nothing.
+        assert!(unmet(None, &manifest).is_empty());
+    }
+
+    #[test]
+    fn declarations_are_read_strictly_and_absence_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("system-interfaces.toml");
+        assert!(read_interfaces(&path).unwrap().is_none());
+
+        std::fs::write(&path, "[interfaces]\nsystem = [1]\n").unwrap();
+        let provided = read_interfaces(&path).unwrap().unwrap();
+        assert_eq!(provided.versions("system"), vec![1]);
+
+        for bad in [
+            "system = [1]\n",
+            "[interfaces]\nsystem = []\n",
+            "[interfaces]\nsystem = [0]\n",
+            "[interfaces]\n\"Sys tem\" = [1]\n",
+            "[interfaces]\nsystem = \"1\"\n",
+        ] {
+            std::fs::write(&path, bad).unwrap();
+            assert!(read_interfaces(&path).is_err(), "{bad:?} parsed");
+        }
+    }
+
+    #[test]
+    fn an_installed_row_is_judged_by_its_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join("manifest.toml");
+        std::fs::write(&manifest, SETTINGS).unwrap();
+        let old_os = parse_interfaces("[interfaces]\nsystem = [1]\n").unwrap();
+        assert_eq!(unmet_at(Some(&old_os), &manifest).len(), 1);
+        assert!(unmet_at(Some(&old_os), &dir.path().join("missing.toml")).is_empty());
+    }
+}

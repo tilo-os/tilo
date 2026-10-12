@@ -51,6 +51,8 @@ pub(crate) enum LayerId {
     /// The Alt+Tab switcher, while Alt is held and it is on screen. It owns
     /// the keyboard until Alt comes up.
     WindowSwitcher,
+    /// Microphone consent and status; preserves the original editable field.
+    Dictation,
     /// The emoji picker; modal while open.
     EmojiPicker,
     /// The Super+P display sheet.
@@ -73,9 +75,10 @@ pub(crate) enum LayerId {
 }
 
 impl LayerId {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::DisplayConfirmation,
         Self::WindowSwitcher,
+        Self::Dictation,
         Self::EmojiPicker,
         Self::DisplayLayouts,
         Self::TabContextMenu,
@@ -96,7 +99,7 @@ impl LayerId {
     pub(crate) const fn band(self) -> Option<Band> {
         match self {
             Self::DisplayConfirmation => Some(Band::Session),
-            Self::WindowSwitcher => Some(Band::Chord),
+            Self::WindowSwitcher | Self::Dictation => Some(Band::Chord),
             Self::EmojiPicker => Some(Band::Modal),
             Self::TabContextMenu | Self::PowerMenu => Some(Band::Popover),
             _ => None,
@@ -175,6 +178,9 @@ pub(crate) enum LayerIntent {
     /// The layer changed what it shows outside a frame the host already
     /// schedules.
     Repaint,
+    Dictation(super::dictation_layer::Request),
+    /// Open the normal Settings launcher from a missing-model prompt.
+    DictationSetup,
 }
 
 /// What a layer may read and ask for while handling one event.
@@ -285,6 +291,7 @@ pub(crate) trait ShellLayer {
 pub(crate) struct OverlayStack {
     pub(crate) display_confirm: DisplayConfirmPrompt,
     pub(crate) window_switcher: WindowSwitcher,
+    pub(crate) dictation: super::dictation_layer::DictationSurface,
     pub(crate) emoji_picker: EmojiPicker,
     pub(crate) tab_menu: TabMenuLayer,
     pub(crate) power_menu: PowerMenu,
@@ -294,20 +301,22 @@ pub(crate) struct OverlayStack {
 
 impl OverlayStack {
     /// Topmost first; must follow [`LayerId`]'s order.
-    fn layers(&self) -> [&dyn ShellLayer; 5] {
+    fn layers(&self) -> [&dyn ShellLayer; 6] {
         [
             &self.display_confirm,
             &self.window_switcher,
+            &self.dictation,
             &self.emoji_picker,
             &self.tab_menu,
             &self.power_menu,
         ]
     }
 
-    fn layers_mut(&mut self) -> [&mut dyn ShellLayer; 5] {
+    fn layers_mut(&mut self) -> [&mut dyn ShellLayer; 6] {
         [
             &mut self.display_confirm,
             &mut self.window_switcher,
+            &mut self.dictation,
             &mut self.emoji_picker,
             &mut self.tab_menu,
             &mut self.power_menu,
@@ -452,7 +461,7 @@ mod tests {
         let mut event_cx = EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,

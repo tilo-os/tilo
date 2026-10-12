@@ -1,0 +1,30 @@
+{
+  "decoder": "production geometric",
+  "records": 256,
+  "eligible": 246,
+  "in_vocabulary": 201,
+  "top1_correct": 160,
+  "top3_correct": 184,
+  "top8_correct": 195,
+  "decode_p50_us": 3185,
+  "decode_p95_us": 7950,
+  "profile": "release",
+  "manifest": {
+    "dataset": "https://huggingface.co/datasets/futo-org/swipe.futo.org",
+    "revision": "d71bf5fd7f45b3e7c2ed2d76a21b0dbd3b4ba566",
+    "split": "validation",
+    "selection": "first 256 rows, original dev split, no repartition",
+    "source_prefix_sha256": "a0de9a1e552e57bcedc3b534a6e309cdeff8f55a9eddf3a0f1f0b78dfb1ace34",
+    "source_prefix_bytes": 981834,
+    "fixture_sha256": "a462239f5bcd39dd03a53c75e1b71674ceb41b926a1093f156779629f342d9b1",
+    "records": 256,
+    "sessions": 5,
+    "metadata_sha256": {
+      "LICENSE": "60968505ce2909b45997d104b678eb42474d47174924338cd0fa652abe0fff60",
+      "swipe-5/layouts/qwerty.json": "1965ecd59c9e4bff89446bb56ff3a2d0070b16eeae4ce424ce08b06ed6864632"
+    },
+    "training": false,
+    "limitations": "bounded prefix, not representative accuracy; source QWERTY geometry"
+  },
+  "repository_base": "4b1210dc7c"
+}

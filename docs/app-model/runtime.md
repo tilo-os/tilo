@@ -263,7 +263,6 @@ tilo-hello: a Tilo-native app, running.
 == fds ==
   collab   : absent
   fs       : absent
-  spellcheck: absent
 
 == sandbox probes ==
   read(        /proc/self/status): permission denied — blocked (bwrap or Landlock)

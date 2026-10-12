@@ -147,7 +147,12 @@ fn peer_focus_offers_a_chip_and_accepting_it_moves_focus_here() {
     );
 
     let mut doc = AutoCommit::new();
-    assert!(bar.perform_semantic_action("topbar:continuity", &Action::Activate, &mut doc, &ROOT));
+    assert!(bar.perform_semantic_action(
+        "topbar:continuity",
+        &Action::Activate,
+        &mut ui::widget::Edits::lend(&mut doc),
+        &ROOT
+    ));
     assert_eq!(focused_tab(&chrome.borrow()), NOTES);
     assert_eq!(continuity_control(&bar), None, "an accepted offer retires");
 
@@ -181,7 +186,7 @@ fn dismissing_the_chip_leaves_focus_alone() {
     assert!(bar.perform_semantic_action(
         "topbar:continuity-dismiss",
         &Action::Activate,
-        &mut doc,
+        &mut ui::widget::Edits::lend(&mut doc),
         &ROOT
     ));
     assert_eq!(continuity_control(&bar), None);

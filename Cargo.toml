@@ -5,6 +5,7 @@
 # `.cargo/config.toml` applies:
 # `crates/doc/tilo-doc-codec-markdown-wasm/build.sh`.
 exclude = [
+    "vendor/buffa-build",
     "fuzz",
     "crates/doc/tilo-doc-codec-markdown-wasm",
     "vendor/vello",
@@ -12,14 +13,23 @@ exclude = [
     "vendor/vello_shaders",
     "vendor/genawaiter-proc-macro",
     "vendor/google-cast-protocol",
+    "vendor/fcast-sender-sdk",
     "vendor/libspa-sys",
     "vendor/winit",
     "vendor/accesskit_winit",
     "vendor/wgpu",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
+    # Built only by the OS image's bootc (os/Containerfile, bootc-builder).
+    "vendor/zlink-macros",
     "vendor/web-transport-quinn",
     "vendor/automerge",
+    "vendor/librespot-core",
+    "vendor/hyper-proxy2",
+    "vendor/cosmic-text",
+    "vendor/iroh",
+    "vendor/iroh-gossip",
+    "vendor/netwatch",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -30,17 +40,23 @@ default-members = [
     "crates/doc/tilo-doc-codecs",
     "crates/system/fs",
     "crates/session/shell",
+    "crates/session/control-cli",
     "crates/sdk/ui-core",
     "crates/packaging/tilo-app-package",
     "crates/runtime/runtime",
 ]
 members = [
+    "crates/platform/tilo-messaging",
+    "crates/dev/registry-review",
     "apps/canvas",
     "crates/collab/tilo-action-broker",
+    "crates/collab/tilo-identity-ceremony",
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
+    "crates/browser/tilo-browser-compute",
     "crates/browser/tilo-browser-peer",
+    "crates/browser/paint-stream",
     "crates/hosting/tilo-room-service",
     "crates/hosting/tilo-moq",
     "apps/hot-reload-demo",
@@ -61,8 +77,10 @@ members = [
     "apps/calendar",
     "apps/camera",
     "apps/chat",
+    "apps/messages",
     "apps/clocks",
     "apps/code-editor",
+    "apps/chip-design",
     "apps/contacts",
     "apps/containers",
     "apps/db-client",
@@ -118,9 +136,9 @@ members = [
     # SDK
     "crates/sdk/font-catalog",
     "crates/sdk/runner-native",
-    "crates/sdk/runner-web",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-caps",
+    "crates/sdk/tilo-history",
     "crates/sdk/tilo-cpu-raster",
     "crates/sdk/tilo-host",
     "crates/sdk/tilo-resource",
@@ -129,6 +147,7 @@ members = [
     "crates/sdk/search",
 
     # Collab
+    "crates/collab/action-policy",
     "crates/collab/actions",
     "crates/collab/automation",
     "crates/collab/channel-crypto",
@@ -136,9 +155,12 @@ members = [
     "crates/collab/collab-types",
     "crates/collab/neighbour-wire",
     "crates/collab/reference",
+    "crates/collab/feedback-review",
+    "crates/collab/feedback",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-joined-room",
+    "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-user-identity",
 
     # Dev
@@ -148,9 +170,11 @@ members = [
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
     "crates/dev/test-env",
+    "crates/dev/test-app-registry",
     "crates/dev/test-http",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
+    "crates/dev/tilo-device-admin",
     "crates/dev/tilo-vm",
     "crates/dev/tilo-vm-protocol",
     "crates/dev/tilo-vmd",
@@ -174,9 +198,11 @@ members = [
     "crates/hosting/tilo-relay",
     "crates/hosting/tilo-relay-client",
     "crates/hosting/tilo-relay-protocol",
+    "crates/hosting/tilo-relay-session",
 
     # Media
     "crates/media/ocr",
+    "crates/media/segment",
     "crates/media/thumbnail",
     "crates/media/vision",
     "crates/media/wet-media",
@@ -197,8 +223,6 @@ members = [
     "crates/packaging/registry-client",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
-    "crates/packaging/registry-web",
-    "crates/packaging/registry-web-bindgen",
     "crates/packaging/runtime-bundle",
     "crates/packaging/runtime-update",
 
@@ -220,20 +244,30 @@ members = [
     "crates/platform/tilo-appearance",
     "crates/platform/tilo-capture",
     "crates/platform/tilo-clipboard",
+    "crates/platform/tilo-input-context",
+    "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
+    "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
     "crates/platform/tilo-location",
     "crates/platform/tilo-image-codec",
+    "crates/platform/tilo-keyboard-map",
+    "crates/platform/tilo-locale",
+    "crates/platform/tilo-accessibility-settings",
     "crates/platform/tilo-media",
+    "crates/platform/tilo-spotify",
+    "crates/platform/tilo-invidious",
     "crates/platform/tilo-net",
     "crates/platform/tilo-host-search",
     "crates/platform/tilo-notify",
     "crates/platform/tilo-paths",
     "crates/platform/tilo-pdf",
     "crates/platform/tilo-process",
+    "crates/platform/tilo-presentation",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
+    "crates/platform/tilo-subject",
     "crates/platform/tilo-sandbox",
     "crates/platform/tilo-typst-fonts",
 
@@ -244,9 +278,11 @@ members = [
     "crates/runtime/legacy-vm",
     "crates/runtime/runtime",
     "crates/runtime/runtime-collab",
-    "crates/runtime/runtime-connected",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
+    # Single-app engines shipped beside it in the runtime bundle.
+    "crates/runtime/engines/spotify",
+    "crates/runtime/engines/typst",
     "crates/runtime/runtime-fs",
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",
@@ -262,13 +298,14 @@ members = [
 
     # Session
     "crates/session/console-control",
+    "crates/session/control-cli",
     "crates/session/desktop-model",
     "crates/session/desktop-search",
     "crates/session/desktop-surface",
     "crates/session/greetd-client",
     "crates/session/greeter",
+    "crates/session/install-profile-model",
     "crates/session/installer",
-    "crates/session/tilo-connected-protocol",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
 
@@ -285,17 +322,18 @@ members = [
     "crates/system/cloud-source-dropbox",
     "crates/system/cloud-source-onedrive",
     "crates/system/cloud-source-icloud",
-    "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
     "crates/system/content",
     "crates/system/durable-store",
     "crates/system/fs",
     "crates/system/fs-content",
+    "crates/system/fs-protocol",
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",
     "crates/system/libvirt-domain",
+    "crates/system/messaging-protocol",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
@@ -311,13 +349,14 @@ members = [
     "crates/system/tilo-dav",
     "crates/system/tilo-oauth",
     "crates/system/tilo-native-certs",
+    "crates/system/tilo-nm",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
+    "crates/system/tilo-sibling-unlock",
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
     "crates/system/wire-frame",
-    "crates/system/xdg-paths",
 
     # Text
     "crates/text/emoji",
@@ -646,6 +685,9 @@ opt-level = 3
 opt-level = 3
 [profile.test.package.hexane]
 opt-level = 3
+# crates.io automerge, the reference tilo-automerge's tests compare the fork to.
+[profile.test.package.automerge]
+opt-level = 3
 
 # The wet-media simulations re-run on every edit of a painted layer; unoptimised
 # they take seconds per stroke, and the canvas app is unusable in a dev build.
@@ -656,6 +698,23 @@ opt-level = 3
 [profile.dev.package.tiny-skia]
 opt-level = 3
 [profile.test.package.tiny-skia]
+opt-level = 3
+# Refining a selection's edge filters every pixel of a photograph, and the
+# subject model runs a network: unoptimised, select subject takes many
+# seconds in a dev build. rten's kernels are its own crates.
+[profile.dev.package.tilo-segment]
+opt-level = 3
+[profile.test.package.tilo-segment]
+opt-level = 3
+[profile.dev.package.rten]
+opt-level = 3
+[profile.dev.package.rten-gemm]
+opt-level = 3
+[profile.dev.package.rten-vecmath]
+opt-level = 3
+[profile.dev.package.rten-simd]
+opt-level = 3
+[profile.dev.package.rten-tensor]
 opt-level = 3
 
 # Hashing, signature verification and font parsing run on every fixture in
@@ -795,26 +854,42 @@ opt-level = 3
 [profile.test.package.tilo-search]
 opt-level = 3
 
+# Release binaries keep their symbol table (`strip = "debuginfo"`), so a field
+# crash log (shell::crash_log) names each frame's function; fully stripped,
+# the same backtrace was only `<unknown>` frames. The line tables compiled
+# below are stripped: kept in the compositor they would also give file:line,
+# but measured on `shell` (thin LTO as packages build it, panic = "abort")
+# they grow the zstd-compressed binary from 46 MB to 220 MB, against 42 MB
+# fully stripped.
+# The OS image, RPM, Debian and Arch packages ship these binaries as built
+# (the RPM spec and PKGBUILD turn their strip passes off); Nix's default
+# debug-only strip keeps the symbol table too.
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
-strip = "symbols"
+# Unwind, so a process can contain a helper that fails: the compositor
+# restarts its collaboration broker rather than end the session. Every other
+# panic still aborts the process: tilo-rt installs a hook that aborts outside
+# `tilo_rt::panic_boundary::isolate` (see that module).
+panic = "unwind"
+strip = "debuginfo"
 overflow-checks = false
 debug = "line-tables-only"
 incremental = false
 
 # The browser bundles' release build (`build.sh --profile release`), measured
-# in crates/browser/tilo-web-desktop/SIZE.md. Fat LTO, one codegen unit and
-# stripped symbols come from `release`. `panic = "abort"` is the only panic
+# in crates/browser/tilo-web-desktop/SIZE.md. Fat LTO and one codegen unit
+# come from `release`. `panic = "abort"` is the only panic
 # strategy wasm32-unknown-unknown has on stable: the runtime's panic hook
 # reports the message, then the module traps and the page must reload.
-# No debug info: `strip` would drop it after the linker had written it.
+# No debug info or symbol table: the bundle size is what matters in a browser.
 [profile.wasm-release]
 inherits = "release"
 opt-level = 3
+panic = "abort"
 debug = false
+strip = "symbols"
 
 # Thin-app profile: release settings minus those incompatible with dynamic SDK
 # linking.
@@ -829,6 +904,9 @@ debug = false
 inherits = "release"
 panic = "unwind"
 lto = false
+# Signed app packages stay fully stripped; only the native release binaries
+# keep their symbol table.
+strip = "symbols"
 # Pin codegen-units here: CARGO_PROFILE_RELEASE_CODEGEN_UNITS (set for fast
 # release links in CI and the image) is inherited by thin-app unless the child
 # profile names its own value. The wrapper also forces one unit on each tapp
@@ -861,6 +939,19 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
+buffa-build = { path = "vendor/buffa-build" }
+# Verify Cast TLS handshake signatures and bound cancellation; identity
+# authentication remains a separate explicit trust decision. See provenance.
+fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }
+# Spotify parser/session and Rustls proxy repairs; preserve Tilo trust roots.
+# See the two vendor PROVENANCE.md files.
+librespot-core = { path = "vendor/librespot-core" }
+hyper-proxy2 = { path = "vendor/hyper-proxy2" }
+# Shapes a variable font at its `wdth` as well as its `wght`, so condensed
+# text is measured and kerned at the width it is drawn. See
+# vendor/cosmic-text/TILO-PATCH.md.
+cosmic-text = { path = "vendor/cosmic-text" }
 # The Google Cast message types with their prost code pre-generated, so the
 # build no longer compiles a protobuf compiler for one message.
 # See vendor/google-cast-protocol/PROVENANCE.md.
@@ -891,6 +982,13 @@ rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 # compositor alive and treat the vanished object as a disconnected client.
 # See vendor/wayland-backend/TILO-PATCH.md.
 wayland-backend = { path = "vendor/wayland-backend" }
+# An idle endpoint wakes for nothing: no re-STUN tick and no home relay once
+# the relay map is empty, no wall-clock poll on Linux (a timerfd that the
+# kernel cancels on resume or a clock step replaces it), and no gossip cache
+# sweep once a topic's caches are empty. See each crate's TILO-PATCH.md.
+iroh = { path = "vendor/iroh" }
+iroh-gossip = { path = "vendor/iroh-gossip" }
+netwatch = { path = "vendor/netwatch" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
 workspace-hack = { path = "crates/workspace-hack" }

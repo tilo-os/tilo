@@ -38,6 +38,7 @@ fn reference_block_runs(block: &BlockView) -> BlockRuns {
             color,
             background,
             baseline,
+            kind: None,
         });
         i = j;
     }
@@ -111,6 +112,7 @@ fn reference_block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRun
             color,
             background,
             baseline,
+            kind: None,
         });
         i = j;
     }
@@ -244,8 +246,7 @@ fn mark_boundary_runs_merge_equal_styles_and_match_the_reference() {
                     children: vec![],
                 };
                 for review in [false, true] {
-                    let (actual, actual_underlines, actual_strikes) =
-                        block_runs_markup(&block, review);
+                    let (actual, actual_underlines, actual_strikes) = block_runs(&block, review);
                     let (expected, expected_underlines, expected_strikes) =
                         reference_block_runs_markup(&block, review);
                     let fields = |r: RichSpan| {

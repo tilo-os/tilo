@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use ui::time::Duration;
 
 use media::{MediaEngine, Source};
+use ui::framework::{LaunchInput, RunMode};
 use ui::widget::Widget; // brings `sync` (the per-frame Widget method) into scope
 use video_player::PlayerApp;
 
@@ -98,9 +99,7 @@ fn write_sample_media(dir: &Path) -> Option<PathBuf> {
 fn scratch_dir() -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static SEQ: AtomicU32 = AtomicU32::new(0);
-    let nanos = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
+    let nanos = ui::time::unix_now_ns();
     let dir = std::env::temp_dir().join(format!(
         "tilo-vp-real-decode 日本語 #%-{}-{}-{}",
         std::process::id(),
@@ -109,6 +108,13 @@ fn scratch_dir() -> PathBuf {
     ));
     std::fs::create_dir_all(&dir).expect("create scratch dir");
     dir
+}
+
+/// The live player launched on `sample`, as `video-player SAMPLE` opens it.
+fn launched(sample: &Path) -> PlayerApp {
+    let mut app = PlayerApp::new(RunMode::Live);
+    app.open_launch(&LaunchInput::new(&[sample.display().to_string()], None));
+    app
 }
 
 #[test]
@@ -191,21 +197,20 @@ fn real_file_decodes_and_reaches_the_player_surface() {
         let sample = write_sample_media(&dir)
             .expect("real decode requires gst-launch-1.0 and a working encoder/muxer");
 
-        // Drive the real app entry path: open the file, then pump `sync` (the live
-        // event loop's per-frame call) until a decoded picture lands on the surface.
-        let mut app = PlayerApp::new().with_open_path(&sample);
+        // Open the file as a launch does, then pump `sync` until a picture lands.
+        let mut app = launched(&sample);
         assert!(
             app.player()
                 .engine()
                 .is_some_and(MediaEngine::is_real_decode),
             "the app must use the real decoder"
         );
-        let mut doc = automerge::AutoCommit::new();
+        let doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
 
         let deadline = tilo_test_env::hang_deadline();
         while ui::time::now() < deadline {
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             if app.player().latest_frame().is_some() {
                 break;
             }

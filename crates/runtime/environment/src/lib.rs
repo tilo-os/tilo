@@ -13,22 +13,11 @@
 //! and `perm allow-host` is [`Environment::ALLOW_HOST`].
 //! History and undo come from the record layer.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::str::FromStr;
 
-use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
+use collab_types::caps::{Access, CapOverride, Effect, Principal, Scope, Subject};
 pub use tilo_app_package::PackageId;
 use tilo_resource::{Json, JsonSchema, Model, ModelError, resource};
 
@@ -415,7 +404,7 @@ pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
     Ok(CapOverride::grant(
         Subject::Principal(Principal::App(RUNTIME_APP_ID.to_owned())),
         Scope::FsPath(path.to_string_lossy().into_owned()),
-        if write { Verb::Write } else { Verb::Read },
+        if write { Access::Write } else { Access::Read },
     )
     .with_id(grant_id(path))
     .granted_by(Principal::Person("local".to_owned())))
@@ -423,46 +412,18 @@ pub fn dir_grant(path: &Path, write: bool) -> Result<CapOverride, String> {
 
 /// A host as a `NetHost` grant spells it: `*`, `example.com`, or
 /// `.example.com` for the domain and everything under it (`*.example.com`
-/// is accepted and written that way). Lower-case, no trailing dot.
+/// is accepted and written that way). Lower-case, no trailing dot. The
+/// grammar is [`collab_types::caps::NetHostPattern`]'s, the one apps' grants
+/// are read with too.
 ///
 /// # Errors
 /// Returns the reason when `host` is not a host name: empty, an address
 /// (egress is decided by name, so a literal would bypass the resolver that
 /// decides), or characters DNS names do not carry.
 pub fn normalize_host(host: &str) -> Result<String, String> {
-    let trimmed = host.trim().trim_end_matches('.');
-    if trimmed == "*" {
-        return Ok("*".to_owned());
-    }
-    let (domain, name) = match trimmed
-        .strip_prefix("*.")
-        .or_else(|| trimmed.strip_prefix('.'))
-    {
-        Some(rest) => (true, rest),
-        None => (false, trimmed),
-    };
-    let name = name.to_ascii_lowercase();
-    if name.parse::<std::net::IpAddr>().is_ok() || name.starts_with('[') {
-        return Err(format!(
-            "{host:?} is an address; hosts are allowed by name (example.com), so the \
-             resolver that decides what the guest reaches cannot be bypassed"
-        ));
-    }
-    let label_ok = |l: &str| {
-        !l.is_empty()
-            && l.len() <= 63
-            && !l.starts_with('-')
-            && !l.ends_with('-')
-            && l.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    };
-    if name.is_empty() || name.len() > 253 || !name.split('.').all(label_ok) {
-        return Err(format!(
-            "{host:?} is not a host: name one (example.com), a domain with everything \
-             under it (*.example.com), or * for any host"
-        ));
-    }
-    Ok(if domain { format!(".{name}") } else { name })
+    collab_types::caps::NetHostPattern::parse(host)
+        .map(|pattern| pattern.to_string())
+        .map_err(|reason| reason.to_string())
 }
 
 /// The grant id for a host: stable, so allowing it again replaces one
@@ -483,7 +444,7 @@ pub fn host_grant(host: &str) -> Result<CapOverride, String> {
     Ok(CapOverride::grant(
         Subject::Principal(Principal::App(RUNTIME_APP_ID.to_owned())),
         Scope::NetHost(host.clone()),
-        Verb::Read,
+        Access::Read,
     )
     .with_id(host_grant_id(&host))
     .granted_by(Principal::Person("local".to_owned())))
@@ -520,13 +481,51 @@ pub enum Target {
     Environment {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         record: Option<String>,
+        /// Where the guest runs: this device unless it names a relay.
+        #[serde(default, skip_serializing_if = "Location::is_this_device")]
+        location: Location,
     },
 }
 
+/// Where an environment's guest runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Location {
+    /// On the device that asks.
+    #[default]
+    ThisDevice,
+    /// On a relay the person is a member of, named by its endpoint id
+    /// (hex). The device's supervisor carries the pty there.
+    Relay { relay: String },
+}
+
+impl Location {
+    pub fn is_this_device(&self) -> bool {
+        matches!(self, Self::ThisDevice)
+    }
+
+    /// Whether a relay's name is one a request may carry: a 32-byte endpoint
+    /// id in lowercase hex.
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::ThisDevice => true,
+            Self::Relay { relay } => {
+                relay.len() == 64
+                    && relay
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            }
+        }
+    }
+}
+
 impl Target {
-    /// The default environment.
+    /// The default environment, on this device.
     pub fn default_environment() -> Self {
-        Self::Environment { record: None }
+        Self::Environment {
+            record: None,
+            location: Location::ThisDevice,
+        }
     }
 }
 
@@ -651,10 +650,10 @@ mod tests {
         );
         assert!(r.apply(add(&["pandoc"], "riscv", image(5))).is_err());
 
-        r.apply(Environment::REMOVE_TOOL.with(vec!["pandoc".into()]))
+        r.apply_confirmed(Environment::REMOVE_TOOL.with(vec!["pandoc".into()]))
             .unwrap();
         assert!(
-            r.apply(Environment::REMOVE_TOOL.with(vec!["pandoc".into()]))
+            r.apply_confirmed(Environment::REMOVE_TOOL.with(vec!["pandoc".into()]))
                 .is_err()
         );
         assert_eq!(r.state().unwrap().tools.len(), 1);
@@ -671,7 +670,7 @@ mod tests {
         assert_eq!(env.grants.0.len(), 1, "granting again replaces the grant");
         let cap = &env.grants.0[0];
         assert!(is_runtime_grant(cap));
-        assert_eq!(cap.verb, Verb::Read);
+        assert_eq!(cap.access, Access::Read);
         assert_eq!(cap.scope, Scope::FsPath("/var/home/you/src".into()));
 
         for bad in [
@@ -701,11 +700,11 @@ mod tests {
         ] {
             assert!(is_grantable(Path::new(good)), "{good} should be grantable");
         }
-        r.apply(Environment::REVOKE_GRANT.with(cap.id.clone()))
+        r.apply_confirmed(Environment::REVOKE_GRANT.with(cap.id.clone()))
             .unwrap();
         assert!(r.state().unwrap().grants.0.is_empty());
         assert!(
-            r.apply(Environment::REVOKE_GRANT.with(cap.id.clone()))
+            r.apply_confirmed(Environment::REVOKE_GRANT.with(cap.id.clone()))
                 .is_err()
         );
     }
@@ -713,12 +712,11 @@ mod tests {
     #[test]
     fn host_grants_are_capabilities_in_the_shared_spelling() {
         let mut r = replica();
-        r.apply(Environment::ALLOW_HOST.with("GitHub.com.".into()))
+        r.apply(Environment::ALLOW_HOST.with("GitHub.com."))
             .unwrap();
-        r.apply(Environment::ALLOW_HOST.with("*.crates.io".into()))
+        r.apply(Environment::ALLOW_HOST.with("*.crates.io"))
             .unwrap();
-        r.apply(Environment::ALLOW_HOST.with("github.com".into()))
-            .unwrap();
+        r.apply(Environment::ALLOW_HOST.with("github.com")).unwrap();
         let env = r.state().unwrap();
         assert_eq!(env.grants.0.len(), 2, "allowing again replaces the grant");
         let scopes: Vec<&Scope> = env.grants.0.iter().map(|c| &c.scope).collect();
@@ -740,12 +738,13 @@ mod tests {
         assert_eq!(normalize_host(" * ").unwrap(), "*");
         for bad in ["", "1.1.1.1", "::1", "[::1]", "a b", "-x.com", "x..com"] {
             assert!(
-                r.apply(Environment::ALLOW_HOST.with(bad.into())).is_err(),
+                r.apply(Environment::ALLOW_HOST.with(bad)).is_err(),
                 "{bad:?} must not be allowed"
             );
         }
         let id = host_grant_id("github.com");
-        r.apply(Environment::REVOKE_GRANT.with(id)).unwrap();
+        r.apply_confirmed(Environment::REVOKE_GRANT.with(id))
+            .unwrap();
         assert_eq!(r.state().unwrap().grants.0.len(), 1);
     }
 
@@ -773,8 +772,8 @@ mod tests {
         assert_eq!(env.runtime_image("x86_64").unwrap(), image(9));
         assert_eq!(env.tools, vec![rebuilt]);
 
-        assert!(r.apply(Environment::RENAME.with("  ".into())).is_err());
-        r.apply(Environment::RENAME.with(" Docs ".into())).unwrap();
+        assert!(r.apply(Environment::RENAME.with("  ")).is_err());
+        r.apply(Environment::RENAME.with(" Docs ")).unwrap();
         assert_eq!(r.state().unwrap().name, "Docs");
         assert_eq!(r.state().unwrap().home, HomePolicy::Persistent);
     }
@@ -788,8 +787,32 @@ mod tests {
         assert_eq!(
             named,
             Target::Environment {
-                record: Some("work".into())
+                record: Some("work".into()),
+                location: Location::ThisDevice,
             }
+        );
+        let relay = "ab".repeat(32);
+        let on_relay: Target = serde_json::from_str(&format!(
+            r#"{{"kind":"environment","record":"work","location":{{"kind":"relay","relay":"{relay}"}}}}"#
+        ))
+        .unwrap();
+        assert!(matches!(
+            &on_relay,
+            Target::Environment { location: Location::Relay { relay: r }, .. } if *r == relay
+        ));
+        assert!(
+            serde_json::to_string(&Target::default_environment())
+                .unwrap()
+                .find("location")
+                .is_none(),
+            "this device is the default and is not spelled out"
+        );
+        assert!(Location::Relay { relay }.is_valid());
+        assert!(
+            !Location::Relay {
+                relay: "home".into()
+            }
+            .is_valid()
         );
         assert_eq!(
             serde_json::from_str::<Target>(r#"{"kind":"host"}"#).unwrap(),

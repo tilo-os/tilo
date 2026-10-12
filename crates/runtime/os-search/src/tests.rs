@@ -131,6 +131,7 @@ pub(crate) fn row(provider: &str, resource: &str, label: &str, action: &str) -> 
             presentation: None,
         },
         action: Some(ActionDescriptor {
+            semantic_identity: None,
             address: ActionAddress::new(resource, action),
             resource_kind: "notes.page".into(),
             resource_label: label.into(),
@@ -156,6 +157,7 @@ fn with_view(mut row: CatalogueRow, primary: bool) -> CatalogueRow {
         description: None,
         open_action: action.address.action.clone(),
         primary,
+        range: None,
         mount: None,
     });
     row

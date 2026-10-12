@@ -137,6 +137,16 @@ pub fn export(
                 }
             }
         } else {
+            // A painted layer's picture comes with its vignette; a plain
+            // layer's is laid over what the layer draws.
+            let vignette = layer
+                .adjust
+                .as_ref()
+                .and_then(|adjust| adjust.vignette)
+                .filter(|amount| *amount != 0.0);
+            if vignette.is_some() {
+                let _ = write!(out.body, r#"<g id="lc-{}">"#, escape(&layer.id));
+            }
             let start = out.body.len();
             for mark in art.marks_of(&layer.id) {
                 if mark.erases() {
@@ -151,6 +161,11 @@ pub fn export(
                     crate::render::grades_of(&[mark.style.adjust.as_ref(), layer.adjust.as_ref()]);
                 let graded = crate::render::graded_mark(mark, &palette, &steps);
                 out.mark(art, &graded, &palette);
+            }
+            if let Some(amount) = vignette {
+                out.enter_group("");
+                out.body.push_str("</g>");
+                out.vignette(art, &layer.id, amount);
             }
         }
         out.enter_group("");
@@ -229,6 +244,40 @@ impl Writer {
             let _ = write!(self.body, r#"<g data-group="{}">"#, escape(&whole));
             self.open.push((*path.get(depth).unwrap_or(&"")).to_owned());
         }
+    }
+
+    /// A layer's vignette over what it draws (`lc-<layer>`): black (or,
+    /// below zero, white) growing toward the artwork's edges, as the
+    /// canvas draws it, kept to the layer's own paint by an alpha mask.
+    fn vignette(&mut self, art: &Artwork, layer: &str, amount: f64) {
+        let ink = if amount > 0.0 { "#000000" } else { "#ffffff" };
+        let reach = crate::adjust::VIGNETTE_REACH;
+        let mut stops = String::new();
+        for step in 0..=12 {
+            let distance = reach * f64::from(step) / 12.0;
+            let _ = write!(
+                stops,
+                r#"<stop offset="{}" stop-color="{ink}" stop-opacity="{}"/>"#,
+                num(distance / reach),
+                num(crate::adjust::vignette_alpha(amount, distance))
+            );
+        }
+        let id = escape(layer);
+        let _ = write!(
+            self.defs,
+            r##"<radialGradient id="vg-{id}" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="{}" gradientTransform="translate({} {}) scale({} {})">{stops}</radialGradient><mask id="vm-{id}" style="mask-type:alpha"><use href="#lc-{id}"/></mask>"##,
+            num(reach),
+            num(art.width / 2.0),
+            num(art.height / 2.0),
+            num(art.width / 2.0),
+            num(art.height / 2.0)
+        );
+        let _ = write!(
+            self.body,
+            r#"<rect width="{}" height="{}" fill="url(#vg-{id})" mask="url(#vm-{id})"/>"#,
+            num(art.width),
+            num(art.height)
+        );
     }
 
     /// An eraser: everything written on its layer before it, from byte
@@ -433,11 +482,16 @@ impl Writer {
             num(*width),
             num(*height)
         );
+        let sampling = if style.pixelated {
+            r#" image-rendering="pixelated""#
+        } else {
+            ""
+        };
         let _ = write!(self.body, "<g{attrs}>");
         if let Some(picture) = self.pictures.get(&mark.id) {
             let _ = write!(
                 self.body,
-                r#"<image{place} preserveAspectRatio="none" href="data:{};base64,{}"/>"#,
+                r#"<image{place}{sampling} preserveAspectRatio="none" href="data:{};base64,{}"/>"#,
                 picture.mime,
                 base64::engine::general_purpose::STANDARD.encode(&picture.bytes)
             );
@@ -715,7 +769,7 @@ pub fn source(svg: &str) -> Result<String, String> {
         return Ok(svg.to_owned());
     }
     let bytes = if let Some(hash) = ui::tilo_actions::content_hash(trimmed) {
-        tilo_content::ContentStore::for_app()
+        crate::content::store()
             .read(hash)
             .ok_or_else(|| format!("no stored content {trimmed}"))?
     } else if trimmed.starts_with('/') {

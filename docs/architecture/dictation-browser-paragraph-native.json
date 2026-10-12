@@ -1,0 +1,50 @@
+{
+  "qualification": "failed_browser_paragraph_batch",
+  "microphone_used": false,
+  "installed_or_deployed": false,
+  "receipt_root": "${BUILD_ROOT}/target/dictation-browser-paragraph-20261009",
+  "build": {
+    "exit_code": 0,
+    "sdk": {
+      "name": "cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_linux64_minimal.tar.bz2",
+      "size": 321503907,
+      "sha1": "9711b86c105fb590da576fe5a829802f1a79d520",
+      "sha256": "daf8c2b6e63787d6a91d666205a8a4521419937eabaf47723738c86aea7135bd"
+    },
+    "sources": {
+      "apps/browser/chromium/src/host.cc": "4397f77cbaed86358756c79befc91f2aa05e6c1f2562592f997fd311f64615b2",
+      "apps/browser/chromium/src/renderer.cc": "e96289b156f47fab209a124062b489cf676fa8cb092c90dfdf01a2b865d47ec5",
+      "apps/browser/chromium/src/main_linux.cc": "0a2014a70869cd01acd94906627b2448321b3405a37493452719a6f850d7be26",
+      "apps/browser/chromium/src/page_automation.js": "b9219856f5df83bf43ded77738c0479cd0f6a789f5b58b1fcb18296f0d38edeb",
+      "apps/browser/chromium/src/page_automation.h": "34d93aa25ac1f624202d6b30139283ad4bc20723b3b34f753841984b9310b588",
+      "apps/browser/chromium/tests/guarded_text_input.py": "e9d5e83da0b59d8087b391644329df8cfed216748fd92dd84d15f388cb90f4f9"
+    },
+    "elapsed_seconds": 58.08663011700264,
+    "host_sha256": "d2850215fff097c286480bf9e87e70542e25a480d77eaa38f398b7a5fe09f1d4"
+  },
+  "focused_tests_log": "test_multiline_paragraph_replacement_is_one_native_history_edit (__main__.GuardedTextInput.test_multiline_paragraph_replacement_is_one_native_history_edit) ... \n  test_multiline_paragraph_replacement_is_one_native_history_edit (__main__.GuardedTextInput.test_multiline_paragraph_replacement_is_one_native_history_edit) (target='notes') ... FAIL\n  test_multiline_paragraph_replacement_is_one_native_history_edit (__main__.GuardedTextInput.test_multiline_paragraph_replacement_is_one_native_history_edit) (target='rich') ... FAIL\ntest_control_characters_never_delete_the_original_selection (__main__.GuardedTextInput.test_control_characters_never_delete_the_original_selection) ... ok\ntest_single_line_kinds_reject_paragraphs_before_page_handlers (__main__.GuardedTextInput.test_single_line_kinds_reject_paragraphs_before_page_handlers) ... ok\n\n======================================================================\nFAIL: test_multiline_paragraph_replacement_is_one_native_history_edit (__main__.GuardedTextInput.test_multiline_paragraph_replacement_is_one_native_history_edit) (target='notes')\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"${BUILD_ROOT}/apps/browser/chromium/tests/guarded_text_input.py\", line 138, in test_multiline_paragraph_replacement_is_one_native_history_edit\n    self.assertEqual(self.main_world('editEvents'), ['insertText'])\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Lists differ: ['insertText', 'insertText', 'insertText', 'insertText'] != ['insertText']\n\nFirst list contains 3 additional elements.\nFirst extra element 1:\n'insertText'\n\n- ['insertText', 'insertText', 'insertText', 'insertText']\n+ ['insertText']\n\n======================================================================\nFAIL: test_multiline_paragraph_replacement_is_one_native_history_edit (__main__.GuardedTextInput.test_multiline_paragraph_replacement_is_one_native_history_edit) (target='rich')\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"${BUILD_ROOT}/apps/browser/chromium/tests/guarded_text_input.py\", line 138, in test_multiline_paragraph_replacement_is_one_native_history_edit\n    self.assertEqual(self.main_world('editEvents'), ['insertText'])\n    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Lists differ: ['insertText', 'insertText', 'insertText', 'insertText'] != ['insertText']\n\nFirst list contains 3 additional elements.\nFirst extra element 1:\n'insertText'\n\n- ['insertText', 'insertText', 'insertText', 'insertText']\n+ ['insertText']\n\n----------------------------------------------------------------------\nRan 3 tests in 6.085s\n\nFAILED (failures=2)\n",
+  "independent_native_text_control": "notes {\"ok\": true, \"events\": [\"insertText\", \"insertText\", \"insertText\", \"insertText\"], \"value\": \"alpha First café.\\n\\nSecond 👋 gamma\", \"rich\": \"alpha beta gamma\", \"html\": \"alpha <b>beta</b> gamma\"}\nundo True alpha beta gamma\nrich {\"ok\": true, \"events\": [\"insertText\", \"insertText\", \"insertText\", \"insertText\"], \"value\": \"alpha beta gamma\", \"rich\": \"alpha First café.\\n\\n\\nSecond 👋 gamma\", \"html\": \"alpha <b>First café.</b><div><br></div><div>Second 👋 gamma</div>\"}\nundo True alpha <b>beta</b> gamma\n",
+  "independent_native_fragment_control": "notes {\"ok\": true, \"events\": [\"\"], \"value\": \"alpha First café.\\n\\nSecond 👋 gamma\", \"rich\": \"alpha beta gamma\", \"html\": \"alpha <b>beta</b> gamma\"}\nundo True alpha beta gamma\nrich {\"ok\": true, \"events\": [\"\"], \"value\": \"alpha beta gamma\", \"rich\": \"alpha First café.\\n\\nSecond 👋 gamma\", \"html\": \"alpha First café.<br><br>Second 👋&nbsp;gamma\"}\nundo True alpha <b>beta</b> gamma\n",
+  "limitations": [
+    "One native text command produces four input notifications for this two-paragraph sample; notification count alone is not final-delivery count.",
+    "The rich editing fixture renders two requested LF as three LF through native insertText.",
+    "Fragment insertion preserves LF but changes the native event inputType and loses inherited bold formatting.",
+    "The guard paragraph test fails; no browser paragraph acceptance is claimed.",
+    "No CEF sandbox flags were weakened. The transient build/test container uses a read-only source mount and no external network; container SELinux labeling was disabled transiently for the owned mount without changing host file labels."
+  ],
+  "primary_sources": [
+    "https://raw.githubusercontent.com/chromium/chromium/main/third_party/blink/renderer/core/editing/commands/typing_command.cc",
+    "https://raw.githubusercontent.com/chromium/chromium/main/third_party/blink/renderer/core/editing/commands/insert_commands.cc"
+  ],
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "0adea11390e797d84e492f5c99fe301f7da97e4a",
+    "original_sha256": "cd670af5dd90eb62a8c3b18eef3b6098d3c70597985461a35e6e3ffaf815547a",
+    "original_path": "docs/architecture/dictation-browser-paragraph-native.json",
+    "normalized_string_fields": [
+      "$.receipt_root",
+      "$.focused_tests_log"
+    ]
+  }
+}

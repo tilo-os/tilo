@@ -8,7 +8,7 @@
 //! - this device's own certificate from the identity;
 //! - the fleet record the identity host keeps (`fleets/<user>.json` in the
 //!   identity directory): every device enrolled and every device removed;
-//! - the home peers enrolled for the user (`home-peers.json` beside the
+//! - the home peers enrolled for the user (`peers/home-peers.json` beside the
 //!   identity keys), each with the certificate it was enrolled under — a
 //!   relay is one of the user's devices exactly when it holds one.
 //!
@@ -61,7 +61,7 @@ impl UserFleet {
         let identity = std::env::var_os("TILO_IDENTITY_ROOT")
             .filter(|root| !root.is_empty())
             .map_or_else(IdentityPaths::default_system, IdentityPaths::under);
-        let identity_dir = xdg_paths::xdg::config_home()
+        let identity_dir = tilo_paths::xdg::config_home()
             .filter(|dir| dir.is_absolute())
             .map(|config| config.join("tilo").join("identity"));
         Self::at(identity, identity_dir)
@@ -100,7 +100,7 @@ impl FleetSource for UserFleet {
             .user_pubkey
             .parent()
             .and_then(Path::parent)
-            .map(|root| root.join("home-peers.json"));
+            .map(tilo_user_identity::home_peer_registry_path);
         if let Some(path) = home_peers
             && let Some(peers) = read_json::<Vec<HomePeer>>(&path)?
         {
@@ -187,8 +187,9 @@ mod tests {
             })
         };
         std::fs::write(&fleet_file, record(Vec::new()).to_string()).unwrap();
+        std::fs::create_dir_all(dir.path().join("system/peers")).unwrap();
         std::fs::write(
-            dir.path().join("system/home-peers.json"),
+            tilo_user_identity::home_peer_registry_path(&dir.path().join("system")),
             serde_json::json!([
                 { "label": "home", "device_cert": cert(&root, [4; 32]) },
                 { "label": "someone's", "device_cert": cert(&other_root, [5; 32]) },

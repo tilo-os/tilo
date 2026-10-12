@@ -20,8 +20,8 @@ use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
 
-use super::{DesktopHandle, DesktopSurface};
-use crate::navigation::{self, Admitted, RouteIds};
+use super::{DesktopHandle, DesktopSurface, route_of};
+use crate::navigation::{self, Admitted};
 
 /// What a host asked of search, taken on the next update pass.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,21 +146,6 @@ fn commands(tree: &DesktopTree) -> Vec<CommandSpec> {
     out
 }
 
-fn route_of(tree: &DesktopTree, tab: u64) -> Option<RouteIds> {
-    tree.workspaces.iter().find_map(|workspace| {
-        workspace.strips.iter().find_map(|strip| {
-            strip.window_groups.iter().find_map(|group| {
-                group.tabs.iter().any(|t| t.id == tab).then_some(RouteIds {
-                    workspace: workspace.id,
-                    strip: strip.id,
-                    group: group.id,
-                    tab,
-                })
-            })
-        })
-    })
-}
-
 impl DesktopSurface {
     /// Open search over what the desktop has open now.
     pub(super) fn open_search(&mut self, doc: &AutoCommit, query: Option<String>) {
@@ -264,7 +249,7 @@ impl DesktopSurface {
         let modifiers = *ctx.modifiers;
         if !self.search.is_open() {
             if is_search_chord(event, modifiers, self.platform) {
-                self.open_search(ctx.state, None);
+                self.open_search(&ctx.state, None);
                 self.shared.borrow_mut().search_open = true;
                 return true;
             }

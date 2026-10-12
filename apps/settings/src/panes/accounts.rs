@@ -14,6 +14,9 @@
 //!   starting a flow that cannot finish.
 //! - **Remove** is explicitly confirmed, then transactionally clears the
 //!   canonical metadata, sealed credential, and local sync-health record.
+//! - **Sync now**, **Pause sync** and **Resume sync** reach a file account's
+//!   mount through the cloud account service (`cloud_control`), offered
+//!   exactly while the service lists the account as mounted.
 //!
 //! ## Live vs. sample
 //!
@@ -25,92 +28,392 @@
 //! Connection checks run asynchronously through bounded, protocol-level
 //! probes. No form draft or credential is written to collaborative state.
 
-use std::collections::HashMap;
-use ui::doc::read_bool;
-use ui::widget::{AppModel, ModelPath};
+use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
-use taffy::{NodeId, TaffyTree};
+use accounts::email::AccountConfig;
 use tracing::warn;
-use ui::theme::Theme;
+use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
-use crate::accounts::{AccountConfig, AccountDirectory, AccountKind, AccountRoot, AccountView};
+use crate::accounts::{AccountDirectory, AccountKind, AccountRoot, AccountView};
+use crate::effects::SettingsEffect;
+use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
+use crate::panes::model::{PaneModel, Shared};
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 use crate::widgets::{
     El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, setting_row,
     value_row,
 };
 
+mod cloud_control;
 mod cloud_signin;
+pub(crate) use cloud_control::CloudMounts;
 pub use cloud_signin::{BrowserOpener, PortalOpener};
+use runtime_fs::cloud::CloudRequest;
 #[cfg(test)]
 mod signin_tests;
 
-/// Key the "Add" button on the Email card writes to open the form.
-pub const ADD_MAIL_KEY: &str = "settings.accounts.add.mail";
-pub const ADD_CALDAV_KEY: &str = "settings.accounts.add.caldav";
-pub const ADD_WEBDAV_KEY: &str = "settings.accounts.add.webdav";
-pub const ADD_NEXTCLOUD_KEY: &str = "settings.accounts.add.nextcloud";
-pub const ADD_GOOGLE_DRIVE_KEY: &str = "settings.accounts.add.google-drive";
-pub const ADD_ONEDRIVE_KEY: &str = "settings.accounts.add.onedrive";
-pub const ADD_DROPBOX_KEY: &str = "settings.accounts.add.dropbox";
-pub const ADD_ICLOUD_DRIVE_KEY: &str = "settings.accounts.add.icloud-drive";
-/// Keys the inline form's Save / Cancel buttons write.
-pub const FORM_SAVE_KEY: &str = "settings.accounts.form.save";
-pub const FORM_CANCEL_KEY: &str = "settings.accounts.form.cancel";
-pub const REAUTH_SAVE_KEY: &str = "settings.accounts.reauth.save";
-pub const REAUTH_CANCEL_KEY: &str = "settings.accounts.reauth.cancel";
-pub const REMOVE_CONFIRM_KEY: &str = "settings.accounts.remove.confirm";
-pub const REMOVE_CANCEL_KEY: &str = "settings.accounts.remove.cancel";
-
-/// Per-account Remove key.
-fn remove_key(id: &str) -> String {
-    format!("settings.accounts.remove.{id}")
+/// Adding, editing, checking and removing the person's external accounts.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum AccountsEffect {
+    /// Show or hide public metadata in the browser identity picker.
+    #[effect(row, device_only, idempotent)]
+    SetBrowserIdentityEnabled { account: String, enabled: bool },
+    /// Remove browser picker metadata; this does not revoke sign-in or access.
+    #[effect(row, device_only, destructive)]
+    RemoveBrowserIdentity { account: String },
+    /// Publish the signed-in Tilo identity's public browser connection metadata.
+    #[effect(device_only, idempotent)]
+    PublishBrowserIdentity {
+        #[param("Canonical HTTPS origin of the existing Tilo host")]
+        origin: String,
+    },
+    /// Add an account: mail, caldav, webdav, nextcloud, google-drive,
+    /// onedrive, dropbox or icloud-drive.
+    #[effect(view)]
+    AddAccount {
+        #[param("The kind of account, by its slug")]
+        kind: String,
+    },
+    /// Edit an account's details.
+    #[effect(view, row)]
+    EditAccount {
+        #[param("The account's id")]
+        account: String,
+    },
+    /// Sign an account in again.
+    #[effect(view, row, label = "Sign in again")]
+    SignInAgain {
+        #[param("The account's id")]
+        account: String,
+    },
+    /// Check and save the account form, or take the sign-in's next step.
+    #[effect(label = "Save account")]
+    SaveAccountForm,
+    /// Close the account form or sign-in without saving.
+    #[effect(view)]
+    CancelAccountForm,
+    /// Check and save the password typed to sign an account in again.
+    #[effect(label = "Save password")]
+    SaveNewPassword,
+    /// Close the sign-in-again form without saving.
+    #[effect(view)]
+    CancelNewPassword,
+    /// Check that an account's server accepts its saved sign-in.
+    #[effect(job, returns, row, idempotent, label = "Check connection")]
+    TestAccount {
+        #[param("The account's id")]
+        account: String,
+    },
+    /// Remove an account, its saved credential and its sync record.
+    #[effect(row, destructive, label = "Remove account")]
+    RemoveAccount {
+        #[param("The account's id")]
+        account: String,
+    },
+    /// Sync a mounted file account now; one that could not start is tried
+    /// again.
+    #[effect(row, job, device_only, idempotent, label = "Sync now")]
+    SyncNow {
+        #[param("The account's id")]
+        account: String,
+    },
+    /// Pause a mounted file account's background sync and uploads.
+    #[effect(row, job, device_only, idempotent, label = "Pause sync")]
+    PauseSync {
+        #[param("The account's id")]
+        account: String,
+    },
+    /// Resume a paused file account's sync.
+    #[effect(row, job, device_only, idempotent, label = "Resume sync")]
+    ResumeSync {
+        #[param("The account's id")]
+        account: String,
+    },
 }
 
-pub(crate) fn reauth_key(id: &str) -> String {
-    format!("settings.accounts.reauth.{id}")
+/// Answer `effect` on the area's model; a connection check runs on a
+/// worker.
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: AccountsEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    match effect {
+        AccountsEffect::PublishBrowserIdentity { origin } => {
+            app.publish_browser_identity(origin)?;
+            return Ok(Effected::done());
+        }
+        AccountsEffect::SetBrowserIdentityEnabled { account, enabled } => {
+            app.set_browser_identity_enabled(account, enabled)?;
+            return Ok(Effected::done());
+        }
+        AccountsEffect::RemoveBrowserIdentity { account } => {
+            app.remove_browser_identity(account)?;
+            return Ok(Effected::done());
+        }
+        _ => {}
+    }
+    let shared = app.accounts().model();
+    let mut model = shared.borrow_mut();
+    match effect {
+        AccountsEffect::PublishBrowserIdentity { .. }
+        | AccountsEffect::SetBrowserIdentityEnabled { .. }
+        | AccountsEffect::RemoveBrowserIdentity { .. } => {
+            return Err("Identity publication was not handled".into());
+        }
+        AccountsEffect::AddAccount { kind } => {
+            let kind =
+                AccountKind::from_slug(&kind).ok_or_else(|| "unknown account kind".to_string())?;
+            model.command(AccountViewCommand::Add(kind));
+        }
+        AccountsEffect::EditAccount { account } => model.command(AccountViewCommand::Edit(account)),
+        AccountsEffect::SignInAgain { account } => {
+            model.command(AccountViewCommand::Reauthenticate(account));
+        }
+        AccountsEffect::SaveAccountForm => model.command(AccountViewCommand::Submit),
+        AccountsEffect::CancelAccountForm => model.command(AccountViewCommand::Cancel),
+        AccountsEffect::SaveNewPassword => {
+            model.command(AccountViewCommand::SubmitReauthentication);
+        }
+        AccountsEffect::CancelNewPassword => {
+            model.command(AccountViewCommand::CancelReauthentication);
+        }
+        AccountsEffect::RemoveAccount { account } => model.remove(&account)?,
+        AccountsEffect::SyncNow { account } => {
+            return cloud(model, CloudRequest::SyncNow { account }, cx);
+        }
+        AccountsEffect::PauseSync { account } => {
+            return cloud(model, CloudRequest::Pause { account }, cx);
+        }
+        AccountsEffect::ResumeSync { account } => {
+            return cloud(model, CloudRequest::Resume { account }, cx);
+        }
+        AccountsEffect::TestAccount { account } => {
+            let check = model.connection_check(&account)?;
+            drop(model);
+            return Ok(cx.thread(
+                move |_| check(),
+                |_: &mut SettingsApp, outcome: Result<String, String>, _| {
+                    complete_account_check(outcome)
+                },
+            ));
+        }
+    }
+    Ok(Effected::done())
 }
 
-fn edit_key(id: &str) -> String {
-    format!("settings.accounts.edit.{id}")
+fn complete_account_check(outcome: Result<String, String>) -> EffectAnswer {
+    outcome.map(Effected::value)
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "the resource action binding mirrors the framework's distinct address, label, operation, and destructive fields"
-)]
-fn account_action_button(
-    control_id: &str,
-    label: &str,
-    resource_id: String,
-    resource_label: String,
-    action_id: &str,
-    kind: tilo_actions::OperationKind,
-    operation: crate::actions::AccountOperation,
-    destructive: bool,
-) -> Button {
-    let button = Button::new(control_id, label, None);
-    match crate::actions::account_operation_binding(
-        resource_id,
-        resource_label,
-        action_id,
-        label,
-        kind,
-        &operation,
-        destructive,
-    ) {
-        Some(binding) => button.on_action(binding),
-        None => button,
+/// Send `request` to the cloud account service on a worker; the pane asks
+/// the service for its mounts again once it answered.
+fn cloud(
+    model: std::cell::RefMut<'_, AccountsPane>,
+    request: CloudRequest,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let send = model.cloud.request(request)?;
+    drop(model);
+    Ok(cx.thread(
+        move |_| send(),
+        |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+            app.accounts().model().borrow_mut().cloud.invalidate();
+            outcome.map(|()| Effected::done())
+        },
+    ))
+}
+
+/// What the External Accounts area keeps for the window: the model, read
+/// when first needed.
+pub struct AccountsArea {
+    cx: PaneCx,
+    model: std::cell::OnceCell<Shared<AccountsPane>>,
+    account_root: Option<AccountRoot>,
+    /// The credential vault, its custody and the sync statuses, opened off
+    /// the UI thread after the window's first frame ([`Self::start_read`]).
+    read: crate::device_read::DeviceRead<AccountsRead>,
+}
+
+/// What the External Accounts area opens of the device: the credential
+/// vault (a Secret Service round trip for its custody and key), the
+/// custodian (an HTTP client for iCloud sign-in) and the accounts' sync
+/// statuses. Opened off the UI thread; the person's directory, which a
+/// host's record may hold, is read on the UI thread
+/// ([`AccountsPane::from_read`]).
+pub(crate) struct AccountsRead {
+    statuses: accounts::AccountSyncStatusStore,
+    vault: accounts::SecretVault,
+    custodian: account_custody::Custodian,
+}
+
+impl AccountsRead {
+    /// Open the stores under `root`.
+    fn of(root: &AccountRoot) -> Self {
+        Self {
+            statuses: root.statuses(),
+            vault: root.vault(),
+            custodian: root.custodian(),
+        }
+    }
+
+    /// Open the stores under the config root `explicit`, or the user's: the
+    /// same stores as the root's, whose person's record none of them read.
+    fn under(explicit: Option<std::path::PathBuf>) -> Self {
+        Self::of(&explicit.map_or_else(AccountRoot::live, AccountRoot::at))
     }
 }
 
-fn pane_label() -> String {
-    t("settings-category-external-accounts")
+impl AccountsArea {
+    pub fn new(cx: &PaneCx) -> Self {
+        Self {
+            cx: cx.clone(),
+            model: std::cell::OnceCell::new(),
+            account_root: None,
+            read: crate::device_read::DeviceRead::default(),
+        }
+    }
+
+    /// Open the vault, the custodian and the statuses off the UI thread;
+    /// `false` when they have been opened or are being opened, or for a
+    /// screenshot, which opens none of them.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() || self.cx.scene().is_some() {
+            return false;
+        }
+        let explicit = self
+            .account_root
+            .as_ref()
+            .and_then(|root| root.explicit().map(std::path::Path::to_path_buf));
+        self.read.start(move || AccountsRead::under(explicit))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
+    }
+
+    pub(crate) fn with_account_root(mut self, root: AccountRoot) -> Self {
+        self.account_root = Some(root);
+        self
+    }
+
+    /// The model over the person's accounts; a screenshot shows the sample
+    /// accounts and the form its scene asks for.
+    pub fn model(&self) -> &Shared<AccountsPane> {
+        self.model.get_or_init(|| {
+            let scene = self.cx.scene();
+            let root = scene
+                .and_then(|scene| scene.account_root.clone())
+                .map_or_else(
+                    || self.account_root.clone().unwrap_or_else(AccountRoot::live),
+                    AccountRoot::at,
+                );
+            let read = self.read.take();
+            let mut model = if scene.is_some() {
+                AccountsPane::from_dir_in(root, crate::accounts::sample_directory(), false)
+            } else if let Some(read) = read
+                && !root.mutation_pending()
+            {
+                let dir = AccountDirectory::load_in(&root);
+                AccountsPane::from_read(root, dir, read)
+            } else {
+                // Opened here: nothing was read, or an interrupted mutation
+                // is recovered first, which may rewrite the vault read.
+                AccountsPane::in_root(root)
+            };
+            if let Some(kind) = scene.and_then(|scene| scene.account_form) {
+                model = model.with_open_form_for_shot(kind);
+            }
+            Rc::new(std::cell::RefCell::new(model.with_host(self.cx.clone())))
+        })
+    }
+
+    /// Take in finished checks and sign-in steps, if the model exists.
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get() {
+            let _ = model.borrow_mut().poll();
+        }
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
+    }
+
+    /// One row per account, offering what can be done to it.
+    pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        let model = self.model().borrow();
+        if model.is_sample {
+            return Vec::new();
+        }
+        let offer = |effect: AccountsEffect| SettingsEffect::from(effect).bound();
+        let mut published: Vec<LiveRow> = AccountKind::ALL
+            .into_iter()
+            .flat_map(|kind| model.dir.views_of(kind))
+            .map(|view| {
+                let id = view.id.clone();
+                let mut row = LiveRow::new(
+                    format!("settings.account:{id}"),
+                    "settings.account",
+                    view.label.clone(),
+                );
+                if !view.kind.is_cloud_storage() {
+                    row = row.operation(offer(AccountsEffect::EditAccount {
+                        account: id.clone(),
+                    }));
+                }
+                if let Some(mount) = model.cloud.mount(&id) {
+                    row = row.operation(offer(AccountsEffect::SyncNow {
+                        account: id.clone(),
+                    }));
+                    row = row.operation(offer(if mount.paused {
+                        AccountsEffect::ResumeSync {
+                            account: id.clone(),
+                        }
+                    } else {
+                        AccountsEffect::PauseSync {
+                            account: id.clone(),
+                        }
+                    }));
+                }
+                row.operation(offer(AccountsEffect::SignInAgain {
+                    account: id.clone(),
+                }))
+                .operation(offer(AccountsEffect::TestAccount {
+                    account: id.clone(),
+                }))
+                .operation(offer(AccountsEffect::RemoveAccount { account: id }))
+            })
+            .collect();
+        for account in model
+            .account_root
+            .store()
+            .list(&accounts::person::TILO_IDENTITY_TYPE.into())
+        {
+            let id = account.id.as_str().to_owned();
+            published.push(
+                LiveRow::new(
+                    format!("settings.browser-identity:{id}"),
+                    "settings.browser-identity",
+                    account.display_name.clone(),
+                )
+                .operation(offer(AccountsEffect::SetBrowserIdentityEnabled {
+                    account: id.clone(),
+                    enabled: !account.enabled,
+                }))
+                .operation(offer(AccountsEffect::RemoveBrowserIdentity { account: id })),
+            );
+        }
+        published
+    }
 }
 
 fn kind_shown(kind: AccountKind) -> String {
@@ -138,7 +441,7 @@ fn account_status(
     } else {
         match health {
             Some(accounts::AccountSyncHealth::Syncing) => {
-                (t("accounts-status-syncing"), StatusTone::Accent)
+                (t("accounts-status-syncing"), StatusTone::Info)
             }
             Some(accounts::AccountSyncHealth::Healthy) => {
                 (t("accounts-status-healthy"), StatusTone::Success)
@@ -211,13 +514,22 @@ impl ProbeJob {
     }
 }
 
-/// External accounts pane.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the flags are independent form and asynchronous-operation latches, not a single state machine"
-)]
+impl Default for AccountsPane {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The person's external accounts as the pane shows them, with the forms
+/// and sign-ins in progress.
 pub struct AccountsPane {
+    /// The window this model serves, for binding its controls; none for a
+    /// model a test drives directly.
+    cx: Option<PaneCx>,
     account_root: AccountRoot,
+    /// The revision of the person's accounts last shown, so an edit from
+    /// another window or device is shown too.
+    seen_accounts: Option<u64>,
     dir: AccountDirectory,
     sync_statuses: accounts::AccountSyncStatusStore,
     vault: accounts::SecretVault,
@@ -233,52 +545,49 @@ pub struct AccountsPane {
     form_server: ui::LocalState<String>,
     reauth_password: ui::LocalState<String>,
     reauth_error: Option<String>,
-    commands: ui::LocalState<Option<AccountViewCommand>>,
-    form_submit: bool,
-    form_cancel: bool,
-    reauth_submit: bool,
-    reauth_cancel: bool,
     reauth_id: Option<String>,
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     form_probe: Option<ProbeJob>,
     form_candidate: Option<AccountDraft>,
     reauth_probe: Option<ProbeJob>,
     reauth_candidate: Option<(accounts::AccountId, accounts::Secret)>,
-    pending_remove: Option<(AccountKind, String)>,
     /// A running browser or Apple ID sign-in.
     sign_in: Option<cloud_signin::SignInFlow>,
     custodian: account_custody::Custodian,
     opener: std::sync::Arc<dyn BrowserOpener>,
-    /// Ids we've already removed this session, so a stale key edge doesn't
-    /// try to remove twice.
-    removed: Vec<String>,
-    structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
-}
-
-impl Default for AccountsPane {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// The file accounts the cloud service has mounted.
+    cloud: CloudMounts,
+    changed: bool,
 }
 
 impl AccountsPane {
+    /// The live pane over the person's account stores.
+    #[must_use]
     pub fn new() -> Self {
         Self::in_root(AccountRoot::live())
     }
 
     /// The live pane over the account stores under `account_root`.
     pub fn in_root(account_root: AccountRoot) -> Self {
+        // Loading the directory first recovers an interrupted mutation,
+        // which may rewrite the vault the read then opens.
+        let dir = AccountDirectory::load_in(&account_root);
+        let read = AccountsRead::of(&account_root);
+        Self::from_read(account_root, dir, read)
+    }
+
+    /// The live pane over the account stores under `account_root`, showing
+    /// `dir` and holding what `read` opened.
+    fn from_read(account_root: AccountRoot, dir: AccountDirectory, read: AccountsRead) -> Self {
         // The live pane shows the *real* stores — empty until the user adds an
         // account. It never substitutes illustrative sample accounts: showing
         // fabricated `ada@example.com` rows would present made-up data on an
         // empty state. The deterministic `--shots`/tests use
         // `from_dir(sample_directory(), true)` for a rich still instead.
         Self {
-            dir: AccountDirectory::load_in(&account_root),
-            sync_statuses: account_root.statuses(),
-            vault: account_root.vault(),
+            dir,
+            sync_statuses: read.statuses,
+            vault: read.vault,
             is_sample: false,
             form_kind: None,
             form_error: None,
@@ -290,26 +599,20 @@ impl AccountsPane {
             form_server: ui::LocalState::new(String::new()),
             reauth_password: ui::LocalState::new(String::new()),
             reauth_error: None,
-            commands: ui::LocalState::new(None),
-            form_submit: false,
-            form_cancel: false,
-            reauth_submit: false,
-            reauth_cancel: false,
             reauth_id: None,
             account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
             form_probe: None,
             form_candidate: None,
             reauth_probe: None,
             reauth_candidate: None,
-            pending_remove: None,
             sign_in: None,
-            custodian: account_root.custodian(),
+            custodian: read.custodian,
             opener: std::sync::Arc::new(PortalOpener),
-            removed: Vec::new(),
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            cloud: CloudMounts::live(),
+            changed: false,
+            cx: None,
             account_root,
+            seen_accounts: None,
         }
     }
 
@@ -337,27 +640,29 @@ impl AccountsPane {
             form_server: ui::LocalState::new(String::new()),
             reauth_password: ui::LocalState::new(String::new()),
             reauth_error: None,
-            commands: ui::LocalState::new(None),
-            form_submit: false,
-            form_cancel: false,
-            reauth_submit: false,
-            reauth_cancel: false,
             reauth_id: None,
             account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
             form_probe: None,
             form_candidate: None,
             reauth_probe: None,
             reauth_candidate: None,
-            pending_remove: None,
             sign_in: None,
             custodian: account_root.custodian(),
             opener: std::sync::Arc::new(PortalOpener),
-            removed: Vec::new(),
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            cloud: CloudMounts::at(None),
+            changed: false,
+            cx: None,
             account_root,
+            seen_accounts: None,
         }
+    }
+
+    /// Know the cloud service's mounts from `cloud` (tests).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_cloud_mounts(mut self, cloud: CloudMounts) -> Self {
+        self.cloud = cloud;
+        self
     }
 
     pub fn is_sample(&self) -> bool {
@@ -388,8 +693,8 @@ impl AccountsPane {
     }
 
     #[doc(hidden)]
-    pub fn submit_form_for_test(&self) {
-        self.commands.set(Some(AccountViewCommand::Submit));
+    pub fn submit_form_for_test(&mut self) {
+        self.command(AccountViewCommand::Submit);
     }
 
     /// Drive the same nonblocking sync polling the live host uses until the
@@ -397,14 +702,10 @@ impl AccountsPane {
     /// Bounded by the probe's production deadline; unlike a fixed number of
     /// scheduler yields this remains reliable when the test suite is busy.
     #[doc(hidden)]
-    pub fn finish_form_submission_for_test(
-        &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-    ) -> bool {
+    pub fn finish_form_submission_for_test(&mut self) -> bool {
         let deadline = ui::time::now() + ProbeJob::DEADLINE;
         while self.form_open() && ui::time::now() < deadline {
-            self.sync(state, root);
+            let _ = self.poll();
             if self.form_open() {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -412,13 +713,19 @@ impl AccountsPane {
         !self.form_open()
     }
 
+    /// The model serving `cx`'s window: its controls invoke the effects.
     #[must_use]
-    pub fn with_command_state(
-        mut self,
-        commands: &ui::LocalState<Option<AccountViewCommand>>,
-    ) -> Self {
-        self.commands = commands.clone();
+    pub(crate) fn with_host(mut self, cx: PaneCx) -> Self {
+        self.cx = Some(cx);
         self
+    }
+
+    /// `button`, invoking `effect` in the window this model serves.
+    fn bound(&self, button: Button, effect: AccountsEffect) -> Button {
+        match &self.cx {
+            Some(cx) => cx.bind_invocation(button, effect),
+            None => button,
+        }
     }
 
     #[must_use]
@@ -509,7 +816,7 @@ impl AccountsPane {
             self.custodian.clone(),
             std::sync::Arc::clone(&self.opener),
         ));
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
     fn close_sign_in(&mut self) {
@@ -517,7 +824,7 @@ impl AccountsPane {
             flow.cancel();
         }
         self.sign_in = None;
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
     fn poll_sign_in(&mut self) {
@@ -526,7 +833,7 @@ impl AccountsPane {
         };
         let (completed, changed) = flow.poll();
         if changed {
-            self.structure_dirty = true;
+            self.changed = true;
         }
         let Some(completed) = completed else {
             return;
@@ -550,7 +857,7 @@ impl AccountsPane {
                 }
             }
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
     /// Persist a completed sign-in: the sealed grant first, then the
@@ -673,13 +980,12 @@ impl AccountsPane {
         self.form_account_id = Some(view.id);
         self.form_error = None;
         self.form_password.set(String::new());
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
-    fn handle_local_command(&mut self) {
-        let command = self.commands.with(Clone::clone);
-        self.commands.set(None);
-        match command {
+    /// Take `command`, as the pane's buttons and their effects ask.
+    pub fn command(&mut self, command: AccountViewCommand) {
+        match Some(command) {
             Some(AccountViewCommand::Add(kind)) if kind.signs_in() => {
                 self.open_sign_in(kind, None);
             }
@@ -690,7 +996,7 @@ impl AccountsPane {
                 self.form_error = None;
                 self.form_password.set(String::new());
                 self.clear_form_fields();
-                self.structure_dirty = true;
+                self.changed = true;
             }
             Some(AccountViewCommand::Edit(id)) => self.open_edit(&id),
             Some(AccountViewCommand::Reauthenticate(id)) => self.open_reauthentication(id),
@@ -698,13 +1004,13 @@ impl AccountsPane {
                 if let Some(flow) = self.sign_in.as_mut() {
                     flow.submit();
                 }
-                self.structure_dirty = true;
+                self.changed = true;
             }
             Some(AccountViewCommand::Cancel) if self.sign_in.is_some() => self.close_sign_in(),
-            Some(AccountViewCommand::Submit) => self.form_submit = true,
-            Some(AccountViewCommand::Cancel) => self.form_cancel = true,
-            Some(AccountViewCommand::SubmitReauthentication) => self.reauth_submit = true,
-            Some(AccountViewCommand::CancelReauthentication) => self.reauth_cancel = true,
+            Some(AccountViewCommand::Submit) => self.submit_form(),
+            Some(AccountViewCommand::Cancel) => self.cancel_form(),
+            Some(AccountViewCommand::SubmitReauthentication) => self.submit_reauth(),
+            Some(AccountViewCommand::CancelReauthentication) => self.cancel_reauth(),
             None => {}
         }
     }
@@ -728,7 +1034,7 @@ impl AccountsPane {
         self.reauth_id = Some(id);
         self.reauth_error = None;
         self.reauth_password.set(String::new());
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
     fn clear_form_fields(&self) {
@@ -739,11 +1045,13 @@ impl AccountsPane {
         self.form_password.set(String::new());
     }
 
-    fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
+    fn build_composition(&self) -> Box<dyn Widget> {
         let mut panel: Vec<El> = Vec::new();
 
         let mut intro: Vec<El> = Vec::new();
-        intro.push(Box::new(Text::new(&t("accounts-intro")).with_size(12.0)));
+        intro.push(Box::new(
+            Text::new(&t("accounts-intro")).with_role(ui::TextRole::Caption),
+        ));
         if self.vault.custody() == accounts::SecretCustody::LocalFile {
             intro.push(caption(&t("accounts-vault-local")));
         }
@@ -758,131 +1066,115 @@ impl AccountsPane {
         let mut introduction = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(8.0);
+            .with_gap(ui::tokens::Spacing::BASE.s2);
         for line in intro {
             introduction = introduction.push(line);
         }
         panel.push(Box::new(introduction));
 
         if let Some(flow) = &self.sign_in {
-            panel.push(flow.card());
+            panel.push(flow.card(&|button, effect| self.bound(button, effect)));
         } else if let Some(kind) = self.form_kind {
             panel.push(self.account_form(kind));
         }
         if let Some(id) = &self.reauth_id {
             panel.push(self.reauth_form(id));
         }
-        if let Some((kind, id)) = &self.pending_remove
-            && let Some(view) = self
-                .dir
-                .views_of(*kind)
-                .into_iter()
-                .find(|view| &view.id == id)
-        {
-            let remove = t("accounts-remove-confirm");
-            let cancel = t("accounts-cancel");
-            panel.push(card(
-                &t("accounts-remove-title"),
-                rows(vec![
-                    caption(&t_args(
-                        "accounts-remove-body",
-                        &[("name", view.label.as_str().into())],
-                    )),
-                    Box::new(
-                        Row::new()
-                            .push(Box::new(
-                                Button::new(
-                                    "settings.accounts.remove.confirm",
-                                    &remove,
-                                    Some(REMOVE_CONFIRM_KEY),
-                                )
-                                .content_sized(),
-                            ))
-                            .push(Box::new(
-                                Button::new(
-                                    "settings.accounts.remove.cancel",
-                                    &cancel,
-                                    Some(REMOVE_CANCEL_KEY),
-                                )
-                                .content_sized(),
-                            ))
-                            .push(Box::new(Spacer::new())),
-                    ),
-                ]),
-            ));
-        }
-
-        panel.push(self.mail_card(theme));
-        panel.push(self.kind_card(AccountKind::CalDav, theme));
-        panel.push(self.kind_card(AccountKind::WebDav, theme));
-        panel.push(self.kind_card(AccountKind::Nextcloud, theme));
+        panel.push(self.browser_identity_card());
+        panel.push(self.mail_card());
+        panel.push(self.kind_card(AccountKind::CalDav));
+        panel.push(self.kind_card(AccountKind::WebDav));
+        panel.push(self.kind_card(AccountKind::Nextcloud));
         for kind in [
             AccountKind::GoogleDrive,
             AccountKind::OneDrive,
             AccountKind::Dropbox,
             AccountKind::ICloudDrive,
         ] {
-            panel.push(self.kind_card(kind, theme));
+            panel.push(self.kind_card(kind));
         }
 
         crate::widgets::cards(panel)
     }
 
-    fn mail_card(&self, theme: &Theme) -> El {
+    fn browser_identity_card(&self) -> El {
+        let store = self.account_root.store();
+        let mut body = vec![caption(&t("accounts-browser-identity-about"))];
+        for account in store.list(&accounts::person::TILO_IDENTITY_TYPE.into()) {
+            let id = account.id.as_str().to_owned();
+            let toggle = if account.enabled {
+                "accounts-browser-identity-hide"
+            } else {
+                "accounts-browser-identity-show"
+            };
+            body.push(setting_row(
+                &account.display_name,
+                Box::new(self.bound(
+                    Button::new(
+                        &format!("settings.browser-identity.toggle:{id}"),
+                        &t(toggle),
+                    ),
+                    AccountsEffect::SetBrowserIdentityEnabled {
+                        account: id.clone(),
+                        enabled: !account.enabled,
+                    },
+                )),
+            ));
+            if let Some(origin) = account
+                .config
+                .get("origin")
+                .and_then(serde_json::Value::as_str)
+            {
+                body.push(caption(origin));
+            }
+            body.push(Box::new(self.bound(
+                Button::new(
+                    &format!("settings.browser-identity.remove:{id}"),
+                    &t("accounts-browser-identity-remove"),
+                ),
+                AccountsEffect::RemoveBrowserIdentity { account: id },
+            )));
+        }
+        card(&t("accounts-browser-identity-title"), rows(body))
+    }
+
+    fn mail_card(&self) -> El {
         let title = kind_shown(AccountKind::Mail);
         let add = t("accounts-add");
-        let add_btn: El = Box::new(
-            account_action_button(
-                "settings.accounts.add.mail",
-                &add,
-                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                pane_label(),
-                "add-mail",
-                tilo_actions::OperationKind::View,
-                crate::actions::AccountOperation::Add {
-                    kind: "mail".into(),
-                },
-                false,
-            )
-            .content_sized(),
-        );
+        let add_btn: El = Box::new(self.bound(
+            Button::new("settings.accounts.add.mail", &add),
+            AccountsEffect::AddAccount {
+                kind: "mail".into(),
+            },
+        ));
         let views = self.dir.views_of(AccountKind::Mail);
-        let body = self.kind_body(AccountKind::Mail, &views, theme);
+        let body = self.kind_body(AccountKind::Mail, &views);
         card_with_action(&title, add_btn, body)
     }
 
-    fn kind_card(&self, kind: AccountKind, theme: &Theme) -> El {
+    fn kind_card(&self, kind: AccountKind) -> El {
         let views = self.dir.views_of(kind);
         let add = t("accounts-add");
         card_with_action(
             &kind_shown(kind),
-            Box::new(
-                account_action_button(
-                    &format!("settings.accounts.add.{}", kind.slug()),
-                    &add,
-                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                    pane_label(),
-                    &format!("add-{}", kind.slug()),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Add {
-                        kind: kind.slug().into(),
-                    },
-                    false,
-                )
-                .content_sized(),
-            ),
-            self.kind_body(kind, &views, theme),
+            Box::new(self.bound(
+                Button::new(&format!("settings.accounts.add.{}", kind.slug()), &add),
+                AccountsEffect::AddAccount {
+                    kind: kind.slug().into(),
+                },
+            )),
+            self.kind_body(kind, &views),
         )
     }
 
-    fn kind_body(&self, kind: AccountKind, views: &[AccountView], theme: &Theme) -> El {
+    fn kind_body(&self, kind: AccountKind, views: &[AccountView]) -> El {
         let mut body: Vec<El> = if views.is_empty() {
             vec![caption(&t_args(
                 "accounts-kind-empty",
                 &[("kind", kind_shown(kind).into())],
             ))]
         } else {
-            views.iter().map(|v| self.account_row(v, theme)).collect()
+            views.iter().map(|v| self.account_row(v)).collect()
         };
         if kind.is_cloud_storage()
             && let Some(reason) = cloud_signin::unavailable_reason(kind, &self.custodian)
@@ -903,20 +1195,27 @@ impl AccountsPane {
         clippy::too_many_lines,
         reason = "the full account-row action hierarchy is kept together for auditability"
     )]
-    fn account_row(&self, view: &AccountView, _theme: &Theme) -> El {
+    fn account_row(&self, view: &AccountView) -> El {
         let id = accounts::AccountId::from(view.id.clone());
         let runtime = self.sync_statuses.get(&id);
-        let (status, status_tone) = account_status(
-            self.is_sample,
-            view.enabled,
-            runtime.map(|status| status.health),
-        );
+        let mount = self.cloud.mount(&view.id);
+        let (status, status_tone) = if mount.is_some_and(|mount| mount.paused) {
+            (t("accounts-status-paused"), StatusTone::Neutral)
+        } else {
+            account_status(
+                self.is_sample,
+                view.enabled,
+                runtime.map(|status| status.health),
+            )
+        };
 
         // Keep identity and health together; maintenance actions get their own
         // row so narrow layouts remain legible and touch targets never crush
         // the connection summary.
         let mut top = Row::new()
-            .push(Box::new(Text::new(&view.label).with_size(13.0)))
+            .push(Box::new(
+                Text::new(&view.label).with_role(ui::TextRole::Body),
+            ))
             .push(Box::new(Spacer::new()));
         if view.kind.best_effort() {
             top = top.push(semantic_status_pill(
@@ -930,7 +1229,11 @@ impl AccountsPane {
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(top))
-            .push(Box::new(Text::new(&view.summary).with_size(11.0).dimmed()));
+            .push(Box::new(
+                Text::new(&view.summary)
+                    .with_role(ui::TextRole::Caption)
+                    .dimmed(),
+            ));
         if !self.is_sample {
             let sync_line = runtime.map_or_else(
                 || t("accounts-sync-none"),
@@ -947,8 +1250,11 @@ impl AccountsPane {
                     }
                 },
             );
-            column = column.push(Box::new(Text::new(&sync_line).with_size(11.0).dimmed()));
-            let account_resource = format!("settings.account:{}", view.id);
+            column = column.push(Box::new(
+                Text::new(&sync_line)
+                    .with_role(ui::TextRole::Caption)
+                    .dimmed(),
+            ));
             let needs_sign_in = runtime.is_some_and(|status| {
                 status.health == accounts::AccountSyncHealth::NeedsAuthentication
             });
@@ -966,77 +1272,84 @@ impl AccountsPane {
             let remove = t("accounts-remove");
             let mut primary_actions = Row::new();
             if !view.kind.is_cloud_storage() {
-                primary_actions = primary_actions.push(Box::new(
-                    account_action_button(
-                        &format!("settings.accounts.edit.{}", view.id),
-                        &edit,
-                        account_resource.clone(),
-                        view.label.clone(),
-                        "edit",
-                        tilo_actions::OperationKind::View,
-                        crate::actions::AccountOperation::Edit {
-                            id: view.id.clone(),
-                        },
-                        false,
-                    )
-                    .content_sized(),
-                ));
+                primary_actions = primary_actions.push(Box::new(self.bound(
+                    Button::new(&format!("settings.accounts.edit.{}", view.id), &edit),
+                    AccountsEffect::EditAccount {
+                        account: view.id.clone(),
+                    },
+                )));
             }
             let primary_actions = primary_actions
-                .push(Box::new(
-                    account_action_button(
+                .push(Box::new(self.bound(
+                    Button::new(
                         &format!("settings.accounts.reauth.{}", view.id),
                         &reauth_label,
-                        account_resource.clone(),
-                        view.label.clone(),
-                        "reauthenticate",
-                        tilo_actions::OperationKind::View,
-                        crate::actions::AccountOperation::Reauthenticate {
-                            id: view.id.clone(),
-                        },
-                        false,
-                    )
-                    .content_sized(),
-                ))
+                    ),
+                    AccountsEffect::SignInAgain {
+                        account: view.id.clone(),
+                    },
+                )))
                 .push(Box::new(Spacer::new()));
             let secondary_actions = Row::new()
-                .push(Box::new(
-                    account_action_button(
-                        &format!("settings.accounts.test.{}", view.id),
-                        &check,
-                        account_resource.clone(),
-                        view.label.clone(),
-                        "test",
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::AccountOperation::Test {
-                            id: view.id.clone(),
-                        },
-                        false,
-                    )
-                    .content_sized(),
-                ))
+                .push(Box::new(self.bound(
+                    Button::new(&format!("settings.accounts.test.{}", view.id), &check),
+                    AccountsEffect::TestAccount {
+                        account: view.id.clone(),
+                    },
+                )))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
-                    account_action_button(
-                        &format!("settings.accounts.remove.{}", view.id),
-                        &remove,
-                        account_resource,
-                        view.label.clone(),
-                        "remove",
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::AccountOperation::Remove {
-                            id: view.id.clone(),
+                    self.bound(
+                        Button::new(&format!("settings.accounts.remove.{}", view.id), &remove)
+                            .role(ui::widget::ButtonRole::Destructive),
+                        AccountsEffect::RemoveAccount {
+                            account: view.id.clone(),
                         },
-                        true,
-                    )
-                    .danger()
-                    .content_sized(),
+                    ),
                 ));
             column = column
                 .push(Box::new(primary_actions))
                 .push(Box::new(secondary_actions));
+            if let Some(mount) = mount {
+                column = column.push(Box::new(self.sync_actions(&view.id, mount.paused)));
+            }
         }
         Box::new(column)
+    }
+
+    /// Sync now, and pause or resume, for a mounted file account.
+    fn sync_actions(&self, id: &str, paused: bool) -> Row {
+        let (toggle_id, toggle_label, toggle) = if paused {
+            (
+                format!("settings.accounts.resume-sync.{id}"),
+                t("accounts-resume-sync"),
+                AccountsEffect::ResumeSync {
+                    account: id.to_owned(),
+                },
+            )
+        } else {
+            (
+                format!("settings.accounts.pause-sync.{id}"),
+                t("accounts-pause-sync"),
+                AccountsEffect::PauseSync {
+                    account: id.to_owned(),
+                },
+            )
+        };
+        Row::new()
+            .push(Box::new(self.bound(
+                Button::new(
+                    &format!("settings.accounts.sync-now.{id}"),
+                    &t("accounts-sync-now"),
+                ),
+                AccountsEffect::SyncNow {
+                    account: id.to_owned(),
+                },
+            )))
+            .push(Box::new(
+                self.bound(Button::new(&toggle_id, &toggle_label), toggle),
+            ))
+            .push(Box::new(Spacer::new()))
     }
 
     /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
@@ -1080,8 +1393,7 @@ impl AccountsPane {
             .with_kind(TextInputKind::Name)
             .with_id("accounts.form.name")
             .with_accessible_name(&display_name)
-            .with_placeholder(&display_name)
-            .with_font_size(13.0);
+            .with_placeholder(&display_name);
         let identity = TextInput::from_state(if kind == AccountKind::Mail {
             &self.form_email
         } else {
@@ -1094,54 +1406,32 @@ impl AccountsPane {
         })
         .with_id("accounts.form.identity")
         .with_accessible_name(&identity_name)
-        .with_placeholder(&identity_placeholder)
-        .with_font_size(13.0);
+        .with_placeholder(&identity_placeholder);
         let user = TextInput::from_state(&self.form_user)
             .with_kind(TextInputKind::Username)
             .with_id("accounts.form.username")
             .with_accessible_name(&login_name)
-            .with_placeholder(&login_placeholder)
-            .with_font_size(13.0);
+            .with_placeholder(&login_placeholder);
         let password = TextInput::from_state(&self.form_password)
             .with_kind(TextInputKind::Password)
             .with_id("accounts.form.password")
             .with_accessible_name(&password_label)
             .with_secret(true)
-            .with_placeholder(&password_short)
-            .with_font_size(13.0);
+            .with_placeholder(&password_short);
         let server = TextInput::from_state(&self.form_server)
             .with_kind(TextInputKind::Url)
             .with_id("accounts.form.server")
             .with_accessible_name(&server_url)
-            .with_placeholder(&server_placeholder)
-            .with_font_size(13.0);
+            .with_placeholder(&server_placeholder);
         let buttons = Row::new()
-            .push(Box::new(
-                account_action_button(
-                    "settings.accounts.form.save",
-                    &save,
-                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                    pane_label(),
-                    "save-form",
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::AccountOperation::SubmitForm,
-                    false,
-                )
-                .content_sized(),
-            ))
-            .push(Box::new(
-                account_action_button(
-                    "settings.accounts.form.cancel",
-                    &cancel,
-                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                    pane_label(),
-                    "cancel-form",
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::CancelForm,
-                    false,
-                )
-                .content_sized(),
-            ))
+            .push(Box::new(self.bound(
+                Button::new("settings.accounts.form.save", &save),
+                AccountsEffect::SaveAccountForm,
+            )))
+            .push(Box::new(self.bound(
+                Button::new("settings.accounts.form.cancel", &cancel),
+                AccountsEffect::CancelAccountForm,
+            )))
             .push(Box::new(Spacer::new()));
         let title = t_args(
             if self.form_account_id.is_some() {
@@ -1188,8 +1478,7 @@ impl AccountsPane {
             .with_id("accounts.reauth.password")
             .with_accessible_name(&password_label)
             .with_secret(true)
-            .with_placeholder(&password_label)
-            .with_font_size(13.0);
+            .with_placeholder(&password_label);
         let mut fields = vec![
             value_row(&t("accounts-reauth-account"), id),
             setting_row(&t("accounts-reauth-credential"), Box::new(password)),
@@ -1203,36 +1492,14 @@ impl AccountsPane {
         }
         fields.push(Box::new(
             Row::new()
-                .push(Box::new(
-                    account_action_button(
-                        "settings.accounts.reauth.save",
-                        &save,
-                        crate::actions::pane_resource_id(
-                            crate::categories::Category::ExternalAccounts,
-                        ),
-                        pane_label(),
-                        "save-reauthentication",
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::AccountOperation::SubmitReauthentication,
-                        false,
-                    )
-                    .content_sized(),
-                ))
-                .push(Box::new(
-                    account_action_button(
-                        "settings.accounts.reauth.cancel",
-                        &cancel,
-                        crate::actions::pane_resource_id(
-                            crate::categories::Category::ExternalAccounts,
-                        ),
-                        pane_label(),
-                        "cancel-reauthentication",
-                        tilo_actions::OperationKind::View,
-                        crate::actions::AccountOperation::CancelReauthentication,
-                        false,
-                    )
-                    .content_sized(),
-                ))
+                .push(Box::new(self.bound(
+                    Button::new("settings.accounts.reauth.save", &save),
+                    AccountsEffect::SaveNewPassword,
+                )))
+                .push(Box::new(self.bound(
+                    Button::new("settings.accounts.reauth.cancel", &cancel),
+                    AccountsEffect::CancelNewPassword,
+                )))
                 .push(Box::new(Spacer::new())),
         ));
         card(&t("accounts-reauth-title"), rows(fields))
@@ -1581,53 +1848,8 @@ impl AccountsPane {
         Ok(())
     }
 
-    /// Open the add-email form (and seed its bound `Text` objects).
-    fn handle_add(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        for kind in AccountKind::ALL {
-            let key = add_key(kind);
-            if read_bool(state, root, key).unwrap_or(false) {
-                let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
-                if kind.signs_in() {
-                    if self.sign_in.is_none() {
-                        self.open_sign_in(kind, None);
-                    }
-                } else if self.form_kind.is_none() && self.sign_in.is_none() {
-                    self.form_kind = Some(kind);
-                    self.form_error = None;
-                    self.form_account_id = None;
-                    self.form_password.set(String::new());
-                    self.clear_form_fields();
-                    self.structure_dirty = true;
-                }
-            }
-        }
-    }
-
-    fn handle_edit_triggers(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.is_sample {
-            return;
-        }
-        for kind in AccountKind::ALL {
-            for view in self.dir.views_of(kind) {
-                let key = edit_key(&view.id);
-                if !read_bool(state, root, &key).unwrap_or(false) {
-                    continue;
-                }
-                let _ = state.put(root, key, false);
-                self.open_edit(&view.id);
-                return;
-            }
-        }
-    }
-
-    fn handle_form_cancel(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.form_cancel || read_bool(state, root, FORM_CANCEL_KEY).unwrap_or(false) {
-            self.form_cancel = false;
-            let _ = state.put(
-                root,
-                FORM_CANCEL_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
+    fn cancel_form(&mut self) {
+        {
             if self.sign_in.is_some() {
                 self.close_sign_in();
                 return;
@@ -1640,7 +1862,7 @@ impl AccountsPane {
                 self.form_candidate = None;
                 self.form_password.set(String::new());
                 self.clear_form_fields();
-                self.structure_dirty = true;
+                self.changed = true;
             }
         }
     }
@@ -1648,13 +1870,11 @@ impl AccountsPane {
     /// Save starts a bounded protocol probe against a device-local draft. No
     /// metadata or credential is persisted until [`Self::poll_form_probe`]
     /// receives success.
-    fn handle_form_save(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.form_submit || read_bool(state, root, FORM_SAVE_KEY).unwrap_or(false) {
-            self.form_submit = false;
-            let _ = state.put(root, FORM_SAVE_KEY, automerge::ScalarValue::Boolean(false));
+    fn submit_form(&mut self) {
+        {
             if let Some(flow) = self.sign_in.as_mut() {
                 flow.submit();
-                self.structure_dirty = true;
+                self.changed = true;
                 return;
             }
             let name = self.form_name.with(Clone::clone);
@@ -1694,11 +1914,11 @@ impl AccountsPane {
                     self.form_candidate = Some(draft);
                     self.form_probe = Some(ProbeJob::new(receiver));
                     self.form_error = Some(t("accounts-checking"));
-                    self.structure_dirty = true;
+                    self.changed = true;
                 }
                 Err(error) => {
                     self.form_error = Some(error);
-                    self.structure_dirty = true;
+                    self.changed = true;
                 }
             }
         }
@@ -1719,7 +1939,7 @@ impl AccountsPane {
         } else {
             let Some(candidate) = self.form_candidate.take() else {
                 self.form_error = Some("account check result had no pending draft".into());
-                self.structure_dirty = true;
+                self.changed = true;
                 return;
             };
             match Self::save_account_with_id(&self.account_root, &candidate) {
@@ -1733,60 +1953,22 @@ impl AccountsPane {
                 Err(error) => self.form_error = Some(error),
             }
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
-    /// Per-account reauthentication triggers for accounts with a stored
-    /// password (sample rows never offer reauth).
-    fn handle_reauth_triggers(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.is_sample {
-            return;
-        }
-        let views: Vec<_> = AccountKind::ALL
-            .into_iter()
-            .flat_map(|kind| self.dir.views_of(kind))
-            .collect();
-        for view in views {
-            let has_password = self
-                .vault
-                .get(&accounts::AccountId::from(view.id.clone()))
-                .is_some_and(|secret| !secret.password.is_empty());
-            if !has_password && !view.kind.signs_in() {
-                continue;
-            }
-            let key = reauth_key(&view.id);
-            if read_bool(state, root, &key).unwrap_or(false) {
-                let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
-                self.open_reauthentication(view.id);
-            }
-        }
-    }
-
-    fn handle_reauth_cancel(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.reauth_cancel || read_bool(state, root, REAUTH_CANCEL_KEY).unwrap_or(false) {
-            self.reauth_cancel = false;
-            let _ = state.put(
-                root,
-                REAUTH_CANCEL_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
+    fn cancel_reauth(&mut self) {
+        {
             self.reauth_id = None;
             self.reauth_error = None;
             self.reauth_probe = None;
             self.reauth_candidate = None;
             self.reauth_password.set(String::new());
-            self.structure_dirty = true;
+            self.changed = true;
         }
     }
 
-    fn handle_reauth_save(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.reauth_submit || read_bool(state, root, REAUTH_SAVE_KEY).unwrap_or(false) {
-            self.reauth_submit = false;
-            let _ = state.put(
-                root,
-                REAUTH_SAVE_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
+    fn submit_reauth(&mut self) {
+        {
             if self.reauth_probe.is_some() {
                 return;
             }
@@ -1794,13 +1976,13 @@ impl AccountsPane {
                 let password = self.reauth_password.with(Clone::clone);
                 if password.trim().is_empty() {
                     self.reauth_error = Some("enter a password or app password".into());
-                    self.structure_dirty = true;
+                    self.changed = true;
                     return;
                 }
                 let account_id = accounts::AccountId::from(id);
                 let Some(account) = self.account_root.store().get(&account_id).cloned() else {
                     self.reauth_error = Some(t("accounts-gone"));
-                    self.structure_dirty = true;
+                    self.changed = true;
                     return;
                 };
                 let mut secret = self
@@ -1818,7 +2000,7 @@ impl AccountsPane {
                 self.reauth_candidate = Some((account_id, secret));
                 self.reauth_probe = Some(ProbeJob::new(receiver));
                 self.reauth_error = Some(t("accounts-checking-reauth"));
-                self.structure_dirty = true;
+                self.changed = true;
             }
         }
     }
@@ -1838,7 +2020,7 @@ impl AccountsPane {
         } else {
             let Some((account_id, secret)) = self.reauth_candidate.take() else {
                 self.reauth_error = Some("credential check result had no pending draft".into());
-                self.structure_dirty = true;
+                self.changed = true;
                 return;
             };
             let mut vault = self.account_root.vault();
@@ -1852,75 +2034,115 @@ impl AccountsPane {
                 Err(error) => self.reauth_error = Some(error),
             }
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
+}
 
-    fn handle_remove_cancel(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if read_bool(state, root, REMOVE_CANCEL_KEY).unwrap_or(false) {
-            let _ = state.put(
-                root,
-                REMOVE_CANCEL_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            self.pending_remove = None;
-            self.structure_dirty = true;
-        }
-    }
-
-    fn handle_remove_confirm(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if read_bool(state, root, REMOVE_CONFIRM_KEY).unwrap_or(false) {
-            let _ = state.put(
-                root,
-                REMOVE_CONFIRM_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            if let Some((kind, id)) = self.pending_remove.take() {
-                match Self::remove_account(&self.account_root, &self.custodian, kind, &id) {
-                    Ok(()) => {
-                        self.removed.push(id);
-                        self.reload();
-                        self.structure_dirty = true;
-                    }
-                    Err(error) => {
-                        self.form_error = Some(error);
-                        self.structure_dirty = true;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Per-account Remove buttons. Snapshot (kind, id, key) so we don't hold
-    /// a borrow across the mutating store calls.
-    fn handle_remove_triggers(&mut self, state: &mut AutoCommit, root: &ObjId) {
+impl AccountsPane {
+    /// Remove the account `id`, its credential and its sync record.
+    ///
+    /// # Errors
+    ///
+    /// Why the account could not be removed.
+    pub fn remove(&mut self, id: &str) -> Result<(), String> {
         if self.is_sample {
-            return;
+            return Err("example accounts cannot be removed".into());
         }
-        let targets: Vec<(AccountKind, String, String)> = AccountKind::ALL
-            .into_iter()
-            .flat_map(|kind| {
-                self.dir
-                    .views_of(kind)
-                    .into_iter()
-                    .map(move |v| (kind, v.id.clone(), remove_key(&v.id)))
-            })
-            .collect();
-        for (kind, id, key) in targets {
-            if !read_bool(state, root, &key).unwrap_or(false) || self.removed.contains(&id) {
-                continue;
+        let stored = self
+            .account_root
+            .store()
+            .get(&accounts::AccountId::from(id.to_owned()))
+            .cloned()
+            .ok_or_else(|| t("accounts-gone"))?;
+        let kind = AccountKind::from_type_id(stored.type_id.as_str())
+            .ok_or_else(|| "unsupported account type".to_string())?;
+        Self::remove_account(&self.account_root, &self.custodian, kind, id)?;
+        self.reload();
+        self.changed = true;
+        Ok(())
+    }
+
+    /// The check of account `id`'s saved sign-in, to run on a worker: a
+    /// protocol probe, or for a cloud drive a fresh token from the provider.
+    fn connection_check(
+        &self,
+        id: &str,
+    ) -> Result<impl FnOnce() -> Result<String, String> + Send + 'static, String> {
+        let account_id = accounts::AccountId::from(id.to_owned());
+        let account = self
+            .account_root
+            .store()
+            .get(&account_id)
+            .cloned()
+            .ok_or_else(|| t("accounts-gone"))?;
+        let secret = self.account_root.vault().get(&account_id).ok_or_else(|| {
+            "this account has no saved credential; sign in again first".to_string()
+        })?;
+        let cloud = AccountKind::from_type_id(account.type_id.as_str())
+            .is_some_and(AccountKind::is_cloud_storage);
+        let custodian = self.custodian.clone();
+        let tester = std::sync::Arc::clone(&self.account_tester);
+        Ok(move || {
+            if cloud {
+                custodian
+                    .publish(&account_id, true)
+                    .map(|()| "The provider accepted the saved sign-in".to_string())
+                    .map_err(|error| error.to_string())
+            } else {
+                tester.test(&account, &secret)
             }
-            let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
-            self.pending_remove = Some((kind, id));
-            self.structure_dirty = true;
-            break;
+        })
+    }
+
+    /// Take in finished checks and sign-in steps; whether anything shown
+    /// changed.
+    pub fn poll(&mut self) -> bool {
+        let revision = self.account_root.revision();
+        if !self.is_sample && revision != self.seen_accounts {
+            if self.seen_accounts.is_some() {
+                self.reload();
+                if let Err(error) = self.account_root.project() {
+                    tracing::warn!(%error, "the device's account file could not follow the person's accounts");
+                }
+                self.changed = true;
+            }
+            self.seen_accounts = revision;
         }
+        self.poll_form_probe();
+        self.poll_sign_in();
+        self.poll_reauth_probe();
+        if !self.is_sample && self.cloud.poll() {
+            self.changed = true;
+        }
+        std::mem::take(&mut self.changed)
+    }
+}
+
+impl PaneModel for AccountsPane {
+    fn compose(&self) -> Box<dyn Widget> {
+        self.build_composition()
+    }
+
+    fn poll(&mut self) -> bool {
+        AccountsPane::poll(self)
+    }
+
+    fn name(&self) -> &'static str {
+        "AccountsPane"
+    }
+
+    fn busy(&self) -> bool {
+        self.form_probe.is_some()
+            || self.reauth_probe.is_some()
+            || self
+                .sign_in
+                .as_ref()
+                .is_some_and(cloud_signin::SignInFlow::busy)
     }
 }
 
 fn relative_sync_time(unix: i64) -> String {
-    let now = ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() as i64);
+    let now = ui::time::unix_now_i64();
     let age = now.saturating_sub(unix).max(0);
     match age {
         0..=59 => t("accounts-just-now"),
@@ -1992,177 +2214,72 @@ fn finish_or_recover(account_root: &AccountRoot, operation: &str) -> Result<(), 
     Ok(())
 }
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(AccountsPane::new())
-}
-
-/// Build the pane from a caller-supplied directory (tests / deterministic
-/// `--shots`). Treated as real accounts so Remove buttons render.
-pub fn build_with(dir: &AccountDirectory) -> Box<dyn Widget> {
-    Box::new(AccountsPane::from_dir(dir.clone(), false))
-}
-
-impl Widget for AccountsPane {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
-        self.handle_local_command();
-        self.handle_add(state, root);
-        self.handle_edit_triggers(state, root);
-        self.handle_form_cancel(state, root);
-        self.handle_form_save(state, root);
-        self.poll_form_probe();
-        self.poll_sign_in();
-        self.handle_reauth_triggers(state, root);
-        self.handle_reauth_cancel(state, root);
-        self.handle_reauth_save(state, root);
-        self.poll_reauth_probe();
-        self.handle_remove_cancel(state, root);
-        self.handle_remove_confirm(state, root);
-        self.handle_remove_triggers(state, root);
-
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut composed = self.build_composition(theme);
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        // A wrapping-node failure would mean the taffy tree rejected a node it
-        // just handed back to us; fall back to the child itself so layout
-        // still proceeds, just without the outer flex column.
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // No computed layout for `node` means `build_layout` wasn't run first;
-        // keep the previous rect rather than panicking.
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        self.form_probe.is_some()
-            || self.reauth_probe.is_some()
-            || self
-                .sign_in
-                .as_ref()
-                .is_some_and(cloud_signin::SignInFlow::busy)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|child| child.needs_idle_sync())
-    }
-
-    fn name(&self) -> &'static str {
-        "AccountsPane"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
-        own || child
-    }
-}
-
-fn add_key(kind: AccountKind) -> &'static str {
-    match kind {
-        AccountKind::Mail => ADD_MAIL_KEY,
-        AccountKind::CalDav => ADD_CALDAV_KEY,
-        AccountKind::WebDav => ADD_WEBDAV_KEY,
-        AccountKind::Nextcloud => ADD_NEXTCLOUD_KEY,
-        AccountKind::GoogleDrive => ADD_GOOGLE_DRIVE_KEY,
-        AccountKind::OneDrive => ADD_ONEDRIVE_KEY,
-        AccountKind::Dropbox => ADD_DROPBOX_KEY,
-        AccountKind::ICloudDrive => ADD_ICLOUD_DRIVE_KEY,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::accounts::sample_directory;
-    use automerge::ReadDoc;
+    use crate::host::testing::{count_named, labels_of};
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};
     use ui::Theme;
 
     struct RejectCandidate;
+
+    struct AcceptSavedCredential;
+
+    impl crate::account_probe::AccountTester for AcceptSavedCredential {
+        fn test(
+            &self,
+            account: &accounts::Account,
+            secret: &accounts::Secret,
+        ) -> Result<String, String> {
+            if account.id.as_str() != "connection@example.test"
+                || secret.password != "test-only-password"
+            {
+                return Err("the probe did not receive the saved account credential".into());
+            }
+            Ok("The server accepted the saved sign-in".into())
+        }
+    }
+
+    #[test]
+    fn account_check_returns_its_saved_credential_probe_result() -> Result<(), String> {
+        let (_dir, root) = scratch_root();
+        let id = accounts::AccountId::from("connection@example.test");
+        let account = accounts::Account::new(id.clone(), "email");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(account);
+        root.save_store(&store).map_err(|error| error.to_string())?;
+        let mut vault = root.vault();
+        vault.put(&id, &accounts::Secret::password("test-only-password"));
+        vault.try_save()?;
+        let pane = AccountsPane::in_root(root.clone())
+            .with_account_tester(std::sync::Arc::new(AcceptSavedCredential));
+        let check = pane.connection_check(id.as_str())?;
+        let Effected::Done(output) = complete_account_check(check())? else {
+            return Err("the finished account check remained pending".into());
+        };
+        let effect = AccountsEffect::TestAccount {
+            account: id.as_str().into(),
+        };
+        let spec = effect.bound();
+        spec.contract.result.validate(&output)?;
+        if output.value != Some(serde_json::json!("The server accepted the saved sign-in"))
+            || !output.resources.is_empty()
+        {
+            return Err("the account check must return its exact status without resources".into());
+        }
+        if root.vault().get(&id) != vault.get(&id) {
+            return Err("checking the account must preserve its saved credential".into());
+        }
+        let rejecting =
+            AccountsPane::in_root(root).with_account_tester(std::sync::Arc::new(RejectCandidate));
+        let check = rejecting.connection_check(id.as_str())?;
+        if complete_account_check(check()) != Err("server rejected candidate".into()) {
+            return Err("the account check must propagate the probe's rejection".into());
+        }
+        Ok(())
+    }
 
     impl crate::account_probe::AccountTester for RejectCandidate {
         fn test(
@@ -2184,34 +2301,15 @@ mod tests {
 
     /// Drive the host's polling until the pending account probe reports,
     /// however long the probe thread takes to be scheduled.
-    fn settle_probes(pane: &mut AccountsPane, doc: &mut AutoCommit) {
+    fn settle_probes(pane: &mut AccountsPane) {
         let deadline = ui::time::now() + ProbeJob::DEADLINE;
         loop {
-            pane.sync(doc, &automerge::ROOT);
+            let _ = pane.poll();
             if pane.form_probe.is_none() && pane.reauth_probe.is_none() {
                 return;
             }
             assert!(ui::time::now() < deadline, "account probe never reported");
             std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
-
-    fn count_named(w: &dyn Widget, name: &str) -> usize {
-        let mut n = usize::from(w.name() == name);
-        for c in w.children() {
-            n += count_named(c, name);
-        }
-        n
-    }
-
-    fn button_labels(w: &dyn Widget, labels: &mut Vec<String>) {
-        if w.name() == "Button"
-            && let Some(label) = w.accessibility().and_then(|node| node.name)
-        {
-            labels.push(label);
-        }
-        for c in w.children() {
-            button_labels(c, labels);
         }
     }
 
@@ -2224,11 +2322,13 @@ mod tests {
         }
     }
 
-    fn lay_out(pane: &mut dyn Widget) {
+    fn lay_out(pane: &AccountsPane) -> Box<dyn Widget> {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
+        let mut composed = pane.build_composition();
+        let _ = composed.build_layout(&mut taffy, &theme, &mut node_map);
+        composed
     }
 
     /// Sample directories are read-only, real ones get labelled destructive remove buttons, and empty stores stay empty.
@@ -2237,11 +2337,13 @@ mod tests {
         // Case `sample_directory_renders_read_only_without_remove_buttons`.
         {
             // The sample is illustration: one live Add button per provider kind,
-            // and no Remove buttons.
-            let mut pane = AccountsPane::from_dir(sample_directory(), true);
-            lay_out(&mut pane);
+            // and no Remove buttons. A scratch root keeps whatever the runner's
+            // own account stores hold (a browser identity, say) out of the count.
+            let (_scratch, root) = scratch_root();
+            let pane = AccountsPane::from_dir_in(root, sample_directory(), true);
+            let composed = lay_out(&pane);
             assert_eq!(
-                count_named(&pane, "Button"),
+                count_named(composed.as_ref(), "Button"),
                 AccountKind::ALL.len(),
                 "every provider kind can be added over the sample"
             );
@@ -2252,10 +2354,14 @@ mod tests {
             // Without stored passwords, real rows offer removal but do not invent
             // a reauthentication action.
             let dir = sample_directory(); // 2 mail + 1 cal + 1 nextcloud = 4 accounts
-            let mut pane = AccountsPane::from_dir(dir, false);
-            lay_out(&mut pane);
+            let (_scratch, root) = scratch_root();
+            let pane = AccountsPane::from_dir_in(root, dir, false);
+            let composed = lay_out(&pane);
             // One Add per kind + four maintenance actions on each of four accounts.
-            assert_eq!(count_named(&pane, "Button"), AccountKind::ALL.len() + 16);
+            assert_eq!(
+                count_named(composed.as_ref(), "Button"),
+                AccountKind::ALL.len() + 16
+            );
         }
 
         // Case `account_removal_is_labeled_and_visibly_destructive`.
@@ -2263,10 +2369,11 @@ mod tests {
             // Real accounts get an explicit Remove action rather than a lone
             // trash glyph. The confirmation flow still owns the mutation; this
             // assertion guards the decision point users see before it.
-            let mut pane = AccountsPane::from_dir(sample_directory(), false);
-            lay_out(&mut pane);
+            let (_scratch, root) = scratch_root();
+            let pane = AccountsPane::from_dir_in(root, sample_directory(), false);
+            let composed = lay_out(&pane);
             let mut labels = Vec::new();
-            button_labels(&pane, &mut labels);
+            labels_of(composed.as_ref(), "Button", &mut labels);
             assert_eq!(
                 labels
                     .iter()
@@ -2304,61 +2411,51 @@ mod tests {
         }
     }
 
+    /// Removing an account asks first; a connection check reports later.
+    #[test]
+    fn removal_asks_first_and_checks_run_as_jobs() {
+        let declarations = AccountsEffect::declarations();
+        let declared = |id: &str| {
+            declarations
+                .iter()
+                .find(|declaration| declaration.id == id)
+                .unwrap()
+        };
+        assert_eq!(
+            declared(AccountsEffect::REMOVE_ACCOUNT.id).risk,
+            ui::tilo_actions::RiskLevel::Destructive
+        );
+        assert!(matches!(
+            declared(AccountsEffect::TEST_ACCOUNT.id).answers,
+            ui::tilo_resource::effect::Answers::Later { .. }
+        ));
+    }
+
     /// The inline add form: local drafts, labelled fields, empty-email no-op and rejected adds.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn account_form_drafts_are_local_accessible_and_validated() {
         // Case `add_button_opens_the_inline_form`.
         {
             let mut pane = AccountsPane::from_dir(sample_directory(), true);
             assert!(!pane.form_open());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let _ = doc.put(&root, ADD_MAIL_KEY, true);
-            pane.sync(&mut doc, &root);
+            pane.command(AccountViewCommand::Add(AccountKind::Mail));
             assert!(pane.form_open(), "Add opens the form");
-            assert!(
-                pane.take_structure_dirty(),
-                "opening the form requests a rebuild"
-            );
+            assert!(pane.poll(), "opening the form requests a rebuild");
             // Cancel closes it.
-            let _ = doc.put(&root, FORM_CANCEL_KEY, true);
-            pane.sync(&mut doc, &root);
+            pane.command(AccountViewCommand::Cancel);
             assert!(!pane.form_open(), "Cancel closes the form");
         }
 
         // Case `form_drafts_are_local_and_every_field_has_explicit_accessibility`.
         {
-            let commands = ui::LocalState::new(None);
-            let mut pane =
-                AccountsPane::from_dir(sample_directory(), true).with_command_state(&commands);
-            let mut doc = AutoCommit::new();
-            commands.set(Some(AccountViewCommand::Add(AccountKind::WebDav)));
-            pane.sync(&mut doc, &automerge::ROOT);
+            let mut pane = AccountsPane::from_dir(sample_directory(), true);
+            pane.command(AccountViewCommand::Add(AccountKind::WebDav));
             pane.set_form_fields_for_test("Home files", "", "ada", "https://files.example.test");
             pane.set_form_password_for_test("never-collaborate-this");
-            pane.sync(&mut doc, &automerge::ROOT);
-            for key in [
-                "accounts.form.name",
-                "accounts.form.email",
-                "accounts.form.username",
-                "accounts.form.server",
-                "accounts.form.password",
-            ] {
-                assert!(
-                    doc.get(&automerge::ROOT, key)
-                        .expect("read draft key")
-                        .is_none(),
-                    "device-local form field {key} must never enter Automerge"
-                );
-            }
-
-            lay_out(&mut pane);
+            let _ = pane.poll();
+            let composed = lay_out(&pane);
             let mut nodes = Vec::new();
-            access_nodes(&pane, &mut nodes);
+            access_nodes(composed.as_ref(), &mut nodes);
             for name in [
                 "Display name",
                 "Username",
@@ -2410,13 +2507,9 @@ mod tests {
         // Case `add_rejection_keeps_the_draft_open_and_persists_nothing`.
         {
             let (_dir, root) = scratch_root();
-            let commands = ui::LocalState::new(None);
             let mut pane = AccountsPane::in_root(root.clone())
-                .with_command_state(&commands)
                 .with_account_tester(std::sync::Arc::new(RejectCandidate));
-            let mut doc = AutoCommit::new();
-            commands.set(Some(AccountViewCommand::Add(AccountKind::Mail)));
-            pane.sync(&mut doc, &automerge::ROOT);
+            pane.command(AccountViewCommand::Add(AccountKind::Mail));
             pane.set_form_fields_for_test(
                 "Rejected",
                 "rejected@example.test",
@@ -2424,9 +2517,8 @@ mod tests {
                 "",
             );
             pane.set_form_password_for_test("candidate-password");
-            commands.set(Some(AccountViewCommand::Submit));
-            pane.sync(&mut doc, &automerge::ROOT);
-            settle_probes(&mut pane, &mut doc);
+            pane.command(AccountViewCommand::Submit);
+            settle_probes(&mut pane);
             assert_eq!(
                 pane.form_error.as_deref(),
                 Some("server rejected candidate")
@@ -2589,18 +2681,12 @@ mod tests {
             let mut vault = root.vault();
             vault.put(&id, &accounts::Secret::password("old-password"));
             vault.try_save().expect("seed credential");
-
-            let commands = ui::LocalState::new(None);
             let mut pane = AccountsPane::in_root(root.clone())
-                .with_command_state(&commands)
                 .with_account_tester(std::sync::Arc::new(RejectCandidate));
-            let mut doc = AutoCommit::new();
-            commands.set(Some(AccountViewCommand::Reauthenticate(id.to_string())));
-            pane.sync(&mut doc, &automerge::ROOT);
+            pane.command(AccountViewCommand::Reauthenticate(id.to_string()));
             pane.set_reauth_password_for_test("candidate-password");
-            commands.set(Some(AccountViewCommand::SubmitReauthentication));
-            pane.sync(&mut doc, &automerge::ROOT);
-            settle_probes(&mut pane, &mut doc);
+            pane.command(AccountViewCommand::SubmitReauthentication);
+            settle_probes(&mut pane);
             assert_eq!(
                 pane.reauth_error_for_test(),
                 Some("server rejected candidate")
@@ -2611,5 +2697,145 @@ mod tests {
                 "rejected candidate must never replace the stored credential"
             );
         }
+    }
+
+    /// Sync now and pause or resume ride on exactly the accounts the cloud
+    /// service lists as mounted, and the window offers the same controls.
+    #[test]
+    fn account_actions_include_sync_now_for_mounted_accounts() {
+        use runtime_fs::cloud::{CloudCapabilities, CloudMount, MountHealth};
+        let mount = |account: &str, paused: bool| CloudMount {
+            account: account.into(),
+            mount_point: std::path::PathBuf::from("/home/ada/Remote").join(account),
+            health: Some(MountHealth::Healthy),
+            paused,
+            capabilities: CloudCapabilities::default(),
+        };
+        for paused in [false, true] {
+            let (_scratch, root) = scratch_root();
+            // Sample accounts take fresh ids each time: read them back.
+            let pane = AccountsPane::from_dir_in(root.clone(), sample_directory(), false);
+            let files = pane.directory().views_of(AccountKind::Nextcloud)[0]
+                .id
+                .clone();
+            let mail = pane.directory().views_of(AccountKind::Mail)[0].id.clone();
+            let pane = pane.with_cloud_mounts(CloudMounts::known(vec![mount(&files, paused)]));
+            let composed = lay_out(&pane);
+            let mut labels = Vec::new();
+            labels_of(composed.as_ref(), "Button", &mut labels);
+            let profile = tempfile::tempdir().unwrap();
+            let cx = PaneCx::in_file(profile.path().join("settings.json"));
+            let area = AccountsArea::new(&cx).with_account_root(root);
+            let _ = area.model.set(Rc::new(std::cell::RefCell::new(pane)));
+            let actions = |account: &str| -> Vec<String> {
+                let row = format!("settings.account:{account}");
+                area.rows()
+                    .into_iter()
+                    .find(|published| published.id() == row)
+                    .map(|published| {
+                        published
+                            .into_resource()
+                            .actions
+                            .into_iter()
+                            .map(|spec| spec.id)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let mounted = actions(&files);
+            assert!(mounted.contains(&"sync-now".to_owned()), "{mounted:?}");
+            let (offered, withheld) = if paused {
+                ("resume-sync", "pause-sync")
+            } else {
+                ("pause-sync", "resume-sync")
+            };
+            assert!(mounted.contains(&offered.to_owned()), "{mounted:?}");
+            assert!(!mounted.contains(&withheld.to_owned()), "{mounted:?}");
+            let unmounted = actions(&mail);
+            assert!(
+                unmounted.contains(&"test-account".to_owned()),
+                "{unmounted:?}"
+            );
+            assert!(
+                unmounted
+                    .iter()
+                    .all(|id| !matches!(id.as_str(), "sync-now" | "pause-sync" | "resume-sync")),
+                "an account the service has not mounted offers no sync control: {unmounted:?}"
+            );
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| label.as_str() == "Sync now")
+                    .count(),
+                1,
+                "{labels:?}"
+            );
+            let toggle = if paused { "Resume sync" } else { "Pause sync" };
+            assert_eq!(
+                labels
+                    .iter()
+                    .filter(|label| label.as_str() == toggle)
+                    .count(),
+                1,
+                "{labels:?}"
+            );
+        }
+    }
+
+    /// Wait for a background read to end, as the warm-up's wake would.
+    fn until_finished(finished: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !finished() {
+            assert!(std::time::Instant::now() < deadline, "the read ends");
+            std::thread::yield_now();
+        }
+    }
+
+    /// The warm-up opens the vault off the UI thread once; the model holds
+    /// what it opened, so a saved credential is there.
+    #[test]
+    fn the_area_builds_its_model_from_the_read_it_started() {
+        let (dir, root) = scratch_root();
+        let id = accounts::AccountId::from("warm@example.test");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(accounts::Account::new(id.clone(), "email"));
+        root.save_store(&store).expect("the store is saved");
+        let mut vault = root.vault();
+        vault.put(&id, &accounts::Secret::password("test-only-password"));
+        vault.try_save().expect("the vault is saved");
+        let cx = PaneCx::in_file(dir.path().join("settings.json"));
+        let area = AccountsArea::new(&cx).with_account_root(root.clone());
+        assert!(area.start_read(), "the first read starts");
+        assert!(!area.start_read(), "one read at a time");
+        assert!(!area.is_open(), "a running read publishes nothing yet");
+        until_finished(|| area.read_finished());
+        let model = area.model().borrow();
+        assert!(area.is_open());
+        assert!(vault.get(&id).is_some(), "the credential was saved");
+        assert_eq!(
+            model.vault.get(&id),
+            vault.get(&id),
+            "the vault read is held"
+        );
+        assert_eq!(
+            model.directory(),
+            AccountsPane::in_root(root).directory(),
+            "the directory is the one reading in place shows"
+        );
+        drop(model);
+        assert!(!area.start_read(), "a built model is not read again");
+    }
+
+    /// A mutation whose intent is on disk is recovered before the vault is
+    /// opened, so a vault read before it is not used.
+    #[test]
+    fn a_pending_mutation_is_seen() {
+        let (_dir, root) = scratch_root();
+        assert!(!root.mutation_pending());
+        let config = root.path().expect("an explicit root");
+        let accounts_dir = accounts::accounts_dir_in(&config);
+        std::fs::create_dir_all(&accounts_dir).expect("the accounts directory");
+        std::fs::write(accounts_dir.join("mutation-journal.json"), b"{}").expect("an intent");
+        assert!(root.mutation_pending());
     }
 }

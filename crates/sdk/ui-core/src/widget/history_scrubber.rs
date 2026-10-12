@@ -13,6 +13,7 @@
 //! degenerate case — every change is a tick, nothing snaps — not a separate
 //! mode.
 
+use crate::num::f64_of_usize;
 use crate::time::SystemTime;
 use std::collections::HashMap;
 
@@ -23,9 +24,9 @@ use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::history::{HistoryEntry, HistoryEntryId, format_relative_time};
@@ -54,7 +55,9 @@ const BUTTON_H: f64 = 28.0;
 /// a 1000 px button row would be a metre of empty box for three words.
 const NAME_FIELD_W: f64 = 300.0;
 const BUTTON_Y_OFFSET: f64 = 24.0;
-const POPOVER_H: f64 = 36.0;
+const POPOVER_H: f64 = 38.0;
+/// Between the popover and the band below it.
+const POPOVER_BAND_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// Breathing room the popover's text stack keeps from its top and bottom
 /// edge — a hairline, half the smallest spacing step; a stack that cannot
 /// keep it drops its second line.
@@ -79,15 +82,6 @@ fn wash(surface: Color, alpha: u8) -> Color {
     crate::tokens::colors::Colors::hairline_on(surface, alpha)
 }
 
-/// A tick index or entry count, widened for pixel-space layout math.
-/// Lossless in practice — a history never approaches `u32::MAX` entries —
-/// but `usize -> f64` cannot express that to the compiler, so this goes
-/// through `u32` (exactly representable in `f64`) with a saturating
-/// fallback rather than an `as` cast.
-fn px(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 /// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
 /// pure `f64` matrix multiply-add with no overflow trap, so it cannot panic
 /// regardless of operand magnitude, but going through `pre_translate`
@@ -106,7 +100,7 @@ fn translated(transform: Affine, offset: (f64, f64)) -> Affine {
     reason = "ratio is clamped to [0,1] and max is a bounded entry count, so the rounded product always fits usize"
 )]
 fn tick_from_ratio(ratio: f64, max: usize) -> usize {
-    (ratio.clamp(0.0, 1.0) * px(max)).round() as usize
+    (ratio.clamp(0.0, 1.0) * f64_of_usize(max)).round() as usize
 }
 
 /// `FnMut` so the host can mutate captured state (e.g. flip a
@@ -424,7 +418,7 @@ impl HistoryScrubber {
         if n <= 1 {
             return track.x1;
         }
-        let t = px(i) / px(n.saturating_sub(1));
+        let t = f64_of_usize(i) / f64_of_usize(n.saturating_sub(1));
         track.x0 + t * track.width()
     }
 
@@ -488,8 +482,14 @@ impl HistoryScrubber {
         let lo = self.rect.x0 + TRACK_INSET;
         let hi = (self.rect.x1 - TRACK_INSET - w).max(lo);
         let x0 = (centre.x - w / 2.0).clamp(lo, hi);
-        let y0 = self.rect.y0 + 8.0;
-        Rect::new(x0, y0, x0 + w, y0 + POPOVER_H)
+        // A clear gap between the popover and the band under it, so the
+        // two read as separate things rather than one stacked block.
+        let y1 = if self.groups.is_empty() {
+            self.rect.y0 + 8.0 + POPOVER_H
+        } else {
+            self.band_rect().y0 - POPOVER_BAND_GAP
+        };
+        Rect::new(x0, y1 - POPOVER_H, x0 + w, y1)
     }
 
     /// Restore is always there. The rest are dropped from the low-priority
@@ -756,7 +756,7 @@ impl HistoryScrubber {
         let spacing = if n <= 1 {
             track.width()
         } else {
-            track.width() / px(n.saturating_sub(1))
+            track.width() / f64_of_usize(n.saturating_sub(1))
         };
         if spacing < MIN_TICK_SPACING {
             return;
@@ -795,7 +795,7 @@ impl HistoryScrubber {
         let track = self.track_rect();
         // `scale.xs` is the floor of the type scale; the band caption was
         // three points under `sm`, which landed below it.
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
+        let style = theme.text(TextRole::Caption);
 
         // Segments abut at the tick each one ends on so every visible edge is
         // a boundary; spanning only first-tick..last-tick would leave a
@@ -819,7 +819,11 @@ impl HistoryScrubber {
             // Unnamed segments step up the strip's own ramp; the declared
             // white veneers they replace were one fixed colour per theme.
             let fill = if named {
-                colors.accent[if contains_handle { 4 } else { 6 }]
+                if contains_handle {
+                    colors.intent.inverted
+                } else {
+                    colors.intent.selection
+                }
             } else if contains_handle {
                 wash(colors.surfaces.raised, WASH_MID)
             } else if i % 2 == 0 {
@@ -836,17 +840,17 @@ impl HistoryScrubber {
             // shown when it fits: a two-character stub is worse
             // than the block on its own.
             let (label, ink) = match &g.label {
+                Some(l) if contains_handle => (l.as_str(), colors.intent.on_inverted),
                 Some(l) => (l.as_str(), colors.text_primary),
                 None => (g.derived.as_str(), colors.text_dim),
             };
             let budget = seg.width() - 8.0;
-            let shown = fit(tr, label, size, budget);
-            let (lw, lh) = tr.measure(&shown, size, None);
+            let shown = fit(tr, label, &style, budget);
+            let (lw, lh) = tr.measure_style(&shown, None, &style);
             if !shown.is_empty() && f64::from(lw) <= budget && shown.chars().count() > 2 {
-                tr.draw_text(
+                tr.draw_style(
                     scene,
                     &shown,
-                    size,
                     ink,
                     translated(
                         transform,
@@ -856,6 +860,7 @@ impl HistoryScrubber {
                         ),
                     ),
                     None,
+                    &style,
                 );
             }
 
@@ -866,7 +871,7 @@ impl HistoryScrubber {
                 &Stroke::new(if named { 1.5 } else { 1.0 }),
                 transform,
                 if named {
-                    colors.accent[4]
+                    colors.intent.inverted_hover
                 } else {
                     wash(colors.surfaces.raised, WASH_MID)
                 },
@@ -876,17 +881,6 @@ impl HistoryScrubber {
                     Point::new(bx, track.center().y - TICK_MARK_H / 2.0),
                 ),
             );
-            if g.open {
-                // An open segment has no settled end; mark it as live rather than
-                // drawing a boundary that is not one.
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    colors.accent[4],
-                    None,
-                    &Circle::new(Point::new(bx, band.y0 - 4.0), 2.5),
-                );
-            }
         }
     }
 
@@ -901,7 +895,7 @@ impl HistoryScrubber {
         hovered: bool,
         primary: bool,
     ) {
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.detail);
         let shape = RoundedRect::from_rect(rect, radius);
         let colors = &theme.tokens.colors;
         // Primary: accent, ink chosen against it; the accent face is its own
@@ -909,12 +903,12 @@ impl HistoryScrubber {
         // Neutral: the Button Neutral rest — the strip's raised fill under a
         // derived edge — and one step up the strip's ramp on hover.
         let (fill, border, text_color) = if primary {
-            let fill = colors.accent[if hovered { 4 } else { 5 }];
-            (
-                fill,
-                None,
-                colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST),
-            )
+            let fill = if hovered {
+                colors.intent.inverted_hover
+            } else {
+                colors.intent.inverted
+            };
+            (fill, None, colors.intent.on_inverted)
         } else if hovered {
             let fill = wash(colors.surfaces.raised, WASH_MID);
             (
@@ -939,13 +933,12 @@ impl HistoryScrubber {
                 &crate::surface::edge_outline(rect, radius),
             );
         }
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let shown = fit(text_renderer, label, size, rect.width() - 10.0);
-        let (w, h) = text_renderer.measure(&shown, size, None);
-        text_renderer.draw_text(
+        let style = theme.text(TextRole::Caption);
+        let shown = fit(text_renderer, label, &style, rect.width() - 10.0);
+        let (w, h) = text_renderer.measure_style(&shown, None, &style);
+        text_renderer.draw_style(
             scene,
             &shown,
-            size,
             text_color,
             translated(
                 transform,
@@ -955,6 +948,7 @@ impl HistoryScrubber {
                 ),
             ),
             None,
+            &style,
         );
     }
 
@@ -967,12 +961,11 @@ impl HistoryScrubber {
         theme: &Theme,
     ) {
         let label = "No history yet";
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let (w, h) = text_renderer.measure(label, size, None);
-        text_renderer.draw_text(
+        let style = theme.text(TextRole::Caption);
+        let (w, h) = text_renderer.measure_style(label, None, &style);
+        text_renderer.draw_style(
             scene,
             label,
-            size,
             theme.tokens.colors.text_dim,
             translated(
                 transform,
@@ -982,6 +975,7 @@ impl HistoryScrubber {
                 ),
             ),
             None,
+            &style,
         );
     }
 
@@ -1013,7 +1007,7 @@ impl HistoryScrubber {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5],
+                theme.tokens.colors.intent.inverted,
                 None,
                 &active_shape,
             );
@@ -1033,14 +1027,18 @@ impl HistoryScrubber {
             &crate::surface::edge_outline(track, 3.0),
         );
 
-        let live_dot = Circle::new(self.live_state_dot_center(), 3.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.accent[5],
-            None,
-            &live_dot,
-        );
+        // The live state is marked only while the handle is away from it;
+        // under the handle it is a stray dot beside the thumb.
+        if self.current_tick + 1 < self.entries.len() {
+            let live_dot = Circle::new(self.live_state_dot_center(), 3.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.intent.inverted,
+                None,
+                &live_dot,
+            );
+        }
 
         let handle = self.handle_center();
         let radius = if self.is_dragging {
@@ -1085,84 +1083,86 @@ impl HistoryScrubber {
             scene,
             transform,
             pop,
-            f64::from(theme.tokens.radii.sm),
+            f64::from(theme.tokens.radii.detail),
             theme.tokens.colors.surfaces.overlay,
         );
         let Some(entry) = self.current_entry() else {
             return;
         };
         let now = self.now();
-        let detail = if entry.is_genesis() {
-            entry.summary.clone()
-        } else {
+        // The title names the version (or the change, outside one); the
+        // caption under it says who and when, and which change within the
+        // version — sentences, not a chain of fields.
+        let by = (!entry.is_genesis()).then(|| {
             format!(
-                "{} by {} \u{00b7} {}",
-                entry.summary,
+                "by {}, {}",
                 entry.author.name,
                 format_relative_time(entry.timestamp, now)
             )
-        };
+        });
         // An unnamed segment of one change derives its title *from* that
         // change, so a two-line popover would print the same words twice —
         // once as the version and once as the change. Say it once.
         let group_line = self.current_group().and_then(|g| {
-            let mut s = g.title().to_string();
-            if g.label.is_none() && !g.open && s == entry.summary {
+            let title = g.title().to_string();
+            if g.label.is_none() && !g.open && title == entry.summary {
                 return None;
             }
-            if g.open {
-                s.push_str(" \u{00b7} still open");
-            }
-            Some(s)
+            Some(if g.open {
+                format!("{title} (still open)")
+            } else {
+                title
+            })
         });
+        let detail = match (&group_line, by) {
+            (Some(_), Some(by)) => format!("{} {by}", entry.summary),
+            (Some(_) | None, None) => entry.summary.clone(),
+            (None, Some(by)) => by,
+        };
         let budget = pop.width() - 12.0;
-        let head_size = renderer_type_size(
-            text_renderer,
-            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
-        );
-        // The floor of the type scale, not three points under `sm`.
-        let sub_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+        let head_style = theme.text(TextRole::Caption).strong();
+        let sub_style = theme.text(TextRole::Caption);
         let colors = &theme.tokens.colors;
         // Each line is fitted to the width and measured at the size it is
         // painted with; the stack is then centred as one block on the
         // popover, each line on its own measured box rather than at two
         // hand-picked offsets.
-        let mut lines: Vec<(String, f32, Color, f32, f32)> = Vec::new();
-        let mut push = |text_renderer: &mut TextRenderer, text: &str, size: f32, ink: Color| {
-            let drawn = fit(text_renderer, text, size, budget);
-            let (w, h) = text_renderer.measure(&drawn, size, None);
-            lines.push((drawn, size, ink, w, h));
+        let mut lines: Vec<(String, &TextStyle, Color, f32, f32)> = Vec::new();
+        let push = |text_renderer: &mut TextRenderer, text: &str, style: &TextStyle, ink: Color| {
+            let drawn = fit(text_renderer, text, style, budget);
+            let (w, h) = text_renderer.measure_style(&drawn, None, style);
+            (drawn, w, h, ink)
         };
-        match group_line {
-            Some(head) => {
-                push(text_renderer, &head, head_size, colors.text_primary);
-                push(text_renderer, &detail, sub_size, colors.text_dim);
-            }
-            None => push(text_renderer, &detail, head_size, colors.text_primary),
+        let head = group_line.unwrap_or_else(|| entry.summary.clone());
+        let (d, w, h, ink) = push(text_renderer, &head, &head_style, colors.text_primary);
+        lines.push((d, &head_style, ink, w, h));
+        if detail != head {
+            let (d, w, h, ink) = push(text_renderer, &detail, &sub_style, colors.text_dim);
+            lines.push((d, &sub_style, ink, w, h));
         }
         // The popover cannot grow — below it sit the band and the handle's
         // reach — so when the two-line stack no longer fits its box (2×
         // type), the change line yields and the version name stays; the
         // screen reader still gets both. Painting both would have pushed the
         // detail line down over the band.
-        let stack_h = |lines: &[(String, f32, Color, f32, f32)]| -> f64 {
+        let stack_h = |lines: &[(String, &TextStyle, Color, f32, f32)]| -> f64 {
             lines.iter().map(|l| f64::from(l.4)).sum()
         };
         if lines.len() > 1 && stack_h(&lines) > pop.height() - POPOVER_PAD_Y * 2.0 {
             lines.truncate(1);
         }
         let mut top = pop.center().y - stack_h(&lines) / 2.0;
-        for (drawn, size, ink, w, h) in &lines {
-            text_renderer.draw_text(
+        for (drawn, style, ink, w, h) in &lines {
+            text_renderer.draw_style(
                 scene,
                 drawn,
-                *size,
                 *ink,
                 translated(
                     transform,
                     (pop.x0 + (pop.width() - f64::from(*w)) / 2.0, top),
                 ),
                 None,
+                style,
             );
             top += f64::from(*h);
         }
@@ -1183,19 +1183,18 @@ impl HistoryScrubber {
         if let Some((_, field)) = self.naming.as_ref() {
             let last = layout.iter().map(|(_, r, _)| r.x1).fold(0.0_f64, f64::max);
             let box_rect = self.name_field_rect();
-            let size = theme.tokens.typography.scale.sm;
-            field.draw(scene, transform, text_renderer, theme, box_rect, size);
+            let style = theme.text(TextRole::Caption);
+            field.draw(scene, transform, text_renderer, theme, box_rect, &style);
             // The field replaced the buttons, so nothing on screen says how to
             // finish. Enter and Escape are the only two things it does; say so
             // where the buttons were, when there is room left over.
-            let hint = "Enter to save \u{00b7} Esc to cancel";
-            let hint_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
-            let (hw, hh) = text_renderer.measure(hint, hint_size, None);
+            let hint = "Enter saves, Esc cancels";
+            let hint_style = theme.text(TextRole::Caption);
+            let (hw, hh) = text_renderer.measure_style(hint, None, &hint_style);
             if box_rect.x1 + 10.0 + f64::from(hw) <= last {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     hint,
-                    hint_size,
                     theme.tokens.colors.text_dim,
                     translated(
                         transform,
@@ -1205,6 +1204,7 @@ impl HistoryScrubber {
                         ),
                     ),
                     None,
+                    &hint_style,
                 );
             }
         } else {
@@ -1237,7 +1237,7 @@ impl Widget for HistoryScrubber {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let h = self.natural_height();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 #[allow(
@@ -1247,20 +1247,13 @@ impl Widget for HistoryScrubber {
                 height: Dimension::length(h as f32),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }
@@ -1281,7 +1274,7 @@ impl Widget for HistoryScrubber {
             scene,
             transform,
             self.rect,
-            f64::from(theme.tokens.radii.md),
+            f64::from(theme.tokens.radii.control),
             theme.tokens.colors.surfaces.raised,
         );
 
@@ -1377,6 +1370,23 @@ impl Widget for HistoryScrubber {
         self.naming
             .as_ref()
             .and_then(|(_, field)| field.ime_cursor_rect())
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        let (kind, field) = self.naming.as_ref()?;
+        let scope = format!(
+            "{}:{}",
+            self.current_tick,
+            match kind {
+                NameKind::CurrentGroup => "group",
+                NameKind::NewVersion => "version",
+            }
+        );
+        Some(crate::ime::scoped_fingerprint(
+            scope.as_bytes(),
+            field.ime_edit_fingerprint(key)?,
+            key,
+        ))
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
@@ -1569,13 +1579,14 @@ impl HistoryScrubber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+    use crate::testing::dispatch;
     use crate::time::Duration;
+    use crate::widget::EntryKind;
     use crate::widget::history::HistoryAuthor;
-    use automerge::AutoCommit;
-    use collab_types::{ArtifactKind, OpClass};
+    use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     fn entry(id: u8) -> HistoryEntry {
         let mut bytes = [0u8; 16];
@@ -1584,7 +1595,7 @@ mod tests {
         HistoryEntry {
             id: HistoryEntryId(bytes),
             author: HistoryAuthor::new("Alice", 120.0, "deadbeef"),
-            op_class: OpClass::Splice,
+            entry_kind: EntryKind::Text,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(secs))
@@ -1742,51 +1753,6 @@ mod tests {
         scrubber_with_no_entries_is_a_no_op();
         drag_saturates_at_endpoints();
     }
-
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn dispatch(s: &mut HistoryScrubber, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
-    }
 }
 
 // =====================================================================
@@ -1796,13 +1762,13 @@ mod tests {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+    use crate::testing::dispatch;
     use crate::time::Duration;
+    use crate::widget::EntryKind;
     use crate::widget::history::HistoryAuthor;
-    use automerge::AutoCommit;
-    use collab_types::{ArtifactKind, OpClass};
+    use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use winit::event::Modifiers;
 
     fn entry(id: u8) -> HistoryEntry {
         let mut bytes = [0u8; 16];
@@ -1812,7 +1778,7 @@ mod version_tests {
         HistoryEntry {
             id: HistoryEntryId(bytes),
             author: HistoryAuthor::new("Alice", 120.0, "deadbeef"),
-            op_class: OpClass::Splice,
+            entry_kind: EntryKind::Text,
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH
                 .checked_add(Duration::from_secs(secs))
@@ -1907,7 +1873,7 @@ mod version_tests {
                         (1000, h as u32),
                         theme.clone(),
                     );
-                    harness.render_window_png(&png);
+                    harness.render_png(&png);
                     if let Ok(json) = harness.inspection_json() {
                         std::fs::write(png.with_extension("inspection.json"), json)
                             .expect("write inspection");
@@ -1935,7 +1901,8 @@ mod version_tests {
                     clippy::cast_sign_loss,
                     reason = "a small test surface"
                 )]
-                let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+                let rgba = OffscreenRenderer::new(w as u32, h as u32)
+                    .render(&scene, theme.tokens.colors.surfaces.content);
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
@@ -2115,69 +2082,18 @@ mod version_tests {
         s
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
-    fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_release;
 
     fn key(k: winit::keyboard::Key) -> WindowEvent {
-        // SAFETY: as in the sibling test modules — every pub field of `KeyEvent`
-        // tolerates the all-zero bit pattern, and winit 0.30 keeps
-        // `KeyEventExtra` crate-private so a struct literal is unavailable.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = k;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn dispatch(s: &mut HistoryScrubber, event: &WindowEvent) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        s.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            k,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     #[test]

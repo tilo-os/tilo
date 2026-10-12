@@ -1,9 +1,9 @@
-//! What a person's page does with a company node's legacy applications,
-//! from a native peer, against a running node: certify a browser device with
-//! the person's root, create and enter a workspace, find the session beside
-//! the node (`/node`), list the legacy applications it offers in the
-//! workspace, open one, and receive its window's frames on the live plane.
-//! Then close the window and see its stream end.
+//! What a person's page does with a company node's applications, from a
+//! native peer, against a running node: certify a browser device with the
+//! person's root, create and enter a workspace, find the session beside the
+//! node (`/node`), list the applications it offers in the workspace (legacy
+//! ones and Tilo apps such as Terminal), open one, and receive its window's
+//! frames on the live plane. Then close the window and see its stream end.
 //!
 //! ```text
 //! node_apps_probe --addr 127.0.0.1:8443 --cert-sha256 <hex> --root-key <file> --app chromium
@@ -13,6 +13,14 @@
 //! `--root-key` is the person's root signing key, `--app` a case-insensitive
 //! part of the application's name. Prints one line per step; exits non-zero
 //! when a step fails or takes longer than `--seconds` (default 180).
+//!
+//! `--type KEYS` clicks into the window and types `KEYS` before closing it:
+//! text, plus `{enter}` and `{ctrl+l}`-style chords. The window must present
+//! new frames afterwards. `--save FILE` writes the window's encoded frames
+//! (H.264, Annex B) from its first keyframe on, and prints how many came
+//! before the input, so a decoder can compare the picture before and after.
+//! `--leave-open` leaves the window open, as a person does who goes on to
+//! open another application beside it.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,10 +33,6 @@
 )]
 
 #[path = "../tests/support/https.rs"]
-#[allow(
-    dead_code,
-    reason = "the probe uses the tests' pinned HTTPS client alone"
-)]
 mod https;
 
 use std::sync::Arc;
@@ -52,13 +56,21 @@ struct Args {
     cert_sha256: String,
     root_key: std::path::PathBuf,
     app: String,
+    keys: Option<String>,
+    save: Option<std::path::PathBuf>,
+    leave_open: bool,
     deadline: Instant,
 }
 
 fn args() -> Args {
     let mut args = std::env::args().skip(1);
     let (mut addr, mut cert, mut root, mut app, mut seconds) = (None, None, None, None, 180);
+    let (mut keys, mut save, mut leave_open) = (None, None, false);
     while let Some(flag) = args.next() {
+        if flag == "--leave-open" {
+            leave_open = true;
+            continue;
+        }
         let value = args
             .next()
             .unwrap_or_else(|| panic!("{flag} needs a value"));
@@ -68,6 +80,8 @@ fn args() -> Args {
             "--root-key" => root = Some(value.into()),
             "--app" => app = Some(value.to_lowercase()),
             "--seconds" => seconds = value.parse().expect("--seconds is a number"),
+            "--type" => keys = Some(value),
+            "--save" => save = Some(value.into()),
             other => panic!("unknown flag {other}"),
         }
     }
@@ -76,6 +90,9 @@ fn args() -> Args {
         cert_sha256: cert.expect("--cert-sha256"),
         root_key: root.expect("--root-key"),
         app: app.expect("--app"),
+        keys,
+        save,
+        leave_open,
         deadline: Instant::now()
             .checked_add(Duration::from_secs(seconds))
             .expect("--seconds fits"),
@@ -137,6 +154,76 @@ async fn ask<T>(
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     None
+}
+
+const KEY_LEFTCTRL: u32 = 29;
+const KEY_LEFTSHIFT: u32 = 42;
+const KEY_ENTER: u32 = 28;
+
+/// The evdev key and whether it needs Shift, for `c` on a US layout.
+fn evdev(c: char) -> Option<(u32, bool)> {
+    const ROWS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
+    let lower = c.to_ascii_lowercase();
+    for (row, first) in ROWS {
+        if let Some(at) = row.find(lower) {
+            return Some((
+                first.checked_add(u32::try_from(at).ok()?)?,
+                c.is_ascii_uppercase(),
+            ));
+        }
+    }
+    Some(match c {
+        '1'..='9' => (c.to_digit(10)?.checked_add(1)?, false),
+        '0' => (11, false),
+        '-' => (12, false),
+        '=' => (13, false),
+        ';' => (39, false),
+        ':' => (39, true),
+        '\'' => (40, false),
+        ',' => (51, false),
+        '.' => (52, false),
+        '/' => (53, false),
+        ' ' => (57, false),
+        _ => return None,
+    })
+}
+
+/// The strokes typing `keys`: text, `{enter}`, and `{ctrl+X}` chords.
+fn typing(keys: &str) -> Vec<Vec<wire::InputEvent>> {
+    let key = |keysym, pressed| wire::InputEvent::Key {
+        keysym,
+        pressed,
+        modifiers: 0,
+    };
+    let stroke = |modifier: Option<u32>, code| {
+        let mut events = Vec::new();
+        events.extend(modifier.map(|modifier| key(modifier, true)));
+        events.extend([key(code, true), key(code, false)]);
+        events.extend(modifier.map(|modifier| key(modifier, false)));
+        events
+    };
+    let mut strokes = Vec::new();
+    let mut rest = keys;
+    while let Some(c) = rest.chars().next() {
+        if let Some(braced) = rest.strip_prefix('{') {
+            let (chord, after) = braced.split_once('}').expect("a closing }");
+            rest = after;
+            if chord == "enter" {
+                strokes.push(stroke(None, KEY_ENTER));
+            } else if let Some(letter) = chord.strip_prefix("ctrl+") {
+                let (code, _) =
+                    evdev(letter.chars().next().expect("ctrl+<key>")).expect("a known key");
+                strokes.push(stroke(Some(KEY_LEFTCTRL), code));
+            } else {
+                panic!("unknown key {{{chord}}}");
+            }
+            continue;
+        }
+        let (code, shift) = evdev(c).unwrap_or_else(|| panic!("no key types {c:?}"));
+        strokes.push(stroke(shift.then_some(KEY_LEFTSHIFT), code));
+        rest = rest.strip_prefix(c).unwrap_or_default();
+    }
+    strokes
 }
 
 #[tokio::main]
@@ -237,8 +324,10 @@ async fn main() {
         .ok()?;
         page.rows.into_iter().find_map(|row| {
             let action = row.action.as_ref()?;
-            (action.resource_kind == "applications.host-app"
-                && action.address.action == "open"
+            (matches!(
+                action.resource_kind.as_str(),
+                "applications.host-app" | "applications.app"
+            ) && action.address.action == "open"
                 && action.resource_label.to_lowercase().contains(&args.app))
             .then(|| {
                 (
@@ -259,12 +348,14 @@ async fn main() {
         acme.workspace_id,
         session,
         RemoteActionMessage::Invoke(InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target,
             argument: tilo_actions::remote::InvokeArgument::None,
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         }),
         |message| match message {
             RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
@@ -317,6 +408,8 @@ async fn main() {
     // Every window it lists, until one with an application id (a splash
     // screen has none, and comes and goes first) delivers a whole keyframe.
     let (found, mut arrivals) = tokio::sync::mpsc::unbounded_channel();
+    let (pictures, mut presented) =
+        tokio::sync::mpsc::unbounded_channel::<(String, bool, Vec<u8>)>();
     let mut watched = std::collections::BTreeSet::new();
     let stream = tokio::time::timeout_at(deadline.into(), async {
         loop {
@@ -331,7 +424,10 @@ async fn main() {
                         if !watched.insert(stream.surface.clone()) {
                             continue;
                         }
-                        let named = !stream.app.starts_with("anon-");
+                        // Its own window: a splash screen has no application id, and
+                        // windows already open belong to other applications.
+                        let named = !stream.app.starts_with("anon-")
+                            && stream.app.to_lowercase().contains(&args.app);
                         println!(
                             "probe: stream {} {} {}x{}",
                             stream.surface, stream.app, stream.width, stream.height
@@ -344,15 +440,26 @@ async fn main() {
                             .await
                             .unwrap();
                         let found = found.clone();
+                        let pictures = pictures.clone();
                         tokio::spawn(async move {
+                            let mut picture = Vec::new();
                             while let Ok(Some(mut group)) = video.recv_group().await {
                                 while let Ok(Some(frame)) = group.read_frame().await {
-                                    if let Ok(wire::Frame::Chunk { flags, .. }) =
+                                    let Ok(wire::Frame::Chunk { flags, data, .. }) =
                                         wire::Frame::decode(&frame.payload)
-                                        && flags & wire::CHUNK_KEY != 0
-                                        && flags & wire::CHUNK_LAST != 0
-                                        && named
-                                    {
+                                    else {
+                                        continue;
+                                    };
+                                    if flags & wire::CHUNK_FIRST != 0 {
+                                        picture.clear();
+                                    }
+                                    picture.extend_from_slice(&data);
+                                    if flags & wire::CHUNK_LAST == 0 {
+                                        continue;
+                                    }
+                                    let key = flags & wire::CHUNK_KEY != 0;
+                                    let _ = pictures.send((stream.surface.clone(), key, std::mem::take(&mut picture)));
+                                    if key && named {
                                         let _ = found.send(stream.clone());
                                     }
                                 }
@@ -372,6 +479,11 @@ async fn main() {
     );
     let surface = u64::from_str_radix(&stream.surface, 16).unwrap();
 
+    if args.leave_open {
+        println!("probe: left open; node apps ok");
+        peer.close();
+        return;
+    }
     // Driving it closes it at the session.
     let input = |events: Vec<wire::InputEvent>| {
         let (reply, answer) = tokio::sync::oneshot::channel();
@@ -394,6 +506,70 @@ async fn main() {
         Ok(true),
         "the person drives the window"
     );
+    // The window's encoded pictures so far, from its first keyframe.
+    let mut encoded: Vec<Vec<u8>> = Vec::new();
+    let mut take = |encoded: &mut Vec<Vec<u8>>| {
+        while let Ok((surface, key, picture)) = presented.try_recv() {
+            if surface == stream.surface && (key || !encoded.is_empty()) {
+                encoded.push(picture);
+            }
+        }
+    };
+    if let Some(keys) = &args.keys {
+        // Settle, then click into the window and type.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        take(&mut encoded);
+        let before = encoded.len();
+        let (x, y) = (
+            f64::from(stream.width) / 2.0,
+            f64::from(stream.height) / 2.0,
+        );
+        let click = vec![
+            wire::InputEvent::PointerEnter { surface },
+            wire::InputEvent::PointerMotion { x, y },
+            wire::InputEvent::KeyboardFocus {
+                surface,
+                focused: true,
+            },
+            wire::InputEvent::PointerButton {
+                button: 272,
+                pressed: true,
+            },
+            wire::InputEvent::PointerButton {
+                button: 272,
+                pressed: false,
+            },
+        ];
+        assert_eq!(
+            input(click).await.unwrap(),
+            Ok(true),
+            "the click reaches the window"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        // At a typist's pace: the session refuses over 120 events a second.
+        for stroke in typing(keys) {
+            assert_eq!(
+                input(stroke).await.unwrap(),
+                Ok(true),
+                "keys reach the window"
+            );
+            tokio::time::sleep(Duration::from_millis(60)).await;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        take(&mut encoded);
+        let after = encoded.len().saturating_sub(before);
+        println!("probe: typed {keys:?}; {before} pictures before, {after} after");
+        assert!(after > 0, "the window presented nothing after the input");
+    }
+    if let Some(save) = &args.save {
+        take(&mut encoded);
+        std::fs::write(save, encoded.concat()).expect("the saved stream");
+        println!(
+            "probe: saved {} pictures to {}",
+            encoded.len(),
+            save.display()
+        );
+    }
     assert_eq!(
         input(vec![wire::InputEvent::Close]).await.unwrap(),
         Ok(true)

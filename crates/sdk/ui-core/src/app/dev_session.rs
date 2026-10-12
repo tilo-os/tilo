@@ -46,7 +46,7 @@ impl App {
         if let Some(route) = checkpoint.route.as_ref() {
             self.root_widget.restore_dev_route(route);
             let root = self.state.root.clone();
-            self.root_widget.sync(&mut self.state.doc, &root);
+            self.root_widget.sync(&self.state.doc, &root);
         }
         Some(frozen.view)
     }
@@ -309,30 +309,8 @@ impl crate::widget::Widget for DevCaretField {
         node
     }
 
-    fn apply_layout(
-        &mut self,
-        _taffy: &taffy::TaffyTree<()>,
-        _node: taffy::NodeId,
-        _origin: vello::kurbo::Point,
-    ) {
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut vello::Scene,
-        _transform: vello::kurbo::Affine,
-        _text_renderer: &mut crate::text_render::TextRenderer,
-        _theme: &crate::Theme,
-        _presence: &crate::presence::PresenceCtx,
-    ) {
-    }
-
     fn name(&self) -> &str {
         "DevCaretField"
-    }
-
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
 
     fn is_focusable(&self) -> bool {
@@ -394,7 +372,7 @@ fn dev_checkpoint_restores_document_and_route() {
                 caret: String::new(),
             }))
         } else {
-            Ok(Box::new(Button::new(route, route, None)))
+            Ok(Box::new(Button::new(route, route)))
         }
     }
     let router = Router::new("home", ["home", "settings"], &theme, screen).unwrap();
@@ -409,7 +387,7 @@ fn dev_checkpoint_restores_document_and_route() {
         future: Vec::new(),
     });
     let root = app.state.root.clone();
-    app.root_widget.sync(&mut app.state.doc, &root);
+    app.root_widget.sync(&app.state.doc, &root);
     app.autofocus_first = true;
     app.init_layout();
     let focused = app.focused_node.expect("settings caret field is focused");

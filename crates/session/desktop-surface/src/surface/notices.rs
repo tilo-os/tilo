@@ -18,11 +18,10 @@ use ui::time::Instant;
 use ui::vello::Scene;
 use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
-use ui::winit::keyboard::{Key, NamedKey};
 
 use crate::notifications::{
-    CenterLayout, CenterOutcome, HistoryActivation, Notification, NotificationCenter,
-    NotificationHost, NotificationLog, NotificationStack,
+    CenterLayout, CenterMetrics, CenterOutcome, HistoryActivation, Notification,
+    NotificationCenter, NotificationHost, NotificationLog, NotificationStack,
 };
 
 /// Width of the centre panel, and its inset from the surface's edges.
@@ -436,9 +435,9 @@ pub(super) struct NotificationLayer {
     pub open_app: Option<String>,
     rect: Rect,
     cursor: Option<Point>,
-    /// The caption and label sizes the centre paints with, captured from the
+    /// The caption and label line boxes the centre lays out with, captured from the
     /// theme each paint so input between paints measures the same type.
-    type_px: (f32, f32),
+    type_lines: CenterMetrics,
     drawn_revision: Cell<Option<u64>>,
     /// Input changed what the layer shows; its layout (one full-size leaf)
     /// never changes, so this only asks for a repaint.
@@ -447,7 +446,6 @@ pub(super) struct NotificationLayer {
 
 impl NotificationLayer {
     pub fn new(notifications: DesktopNotifications) -> Self {
-        let scale = &ui::Theme::dark().tokens.typography.scale;
         Self {
             notifications,
             inbox: None,
@@ -456,7 +454,7 @@ impl NotificationLayer {
             open_app: None,
             rect: Rect::ZERO,
             cursor: None,
-            type_px: (scale.xs, scale.sm),
+            type_lines: CenterLayout::metrics(&ui::Theme::dark(), &mut ui::TextRenderer::new()),
             drawn_revision: Cell::new(None),
             dirty: true,
         }
@@ -489,12 +487,12 @@ impl NotificationLayer {
         let r = self.rect;
         let width = PANEL_WIDTH.min(r.width() - 2.0 * PANEL_INSET).max(0.0);
         let y0 = r.y0 + PANEL_INSET;
-        let wanted = center.preferred_height(&self.notifications.log(), self.type_px);
+        let wanted = center.preferred_height(&self.notifications.log(), self.type_lines);
         let height = wanted.min(r.y1 - PANEL_INSET - y0).max(0.0);
         let x1 = r.x1 - PANEL_INSET;
         Some(CenterLayout::new(
             Rect::new(x1 - width, y0, x1, y0 + height),
-            self.type_px,
+            self.type_lines,
         ))
     }
 
@@ -514,16 +512,45 @@ impl NotificationLayer {
 
     /// Route `event`; returns whether the layer consumed it.
     pub fn route(&mut self, event: &WindowEvent, scale: f64) -> bool {
+        self.route_with_shift(event, scale, false)
+    }
+
+    fn route_with_shift(&mut self, event: &WindowEvent, scale: f64, backwards: bool) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Some(Point::new(position.x / scale, position.y / scale));
             if self.center.is_some() {
                 // Hover lights the centre's controls.
                 self.dirty = true;
             }
-            return false;
         }
         let notifications = self.notifications.clone();
         let host = notifications.host();
+        if self.center.is_none() {
+            let mut handled = false;
+            self.dirty |= self
+                .stack
+                .handle_pointer_event(host, event, scale, &mut handled);
+            return handled;
+        }
+        self.stack.cancel_pointer_press();
+        if self.stack.wants_pointer_capture()
+            && !matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+        {
+            let mut handled = false;
+            self.dirty |= self
+                .stack
+                .handle_pointer_event(host, event, scale, &mut handled);
+            if handled {
+                return true;
+            }
+        }
         let layout = self.layout();
         match event {
             WindowEvent::MouseInput {
@@ -546,9 +573,7 @@ impl NotificationLayer {
                     self.dirty = true;
                     return true;
                 }
-                let hit = self.stack.click_at(host, p);
-                self.dirty |= hit;
-                hit
+                false
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (Some(center), Some(layout), Some(p)) =
@@ -567,12 +592,7 @@ impl NotificationLayer {
                 let (Some(center), Some(layout)) = (self.center.as_mut(), layout) else {
                     return false;
                 };
-                if event.logical_key == Key::Named(NamedKey::Escape) {
-                    self.center = None;
-                    self.dirty = true;
-                    return true;
-                }
-                let outcome = center.key(host, &layout, &event.logical_key);
+                let outcome = center.key_with_shift(host, &layout, &event.logical_key, backwards);
                 self.apply(outcome)
             }
             _ => false,
@@ -619,15 +639,7 @@ impl Widget for NotificationLayer {
         node
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        if let Ok(layout) = tree.layout(node) {
-            self.rect = Rect::from_origin_size(
-                Point::new(
-                    origin.x + f64::from(layout.location.x),
-                    origin.y + f64::from(layout.location.y),
-                ),
-                (f64::from(layout.size.width), f64::from(layout.size.height)),
-            );
-        }
+        self.rect = ui::widget::layout_rect(tree, node, origin);
     }
     fn draw(
         &mut self,
@@ -637,8 +649,7 @@ impl Widget for NotificationLayer {
         theme: &ui::Theme,
         _presence: &ui::presence::PresenceCtx,
     ) {
-        let scale = &theme.tokens.typography.scale;
-        self.type_px = (scale.xs, scale.sm);
+        self.type_lines = CenterLayout::metrics(theme, text);
         let notifications = self.notifications.clone();
         let host = notifications.host();
         self.stack.set_viewport(self.rect);
@@ -651,7 +662,7 @@ impl Widget for NotificationLayer {
                 scene,
                 transform,
                 panel,
-                f64::from(theme.tokens.radii.lg),
+                f64::from(theme.tokens.radii.control),
                 theme,
             );
             center.draw(host, &layout, scene, transform, text, theme, self.cursor);
@@ -660,9 +671,32 @@ impl Widget for NotificationLayer {
         self.dirty = false;
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if !*ctx.handled && self.route(event, ctx.scale_factor) {
+        if !*ctx.handled
+            && let Some(center) = self.center.as_mut()
+        {
+            self.dirty |= center.reader_event(event, ctx);
+        }
+        if !*ctx.handled
+            && self.route_with_shift(event, ctx.scale_factor, ctx.modifiers.state().shift_key())
+        {
             *ctx.handled = true;
         }
+    }
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        self.center.as_ref()?.reading_scroll()
+    }
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        let result = self
+            .center
+            .as_mut()
+            .map_or(ui::widget::PrimaryScrollResult::Unsupported, |center| {
+                center.apply_reading_scroll(action)
+            });
+        self.dirty |= matches!(result, ui::widget::PrimaryScrollResult::Changed(_));
+        result
     }
     /// The live region announcing banners, holding the centre's dialog
     /// while it is open. Absent while there is nothing to announce or show.
@@ -765,6 +799,60 @@ mod tests {
         let (mut layer, _) = layer_with(0);
         assert!(layer.accessibility().is_none());
         assert!(!press(&mut layer, Point::new(1200.0, 80.0)));
+    }
+
+    #[test]
+    fn portable_banner_clicks_complete_cancel_and_yield_to_history() {
+        for interrupted in [false, true] {
+            let (mut layer, notifications) = layer_with(1);
+            let theme = ui::Theme::dark().with_reduce_motion(true);
+            layer.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut ui::TextRenderer::new(),
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+            let point = layer.stack.rect().center();
+            layer.route(
+                &WindowEvent::CursorMoved {
+                    device_id: ui::winit::event::DeviceId::dummy(),
+                    position: ui::winit::dpi::PhysicalPosition::new(point.x, point.y),
+                },
+                1.0,
+            );
+            assert!(press(&mut layer, point));
+            assert!(
+                notifications.take_outcomes().is_empty(),
+                "pressing is not choosing"
+            );
+            if interrupted {
+                layer.set_center_open(true);
+            }
+            assert!(layer.route(
+                &WindowEvent::MouseInput {
+                    device_id: ui::winit::event::DeviceId::dummy(),
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+                1.0
+            ));
+            let outcomes = notifications.take_outcomes();
+            if interrupted {
+                assert!(
+                    outcomes.is_empty(),
+                    "foreground history cancels the armed banner"
+                );
+                assert_eq!(notifications.counts(), (1, 0));
+                assert!(layer.center_open());
+            } else {
+                assert!(
+                    matches!(&outcomes[..], [NotificationOutcome::Activated { action, .. }]
+                    if action.as_deref() == Some("default"))
+                );
+                assert_eq!(notifications.counts(), (0, 1));
+            }
+        }
     }
 
     #[test]
@@ -937,5 +1025,57 @@ mod tests {
         assert!(notifications.withdraw(retained));
         assert!(!notifications.withdraw(retained));
         assert_eq!(notifications.counts(), (0, 0));
+    }
+    fn reader_key_event(key: ui::winit::keyboard::NamedKey) -> WindowEvent {
+        use ui::winit::event::{KeyEvent, RawKeyEvent};
+        use ui::winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
+        let logical = Key::Named(key);
+        WindowEvent::KeyboardInput {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            event: KeyEvent::synthetic(
+                RawKeyEvent {
+                    physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+                    state: ElementState::Pressed,
+                },
+                logical.clone(),
+                None,
+                KeyLocation::Standard,
+                false,
+                None,
+                logical,
+            ),
+            is_synthetic: true,
+        }
+    }
+
+    #[test]
+    fn portable_notification_reader_returns_to_history_before_closing() {
+        use ui::winit::keyboard::NamedKey;
+        let (mut layer, notifications) = layer_with(1);
+        let id = notifications.log().active()[0].id;
+        notifications.host().dismiss(id);
+        notifications.take_outcomes();
+        layer.set_center_open(true);
+        assert!(layer.route(&reader_key_event(NamedKey::Tab), 1.0));
+        assert!(layer.route(&reader_key_event(NamedKey::Tab), 1.0));
+        assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
+        assert!(layer.center.as_ref().unwrap().is_reading());
+        assert!(layer.route(&reader_key_event(NamedKey::Delete), 1.0));
+        assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
+        assert_eq!(notifications.log().history().len(), 1);
+        assert!(notifications.take_outcomes().is_empty());
+        assert!(layer.route(&reader_key_event(NamedKey::Escape), 1.0));
+        assert!(layer.center_open());
+        assert!(!layer.center.as_ref().unwrap().is_reading());
+        assert!(layer.route(&reader_key_event(NamedKey::Enter), 1.0));
+        assert!(layer.center.as_ref().unwrap().is_reading());
+        let back = layer.layout().unwrap().back();
+        assert!(press(&mut layer, back.center()));
+        assert!(layer.center_open());
+        assert!(!layer.center.as_ref().unwrap().is_reading());
+        assert!(layer.route(&reader_key_event(NamedKey::Escape), 1.0));
+        assert!(!layer.center_open());
+        assert!(notifications.take_outcomes().is_empty());
+        assert!(layer.open_app.is_none());
     }
 }

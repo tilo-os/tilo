@@ -483,6 +483,7 @@ mod tests {
                 architecture: "x86_64".into(),
                 isa: isa.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             },
         }
     }

@@ -1,4 +1,5 @@
-//! The SSH transport to a VM's tilo-vmd.
+//! The transports to a VM's tilo-vmd: SSH, and for a device beyond the
+//! LAN, the peer network through `tilo-device-admin dial`.
 
 use std::io::{BufReader, Read as _};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -7,6 +8,8 @@ use tilo_vm_protocol::{Call, Client, ClientError, HelloResult};
 
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, SshEndpoint};
+
+mod keepawake;
 
 pub const DEFAULT_DAEMON: &str = "tilo-vmd rpc";
 
@@ -125,11 +128,57 @@ pub fn sudo_refusal(stderr: &str) -> Option<String> {
 
 pub struct Remote {
     child: Child,
-    client: Client<BufReader<ChildStdout>, ChildStdin>,
+    /// `None` only while dropping: closing its stdin ends the session.
+    client: Option<Client<BufReader<ChildStdout>, ChildStdin>>,
     pub hello: HelloResult,
+    /// Over the peer network: the dial helper closes the connection itself
+    /// once its stdin ends, so the device's session ends at once.
+    peer: bool,
 }
 
 impl Remote {
+    /// Renew the existing automatic sleep lease while a builder is running.
+    /// Explicit longer holds are preserved by the normal hello handshake.
+    ///
+    /// # Errors
+    /// Worker startup, handshake, lease and transport failures. The inner
+    /// result reports a renewal failure after the owned build has finished.
+    pub(crate) fn keep_awake_while<T>(
+        &mut self,
+        build: impl FnOnce() -> T,
+    ) -> Result<(T, Result<(), CliError>), CliError> {
+        keepawake::during(
+            std::time::Duration::from_secs(60),
+            || self.renew_sleep_lease(std::time::Duration::from_secs(10)),
+            build,
+        )
+    }
+
+    fn renew_sleep_lease(&mut self, timeout: std::time::Duration) -> Result<(), CliError> {
+        let client = self
+            .client
+            .as_mut()
+            .ok_or_else(|| CliError::from(ClientError::Closed))?;
+        let hello = keepawake::hello(client, &mut self.child, timeout)?;
+        let lease = hello.awake.as_ref().ok_or_else(|| {
+            CliError::io("renew the device sleep lease")(std::io::Error::other(
+                "the daemon did not report its sleep lease",
+            ))
+        })?;
+        if !lease.held {
+            return Err(CliError::io("renew the device sleep lease")(
+                std::io::Error::other(
+                    lease
+                        .problem
+                        .as_deref()
+                        .unwrap_or("the sleep lock is not held"),
+                ),
+            ));
+        }
+        self.hello = hello;
+        Ok(())
+    }
+
     /// Open `ssh <vm> tilo-vmd rpc` and complete the handshake.
     ///
     /// # Errors
@@ -168,11 +217,14 @@ impl Remote {
             return Err(CliError::io("start ssh")(std::io::Error::other("no pipes")));
         };
         let mut client = Client::new(BufReader::new(stdout), stdin);
+        // SSH stdio is byte-transparent; the audited peer bridge stays JSON-line oriented.
+        client.enable_binary_uploads();
         match client.hello(env!("CARGO_PKG_VERSION")) {
             Ok(hello) => Ok(Self {
                 child,
-                client,
+                client: Some(client),
                 hello,
+                peer: false,
             }),
             Err(ClientError::Io(_) | ClientError::Closed) => {
                 let _ = child.kill();
@@ -220,16 +272,170 @@ impl Remote {
         }
     }
 
+    /// Open tilo-vmd's RPC over the peer network: `line` runs
+    /// `tilo-device-admin dial`, whose first line names the device and the
+    /// route before the request lines start.
+    ///
+    /// # Errors
+    /// A missing dial helper, a dial that fails (with its exit status and
+    /// what it said), or a protocol mismatch.
+    pub fn over_peer(vm: &str, line: &CommandLine) -> Result<(Self, PeerSession), CliError> {
+        let mut child = Command::new(&line.program)
+            .args(&line.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    peer_tool_missing()
+                } else {
+                    CliError::io("start tilo-device-admin")(e)
+                }
+            })?;
+        let (Some(stdout), Some(stdin)) = (child.stdout.take(), child.stdin.take()) else {
+            return Err(CliError::io("start tilo-device-admin")(
+                std::io::Error::other("no pipes"),
+            ));
+        };
+        let mut stdout = BufReader::new(stdout);
+        let mut first = String::new();
+        let session = match std::io::BufRead::read_line(&mut stdout, &mut first) {
+            Ok(n) if n > 0 => serde_json::from_str::<PeerPreamble>(&first)
+                .map(|preamble| preamble.tilo_device_admin)
+                .ok(),
+            _ => None,
+        };
+        let Some(session) = session else {
+            drop(stdin);
+            return Err(peer_failure(vm, &mut child));
+        };
+        let mut client = Client::new(stdout, stdin);
+        match client.hello(env!("CARGO_PKG_VERSION")) {
+            Ok(hello) => Ok((
+                Self {
+                    child,
+                    client: Some(client),
+                    hello,
+                    peer: true,
+                },
+                session,
+            )),
+            Err(ClientError::Io(_) | ClientError::Closed) => {
+                drop(client);
+                Err(peer_failure(vm, &mut child))
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(error.into())
+            }
+        }
+    }
+
     /// # Errors
     /// Daemon-reported and transport errors.
     pub fn call<C: Call>(&mut self, params: C) -> Result<C::Output, CliError> {
-        self.client.call(params).map_err(CliError::from)
+        self.client
+            .as_mut()
+            .ok_or_else(|| CliError::from(ClientError::Closed))?
+            .call(params)
+            .map_err(CliError::from)
     }
 
     /// # Errors
     /// Read or transport failures.
     pub fn upload(&mut self, bytes: impl std::io::Read) -> Result<String, CliError> {
-        self.client.upload(bytes).map_err(CliError::from)
+        self.client
+            .as_mut()
+            .ok_or_else(|| CliError::from(ClientError::Closed))?
+            .upload(bytes)
+            .map_err(CliError::from)
+    }
+}
+
+/// What a peer-network session said about itself before its first request.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct PeerSession {
+    /// The device id that proved itself, hex.
+    pub device: String,
+    pub label: String,
+    /// `relay` or `direct`.
+    pub route: String,
+    /// The relay's URL or the device's address.
+    pub via: String,
+    /// The session's number in the device's journal.
+    pub session: u64,
+}
+
+impl PeerSession {
+    /// `relay <url>` or `direct <address>`.
+    pub fn describe(&self) -> String {
+        format!("{} {}", self.route, self.via).trim().to_owned()
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PeerPreamble {
+    tilo_device_admin: PeerSession,
+}
+
+/// `TILO_DEVICE_ADMIN` names the dial helper; else `tilo-device-admin`
+/// beside this executable, else on PATH.
+pub fn peer_tool() -> String {
+    if let Some(tool) = std::env::var_os("TILO_DEVICE_ADMIN").filter(|tool| !tool.is_empty()) {
+        return tool.to_string_lossy().into_owned();
+    }
+    let name = format!("tilo-device-admin{}", std::env::consts::EXE_SUFFIX);
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(&name)))
+        .filter(|beside| beside.is_file())
+        .map_or(name, |beside| beside.display().to_string())
+}
+
+fn peer_tool_missing() -> CliError {
+    CliError::ToolMissing {
+        tool: "tilo-device-admin".into(),
+        purpose: "reach a device beyond this network over the peer network; build it beside tilo-vm (cargo build --release -p tilo-device-admin, then copy target/release/tilo-device-admin next to tilo-vm), or name it in TILO_DEVICE_ADMIN".into(),
+    }
+}
+
+/// The dial helper's arguments for `route`, as this machine's identity at
+/// `identity_root`.
+pub fn peer_dial(route: &crate::config::PeerRoute, identity_root: &std::path::Path) -> CommandLine {
+    let mut line = CommandLine::new(&peer_tool(), &["dial", "--identity-root"]);
+    line.args.push(identity_root.display().to_string());
+    line.args
+        .extend(["--endpoint".into(), route.endpoint.clone()]);
+    line.args.extend(["--device".into(), route.device.clone()]);
+    if let Some(relay) = &route.relay {
+        line.args.extend(["--relay".into(), relay.clone()]);
+    }
+    if let Some(home) = &route.home_relay {
+        line.args.extend(["--home-relay".into(), home.clone()]);
+    }
+    line
+}
+
+/// Why the dial helper ended, from its exit status and what it said.
+fn peer_failure(vm: &str, child: &mut Child) -> CliError {
+    let status = child.wait().ok().and_then(|status| status.code());
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    let detail = stderr
+        .lines()
+        .rev()
+        .map(|line| line.trim().trim_start_matches("tilo-device-admin: "))
+        .find(|line| !line.is_empty())
+        .unwrap_or("the dial ended without a word")
+        .to_owned();
+    CliError::PeerRoute {
+        vm: vm.into(),
+        failure: crate::error::PeerFailure::from_exit(status),
+        detail,
     }
 }
 
@@ -318,6 +524,18 @@ pub fn hold_vm_lock(endpoint: &SshEndpoint, key: Option<&str>) -> LockOutcome {
 impl Drop for Remote {
     fn drop(&mut self) {
         // Closing stdin ends the daemon's loop; reap ssh so no zombie remains.
+        drop(self.client.take());
+        if self.peer {
+            // The dial helper closes its connection on its way out; killed,
+            // it would leave the device's session to time out.
+            let started = std::time::Instant::now();
+            while started.elapsed() < std::time::Duration::from_secs(3) {
+                if matches!(self.child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::sync::{MutexGuard, OwnedSemaphorePermit, Semaphore, watch};
 
+use crate::membership_watch::DiskGeneration;
 use crate::peer::WorkspaceRegistry;
+use crate::room_access::AdmissionMode;
 use crate::store::{GovernedAccessRecord, StoreError, WorkspaceStore};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 
@@ -104,10 +106,50 @@ async fn authority_handles(
     (runtime.store.clone(), runtime.authorization.clone())
 }
 
-/// Fresh external-file membership read. Callers must recheck certificate,
-/// policy, room and exact sessions using the returned routing guard. The lane
-/// is released while that guard remains held, so a newer update cannot be
-/// overwritten by this read or slip between this read and the caller's check.
+/// The handles a membership reload needs, attaching the room to the daemon's
+/// membership watch when one now covers it (the runtime may have opened
+/// before the watch started, or outlived a stopped one).
+async fn reload_handles(
+    workspace: &SharedWorkspace,
+) -> (
+    WorkspaceStore,
+    Arc<tokio::sync::Mutex<()>>,
+    Option<DiskGeneration>,
+) {
+    let mut runtime = workspace.lock().await;
+    let generation = watched_generation(&mut runtime);
+    (
+        runtime.store.clone(),
+        runtime.authorization.clone(),
+        generation,
+    )
+}
+
+fn watched_generation(runtime: &mut WorkspaceRuntime) -> Option<DiskGeneration> {
+    if !runtime
+        .disk_generation
+        .as_ref()
+        .is_some_and(DiskGeneration::is_live)
+    {
+        runtime.disk_generation = crate::membership_watch::attach(runtime.store.root());
+    }
+    runtime.disk_generation.clone()
+}
+
+/// Current membership: in memory, reloaded from the external file only after
+/// the daemon's membership watch saw it change (or on every call while no live
+/// watch covers the room). Callers must recheck certificate, policy, room and
+/// exact sessions using the returned routing guard. A reload holds the
+/// authorization lane, and releases it while that guard remains held, so a
+/// newer update cannot be overwritten by this read or slip between this read
+/// and the caller's check. In-process writers narrow the in-memory set under
+/// the routing lock before any filesystem work, so a read that needs no reload
+/// already sees their removals.
+///
+/// Only device membership is reloaded. `governed_user_roots` and
+/// the governed admission mode change through `replace_governed_access` and the
+/// runtime's open, as before the watch: an external edit of the governed file
+/// narrows or widens the exact devices, not the handshake roots.
 pub(crate) async fn fresh_membership(
     workspace: &SharedWorkspace,
 ) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
@@ -133,9 +175,23 @@ async fn fresh_membership_inner(
     workspace: &SharedWorkspace,
     trace: Option<MembershipTrace>,
 ) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
+    {
+        let runtime = workspace.lock().await;
+        if runtime.membership_is_current() {
+            // No disk IO, no worker, no lane.
+            return Ok(runtime);
+        }
+    }
+    reload_membership(workspace, trace).await
+}
+
+async fn reload_membership(
+    workspace: &SharedWorkspace,
+    trace: Option<MembershipTrace>,
+) -> Result<MutexGuard<'_, WorkspaceRuntime>, StoreError> {
     let _slot = admit_work()?;
     membership_phase(trace, "delivery_membership_handles_wait");
-    let (store, lane) = authority_handles(workspace).await;
+    let (store, lane, generation) = reload_handles(workspace).await;
     membership_phase(trace, "delivery_membership_handles_acquired");
     membership_phase(trace, "delivery_membership_lane_wait");
     #[cfg(test)]
@@ -158,15 +214,36 @@ async fn fresh_membership_inner(
     #[cfg(not(test))]
     let _lane = lane.lock_owned().await;
     membership_phase(trace, "delivery_membership_lane_acquired");
-    let mut members = authorization_io(move || store.load_membership(), trace).await?;
+    // Observed before the read: a change during it moves the generation on,
+    // and the next call reads again.
+    let observed = generation.as_ref().and_then(DiskGeneration::current);
+    if observed.is_some() {
+        let runtime = workspace.lock().await;
+        if runtime.loaded_generation == observed {
+            // Another reload finished while this one waited for the lane.
+            return Ok(runtime);
+        }
+    }
+    let members = authorization_io(move || store.load_membership(), trace).await?;
     membership_phase(trace, "delivery_membership_runtime_wait");
     let mut runtime = workspace.lock().await;
     membership_phase(trace, "delivery_membership_runtime_acquired");
+    apply_loaded_membership(&mut runtime, members, observed);
+    Ok(runtime)
+}
+
+/// Publish membership read from disk, bounded by any pending or failed
+/// replacement's ceiling, as loaded at `observed`.
+fn apply_loaded_membership(
+    runtime: &mut WorkspaceRuntime,
+    mut members: Vec<[u8; 32]>,
+    observed: Option<u64>,
+) {
     if let Some(ceiling) = &runtime.membership_ceiling {
         members.retain(|device| ceiling.contains(device));
     }
     runtime.membership.set(members);
-    Ok(runtime)
+    runtime.loaded_generation = observed;
 }
 
 /// Persist an explicitly authorized admission before granting it. The detached,
@@ -245,6 +322,8 @@ pub(crate) async fn replace_membership(
                 .devices
                 .retain(|device| members.contains(device));
         }
+        // Sessions of removed devices re-check now, before the write.
+        crate::authority_epoch::bump();
         let saved = members.clone();
         authorization_io(move || store.save_membership(&saved), None).await?;
         let mut runtime = workspace.lock().await;
@@ -303,19 +382,19 @@ pub(crate) async fn replace_governed_access(
             runtime
                 .governed_user_roots
                 .retain(|root| access.member_user_roots.contains(root));
-            runtime.governed_access = true;
-            runtime.admit_authenticated = false;
+            runtime.admission = AdmissionMode::Governed;
             // Refuse while the authority lane is held so the writer can deliver
             // NotAuthorised before a waiting access audit closes the session.
             runtime.refuse_removed_live_members(&removed);
         }
+        // Sessions of removed devices and roots re-check now, before the write.
+        crate::authority_epoch::bump();
         let saved = access.clone();
         authorization_io(move || store.save_governed_access(&saved), None).await?;
         let mut runtime = workspace.lock().await;
         runtime.membership.set(access.member_devices);
         runtime.governed_user_roots = access.member_user_roots.into_iter().collect();
-        runtime.governed_access = true;
-        runtime.admit_authenticated = false;
+        runtime.admission = AdmissionMode::Governed;
         runtime.membership_ceiling = None;
         Ok(())
     })
@@ -335,7 +414,7 @@ async fn open_runtime(
     state_root: std::path::PathBuf,
     workspace_id: u64,
     pinned: bool,
-    admit_authenticated: bool,
+    admission: AdmissionMode,
 ) -> OpenResult {
     static OPEN: OnceLock<Arc<Semaphore>> = OnceLock::new();
     let permit = OPEN
@@ -348,7 +427,8 @@ async fn open_runtime(
         let _permit = permit;
         let mut runtime =
             WorkspaceRuntime::open(&state_root, workspace_id, pinned, Membership::default())?;
-        runtime.admit_authenticated = admit_authenticated;
+        // A governed record on disk keeps the room governed.
+        runtime.admission = runtime.admission.rebind(admission);
         Ok::<_, StoreError>(Arc::new(tokio::sync::Mutex::new(runtime)))
     })
     .await
@@ -368,7 +448,7 @@ pub(crate) async fn get_or_initialize(
     state_root: std::path::PathBuf,
     workspace_id: u64,
     pinned: bool,
-    admit_authenticated: bool,
+    admission: AdmissionMode,
     capacity: usize,
 ) -> Result<SharedWorkspace, StoreError> {
     let registry_id = Arc::as_ptr(workspaces) as usize;
@@ -397,8 +477,7 @@ pub(crate) async fn get_or_initialize(
             drop(map);
             let registry = workspaces.clone();
             tokio::spawn(async move {
-                let opened =
-                    open_runtime(state_root, workspace_id, pinned, admit_authenticated).await;
+                let opened = open_runtime(state_root, workspace_id, pinned, admission).await;
                 let mut map = registry.lock().await;
                 let opened =
                     opened.map(|workspace| map.entry(workspace_id).or_insert(workspace).clone());
@@ -595,6 +674,211 @@ mod tests {
         );
     }
 
+    /// Fresh reads until the started membership watch vouches for the room.
+    async fn warm(workspace: &SharedWorkspace) {
+        tilo_test_env::within("the membership watch to vouch for the room", async {
+            while !fresh_membership(workspace)
+                .await
+                .unwrap()
+                .membership_is_current()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+    }
+
+    async fn wait_for_members(workspace: &SharedWorkspace, expected: &[[u8; 32]]) {
+        tilo_test_env::within("the external membership edit to be observed", async {
+            while fresh_membership(workspace)
+                .await
+                .unwrap()
+                .membership
+                .devices
+                != expected
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn fresh_membership_cache_hit_does_not_read_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = runtime(tmp.path());
+        let store = workspace.lock().await.store.clone();
+        store.save_membership(&[[1; 32]]).unwrap();
+        let watch = crate::membership_watch::spawn_membership_watch(tmp.path());
+        warm(&workspace).await;
+        let (_release, mut reached) = test_barrier::install(store.root(), "membership-read");
+        let devices = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            fresh_membership(&workspace)
+                .await
+                .map(|runtime| runtime.membership.devices.clone())
+        })
+        .await
+        .expect("an unchanged room must not wait for its membership file")
+        .unwrap();
+        assert_eq!(devices, vec![[1; 32]]);
+        assert!(
+            reached.try_recv().is_err(),
+            "an unchanged room read its membership file"
+        );
+        watch.abort();
+    }
+
+    #[tokio::test]
+    async fn external_membership_edit_is_observed_after_watch_event() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = runtime(tmp.path());
+        let watch = crate::membership_watch::spawn_membership_watch(tmp.path());
+        warm(&workspace).await;
+        // `tilo-relay-admin` edits the file from another process.
+        let external = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        external.save_membership(&[[1; 32], [2; 32]]).unwrap();
+        wait_for_members(&workspace, &[[1; 32], [2; 32]]).await;
+        external.save_membership(&[[2; 32]]).unwrap();
+        wait_for_members(&workspace, &[[2; 32]]).await;
+        watch.abort();
+    }
+
+    #[tokio::test]
+    async fn generation_changed_during_read_reloads_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = runtime(tmp.path());
+        let store = workspace.lock().await.store.clone();
+        store.save_membership(&[[1; 32]]).unwrap();
+        let watch = crate::membership_watch::spawn_membership_watch(tmp.path());
+        warm(&workspace).await;
+        let generation = workspace.lock().await.disk_generation.clone().unwrap();
+        let read = |workspace: &SharedWorkspace| {
+            let workspace = workspace.clone();
+            tokio::spawn(async move {
+                fresh_membership(&workspace)
+                    .await
+                    .unwrap()
+                    .membership
+                    .devices
+                    .clone()
+            })
+        };
+
+        let (release, reached) = test_barrier::install(store.root(), "membership-read");
+        generation.bump();
+        let reader = read(&workspace);
+        tilo_test_env::within("the changed room to read its file", reached)
+            .await
+            .unwrap();
+        // Another change lands while that read is in flight.
+        generation.bump();
+        drop(release);
+        assert_eq!(reader.await.unwrap(), vec![[1; 32]]);
+        assert!(!workspace.lock().await.membership_is_current());
+
+        let (release, reached) = test_barrier::install(store.root(), "membership-read");
+        let reader = read(&workspace);
+        tilo_test_env::within("the next authorization to read the file again", reached)
+            .await
+            .unwrap();
+        drop(release);
+        assert_eq!(reader.await.unwrap(), vec![[1; 32]]);
+        assert!(workspace.lock().await.membership_is_current());
+        watch.abort();
+    }
+
+    #[tokio::test]
+    async fn compute_attach_respects_membership_ceiling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = runtime(tmp.path());
+        replace_membership(&workspace, vec![[1; 32], [2; 32]])
+            .await
+            .unwrap();
+        let path = tmp.path().join("workspaces/7/membership.json");
+        let saved = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            replace_membership(&workspace, vec![[2; 32], [3; 32]])
+                .await
+                .is_err()
+        );
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, saved).unwrap();
+        // The old file still lists [1; 32]; the failed replacement removed it.
+        let owner = [9; 32];
+        let revocations = std::sync::RwLock::new(tilo_user_identity::RevocationList::new());
+        let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
+        let agents = crate::peer::AgentRegistry::default();
+        let trust = crate::room_access::RelayTrust {
+            revocations: &revocations,
+            policy: &policy,
+            own_user: &owner,
+            agents: &agents,
+        };
+        let removed = crate::room_access::tests::unsigned_peer(owner, [1; 32]);
+        for mode in [AdmissionMode::Explicit, AdmissionMode::SameOwner] {
+            // Not even a same-owner room enrols past the ceiling.
+            workspace.lock().await.admission = mode;
+            let admission =
+                crate::compute_session::admit_compute_peer(&workspace, &trust, &removed)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                admission,
+                Err(crate::room_access::DenyReason::NotAMember),
+                "a removed device attached as a compute peer"
+            );
+            assert_eq!(workspace.lock().await.membership.devices, vec![[2; 32]]);
+        }
+    }
+
+    #[tokio::test]
+    async fn compute_attach_does_not_enrol_cross_user_device() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = runtime(tmp.path());
+        workspace.lock().await.admission = AdmissionMode::SameOwner;
+        let owner = [9; 32];
+        // The handshake admits anyone: only the room may keep a stranger out.
+        let revocations = std::sync::RwLock::new(tilo_user_identity::RevocationList::new());
+        let policy = std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny);
+        let agents = crate::peer::AgentRegistry::default();
+        let trust = crate::room_access::RelayTrust {
+            revocations: &revocations,
+            policy: &policy,
+            own_user: &owner,
+            agents: &agents,
+        };
+        let stranger = crate::room_access::tests::unsigned_peer([8; 32], [1; 32]);
+        assert_eq!(
+            crate::compute_session::admit_compute_peer(&workspace, &trust, &stranger)
+                .await
+                .unwrap(),
+            Err(crate::room_access::DenyReason::NotAMember)
+        );
+        assert!(
+            fresh_membership(&workspace)
+                .await
+                .unwrap()
+                .membership
+                .devices
+                .is_empty(),
+            "a cross-user device was enrolled through compute"
+        );
+        let own = crate::room_access::tests::unsigned_peer(owner, [2; 32]);
+        assert_eq!(
+            crate::compute_session::admit_compute_peer(&workspace, &trust, &own)
+                .await
+                .unwrap(),
+            Ok(())
+        );
+        assert_eq!(
+            workspace.lock().await.store.load_membership().unwrap(),
+            vec![[2; 32]],
+            "the owner's device is enrolled durably"
+        );
+    }
+
     #[tokio::test]
     async fn opening_reservation_counts_toward_limit_and_survives_waiter_cancellation() {
         let tmp = tempfile::tempdir().unwrap();
@@ -604,17 +888,32 @@ mod tests {
         let first_registry = registry.clone();
         let first_root = root.clone();
         let first = tokio::spawn(async move {
-            get_or_initialize(&first_registry, first_root, 7, false, false, 1).await
+            get_or_initialize(
+                &first_registry,
+                first_root,
+                7,
+                false,
+                AdmissionMode::Explicit,
+                1,
+            )
+            .await
         });
         reached.await.unwrap();
         assert!(
-            get_or_initialize(&registry, root.clone(), 8, false, false, 1)
-                .await
-                .is_err()
+            get_or_initialize(
+                &registry,
+                root.clone(),
+                8,
+                false,
+                AdmissionMode::Explicit,
+                1
+            )
+            .await
+            .is_err()
         );
         first.abort();
         drop(release);
-        let workspace = get_or_initialize(&registry, root, 7, false, false, 1)
+        let workspace = get_or_initialize(&registry, root, 7, false, AdmissionMode::Explicit, 1)
             .await
             .unwrap();
         assert!(Arc::ptr_eq(&registry.lock().await[&7], &workspace));
@@ -632,7 +931,15 @@ mod tests {
         let first_registry = registry.clone();
         let first_root = root.clone();
         let first = tokio::spawn(async move {
-            get_or_initialize(&first_registry, first_root, 7, false, false, 1).await
+            get_or_initialize(
+                &first_registry,
+                first_root,
+                7,
+                false,
+                AdmissionMode::Explicit,
+                1,
+            )
+            .await
         });
         reached.await.unwrap();
         let mut second = Box::pin(get_or_initialize(
@@ -640,7 +947,7 @@ mod tests {
             root.clone(),
             7,
             false,
-            false,
+            AdmissionMode::Explicit,
             1,
         ));
         assert!(
@@ -655,7 +962,7 @@ mod tests {
         assert!(registry.lock().await.is_empty());
         std::fs::remove_file(tmp.path().join("workspaces/7")).unwrap();
         assert!(
-            get_or_initialize(&registry, root, 7, false, false, 1)
+            get_or_initialize(&registry, root, 7, false, AdmissionMode::Explicit, 1)
                 .await
                 .is_ok()
         );

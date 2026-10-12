@@ -12,7 +12,7 @@ use crate::DEFAULT_TIMEOUT;
 /// Maximum stdout or stderr retained from one OS helper. Eight MiB is far
 /// above legitimate status/list output while bounding a compromised daemon or
 /// network-derived response before it can exhaust the desktop process.
-const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Memo for [`which`]. A binary doesn't appear on or vanish from `$PATH` during a session;
 /// Quick-settings alone asked seven times per open, so caching cuts the probe to one spawn
@@ -77,7 +77,7 @@ pub(crate) fn run_capture(binary: &str, args: &[&str]) -> Result<String, String>
 }
 
 /// [`run_capture`] with an explicit deadline.
-fn run_capture_within(
+pub(crate) fn run_capture_within(
     binary: &str,
     args: &[&str],
     timeout: std::time::Duration,
@@ -88,7 +88,7 @@ fn run_capture_within(
     let output = bounded_command::run(binary, args, None, MAX_CAPTURE_BYTES, timeout)
         .map_err(|error| bounded_error(binary, error))?;
     if !output.status.success() {
-        let stderr = sanitized_diagnostic(&output.stderr);
+        let stderr = output.stderr_diagnostic();
         return Err(format!(
             "{binary} exited with status {:?}: {stderr}",
             output.status.code()
@@ -140,16 +140,6 @@ fn bounded_error(binary: &str, error: bounded_command::Error) -> String {
         }
         other => format!("{binary} process failed: {other}"),
     }
-}
-
-fn sanitized_diagnostic(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
-        .take(512)
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 #[cfg(test)]

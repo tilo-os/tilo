@@ -19,7 +19,8 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use tilo_relay_protocol::live::{
-    ANCHOR_TAG_SAME_SCOPE, ANCHOR_TAG_SCOPED, LiveAnchor, LiveFrame, MAX_OBJECT_ID_BYTES,
+    ANCHOR_TAG_DIGEST, ANCHOR_TAG_SAME_SCOPE, ANCHOR_TAG_SCOPED, LiveAnchor, LiveFrame,
+    MAX_OBJECT_ID_BYTES,
 };
 use ui::collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, CollabTransport, DocumentPublicationError,
@@ -113,10 +114,18 @@ pub fn read_presence_anchors(
     read_anchors(anchor, head)
 }
 
+/// A key too long for the anchor (a framework resource key naming a long
+/// item id) travels as its scope digest, which the receiving editor resolves
+/// against its own keys ([`PresenceKey::digest_form`]).
 fn anchors(key: &PresenceKey, start: usize, end: usize) -> Option<(LiveAnchor, LiveAnchor)> {
     let mut anchor = vec![ANCHOR_TAG_SCOPED];
     push_uvarint(&mut anchor, u64::try_from(start).ok()?);
     anchor.extend(postcard::to_stdvec(key).ok()?);
+    if anchor.len() > MAX_OBJECT_ID_BYTES {
+        anchor = vec![ANCHOR_TAG_DIGEST];
+        push_uvarint(&mut anchor, u64::try_from(start).ok()?);
+        anchor.extend_from_slice(&key.scope_digest()?);
+    }
     let mut head = vec![ANCHOR_TAG_SAME_SCOPE];
     push_uvarint(&mut head, u64::try_from(end).ok()?);
     (anchor.len() <= MAX_OBJECT_ID_BYTES)
@@ -125,11 +134,12 @@ fn anchors(key: &PresenceKey, start: usize, end: usize) -> Option<(LiveAnchor, L
 
 fn read_anchors(anchor: &LiveAnchor, head: &LiveAnchor) -> Option<(PresenceKey, usize, usize)> {
     let (&tag, rest) = anchor.cursor.split_first()?;
-    if tag != ANCHOR_TAG_SCOPED {
-        return None;
-    }
     let (start, key) = read_uvarint(rest)?;
-    let key: PresenceKey = postcard::from_bytes(key).ok()?;
+    let key: PresenceKey = match tag {
+        ANCHOR_TAG_SCOPED => postcard::from_bytes(key).ok()?,
+        ANCHOR_TAG_DIGEST => PresenceKey::from_scope_digest(key.try_into().ok()?),
+        _ => return None,
+    };
     let (&tag, rest) = head.cursor.split_first()?;
     if tag != ANCHOR_TAG_SAME_SCOPE {
         return None;
@@ -161,7 +171,7 @@ impl RelayCollabTransport {
         Self {
             inbound: peer.events(),
             peer,
-            live: crate::live::LiveState::new(crate::clock::now_ms()),
+            live: crate::live::LiveState::new(tilo_clock::unix_now_ms()),
             primary: None,
             confirm_pending: false,
             primary_results: VecDeque::new(),
@@ -218,7 +228,7 @@ impl RelayCollabTransport {
             });
         let frame = self
             .live
-            .publish_presence(crate::clock::now_ms(), |presence| {
+            .publish_presence(tilo_clock::unix_now_ms(), |presence| {
                 presence.focus.clone_from(&focus);
                 match payload {
                     PresencePayload::Pointer { x, y } => presence.pointer = Some([*x, *y]),
@@ -298,7 +308,7 @@ impl RelayCollabTransport {
         };
         if self
             .live
-            .receive(from, frame, crate::clock::now_ms())
+            .receive(from, frame, tilo_clock::unix_now_ms())
             .is_none()
         {
             return;

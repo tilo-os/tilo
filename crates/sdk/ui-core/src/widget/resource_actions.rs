@@ -1,28 +1,25 @@
 //! Toolkit-owned host for a small app's typed resource/action surface.
 //!
 //! Apps provide their retained root, one discoverable resource, and an
-//! immediate or background operation closure. The host supplies the widget
+//! immediate operation closure. The host supplies the widget
 //! forwarding and invocation lifecycle; scaffolds do not need to copy that
 //! infrastructure into every new project.
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crate::automerge::{AutoCommit, ObjId};
-use crate::kurbo::{Affine, Point, Rect};
+use crate::kurbo::Rect;
 use crate::taffy::{NodeId, TaffyTree};
 use crate::tilo_actions::{
-    ActionBinding, ActionBindingError, ActionContract, ActionFailure, ActionOutput, ActionParam,
-    ActionSpec, DiscoveryScope, EncodedAction, ExecutionMode, InvocationId, InvocationUpdate,
-    OperationKind, ParamType, Resource, ResultSpec,
+    ActionBinding, ActionBindingError, ActionContract, ActionOutput, ActionParam, ActionSpec,
+    EncodedAction, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
-use crate::vello::Scene;
 use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Widget};
 
 /// Shared effect-operation type used by the one-resource app host.
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
 
-/// Build one launchable resource with a unit operation.
+/// Build one resource with a unit operation.
 ///
 /// # Panics
 ///
@@ -32,13 +29,7 @@ pub const OPERATION_TYPE: &str = "tilo.app.operation";
     clippy::expect_used,
     reason = "serializing the unit operation payload is infallible"
 )]
-pub fn resource(
-    kind: &str,
-    label: &str,
-    action_id: &str,
-    action_label: &str,
-    background: bool,
-) -> Resource {
+pub fn resource(kind: &str, label: &str, action_id: &str, action_label: &str) -> Resource {
     let mut action = ActionSpec::operation(
         action_id,
         action_label,
@@ -48,23 +39,14 @@ pub fn resource(
     )
     .expect("the unit operation is serializable");
     action.contract = ActionContract {
-        discovery: DiscoveryScope::Launchable,
-        execution: if background {
-            ExecutionMode::Background { cancellable: false }
-        } else {
-            ExecutionMode::Immediate
-        },
-        result: if background {
-            ResultSpec::Job
-        } else {
-            ResultSpec::None
-        },
+        execution: ExecutionMode::Immediate,
+        result: ResultSpec::None,
         ..ActionContract::default()
     };
     Resource::new(format!("{kind}:root"), kind, label).with_action(action)
 }
 
-/// Build one launchable resource whose arguments are schema-bound.
+/// Build one resource whose arguments are schema-bound.
 ///
 /// # Panics
 ///
@@ -81,7 +63,7 @@ pub fn typed_resource(
     action_label: &str,
     params: Vec<ActionParam>,
 ) -> Resource {
-    let mut action = ActionSpec::typed_operation(
+    let action = ActionSpec::typed_operation(
         action_id,
         action_label,
         "Enter action arguments",
@@ -93,7 +75,6 @@ pub fn typed_resource(
                 .expect("bound arguments are serializable")
         },
     );
-    action.contract.discovery = DiscoveryScope::Launchable;
     Resource::new(format!("{kind}:root"), kind, label).with_action(action)
 }
 
@@ -334,19 +315,12 @@ pub fn form(root: Box<dyn Widget>, form: ActionForm) -> Box<dyn Widget> {
 }
 
 type Immediate = Box<dyn FnMut(&[u8]) -> Result<ActionOutput, String>>;
-type Background = Box<dyn FnMut(&[u8]) -> Result<Receiver<Result<ActionOutput, String>>, String>>;
-
-enum Runner {
-    Immediate(Immediate),
-    Background(Background),
-}
 
 /// Transparent retained root that publishes and executes one app resource.
 pub struct ResourceActionHost {
     root: Box<dyn Widget>,
     resource: Resource,
-    runner: Runner,
-    pending: HashMap<InvocationId, Receiver<Result<ActionOutput, String>>>,
+    run: Immediate,
     rect: Rect,
 }
 
@@ -359,47 +333,15 @@ pub fn immediate(
     Box::new(ResourceActionHost {
         root,
         resource,
-        runner: Runner::Immediate(Box::new(run)),
-        pending: HashMap::new(),
+        run: Box::new(run),
         rect: Rect::ZERO,
     })
-}
-
-/// Wrap a root with an accepted job whose receiver supplies terminal output.
-pub fn background(
-    root: Box<dyn Widget>,
-    resource: Resource,
-    run: impl FnMut(&[u8]) -> Result<Receiver<Result<ActionOutput, String>>, String> + 'static,
-) -> Box<dyn Widget> {
-    Box::new(ResourceActionHost {
-        root,
-        resource,
-        runner: Runner::Background(Box::new(run)),
-        pending: HashMap::new(),
-        rect: Rect::ZERO,
-    })
-}
-
-impl ResourceActionHost {
-    fn run_operation(
-        &mut self,
-        invocation: InvocationId,
-        payload: &[u8],
-    ) -> Result<ResourceOperationStart, String> {
-        match &mut self.runner {
-            Runner::Immediate(run) => run(payload).map(ResourceOperationStart::Completed),
-            Runner::Background(run) => {
-                self.pending.insert(invocation, run(payload)?);
-                Ok(ResourceOperationStart::Accepted)
-            }
-        }
-    }
 }
 
 impl Widget for ResourceActionHost {
     crate::provides!(dyn crate::resources::PublishesResources);
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.root.update(state, path)
     }
 
@@ -410,75 +352,17 @@ impl Widget for ResourceActionHost {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.root.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(
-            crate::taffy::Style {
-                size: crate::taffy::Size {
-                    width: crate::taffy::style_helpers::percent(1.0_f32),
-                    height: crate::taffy::style_helpers::percent(1.0_f32),
-                },
-                ..Default::default()
+        let style = crate::taffy::Style {
+            size: crate::taffy::Size {
+                width: crate::taffy::style_helpers::percent(1.0_f32),
+                height: crate::taffy::style_helpers::percent(1.0_f32),
             },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Ok(children) = taffy.children(node)
-            && let Some(child) = children.first()
-        {
-            self.root
-                .apply_layout(taffy, *child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &crate::Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.root
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &crate::winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) {
-        let node_id = ctx
-            .taffy
-            .children(ctx.node_id)
-            .ok()
-            .and_then(|children| children.first().copied())
-            .unwrap_or(ctx.node_id);
-        let path = ctx.path;
-        self.root
-            .handle_event(event, &mut ctx.reborrow(path, node_id));
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.root.as_ref()]
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        visitor(self.root.as_ref());
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![self.root.as_mut()]
-    }
+    crate::forward_to_child!(root, rect);
 
     fn is_focusable(&self) -> bool {
         self.root.is_focusable()
@@ -500,8 +384,17 @@ impl Widget for ResourceActionHost {
         self.root.ime_cursor_rect()
     }
 
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.root.ime_edit_fingerprint(key)
+    }
+
     fn ime_purpose(&self) -> Option<crate::winit::window::ImePurpose> {
         self.root.ime_purpose()
+    }
+
+    fn ime_multiline(&self) -> bool {
+        self.root.ime_multiline()
     }
 
     fn traps_focus(&self) -> bool {
@@ -519,27 +412,18 @@ impl Widget for ResourceActionHost {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        self.root.perform_action(action, state, path)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        self.root.perform_action_at(action, key_path, state, path)
+        self.root.perform_action(action, key_path, state, path)
     }
 
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.root
@@ -553,7 +437,7 @@ impl Widget for ResourceActionHost {
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
@@ -566,35 +450,9 @@ impl Widget for ResourceActionHost {
         else {
             return Ok(None);
         };
-        self.run_operation(request.invocation, request.payload)
+        (self.run)(request.payload)
+            .map(ResourceOperationStart::Completed)
             .map(Some)
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<InvocationUpdate> {
-        let result = match self.pending.get(&invocation)?.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => Err("background worker disconnected".into()),
-        };
-        self.pending.remove(&invocation);
-        Some(match result {
-            Ok(output) => InvocationUpdate::Succeeded { invocation, output },
-            Err(message) => InvocationUpdate::Failed {
-                invocation,
-                error: ActionFailure {
-                    code: "app_operation_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        })
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -631,10 +489,6 @@ impl Widget for ResourceActionHost {
 
     fn name(&self) -> &'static str {
         "ResourceActionHost"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

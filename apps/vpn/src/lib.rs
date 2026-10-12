@@ -1,10 +1,9 @@
 //! VPN — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A `WireGuard` / `OpenVPN` client. The whole saved fleet lives in the
-//! shared Automerge document ([`doc`]); the UI is a single custom-drawn
-//! [`app::VpnApp`] widget that lays out a connections list, a live detail
-//! pane (status / config / logs) with an animated throughput chart, and
-//! add/import + confirm modals.
+//! shared Automerge document ([`doc`]); [`app::VpnApp`] hosts the retained
+//! connection list and live detail views in the shared navigation shell.
+//! Import and confirmation use the shared modal dialog.
 //!
 //! [`VpnShell`] is the framework app: the shared fleet is the [`Vpn`]
 //! resource, and what a profile does on this device is a
@@ -28,27 +27,23 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
-pub mod actions;
 pub mod app;
 pub mod config;
 pub mod device;
-pub mod doc;
 pub mod effects;
 pub mod import;
+pub mod locales;
 pub mod model;
 pub mod net;
 pub mod probe;
 pub mod resource;
+mod view;
 
 pub use app::VpnApp;
 pub use model::{ConnKind, ConnStatus, Connection, Vault};

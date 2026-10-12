@@ -4,7 +4,8 @@
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 
 use super::MapsApp;
-use crate::resource::{Maps, MapsEffect};
+use crate::resource::MapsEffect;
+use crate::workspace::Workspace;
 
 /// How many rows of one kind a published page holds; the rest resolve by id.
 const ROWS_PER_KIND: usize = 12;
@@ -14,13 +15,10 @@ impl MapsApp {
     pub(crate) fn answer_effect(
         &mut self,
         effect: MapsEffect,
-        cx: &mut EffectCx<Maps, Self>,
+        cx: &mut EffectCx<Workspace, Self>,
     ) -> EffectAnswer {
         match effect {
-            MapsEffect::Search { query } => {
-                self.model.query = query;
-                self.run_search(false);
-            }
+            MapsEffect::Search { query } => self.search_for(query),
             MapsEffect::Locate => {
                 if let Some(reason) = self.locate_unavailable() {
                     return Err(reason.1.into());
@@ -32,12 +30,10 @@ impl MapsApp {
             MapsEffect::ToggleTraffic => {
                 self.set_traffic(!self.map_controls.traffic_enabled());
             }
-            MapsEffect::OpenPlace { place } | MapsEffect::Directions { place }
-                if self.model.place(&place).is_none() =>
-            {
+            MapsEffect::OpenPlace { place } => self.open_place(&place)?,
+            MapsEffect::Directions { place } if self.model.place(&place).is_none() => {
                 return Err("Map place is no longer available".into());
             }
-            MapsEffect::OpenPlace { place } => self.select_place(&place),
             MapsEffect::Directions { place } => {
                 self.select_place(&place);
                 self.enter_directions();
@@ -124,7 +120,7 @@ impl MapsApp {
         rows.extend(self.model.regions.iter().take(ROWS_PER_KIND).map(|area| {
             area_row(
                 &area.id,
-                &format!("{} · z{}–{}", area.name, area.z0, area.z1),
+                &format!("{}, zoom {}–{}", area.name, area.z0, area.z1),
             )
         }));
         rows
@@ -172,7 +168,7 @@ impl MapsApp {
                 .map(|area| {
                     area_row(
                         &area.id,
-                        &format!("{} · z{}–{}", area.name, area.z0, area.z1),
+                        &format!("{}, zoom {}–{}", area.name, area.z0, area.z1),
                     )
                 });
         }

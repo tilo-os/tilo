@@ -151,7 +151,21 @@ impl BatteryInfo {
         };
         Self {
             present: true,
-            capacity: read_num(&["capacity"]).unwrap_or(0).min(100) as u32,
+            capacity: read_num(&["capacity"])
+                .or_else(|| {
+                    // Some drivers (Qualcomm's battmgr) publish no
+                    // `capacity`, only the charge or energy left and full.
+                    [("energy_now", "energy_full"), ("charge_now", "charge_full")]
+                        .iter()
+                        .find_map(|(now, full)| {
+                            let (now, full) = (read_num(&[now])?, read_num(&[full])?);
+                            now.saturating_mul(100)
+                                .saturating_add(full / 2)
+                                .checked_div(full)
+                        })
+                })
+                .unwrap_or(0)
+                .min(100) as u32,
             status: read_trim(&dir.join("status")).unwrap_or_else(|| "Unknown".into()),
             cycle_count: read_num(&["cycle_count"]).and_then(|v| u32::try_from(v).ok()),
             on_ac,
@@ -169,20 +183,6 @@ impl BatteryInfo {
         full.saturating_mul(100)
             .checked_div(design)
             .map(|pct| u32::try_from(pct.min(100)).unwrap_or(100))
-    }
-
-    pub fn health_explanation(&self) -> &'static str {
-        match self.health_percent() {
-            None => "This battery does not report comparable full and design capacity.",
-            Some(90..=100) => {
-                "Capacity is close to the factory design value; normal variation is expected."
-            }
-            Some(80..=89) => "Some capacity has been lost through normal chemical ageing.",
-            Some(60..=79) => "Capacity is noticeably reduced; shorter runtime is expected.",
-            Some(_) => {
-                "Capacity is severely reduced. Consider service or replacement if runtime is disruptive."
-            }
-        }
     }
 
     pub fn summary(&self) -> String {
@@ -358,6 +358,21 @@ mod tests {
             let info = BatteryInfo::from_battery_dir(dir.path(), false);
             assert_eq!(info.health_percent(), Some(80));
             assert_eq!(info.summary(), "61% · On battery");
+        }
+        // Phase `level_without_capacity_comes_from_energy_left`, as
+        // Qualcomm's battmgr publishes it.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            for (name, value) in [
+                ("status", "Not charging"),
+                ("energy_now", "53950000"),
+                ("energy_full", "56160000"),
+            ] {
+                std::fs::write(dir.path().join(name), value).unwrap();
+            }
+            let info = BatteryInfo::from_battery_dir(dir.path(), true);
+            assert_eq!(info.capacity, 96);
+            assert_eq!(info.summary(), "96% · Plugged in, not charging");
         }
         // Phase `vendor_charge_cap_is_normalized`.
         {
