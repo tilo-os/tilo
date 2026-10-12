@@ -72,8 +72,11 @@ priority = 100
 # Loopback peer-sync latency budgets assert a 50 ms p95 on wall-clock time;
 # sharing the runner with the parallel suite measures scheduler contention
 # instead of the push path, so they run with the pool to themselves.
+# The legacy-window integration also exercises the running decoder's 150 ms
+# picture wait; sharing the pool can turn a late valid picture into no output
+# for that call. Keep its frame, keyframe and audience assertions unchanged.
 [[profile.default.overrides]]
-filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_target_input_stays_below_the_interactive_p95_budget) or test(=peer_sync_test::a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_document_edit_reaches_the_other_device_within_the_interactive_budget))'
+filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_target_input_stays_below_the_interactive_p95_budget) or test(=peer_sync_test::a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_document_edit_reaches_the_other_device_within_the_interactive_budget) or test(=legacy_window_between_devices::a_legacy_window_streams_between_two_devices))'
 threads-required = "num-cpus"
 priority = 100
 
