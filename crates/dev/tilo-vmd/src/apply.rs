@@ -223,6 +223,15 @@ pub trait Apply {
         session: &Session,
         tapp: &std::path::Path,
     ) -> Result<String, DaemonError>;
+    /// The packages in `session` user's own store (`registry.toml` of
+    /// `~/.local/share/tilo-apps`); none when it has no registry.
+    fn user_packages(
+        &mut self,
+        session: &Session,
+    ) -> Result<Vec<package_store::registry::InstalledPackage>, DaemonError>;
+    /// Whether the image itself, below any merged layer, ships the native
+    /// toolkit `/usr/lib/tilo-runtime/<version>`.
+    fn image_has_runtime(&mut self, version: &str) -> bool;
     /// Select an authenticated development-cohort package, preserving holds.
     fn install_cohort_app(
         &mut self,
@@ -721,6 +730,10 @@ pub struct RecordingApply {
     /// Scripted readiness observations, consumed once per restarted session.
     pub readiness_replies: std::collections::VecDeque<Result<(), String>>,
 
+    /// The rows of the session user's own package registry.
+    pub user_packages: Vec<package_store::registry::InstalledPackage>,
+    /// The `tilo-runtime/<version>` directories the image itself ships.
+    pub image_runtimes: Vec<String>,
     /// Exact normal installer output for production cohort selection tests.
     pub cohort_replies: std::collections::VecDeque<String>,
     /// The machine's own session, when it has one.
@@ -970,6 +983,15 @@ impl Apply for RecordingApply {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         Ok(format!("installed: so.tilo.{name} 0.1.0\n"))
+    }
+    fn user_packages(
+        &mut self,
+        _session: &Session,
+    ) -> Result<Vec<package_store::registry::InstalledPackage>, DaemonError> {
+        Ok(self.user_packages.clone())
+    }
+    fn image_has_runtime(&mut self, version: &str) -> bool {
+        self.image_runtimes.iter().any(|shipped| shipped == version)
     }
     fn install_cohort_app(
         &mut self,
