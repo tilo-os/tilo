@@ -215,6 +215,9 @@ mod tests {
                 Verb::Read,
             ));
         }
+        // A write publishes its own policy on the state writer; let that
+        // land before this explicit publication so none arrives after it.
+        crate::shell::persist::wait_for_saves();
         super::super::launcher::action_authority::Export::of(&tree.read()).publish();
         assert!(
             invoke(&caller, request("inspect")).is_ok(),
@@ -229,6 +232,9 @@ mod tests {
                 Verb::Write,
             ));
         }
+        // A write publishes its own policy on the state writer; let that
+        // land before this explicit publication so none arrives after it.
+        crate::shell::persist::wait_for_saves();
         super::super::launcher::action_authority::Export::of(&tree.read()).publish();
         assert!(
             invoke(&caller, request("edit")).is_ok(),
@@ -236,6 +242,9 @@ mod tests {
         );
         assert!(invoke(&caller, request("apply")).is_err());
         tree.write().desktop.workspaces[0].set_owner(&person);
+        // A write publishes its own policy on the state writer; let that
+        // land before this explicit publication so none arrives after it.
+        crate::shell::persist::wait_for_saves();
         super::super::launcher::action_authority::Export::of(&tree.read()).publish();
         assert!(
             service
@@ -247,12 +256,28 @@ mod tests {
                 .certificate(&RoomId::new().to_string(), &person)
                 .is_err()
         );
+        crate::shell::persist::wait_for_saves();
+        // Hold the state writer so this change is still unpublished: the
+        // save its write submits waits behind this job.
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        crate::shell::durable_writer::global().submit(
+            directory.path().join("hold-the-writer"),
+            move || {
+                let _ = held.recv();
+            },
+        );
         tree.write().desktop.workspaces[0].owner = None;
         assert!(
             service.certificate(&room.to_string(), &person).is_err(),
             "unpublished policy changes revoke the captured native origin"
         );
+        release.send(()).unwrap();
+        crate::shell::persist::wait_for_saves();
         tree.write().desktop.workspaces[0].owner = Some(person.clone());
+        crate::shell::persist::wait_for_saves();
+        // A write publishes its own policy on the state writer; let that
+        // land before this explicit publication so none arrives after it.
+        crate::shell::persist::wait_for_saves();
         super::super::launcher::action_authority::Export::of(&tree.read()).publish();
         assert!(service.certificate(&room.to_string(), &person).is_ok());
         drop(owner);
