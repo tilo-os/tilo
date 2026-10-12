@@ -389,7 +389,7 @@ pub const LOCALES: &[(&str, &str)] = &[
 ];
 
 pub(crate) static STORE_CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "store-remotes-title").with_system_locale();
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// Framework app.
 pub struct StoreShell;

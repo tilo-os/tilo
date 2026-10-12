@@ -147,8 +147,7 @@ pub struct ExistingMarkup {
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
 static CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "pdf-viewer-history-scope")
-        .with_system_locale();
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 #[resource(
     kind = "pdf.document",

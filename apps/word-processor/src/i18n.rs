@@ -28,7 +28,6 @@ const fn catalog() -> EmbeddedCatalog {
             ("en-US", include_str!("../locales/en-US.ftl")),
             ("de", include_str!("../locales/de.ftl")),
         ],
-        "toolbar-styles",
     )
     .with_system_locale();
     // Widget tests assert source copy; keep them independent of the locale

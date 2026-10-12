@@ -71,7 +71,7 @@ pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.
 
 /// The map's messages, in every host that mounts it.
 pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "maps-clear-route").with_system_locale();
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 pub use workspace::Workspace;
 
 ui::dev_reload_entry!(MapsShell);

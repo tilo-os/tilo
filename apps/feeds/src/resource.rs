@@ -35,8 +35,7 @@ pub const LOCALES: &[(&str, &str)] = &[
 ];
 
 /// The reader's messages, in every host that mounts it.
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "feeds-open-link-invalid").with_system_locale();
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// How many tags the library publishes as places.
 pub const MAX_TAG_PLACES: usize = 32;

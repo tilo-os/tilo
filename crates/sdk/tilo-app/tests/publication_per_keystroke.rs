@@ -20,7 +20,6 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
         "en-US",
         "keystroke-draft = Next task\nkeystroke-done = Completed\n",
     )],
-    "keystroke-draft",
 );
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]

@@ -23,11 +23,8 @@ use crate::effects::CodeEditorEffect;
 use crate::project::Project;
 
 /// The editor's Fluent catalog: what its history entries say.
-static CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
-    "en-US",
-    &[("en-US", include_str!("../locales/en-US.ftl"))],
-    "code-editor-new-file",
-);
+static CATALOG: ui::i18n::EmbeddedCatalog =
+    ui::i18n::EmbeddedCatalog::new("en-US", &[("en-US", include_str!("../locales/en-US.ftl"))]);
 
 /// The id the project's embedded terminal is published under.
 pub const TERMINAL_RESOURCE_ID: &str = "code_editor.project/derived/terminal";

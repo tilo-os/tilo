@@ -30,8 +30,7 @@ use crate::model::{InstallProfile, RecentSource, Source};
 /// The imager's Fluent catalog.
 pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
 
-static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES, "imager-setup-action-next").with_system_locale();
+static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
 
 /// The reviewed image, the images reviewed before it and the install
 /// profile: everything the imager keeps in its document.
