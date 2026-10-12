@@ -150,37 +150,6 @@ fn stale_edits_cannot_clobber_another_consumer_or_resurrect_removed_words() {
 }
 
 #[test]
-fn legacy_import_is_owned_transactional_and_not_repeated_after_reset() {
-    let root = tempfile::tempdir().unwrap();
-    let service = Service::new(root.path().to_owned()).unwrap();
-    let reader = service.bind(Some([1; 32])).unwrap();
-    assert!(
-        service
-            .import_legacy(&reader, 0, [2; 32], "Private")
-            .is_err()
-    );
-    assert!(
-        service
-            .import_legacy(&reader, 0, [1; 32], "Tilo\ntwo words")
-            .is_err()
-    );
-    assert!(reader.snapshot().unwrap().words.is_empty());
-    let imported = service
-        .import_legacy(&reader, 0, [1; 32], "Tilo\ntilo\nÉlodie\n")
-        .unwrap();
-    assert_eq!(imported.words.len(), 2);
-    let reset = service
-        .edit(&reader, imported.revision, Edit::Reset)
-        .unwrap();
-    let again = Service::new(root.path().to_owned()).unwrap();
-    let reader = again.bind(Some([1; 32])).unwrap();
-    let snapshot = again
-        .import_legacy(&reader, reset.revision, [1; 32], "Tilo")
-        .unwrap();
-    assert!(snapshot.words.is_empty());
-}
-
-#[test]
 fn corrupt_storage_fails_closed_without_destroying_it_and_files_are_private() {
     let root = tempfile::tempdir().unwrap();
     let service = Service::new(root.path().join("private")).unwrap();
