@@ -80,6 +80,10 @@ authenticating a long-term Tilo publisher. The runtime trust file also includes
 the separate tracked official Store runtime publisher; that entry is not the
 branch app's signing identity. Protected-tag release verification and installed
 runtime trust admission remain separate requirements.
+RPM runtime staging explicitly requires a valid bundle signature. The verifier's
+default mode accepts unsigned bundles, so a publisher field or valid content
+hashes alone cannot satisfy this staging gate. Development builds can still use
+their generated package-local signer; production authority is a separate check.
 
 ## Exact separate live approval boundary
 
