@@ -8,12 +8,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use tilo_vm_protocol::layer_hash::walk;
 use tilo_vm_protocol::{BootChange, BootConfirmResult, ControlResult, InputAction, OutputSpec};
 
 use crate::apply::{Apply, GREETER_UNIT, Session, SessionProcess};
 use crate::boot::Boot;
 use crate::error::DaemonError;
-use crate::fsutil::{symlink, walk, write_atomic};
+use crate::fsutil::{symlink, write_atomic};
 use crate::input;
 use crate::slots::{DeviceSession, Login};
 
