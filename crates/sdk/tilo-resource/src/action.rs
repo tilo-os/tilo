@@ -646,7 +646,7 @@ impl<O: Operation> Stamped<O> {
             0 => return None,
             1 => tilo_actions::EncodedAction::encode(O::KIND, &members.pop()?).ok()?,
             _ => tilo_actions::EncodedAction::encode(
-                format!("{}+group", O::KIND),
+                crate::group::group_type_of(O::KIND),
                 &crate::ActionGroup { actions: members },
             )
             .ok()?,

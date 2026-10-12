@@ -22,10 +22,11 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::manifest::Manifest;
 pub use crate::manifest::{
     ContinuityContract, ContinuityFacet, ContinuitySemanticSchema, EntrypointType, PortalPolicy,
+    Requirement, ServiceReq,
 };
-use crate::manifest::{Manifest, Requirement};
 
 /// `[package].kind` for something a user opens. Everything else is a
 /// system component, however it starts.
@@ -295,9 +296,8 @@ pub struct Sandbox {
     pub seccomp: String,
     pub net: Net,
     pub fs: Fs,
-    /// Map of service-name -> requirement string (`"required@1"`,
-    /// `"optional@2"`, …).
-    pub services: BTreeMap<String, String>,
+    /// Map of service-name -> requirement.
+    pub services: BTreeMap<String, ServiceReq>,
     /// XDG portal policy per portal name. When at least one is `ViaHost`
     /// the launcher bind-mounts the host session D-Bus socket and sets
     /// `DBUS_SESSION_BUS_ADDRESS`; absent/empty means the bus is NOT exposed.
@@ -320,17 +320,6 @@ impl Default for Sandbox {
 
 impl From<crate::manifest::Sandbox> for Sandbox {
     fn from(sandbox: crate::manifest::Sandbox) -> Self {
-        let services = sandbox
-            .services
-            .into_iter()
-            .map(|(name, req)| {
-                let severity = match req.requirement {
-                    Requirement::Required => "required",
-                    Requirement::Optional => "optional",
-                };
-                (name, format!("{severity}@{}", req.version))
-            })
-            .collect();
         Self {
             seccomp: sandbox.seccomp,
             net: Net {
@@ -341,7 +330,7 @@ impl From<crate::manifest::Sandbox> for Sandbox {
                 read: sandbox.fs.read,
                 write: sandbox.fs.write,
             },
-            services,
+            services: sandbox.services,
             portals: sandbox.portals,
         }
     }
@@ -586,16 +575,25 @@ mod tests {
         assert_eq!(m.sandbox.seccomp, DEFAULT_SECCOMP_PROFILE);
         assert_eq!(m.sandbox.fs.read, vec!["/usr/share/fonts".to_string()]);
         assert_eq!(
-            m.sandbox.services.get("collab").map(String::as_str),
-            Some("required@1")
+            m.sandbox
+                .services
+                .get("collab")
+                .map(|r| (r.requirement, r.version)),
+            Some((Requirement::Required, 1))
         );
         assert_eq!(
-            m.sandbox.services.get("fs").map(String::as_str),
-            Some("optional@2")
+            m.sandbox
+                .services
+                .get("fs")
+                .map(|r| (r.requirement, r.version)),
+            Some((Requirement::Optional, 2))
         );
         assert_eq!(
-            m.sandbox.services.get("models").map(String::as_str),
-            Some("required@1"),
+            m.sandbox
+                .services
+                .get("models")
+                .map(|r| (r.requirement, r.version)),
+            Some((Requirement::Required, 1)),
             "the canonical schema pins an unversioned requirement to 1"
         );
         assert!(m.runtime.is_none());

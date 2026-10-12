@@ -64,10 +64,7 @@ struct PendingTabRecordCreation {
 }
 
 fn visual_notification_alerts_enabled() -> bool {
-    settings_store::load_section("accessibility")
-        .get("visual_alerts")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
+    tilo_accessibility_settings::AccessibilitySettings::load().visual_alerts
 }
 
 #[cfg(test)]

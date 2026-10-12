@@ -71,7 +71,7 @@ impl ItemStorage for Arranged {
             .zip(items)
             .map(|(id, item)| (id, item as &dyn crate::model::Stores))
             .collect();
-        store_in_order(doc, slot, &items)
+        store_in_order(doc, slot, &items, false)
     }
 
     #[inline(never)]

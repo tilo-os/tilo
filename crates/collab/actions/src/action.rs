@@ -227,10 +227,31 @@ impl EncodedAction {
     where
         A: Action + Serialize,
     {
-        Ok(Self {
-            type_id: type_id.into(),
-            payload: serde_json::to_vec(action).map_err(ActionError::Encode)?,
-        })
+        Self::encoded(type_id.into(), serde_json::to_vec(action))
+    }
+
+    /// The tail of [`Self::encode`] every action type shares.
+    #[inline(never)]
+    fn encoded(
+        type_id: String,
+        payload: Result<Vec<u8>, serde_json::Error>,
+    ) -> Result<Self, ActionError> {
+        Ok(Self::written(
+            type_id,
+            payload.map_err(ActionError::Encode)?,
+        ))
+    }
+
+    /// An action of `type_id` whose payload is `payload`, a group's written
+    /// with what its members share once ([`crate::group_form`]).
+    #[must_use]
+    pub fn written(type_id: String, payload: Vec<u8>) -> Self {
+        let payload = if crate::group_form::is_group(&type_id) {
+            crate::group_form::compact(&payload).unwrap_or(payload)
+        } else {
+            payload
+        };
+        Self { type_id, payload }
     }
 
     /// Serialize a non-document operation payload. Unlike [`Self::encode`],

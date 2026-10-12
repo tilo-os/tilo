@@ -7,7 +7,8 @@ use tilo_actions::{
     ResultSpec,
 };
 use ui::semantic_document_read::{
-    MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
+    ReadPage, RegisteredSemanticReader, SemanticReadError, decode_cursor, decode_request,
+    encode_cursor,
 };
 
 pub const OPERATION_TYPE: &str = "word-processor.read";
@@ -41,11 +42,7 @@ const DEFAULT_PAGE_SIZE: u8 = 64;
 
 /// Shape validation only; no supplied heads or cursor confer authority.
 fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
-    if payload.len() > MAX_REQUEST_BYTES {
-        return Err(SemanticReadError::Limit);
-    }
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
     let kind = <crate::model::Document as ui::tilo_resource::Resource>::KIND;
     if resource.kind != kind
         || resource.id.as_str() != kind
@@ -53,13 +50,7 @@ fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticR
     {
         return Err(SemanticReadError::InvalidRequest);
     }
-    if let Some(cursor) = request.cursor {
-        if cursor.len() > 1024 {
-            return Err(SemanticReadError::Limit);
-        }
-        let _: super::Cursor =
-            serde_json::from_str(&cursor).map_err(|_| SemanticReadError::InvalidRequest)?;
-    }
+    decode_cursor::<super::Cursor>(request.cursor.as_deref())?;
     Ok(())
 }
 
@@ -132,25 +123,14 @@ fn project(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<ReadPage, SemanticReadError> {
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    let cursor = request
-        .cursor
-        .as_deref()
-        .map(serde_json::from_str::<super::Cursor>)
-        .transpose()
-        .map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
+    let cursor: Option<super::Cursor> = decode_cursor(request.cursor.as_deref())?;
     let limits = tilo_doc::semantic_read::Limits {
         items: usize::from(request.page_size),
         ..tilo_doc::semantic_read::Limits::default()
     };
     let page = super::read_text(document, heads, cursor.as_ref(), limits)?;
-    let next_cursor = page
-        .next
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|_| SemanticReadError::Limit)?;
+    let next_cursor = encode_cursor(page.next.as_ref())?;
     let content = match request.format {
         Format::Markdown => {
             serde_json::json!({ "markdown": super::markdown::render(&page.segments) })

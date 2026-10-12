@@ -391,22 +391,22 @@ fn certified_device_detail(device: &crate::identity_directory::TrustedDevice) ->
     )
 }
 
-fn transfer_phase_label(phase: crate::model::TransferPhase) -> String {
+fn transfer_phase_label(phase: fs_protocol::TransferPhase) -> String {
     t(match phase {
-        crate::model::TransferPhase::Idle => "files-transfer-idle",
-        crate::model::TransferPhase::Queued => "files-transfer-queued",
-        crate::model::TransferPhase::Downloading => "files-transfer-downloading",
-        crate::model::TransferPhase::Uploading => "files-transfer-uploading",
-        crate::model::TransferPhase::Verifying => "files-transfer-verifying",
+        fs_protocol::TransferPhase::Idle => "files-transfer-idle",
+        fs_protocol::TransferPhase::Queued => "files-transfer-queued",
+        fs_protocol::TransferPhase::Downloading => "files-transfer-downloading",
+        fs_protocol::TransferPhase::Uploading => "files-transfer-uploading",
+        fs_protocol::TransferPhase::Verifying => "files-transfer-verifying",
     })
 }
 
-fn grant_status_label(status: crate::model::ShareGrantStatus) -> String {
+fn grant_status_label(status: fs_protocol::ShareGrantStatus) -> String {
     t(match status {
-        crate::model::ShareGrantStatus::Active => "files-grant-active",
-        crate::model::ShareGrantStatus::Expired => "files-grant-expired",
-        crate::model::ShareGrantStatus::Revoked => "files-grant-revoked",
-        crate::model::ShareGrantStatus::Exhausted => "files-grant-exhausted",
+        fs_protocol::ShareGrantStatus::Active => "files-grant-active",
+        fs_protocol::ShareGrantStatus::Expired => "files-grant-expired",
+        fs_protocol::ShareGrantStatus::Revoked => "files-grant-revoked",
+        fs_protocol::ShareGrantStatus::Exhausted => "files-grant-exhausted",
     })
 }
 
@@ -3258,6 +3258,8 @@ impl FileExplorerWidget {
         }
         self.trusted_humans = next;
         self.structure_dirty = true;
+        // File history names its authors from this directory: rebind it.
+        self.framework_history_binding = None;
         true
     }
 
@@ -3524,9 +3526,9 @@ impl FileExplorerWidget {
                     .filter(|entry| {
                         entry.availability.as_ref().is_some_and(|availability| {
                             if keep_offline {
-                                availability.policy != crate::model::AvailabilityPolicy::Pinned
+                                availability.policy != fs_protocol::AvailabilityPolicy::Pinned
                             } else {
-                                availability.policy == crate::model::AvailabilityPolicy::Pinned
+                                availability.policy == fs_protocol::AvailabilityPolicy::Pinned
                                     && !availability.policy_inherited
                             }
                         })
@@ -3543,7 +3545,7 @@ impl FileExplorerWidget {
                 }
                 let mut failures = Vec::new();
                 for path in &paths {
-                    if let Err(error) = xattr::set(path, crate::model::PIN_XATTR, value) {
+                    if let Err(error) = xattr::set(path, fs_protocol::PIN_XATTR, value) {
                         failures.push(format!("{}: {error}", path.display()));
                     }
                 }
@@ -3578,14 +3580,14 @@ impl FileExplorerWidget {
                     .filter(|entry| {
                         !entry.is_dir
                             && entry.availability.as_ref().is_some_and(|availability| {
-                                availability.policy == crate::model::AvailabilityPolicy::Automatic
+                                availability.policy == fs_protocol::AvailabilityPolicy::Automatic
                                     && !availability.policy_inherited
                                     && availability.transfer.phase
-                                        == crate::model::TransferPhase::Idle
+                                        == fs_protocol::TransferPhase::Idle
                                     && matches!(
                                         availability.residency,
-                                        crate::model::Residency::Partial { .. }
-                                            | crate::model::Residency::Resident { .. }
+                                        fs_protocol::Residency::Partial { .. }
+                                            | fs_protocol::Residency::Resident { .. }
                                     )
                             })
                     })
@@ -3595,7 +3597,7 @@ impl FileExplorerWidget {
                 let mut safety_refusals = Vec::new();
                 for path in &paths {
                     if let Err(error) =
-                        xattr::set(path, crate::model::AVAILABILITY_CONTROL_XATTR, b"evict")
+                        xattr::set(path, fs_protocol::AVAILABILITY_CONTROL_XATTR, b"evict")
                     {
                         if xattr::ErrorCode::of(&error) == Some(xattr::ErrorCode::Busy) {
                             safety_refusals.push(path.clone());
@@ -3643,7 +3645,7 @@ impl FileExplorerWidget {
                 for path in &paths {
                     if let Err(error) = xattr::set(
                         path,
-                        crate::model::AVAILABILITY_CONTROL_XATTR,
+                        fs_protocol::AVAILABILITY_CONTROL_XATTR,
                         b"evict-destructive",
                     ) {
                         failures.push(format!("{}: {error}", path.display()));
@@ -3676,8 +3678,8 @@ impl FileExplorerWidget {
                         entry.availability.as_ref().is_some_and(|availability| {
                             !matches!(
                                 availability.residency,
-                                crate::model::Residency::Resident { .. }
-                            ) && availability.transfer.phase == crate::model::TransferPhase::Idle
+                                fs_protocol::Residency::Resident { .. }
+                            ) && availability.transfer.phase == fs_protocol::TransferPhase::Idle
                         })
                     })
                     .map(|entry| entry.path.clone())
@@ -3685,7 +3687,7 @@ impl FileExplorerWidget {
                 let mut failures = Vec::new();
                 for path in &paths {
                     if let Err(error) =
-                        xattr::set(path, crate::model::AVAILABILITY_CONTROL_XATTR, b"retry")
+                        xattr::set(path, fs_protocol::AVAILABILITY_CONTROL_XATTR, b"retry")
                     {
                         failures.push(format!("{}: {error}", path.display()));
                     }
@@ -3798,17 +3800,17 @@ impl FileExplorerWidget {
                     }
                     if let Some(availability) = &entry.availability {
                         let residency = match availability.residency {
-                            crate::model::Residency::NotResident => {
+                            fs_protocol::Residency::NotResident => {
                                 t("files-residency-metadata-only")
                             }
-                            crate::model::Residency::Partial { resident_bytes } => t_args(
+                            fs_protocol::Residency::Partial { resident_bytes } => t_args(
                                 "files-residency-partly-local",
                                 &[arg(
                                     "bytes",
                                     i64::try_from(resident_bytes).unwrap_or(i64::MAX),
                                 )],
                             ),
-                            crate::model::Residency::Resident { bytes } => t_args(
+                            fs_protocol::Residency::Resident { bytes } => t_args(
                                 "files-residency-local",
                                 &[arg("bytes", i64::try_from(bytes).unwrap_or(i64::MAX))],
                             ),
@@ -3859,39 +3861,41 @@ impl FileExplorerWidget {
                     && let Some(availability) = entry.availability
                 {
                     let residency = match availability.residency {
-                        crate::model::Residency::NotResident => t("files-not-stored"),
-                        crate::model::Residency::Partial { resident_bytes } => t_args(
+                        fs_protocol::Residency::NotResident => t("files-not-stored"),
+                        fs_protocol::Residency::Partial { resident_bytes } => t_args(
                             "files-partly-stored",
                             &[arg(
                                 "bytes",
                                 i64::try_from(resident_bytes).unwrap_or(i64::MAX),
                             )],
                         ),
-                        crate::model::Residency::Resident { bytes } => t_args(
+                        fs_protocol::Residency::Resident { bytes } => t_args(
                             "files-stored",
                             &[arg("bytes", i64::try_from(bytes).unwrap_or(i64::MAX))],
                         ),
                     };
                     let policy = match (availability.policy, availability.policy_inherited) {
-                        (crate::model::AvailabilityPolicy::Pinned, true) => {
+                        (fs_protocol::AvailabilityPolicy::Pinned, true) => {
                             t("files-kept-offline-parent")
                         }
-                        (crate::model::AvailabilityPolicy::Pinned, false) => {
-                            t("files-kept-offline")
-                        }
-                        (crate::model::AvailabilityPolicy::Automatic, _) => {
+                        (fs_protocol::AvailabilityPolicy::Pinned, false) => t("files-kept-offline"),
+                        (fs_protocol::AvailabilityPolicy::Automatic, _) => {
                             t("files-automatic-storage")
                         }
                     };
                     let replicas = match availability.replicas {
-                        crate::model::ReplicaEvidence::Unknown => t("files-replica-unverified"),
-                        crate::model::ReplicaEvidence::Known { reachable, durable } => t_args(
-                            "files-replica-counts",
-                            &[
-                                arg("reachable", i64::from(reachable)),
-                                arg("durable", i64::from(durable)),
-                            ],
-                        ),
+                        fs_protocol::ProjectedReplicaEvidence::Unknown => {
+                            t("files-replica-unverified")
+                        }
+                        fs_protocol::ProjectedReplicaEvidence::Known { reachable, durable } => {
+                            t_args(
+                                "files-replica-counts",
+                                &[
+                                    arg("reachable", i64::from(reachable)),
+                                    arg("durable", i64::from(durable)),
+                                ],
+                            )
+                        }
                     };
                     let transfer = availability.transfer.last_error.clone().unwrap_or_else(|| {
                         t_args(
@@ -4066,8 +4070,7 @@ impl FileExplorerWidget {
                         let mut lines = Vec::new();
                         for grant in &share.grants {
                             let (subject, devices) = match grant.subject {
-                                crate::model::ShareSubject::Person { person } => {
-                                    let person = fs_protocol::Ed25519PublicKey::from_bytes(person);
+                                fs_protocol::ShareSubjectProjection::Person { person } => {
                                     self.trusted_humans.human(&person).map_or_else(
                                         || {
                                             (
@@ -4106,13 +4109,13 @@ impl FileExplorerWidget {
                                         },
                                     )
                                 }
-                                crate::model::ShareSubject::BearerLink => {
+                                fs_protocol::ShareSubjectProjection::BearerLink => {
                                     (t("files-anyone-link"), Vec::new())
                                 }
                             };
                             let permission = match grant.permission {
-                                crate::model::FilePermission::View => t("files-can-view"),
-                                crate::model::FilePermission::Edit => t("files-can-edit"),
+                                fs_protocol::FilePermission::View => t("files-can-view"),
+                                fs_protocol::FilePermission::Edit => t("files-can-edit"),
                             };
                             let status = grant_status_label(grant.status);
                             let expiry = grant.expires_at_ms.map_or_else(
@@ -4168,21 +4171,33 @@ impl FileExplorerWidget {
             } => {
                 let selected = self.displayed_entries().iter().find_map(|entry| {
                     let history = entry.history.as_ref()?;
-                    if history.record_id != record_id {
+                    if history.record_id.0.to_string() != record_id {
                         return None;
                     }
                     history
                         .versions
                         .iter()
-                        .find(|version| version.id == version_id.0.to_string())
+                        .find(|version| version.id == version_id)
                         .cloned()
                         .map(|version| (version, entry.path.clone()))
                 });
+                let authors = self.trusted_humans.history_authors();
                 let entry = selected.map(|(version, path)| {
-                    let person = fs_protocol::Ed25519PublicKey::from_bytes(version.actor.person);
-                    let person_label = self.trusted_humans.display_name_or_fingerprint(&person);
-                    let identity = short_fingerprint(&version.actor.person);
-                    let action = t(version.provenance_key());
+                    let person = version.actor.person;
+                    let identity = short_fingerprint(&version.actor.person.0);
+                    // The device that signed the version names who wrote it,
+                    // as the file's History does: an agent's own device reads
+                    // as the agent, on behalf of its person.
+                    let author = authors
+                        .resolve_file_actor(&version.actor.person.0, &version.actor.device.0)
+                        .unwrap_or_else(|| {
+                            ui::widget::HistoryAuthor::new(
+                                self.trusted_humans.display_name_or_fingerprint(&person),
+                                ui::history_source::stable_hue(&identity),
+                                identity.clone(),
+                            )
+                        });
+                    let action = t(crate::model::provenance_key(&version.provenance));
                     let resource_label = path
                         .file_name()
                         .and_then(|name| name.to_str())
@@ -4196,15 +4211,11 @@ impl FileExplorerWidget {
                     .with_app("so.tilo.file-explorer", "Files")
                     .with_facet(ui::tilo_actions::ActionFacet::new(
                         "version",
-                        version.id.clone(),
+                        version.id.0.to_string(),
                     ));
                     ui::widget::HistoryEntry {
                         id: ui::widget::HistoryEntryId(*version_id.0.as_bytes()),
-                        author: ui::widget::HistoryAuthor::new(
-                            person_label,
-                            ui::history_source::stable_hue(&identity),
-                            identity,
-                        ),
+                        author,
                         // This is a signed immutable checkpoint, not a shell
                         // CRDT operation the generic Revert affordance can undo.
                         entry_kind: ui::widget::EntryKind::Compaction,
@@ -5523,11 +5534,8 @@ impl FileExplorerWidget {
             .primary()
             .and_then(|index| self.displayed_entries().get(index).cloned());
         let selected = entry.and_then(|entry| {
-            let id = entry
-                .history
-                .as_ref()
-                .and_then(|h| uuid::Uuid::parse_str(&h.record_id).ok())?;
-            Some((entry.path, fs_protocol::FileRecordId(id), entry.name))
+            let id = entry.history.as_ref()?.record_id;
+            Some((entry.path, id, entry.name))
         });
         let identity = selected
             .as_ref()
@@ -5536,7 +5544,13 @@ impl FileExplorerWidget {
             return;
         }
         let target = selected.and_then(|(path, record, label)| {
-            crate::framework_history::target(&path, record, label).ok()
+            crate::framework_history::target(
+                &path,
+                record,
+                label,
+                self.trusted_humans.history_authors(),
+            )
+            .ok()
         });
         self.framework_history_binding = if target.is_some() { identity } else { None };
         self.framework_history.set_target(target);
@@ -6556,12 +6570,12 @@ impl FileExplorerWidget {
             if !collaborative.is_empty() {
                 let any_automatic = collaborative.iter().any(|entry| {
                     entry.availability.as_ref().is_some_and(|availability| {
-                        availability.policy == crate::model::AvailabilityPolicy::Automatic
+                        availability.policy == fs_protocol::AvailabilityPolicy::Automatic
                     })
                 });
                 let any_directly_pinned = collaborative.iter().any(|entry| {
                     entry.availability.as_ref().is_some_and(|availability| {
-                        availability.policy == crate::model::AvailabilityPolicy::Pinned
+                        availability.policy == fs_protocol::AvailabilityPolicy::Pinned
                             && !availability.policy_inherited
                     })
                 });
@@ -6587,13 +6601,13 @@ impl FileExplorerWidget {
                 let any_releasable = collaborative.iter().any(|entry| {
                     !entry.is_dir
                         && entry.availability.as_ref().is_some_and(|availability| {
-                            availability.policy == crate::model::AvailabilityPolicy::Automatic
+                            availability.policy == fs_protocol::AvailabilityPolicy::Automatic
                                 && !availability.policy_inherited
-                                && availability.transfer.phase == crate::model::TransferPhase::Idle
+                                && availability.transfer.phase == fs_protocol::TransferPhase::Idle
                                 && matches!(
                                     availability.residency,
-                                    crate::model::Residency::Partial { .. }
-                                        | crate::model::Residency::Resident { .. }
+                                    fs_protocol::Residency::Partial { .. }
+                                        | fs_protocol::Residency::Resident { .. }
                                 )
                         })
                 });
@@ -6607,8 +6621,8 @@ impl FileExplorerWidget {
                     entry.availability.as_ref().is_some_and(|availability| {
                         !matches!(
                             availability.residency,
-                            crate::model::Residency::Resident { .. }
-                        ) && availability.transfer.phase == crate::model::TransferPhase::Idle
+                            fs_protocol::Residency::Resident { .. }
+                        ) && availability.transfer.phase == fs_protocol::TransferPhase::Idle
                     })
                 });
                 if any_retryable {
@@ -6751,17 +6765,16 @@ impl FileExplorerWidget {
                     for grant in share
                         .grants
                         .iter()
-                        .filter(|grant| grant.status == crate::model::ShareGrantStatus::Active)
+                        .filter(|grant| grant.status == fs_protocol::ShareGrantStatus::Active)
                     {
-                        let Ok(grant_id) = uuid::Uuid::parse_str(&grant.grant_id) else {
-                            continue;
-                        };
+                        let grant_id = grant.grant_id;
                         let subject = match grant.subject {
-                            crate::model::ShareSubject::Person { person } => {
-                                let person = fs_protocol::Ed25519PublicKey::from_bytes(person);
+                            fs_protocol::ShareSubjectProjection::Person { person } => {
                                 self.trusted_humans.display_name_or_fingerprint(&person)
                             }
-                            crate::model::ShareSubject::BearerLink => t("files-shared-link"),
+                            fs_protocol::ShareSubjectProjection::BearerLink => {
+                                t("files-shared-link")
+                            }
                         };
                         spec.push((
                             t_args("files-revoke-subject", &[arg("subject", subject)]),
@@ -6774,9 +6787,7 @@ impl FileExplorerWidget {
                     if let Some(version_id) = entry.history.as_ref().and_then(|history| {
                         history.versions.iter().rev().find_map(|version| {
                             (!history.heads.contains(&version.id) && version.content_hash.is_some())
-                                .then(|| uuid::Uuid::parse_str(&version.id).ok())
-                                .flatten()
-                                .map(fs_protocol::FileVersionId)
+                                .then_some(version.id)
                         })
                     }) {
                         spec.push((
@@ -6792,15 +6803,15 @@ impl FileExplorerWidget {
                                 .versions
                                 .iter()
                                 .filter_map(|id| {
-                                    history.versions.iter().find(|version| {
-                                        uuid::Uuid::parse_str(&version.id).ok() == Some(id.0)
-                                    })
+                                    history.versions.iter().find(|version| version.id == *id)
                                 })
                                 .collect::<Vec<_>>();
                             let current = members
                                 .iter()
                                 .copied()
-                                .filter(|version| version.content_hash == Some(current_hash))
+                                .filter(|version| {
+                                    version.content_hash.map(|hash| hash.0) == Some(current_hash)
+                                })
                                 .collect::<Vec<_>>();
                             // An exact unique hash match is the strongest fact
                             // this bounded V1 projection exposes. The daemon
@@ -6812,11 +6823,7 @@ impl FileExplorerWidget {
                             let Some(current_version) = current.first() else {
                                 continue;
                             };
-                            let current_projection_id = current_version.id.as_str();
-                            let Ok(current_id) = uuid::Uuid::parse_str(current_projection_id)
-                            else {
-                                continue;
-                            };
+                            let current_id = current_version.id;
                             spec.push((String::new(), None));
                             spec.push((
                                 t_args(
@@ -6826,28 +6833,26 @@ impl FileExplorerWidget {
                                 Some(FileCommand::ResolveConflict {
                                     conflict_id: conflict.id,
                                     strategy: fs_protocol::ConflictStrategy::KeepCurrent,
-                                    version_id: fs_protocol::FileVersionId(current_id),
+                                    version_id: current_id,
                                 }),
                             ));
                             for other in members
                                 .into_iter()
-                                .filter(|version| version.id != current_projection_id)
+                                .filter(|version| version.id != current_id)
                             {
-                                let Ok(other_id) = uuid::Uuid::parse_str(&other.id) else {
-                                    continue;
-                                };
+                                let other_id = other.id;
                                 spec.push((
                                     t_args(
                                         "files-resolve-use-other",
                                         &[
                                             arg("conflict", short_uuid(conflict.id)),
-                                            arg("device", short_fingerprint(&other.actor.device)),
+                                            arg("device", short_fingerprint(&other.actor.device.0)),
                                         ],
                                     ),
                                     Some(FileCommand::ResolveConflict {
                                         conflict_id: conflict.id,
                                         strategy: fs_protocol::ConflictStrategy::UseOther,
-                                        version_id: fs_protocol::FileVersionId(other_id),
+                                        version_id: other_id,
                                     }),
                                 ));
                                 if merge_supported_path(&entry.path) {
@@ -6855,12 +6860,12 @@ impl FileExplorerWidget {
                                         format!(
                                             "{} ({})",
                                             t("files-merge-review-menu"),
-                                            short_fingerprint(&other.actor.device),
+                                            short_fingerprint(&other.actor.device.0),
                                         ),
                                         Some(FileCommand::ReviewConflictMerge {
                                             conflict_id: conflict.id,
-                                            version_id: fs_protocol::FileVersionId(other_id),
-                                            other_device: other.actor.device,
+                                            version_id: other_id,
+                                            other_device: other.actor.device.0,
                                         }),
                                     ));
                                 }
@@ -6870,12 +6875,12 @@ impl FileExplorerWidget {
                                         conflict_strategy_label(
                                             fs_protocol::ConflictStrategy::KeepBoth,
                                         ),
-                                        short_fingerprint(&other.actor.device),
+                                        short_fingerprint(&other.actor.device.0),
                                     ),
                                     Some(FileCommand::ResolveConflict {
                                         conflict_id: conflict.id,
                                         strategy: fs_protocol::ConflictStrategy::KeepBoth,
-                                        version_id: fs_protocol::FileVersionId(other_id),
+                                        version_id: other_id,
                                     }),
                                 ));
                             }
@@ -8564,14 +8569,14 @@ impl FileExplorerWidget {
                 "availability",
                 t("files-availability-title-short"),
             ));
-            if availability.policy == crate::model::AvailabilityPolicy::Automatic {
+            if availability.policy == fs_protocol::AvailabilityPolicy::Automatic {
                 resource.actions.push(row_action(
                     &FilesEffect::KeepOffline { entry: id() },
                     "keep-offline",
                     t("files-keep-offline"),
                 ));
             }
-            if availability.policy == crate::model::AvailabilityPolicy::Pinned
+            if availability.policy == fs_protocol::AvailabilityPolicy::Pinned
                 && !availability.policy_inherited
             {
                 resource.actions.push(row_action(
@@ -8581,13 +8586,13 @@ impl FileExplorerWidget {
                 ));
             }
             let releasable = !entry.is_dir
-                && availability.policy == crate::model::AvailabilityPolicy::Automatic
+                && availability.policy == fs_protocol::AvailabilityPolicy::Automatic
                 && !availability.policy_inherited
-                && availability.transfer.phase == crate::model::TransferPhase::Idle
+                && availability.transfer.phase == fs_protocol::TransferPhase::Idle
                 && matches!(
                     availability.residency,
-                    crate::model::Residency::Partial { .. }
-                        | crate::model::Residency::Resident { .. }
+                    fs_protocol::Residency::Partial { .. }
+                        | fs_protocol::Residency::Resident { .. }
                 );
             if releasable {
                 resource.actions.push(row_action(
@@ -8598,8 +8603,8 @@ impl FileExplorerWidget {
             }
             let retryable = !matches!(
                 availability.residency,
-                crate::model::Residency::Resident { .. }
-            ) && availability.transfer.phase == crate::model::TransferPhase::Idle;
+                fs_protocol::Residency::Resident { .. }
+            ) && availability.transfer.phase == fs_protocol::TransferPhase::Idle;
             if retryable {
                 resource.actions.push(row_action(
                     &FilesEffect::RetryDownload { entry: id() },

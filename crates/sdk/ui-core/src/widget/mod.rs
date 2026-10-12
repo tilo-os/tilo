@@ -79,7 +79,6 @@ pub enum ControlBindingKind {
     /// through the normal action door; useful for custom-painted controls and
     /// process-local editing state that does not belong in document history.
     SemanticAction(String),
-    LegacyDocumentPath(String),
     LegacyCallback,
 }
 
@@ -114,6 +113,7 @@ pub fn semantic_action_bindings(
         matches!(
             role,
             Role::Button
+                | Role::Tab
                 | Role::ToggleButton
                 | Role::Checkbox
                 | Role::RadioButton
@@ -3007,7 +3007,8 @@ mod window_group;
 pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
     WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
-    WindowGroup, WindowWidth, max_group_px, min_group_px, permille_for_px,
+    WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, maximized_chrome_height,
+    min_group_px, permille_for_px,
 };
 mod resize_handle;
 pub use resize_handle::{
@@ -3230,8 +3231,9 @@ pub mod history_scrubber;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
 pub use history::{
-    AuthorRelation, EntryKind, HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId,
-    HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb,
+    AuthorRelation, EntryKind, HistoryAttribution, HistoryAuthor, HistoryClassification,
+    HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
+    hue_to_rgb,
 };
 pub use history_scrubber::HistoryScrubber;
 // The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a

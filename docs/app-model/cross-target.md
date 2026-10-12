@@ -75,8 +75,7 @@ app in the same lane.
 
 Debug, capture and benchmark switches are environment variables named
 `TILO_UI_*` (`TILO_UI_DEBUG`, `TILO_UI_PRESENT`, …), read through
-`ui::env`. The pre-rename `QUICK_UI_*` names still work and warn once per
-variable. [`../performance-flags.md`](../performance-flags.md) lists the
+`ui::env`. [`../performance-flags.md`](../performance-flags.md) lists the
 rendering ones.
 
 ## Packaging

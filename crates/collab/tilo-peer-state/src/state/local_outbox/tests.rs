@@ -708,5 +708,61 @@ fn local_outbox_history_queue_deduplicates_per_route_and_renews_after_expiry() {
     assert_eq!(member.rows(), governor.rows());
 }
 
+/// What a committed edit costs while earlier ones wait for the governor: the
+/// owner reserves recovery for every pending publication, then validates that
+/// reservation. Each publication's history is built once, when it is new; a
+/// history built per pending publication per check made every edit cost the
+/// whole record again for each edit still waiting.
+#[test]
+fn local_outbox_builds_each_pending_publication_history_once() {
+    let (_, mut member, _, key, _, now) = fixture();
+    let selected = key.verifying_key().to_bytes();
+    let mut originals = Vec::new();
+    for edit in 0..6 {
+        originals.push(local_edit(
+            &mut member,
+            &key,
+            now,
+            false,
+            &format!("edit-{edit}"),
+        ));
+        let before = super::history::builds();
+        let rebuilt = super::history::rebuilds();
+        let reserved = member
+            .reserve_local_recovery(&originals, None, selected)
+            .unwrap();
+        assert_eq!(reserved.entries(), 1, "one route");
+        member
+            .validate_local_recovery_projection(&originals, None, &[], selected)
+            .unwrap();
+        assert_eq!(
+            member
+                .reserve_local_recovery(&originals, None, selected)
+                .unwrap(),
+            reserved
+        );
+        assert_eq!(
+            super::history::builds().saturating_sub(before),
+            1,
+            "edit {edit}: only the new publication's history is built"
+        );
+        if edit > 0 {
+            assert_eq!(
+                super::history::rebuilds(),
+                rebuilt,
+                "edit {edit}: the new history extends the previous edit's"
+            );
+        }
+        // What it remembered is what it computes from nothing.
+        super::history::forget();
+        assert_eq!(
+            member
+                .reserve_local_recovery(&originals, None, selected)
+                .unwrap(),
+            reserved
+        );
+    }
+}
+
 #[path = "projection_tests.rs"]
 mod projection_tests;

@@ -47,13 +47,32 @@
 //! offscreen GPU target as a window presents it, with and without copying
 //! what a scroll keeps on screen (`ui::scroll_copy`): pixels repainted and
 //! copied per frame, frames repainted whole, CPU and GPU time per frame. The
-//! last frame must equal a full render, or the run fails. Each run also
-//! prints a `FRAMEWORK-SCROLL` line for `tools/perf/adapters.py
-//! framework-scroll` (`render.framework_scroll.*` KPIs):
+//! last frame must equal a full render, or the run fails. The window is
+//! also scrolled with a collaborator's pointer resting over the list,
+//! painted over the widgets as a window paints it, with and without copies.
+//! Each run also prints a `FRAMEWORK-SCROLL` line (`-PEER` with the
+//! collaborator, `-HOSTED` shown in a host's scene) for
+//! `tools/perf/adapters.py framework-scroll` (`render.framework_scroll.*`
+//! KPIs):
 //!
 //! ```text
 //! cargo run --release -p tilo-app --features test-support \
 //!     --example framework-scaling -- 5000 scroll
+//! ```
+//!
+//! A second argument `focus` measures only the keyboard focus order: what an
+//! agent call adding one task costs end to end through the test harness, what
+//! each focus-order recomputation inside it costs, and what one recomputation
+//! of the live window's order costs ([`tilo_app::App::refresh_focus_order`],
+//! timed as its `ui.focus_order` scope alone). Its rows sit outside a scroll
+//! view, so every row is mounted, and a row is about four widgets: 500 tasks
+//! is a window of about 2,000. Each size prints a
+//! `FRAMEWORK-FOCUS` line for `tools/perf/adapters.py framework-focus`
+//! (`render.framework_focus.*` KPIs):
+//!
+//! ```text
+//! cargo run --release -p tilo-app --features test-support \
+//!     --example framework-scaling -- 250,500,1000,2500 focus
 //! ```
 
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -169,22 +188,52 @@ impl ResourceApp for Scaling {
     }
 
     fn view(cx: &mut ViewCx<Checklist>) -> Element {
-        let draft = cx.input(Checklist::paths().draft).with_id("draft");
-        let rows = cx.each(
-            |list| &list.tasks,
-            |row| {
-                if row.item().is_none() {
-                    return Box::new(Column::new()) as Element;
-                }
-                let done = row.paths().done;
-                Box::new(tilo_app::row![
-                    row.text(|task| task.title.clone()),
-                    row.checkbox("scaling-done", done),
-                ]) as Element
-            },
-        );
-        let list = Scrollable::new_vertical().with_child(Box::new(rows));
-        Box::new(tilo_app::column![draft, list])
+        let (draft, rows) = draft_and_rows(cx);
+        let list: Element = Box::new(Scrollable::new_vertical().with_child(rows));
+        Box::new(Column::new().push(draft).push(list))
+    }
+}
+
+/// The draft field and one row per task.
+fn draft_and_rows(cx: &ViewCx<Checklist>) -> (Element, Element) {
+    let draft = cx.input(Checklist::paths().draft).with_id("draft");
+    let rows = cx.each(
+        |list| &list.tasks,
+        |row| {
+            if row.item().is_none() {
+                return Box::new(Column::new()) as Element;
+            }
+            let done = row.paths().done;
+            Box::new(tilo_app::row![
+                row.text(|task| task.title.clone()),
+                row.checkbox("scaling-done", done),
+            ]) as Element
+        },
+    );
+    (Box::new(draft), Box::new(rows))
+}
+
+/// The same checklist with its rows outside a scroll view, so every row is
+/// mounted: a window whose widget count grows with the list, as the `focus`
+/// mode needs.
+pub struct Mounted;
+
+impl ResourceApp for Mounted {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.example.framework-scaling-mounted";
+    const TITLE: &'static str = "Checklist";
+
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&CATALOG)
+    }
+
+    fn genesis(input: &LaunchInput<'_>) -> Vec<Invoke<Checklist>> {
+        Scaling::genesis(input)
+    }
+
+    fn view(cx: &mut ViewCx<Checklist>) -> Element {
+        let (draft, rows) = draft_and_rows(cx);
+        Box::new(Column::new().push(draft).push(rows))
     }
 }
 
@@ -233,7 +282,14 @@ fn count(resources: &[tilo_actions::Resource]) -> usize {
 /// A checklist window holding `tasks` tasks. Its genesis seeds as many as
 /// the last live window was asked for; the rest are added here.
 fn checklist(tasks: u32) -> Result<TestApp<Scaling>, Box<dyn std::error::Error>> {
-    let mut app = TestApp::<Scaling>::for_person("ada")?;
+    checklist_in::<Scaling>(tasks)
+}
+
+/// [`checklist`] in the window `A`.
+fn checklist_in<A: ResourceApp<Resource = Checklist>>(
+    tasks: u32,
+) -> Result<TestApp<A>, Box<dyn std::error::Error>> {
+    let mut app = TestApp::<A>::for_person("ada")?;
     let seeded = u32::try_from(app.state().tasks.len())?;
     if let Some(missing) = tasks.checked_sub(seeded).filter(|&missing| missing > 0) {
         app.call("seed", serde_json::json!({ "count": missing }))?;
@@ -538,18 +594,23 @@ fn covered(rects: &[Rect], size: PhysicalSize<u32>) -> f64 {
     rows.iter().flatten().filter(|cell| **cell).count() as f64
 }
 
+/// Where a collaborator's pointer rests over the list, in logical pixels.
+const PEER_AT: [f32; 2] = [420.0, 360.0];
+
 /// Scroll the live window down [`SCROLL_FRAMES`] frames of `step` logical
 /// pixels each, the pointer over the list, through the host's input and
 /// frame path ([`tilo_app::App::surface_input`],
 /// [`tilo_app::App::surface_frame_with_damage`]), and present each frame on
 /// an offscreen GPU target as a window does: only where it changed, after
 /// copying what a scroll keeps on screen when `copying`
-/// ([`tilo_app::scroll_copy`]).
+/// ([`tilo_app::scroll_copy`]). With `peer`, a collaborator's pointer rests
+/// over the list, painted over the widgets as a window paints it
+/// ([`tilo_app::app::SurfaceDamage::painting_peers`]).
 #[allow(
     clippy::too_many_lines,
     reason = "one measured scroll loop: input, frame, damage, presentation and its parity check"
 )]
-fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool) -> Scrolling {
+fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool, peer: bool) -> Scrolling {
     use tilo_app::app::{AppSurface, SurfaceDamage};
     use tilo_app::offscreen::OffscreenRenderer;
     use tilo_app::winit::event::{MouseScrollDelta, TouchPhase};
@@ -559,7 +620,12 @@ fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool) -> Scrolling {
         SurfaceDamage::copying()
     } else {
         SurfaceDamage::default()
-    };
+    }
+    .painting_peers();
+    if peer {
+        app.presence_ctx_mut()
+            .upsert_remote_cursor("ada".into(), PEER_AT, Some("Ada Lovelace"));
+    }
     app.init_layout();
     let mut scene = tilo_app::advanced::Scene::new();
     app.surface_input(
@@ -872,6 +938,17 @@ fn hosted_scrolling(tile: &mut tilo_app::app::EmbeddedApp, step: f64, copying: b
     result
 }
 
+/// How the scrolled list is shown.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shown {
+    /// In a window of its own.
+    Window,
+    /// In a window of its own, a collaborator's pointer resting over it.
+    BesidePeer,
+    /// In a region of a host's scene, as the shell shows an in-process app.
+    Hosted,
+}
+
 /// The `scroll` mode: what one frame of continuous scrolling costs, at a
 /// whole and at a fractional step, in a window of its own and shown in a
 /// region of a host's scene as the shell shows an in-process app.
@@ -887,17 +964,22 @@ fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
     let mut checked: Option<(bool, usize)> = None;
     for &tasks in sizes {
         TASKS.store(tasks, Ordering::Relaxed);
-        for (hosted, step, copying) in [
-            (false, SCROLL_STEP, false),
-            (false, SCROLL_STEP, true),
-            (false, SCROLL_STEP + 0.5, true),
-            (true, SCROLL_STEP, false),
-            (true, SCROLL_STEP, true),
+        for (shown, step, copying) in [
+            (Shown::Window, SCROLL_STEP, false),
+            (Shown::Window, SCROLL_STEP, true),
+            (Shown::Window, SCROLL_STEP + 0.5, true),
+            (Shown::BesidePeer, SCROLL_STEP, false),
+            (Shown::BesidePeer, SCROLL_STEP, true),
+            (Shown::Hosted, SCROLL_STEP, false),
+            (Shown::Hosted, SCROLL_STEP, true),
         ] {
-            let s = if hosted {
-                drive_live_embedded::<Scaling, _>(|tile| hosted_scrolling(tile, step, copying))?
-            } else {
-                drive_live_window::<Scaling, _>(|app| scrolling(app, step, copying))?
+            let s = match shown {
+                Shown::Hosted => {
+                    drive_live_embedded::<Scaling, _>(|tile| hosted_scrolling(tile, step, copying))?
+                }
+                Shown::Window | Shown::BesidePeer => drive_live_window::<Scaling, _>(|app| {
+                    scrolling(app, step, copying, shown == Shown::BesidePeer)
+                })?,
             };
             let (missing_gpu, differing) = checked.unwrap_or_default();
             checked = Some((
@@ -908,11 +990,13 @@ fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
                 || ("n/a".to_owned(), "n/a".to_owned()),
                 |(presented, full)| (format!("{presented:.3} ms"), format!("{full:.3} ms")),
             );
-            let copies = match (hosted, copying) {
-                (false, true) => "yes",
-                (false, false) => "no",
-                (true, true) => "hosted",
-                (true, false) => "hosted, none",
+            let copies = match (shown, copying) {
+                (Shown::Window, true) => "yes",
+                (Shown::Window, false) => "no",
+                (Shown::BesidePeer, true) => "peer",
+                (Shown::BesidePeer, false) => "peer, none",
+                (Shown::Hosted, true) => "hosted",
+                (Shown::Hosted, false) => "hosted, none",
             };
             println!(
                 "{tasks:>5}  {step:>4}  {copies:>6}  {:>6}  {:>5}  {:>16.0}  {:>7.0}  \
@@ -927,10 +1011,10 @@ fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
                 s.why.unwrap_or("-"),
             );
             // For tools/perf/adapters.py.
-            let tag = if hosted {
-                "FRAMEWORK-SCROLL-HOSTED"
-            } else {
-                "FRAMEWORK-SCROLL"
+            let tag = match shown {
+                Shown::Window => "FRAMEWORK-SCROLL",
+                Shown::BesidePeer => "FRAMEWORK-SCROLL-PEER",
+                Shown::Hosted => "FRAMEWORK-SCROLL-HOSTED",
             };
             lines.push(format!(
                 "{tag} tasks={tasks} step={step} copying={copying} \
@@ -960,6 +1044,108 @@ fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Times the focus-order scope ran in `phases`, and its time in ms.
+fn focus_order_phase(phases: &[tilo_app::tilo_resource::profiling::Sample]) -> (usize, f64) {
+    phases
+        .iter()
+        .filter(|phase| phase.phase == "ui.focus_order")
+        .fold((0, 0.0), |(calls, ms), phase| {
+            let elapsed = u64::try_from(phase.elapsed_ns).unwrap_or(u64::MAX);
+            (
+                calls.saturating_add(phase.calls),
+                ms + std::time::Duration::from_nanos(elapsed).as_secs_f64() * 1e3,
+            )
+        })
+}
+
+/// Focus-order recomputations timed per size, and tasks added.
+const FOCUS_SAMPLES: usize = 10;
+
+/// What the keyboard focus order costs in a window over `tasks` tasks, in ms.
+struct FocusCost {
+    /// Each agent call adding one task, end to end.
+    adding: Vec<f64>,
+    /// Each focus-order recomputation those calls ran.
+    recomputing: Vec<f64>,
+    /// Each recomputation of the live window's order.
+    native: Vec<f64>,
+}
+
+/// Add one task at a time through an agent call, and recompute the live
+/// window's focus order, [`FOCUS_SAMPLES`] times each.
+fn focus_cost(tasks: u32) -> Result<FocusCost, Box<dyn std::error::Error>> {
+    TASKS.store(tasks, Ordering::Relaxed);
+    let mut app = checklist_in::<Mounted>(tasks)?;
+    let add = serde_json::json!({ "count": 1 });
+    // The first call is a warm-up: it settles the record and the layout.
+    app.call("seed", add.clone())?;
+    let mut add_ms = Vec::new();
+    let mut recompute_ms = Vec::new();
+    for _ in 0..FOCUS_SAMPLES {
+        let start = Instant::now();
+        let (called, phases) = observe(|| app.call("seed", add.clone()));
+        add_ms.push(millis(start));
+        called?;
+        let (calls, ms) = focus_order_phase(&phases);
+        if calls == 0 {
+            return Err("adding a task recomputed no focus order".into());
+        }
+        recompute_ms.push(ms / f64::from(u32::try_from(calls)?));
+    }
+    let native_ms = drive_live_window::<Mounted, _>(|app| {
+        app.init_layout();
+        host_frame(app);
+        (0..FOCUS_SAMPLES)
+            .map(|_| {
+                let ((), phases) = observe(|| app.refresh_focus_order());
+                focus_order_phase(&phases)
+            })
+            .collect::<Vec<_>>()
+    })?;
+    if native_ms.iter().any(|&(calls, _)| calls != 1) {
+        return Err("the live window did not recompute its focus order once per refresh".into());
+    }
+    Ok(FocusCost {
+        adding: add_ms,
+        recomputing: recompute_ms,
+        native: native_ms.into_iter().map(|(_, ms)| ms).collect(),
+    })
+}
+
+/// The `focus` mode: what the keyboard focus order costs as the list grows.
+fn focus_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
+    println!("tasks  add one task p50  focus order in it p50  live window focus order p50");
+    let joined = |samples: &[f64]| {
+        samples
+            .iter()
+            .map(|sample| format!("{sample:.4}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let mut lines = Vec::new();
+    for &tasks in sizes {
+        let cost = focus_cost(tasks)?;
+        println!(
+            "{tasks:>5}  {:>13.3} ms  {:>18.4} ms  {:>24.4} ms",
+            median(cost.adding.clone()),
+            median(cost.recomputing.clone()),
+            median(cost.native.clone()),
+        );
+        // For tools/perf/adapters.py framework-focus.
+        lines.push(format!(
+            "FRAMEWORK-FOCUS tasks={tasks} add_ms={} recompute_ms={} native_ms={}",
+            joined(&cost.adding),
+            joined(&cost.recomputing),
+            joined(&cost.native),
+        ));
+    }
+    println!();
+    for line in lines {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::args().nth(2);
     let open_only = mode.as_deref() == Some("open");
@@ -971,6 +1157,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Result<Vec<_>, _>>()?;
     if mode.as_deref() == Some("scroll") {
         return scroll_mode(&sizes);
+    }
+    if mode.as_deref() == Some("focus") {
+        return focus_mode(&sizes);
     }
     if std::env::var_os("TILO_SCALING_KEYSTROKES").is_some() {
         println!(

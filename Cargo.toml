@@ -43,7 +43,6 @@ default-members = [
     "crates/session/control-cli",
     "crates/sdk/ui-core",
     "crates/packaging/tilo-app-package",
-    "crates/runtime/runtime",
 ]
 members = [
     "crates/platform/tilo-messaging",
@@ -254,6 +253,7 @@ members = [
     "crates/platform/tilo-image-codec",
     "crates/platform/tilo-keyboard-map",
     "crates/platform/tilo-locale",
+    "crates/platform/tilo-accessibility-settings",
     "crates/platform/tilo-media",
     "crates/platform/tilo-spotify",
     "crates/platform/tilo-invidious",
@@ -275,7 +275,6 @@ members = [
     "crates/runtime/legacy-agent",
     "crates/runtime/legacy-agent-protocol",
     "crates/runtime/legacy-vm",
-    "crates/runtime/runtime",
     "crates/runtime/runtime-collab",
     # Opt-in dynamic SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
@@ -285,7 +284,6 @@ members = [
     "crates/runtime/runtime-fs",
     "crates/runtime/runtime-identity",
     "crates/runtime/runtime-portal",
-    "crates/runtime/runtime-portal-xdg",
     "crates/runtime/os-search",
     "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity-host",
@@ -303,6 +301,7 @@ members = [
     "crates/session/desktop-surface",
     "crates/session/greetd-client",
     "crates/session/greeter",
+    "crates/session/install-profile-model",
     "crates/session/installer",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
@@ -320,7 +319,6 @@ members = [
     "crates/system/cloud-source-dropbox",
     "crates/system/cloud-source-onedrive",
     "crates/system/cloud-source-icloud",
-    "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
     "crates/system/content",

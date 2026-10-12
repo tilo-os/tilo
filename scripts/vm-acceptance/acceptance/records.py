@@ -3,7 +3,7 @@
 Checks hand their samples to `Context.record` whether they pass or not: a number over
 its budget is the record that matters most. run.py `--records` turns them into one
 JSON line per KPI with the run's environment, and the workflow compares them with the
-store (DEVELOPMENT.md, "Performance results"). The environment says what produced
+store (docs/measurements/performance.md). The environment says what produced
 them: a KVM guest on a CI runner class, rendering on the VM's renderer. A software VM's
 numbers are never compared with, or quoted as, hardware figures.
 """

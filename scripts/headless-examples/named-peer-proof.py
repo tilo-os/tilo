@@ -267,10 +267,9 @@ class Session:
             **self.env,
             "WAYLAND_DISPLAY": display,
             # How the toolkit addresses the broker: which app, and which
-            # room. The room is the cluster id, which is the whole reason
+            # room. The room is the workspace id, which is the whole reason
             # two machines' apps can reach each other.
             "QUICK_APP_ID": APP_ID,
-            "QUICK_CLUSTER_ID": room,
             "TILO_PACKAGE_ID": APP_ID,
             "TILO_WORKSPACE_ID": room,
             "QUICK_COLLAB_SOCK": self.collab_sock,

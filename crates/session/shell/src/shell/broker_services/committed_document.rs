@@ -1,9 +1,14 @@
 //! Reads the same native owner; local app storage is never an authority fallback.
-//! Captures come from a bounded restore of the room's committed state, never
-//! from the live peer.
+//! Whole captures come from a bounded restore of the room's committed state,
+//! never from the live peer. The changes since a revision this owner handed
+//! a reader come from the committed view's own document
+//! ([`tilo_joined_room::NativeCommittedView::read_changes`]), which is what
+//! the room durably committed; anything only a restore can decide is read
+//! whole.
 use super::{
     NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, NativeOwnerCommitService,
 };
+use tilo_action_broker::services::HeldRevision;
 impl NativeDocumentReads for NativeOwnerCommitService {
     fn prepare_application(
         &self,
@@ -184,9 +189,48 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             DocumentRead::Unchanged(revision) => NativeDocumentRead::Unchanged(revision),
             DocumentRead::Captured(document) => NativeDocumentRead::Captured {
                 revision: document.revision,
+                heads: document.heads,
                 body: Box::new(Captured(document.bytes)),
             },
             DocumentRead::CheckpointPending => NativeDocumentRead::Pending,
+        })
+    }
+    fn capture_since(
+        &self,
+        context: &NativeDocumentReadContext,
+        held: &HeldRevision,
+        maximum: usize,
+    ) -> Result<NativeDocumentRead, String> {
+        use tilo_joined_room::ChangesRead;
+        self.authorize(context)?;
+        let route = context.route();
+        let room = super::super::state::RoomId::parse(&route.cluster_id)
+            .ok_or("invalid committed document room")?;
+        let owner = self
+            .owner
+            .as_ref()
+            .ok_or("native document owner unavailable")?;
+        let read = owner.with_current(room, |view| {
+            view.read_changes(
+                context.certificate().device_public_key,
+                &route.app_id,
+                &route.record_id,
+                &held.heads,
+                maximum,
+                std::time::SystemTime::now(),
+            )
+        })?;
+        Ok(match read {
+            ChangesRead::Unchanged(revision) => NativeDocumentRead::Unchanged(revision),
+            ChangesRead::Changes(changes) => NativeDocumentRead::Changes {
+                revision: changes.revision,
+                heads: changes.heads,
+                base: held.heads.clone(),
+                body: Box::new(Captured(changes.bytes)),
+            },
+            // A pending checkpoint, an encrypted or incomplete document, a
+            // base it does not hold: the whole read decides, as before.
+            ChangesRead::Whole => return self.capture(context, Some(held.revision), maximum),
         })
     }
     fn unchanged(

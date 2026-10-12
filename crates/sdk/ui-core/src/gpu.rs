@@ -228,6 +228,18 @@ fn native_backends() -> BackendChoice {
     BackendChoice::only(wgpu::Backends::all())
 }
 
+/// Whether `WGPU_ADAPTER_NAME` picks the adapter (`RenderContext::request_adapter`).
+#[cfg(feature = "native")]
+fn adapter_named_by_env() -> bool {
+    crate::native::gpu_backends::adapter_named()
+}
+
+/// Without a process environment to read, assume it may.
+#[cfg(not(feature = "native"))]
+fn adapter_named_by_env() -> bool {
+    true
+}
+
 /// An instance of `backends`, with every field spelled out:
 /// `InstanceDescriptor` has no `Default`, and these are the values vello
 /// would have used.
@@ -323,6 +335,38 @@ impl RenderContext {
         }
     }
 
+    /// The adapter for a new device. The first device decides the instance
+    /// for good (`settle_backends`).
+    ///
+    /// Asking wgpu for an adapter enumerates every adapter, and so does
+    /// settling. So the first request goes to the primary instance at once,
+    /// and the instance is settled (and the request repeated) only when that
+    /// finds nothing. With `WGPU_ADAPTER_NAME` set it is settled first
+    /// instead: wgpu then panics on an instance that offers no adapter
+    /// rather than failing.
+    async fn request_adapter(
+        &mut self,
+        compatible_surface: Option<&Surface<'_>>,
+    ) -> Option<wgpu::Adapter> {
+        if self.fallback.is_some()
+            && self.devices.is_empty()
+            && !adapter_named_by_env()
+            && let Ok(adapter) = wgpu::util::initialize_adapter_from_env_or_default(
+                &self.instance,
+                compatible_surface,
+            )
+            .await
+        {
+            // It offers an adapter, so it stays.
+            self.fallback = None;
+            return Some(adapter);
+        }
+        self.settle_backends().await;
+        wgpu::util::initialize_adapter_from_env_or_default(&self.instance, compatible_surface)
+            .await
+            .ok()
+    }
+
     /// Index of a device that can present to `compatible_surface`, opening one
     /// if none of the existing devices can.
     pub async fn device(&mut self, compatible_surface: Option<&Surface<'_>>) -> Option<usize> {
@@ -343,14 +387,7 @@ impl RenderContext {
 
     async fn new_device(&mut self, compatible_surface: Option<&Surface<'_>>) -> Option<usize> {
         tilo_startup_metrics::mark("gpu-adapter-request-start");
-        // The first device decides the instance for good. Asked first, not
-        // after a failed request: with `WGPU_ADAPTER_NAME` set, wgpu panics
-        // on an instance that offers no adapter instead of failing.
-        self.settle_backends().await;
-        let adapter =
-            wgpu::util::initialize_adapter_from_env_or_default(&self.instance, compatible_surface)
-                .await
-                .ok()?;
+        let adapter = self.request_adapter(compatible_surface).await?;
         tilo_startup_metrics::mark("gpu-adapter-request-done");
         if compatible_surface.is_some() {
             tilo_startup_metrics::mark("gpu-adapter-report-start");

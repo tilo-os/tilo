@@ -47,6 +47,12 @@ pub(crate) fn backends_for(vulkan_pinned: bool, render_node: bool) -> BackendCho
 
 /// Whether this process's Vulkan loader was told which driver to load: the
 /// launcher's GPU pin, or a person's own choice.
+/// Whether `WGPU_ADAPTER_NAME` names the adapter wgpu must pick
+/// (`wgpu::util::initialize_adapter_from_env_or_default`).
+pub(crate) fn adapter_named() -> bool {
+    std::env::var_os("WGPU_ADAPTER_NAME").is_some()
+}
+
 fn vulkan_driver_pinned() -> bool {
     ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"]
         .into_iter()
