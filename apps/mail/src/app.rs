@@ -4355,7 +4355,7 @@ impl MailApp {
             .map(|(index, account)| {
                 (
                     account.id.clone(),
-                    account.label().to_string(),
+                    account.config.label().to_string(),
                     state.accounts.active == index,
                 )
             })
