@@ -9,7 +9,7 @@ use crate::resolved::Resolved;
 use crate::xml_escape::{escape_attr, push_text};
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_content::ContentSource;
-use tilo_doc::export::InlinePlan;
+use tilo_doc::export::{CellGrid, ExportBlock, InlinePlan};
 use tilo_doc::model::DocRef;
 use tilo_doc::schema::{
     STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
@@ -1230,10 +1230,11 @@ struct Numbering {
 
 /// What a list item numbers: `(ordered, format, start)`.
 fn list_key(b: &BlockView) -> (bool, String, i64) {
+    let item = ExportBlock::new(b);
     (
-        b.flag("ordered"),
-        b.str_attr("num_format").unwrap_or("decimal").to_owned(),
-        b.int_attr("num_start").unwrap_or(1),
+        item.ordered(),
+        item.num_format().to_string(),
+        item.num_start(),
     )
 }
 
@@ -1513,7 +1514,7 @@ fn image_drawing_xml(b: &BlockView, snap: &Resolved<'_>, imgs: &mut ImageExport)
     let graphic = format!(
         r#"<wp:docPr id="{docpr_id}" name="{name}"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="{docpr_id}" name="{name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{rel_id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"#
     );
-    let anchor = b.str_attr("anchor").unwrap_or("inline");
+    let anchor = ExportBlock::new(b).image_anchor();
     if anchor == "inline" {
         Some(format!(
             r#"<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>{graphic}</wp:inline></w:drawing></w:r>"#
@@ -1526,7 +1527,7 @@ fn image_drawing_xml(b: &BlockView, snap: &Resolved<'_>, imgs: &mut ImageExport)
         } else {
             "paragraph"
         };
-        let wrap = match b.str_attr("wrap").unwrap_or("none") {
+        let wrap = match ExportBlock::new(b).image_wrap() {
             "left" => r#"<wp:wrapSquare wrapText="left"/>"#.to_string(),
             "right" => r#"<wp:wrapSquare wrapText="right"/>"#.to_string(),
             "both" => r#"<wp:wrapSquare wrapText="bothSides"/>"#.to_string(),
@@ -1547,37 +1548,9 @@ fn index_to_i64(i: usize) -> i64 {
 /// Renders one contiguous run of `cell` blocks sharing a `table` id as a `w:tbl`, returning the
 /// index just past the run.
 fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &RunIds) -> usize {
-    let Some(b) = snap.blocks.get(i) else {
-        return i.saturating_add(1);
-    };
-    let tid = b.str_attr("table").unwrap_or_default();
-    let start = i;
-    let mut i = i;
-    while snap
-        .blocks
-        .get(i)
-        .is_some_and(|blk| blk.str_attr("table") == Some(tid))
-    {
-        i = i.saturating_add(1);
-    }
-    let Some(cells) = snap.blocks.get(start..i) else {
-        return i;
-    };
-    // Cells by grid position; the rows below a vertically merged cell hold a continuation
-    // cell as wide as it.
-    let mut at: BTreeMap<(usize, usize), &BlockView> = BTreeMap::new();
-    let mut continued: BTreeMap<(usize, usize), &BlockView> = BTreeMap::new();
-    let (mut nrows, mut ncols) = (0usize, 0usize);
-    for cell in cells {
-        let (r, c) = cell.cell_position();
-        let (cols, rows) = (cell.cell_span("colspan"), cell.cell_span("rowspan"));
-        at.entry((r, c)).or_insert(cell);
-        for dr in 1..rows {
-            continued.insert((r.saturating_add(dr), c), cell);
-        }
-        nrows = nrows.max(r.saturating_add(rows));
-        ncols = ncols.max(c.saturating_add(cols));
-    }
+    let grid = CellGrid::run(&snap.blocks, i);
+    let cells = grid.cells();
+    let (nrows, ncols) = (grid.rows(), grid.cols());
     body.push_str("<w:tbl>");
     push_table_props(body, cells.first(), ncols);
     // A row's properties ride on its first cell.
@@ -1585,7 +1558,7 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
     for cell in cells {
         if let Some(AttrVal::Str(xml)) = cell.attrs.get(super::paragraph::ATTR_TRPR) {
             row_props
-                .entry(cell.cell_position().0)
+                .entry(ExportBlock::new(cell).cell_position().0)
                 .or_insert(xml.as_str());
         }
     }
@@ -1596,22 +1569,30 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
         }
         let mut c = 0;
         while c < ncols {
-            let own = at.get(&(r, c)).copied();
-            // A vertical merge's continuation cells look like its first one.
-            let cell = own.or_else(|| continued.get(&(r, c)).copied());
+            let own = grid.origin(r, c);
+            // The rows below a vertically merged cell hold a continuation cell as wide as it,
+            // which looks like its first one.
+            let cell = own.or_else(|| {
+                grid.covering(r, c)
+                    .filter(|first| ExportBlock::new(first).cell_position().1 == c)
+            });
             let (span, merge, inner) = if let Some(cl) = own {
-                let merge = if cl.cell_span("rowspan") > 1 {
+                let merge = if ExportBlock::new(cl).row_span() > 1 {
                     r#"<w:vMerge w:val="restart"/>"#
                 } else {
                     ""
                 };
                 (
-                    cl.cell_span("colspan"),
+                    ExportBlock::new(cl).col_span(),
                     merge,
                     render_runs(&cl.text, &cl.marks, ids),
                 )
             } else if let Some(first) = cell {
-                (first.cell_span("colspan"), "<w:vMerge/>", String::new())
+                (
+                    ExportBlock::new(first).col_span(),
+                    "<w:vMerge/>",
+                    String::new(),
+                )
             } else {
                 (1, "", String::new())
             };
@@ -1643,7 +1624,7 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
         body.push_str("</w:tr>");
     }
     body.push_str("</w:tbl>");
-    i
+    i.saturating_add(cells.len().max(1))
 }
 
 /// A table's `w:tblPr` and `w:tblGrid`: the ones kept from import on its `first` cell (the
@@ -1683,7 +1664,7 @@ fn render_block(
     };
     match b.kind.as_str() {
         "heading" => {
-            let level = b.int_attr("level").map_or(1, |n| n.clamp(1, 6));
+            let level = ExportBlock::new(b).heading_level();
             let style = format!(r#"<w:pStyle w:val="Heading{level}"/>"#);
             named_refs.insert(format!("Heading{level}"));
             let ppr = block_ppr(b, &[(b"w:pStyle", style)], ids);
@@ -1696,7 +1677,7 @@ fn render_block(
         }
         "list_item" => {
             let numid = numbering.num_id(b);
-            let level = b.int_attr("level").map_or(0, |n| n.clamp(0, 8));
+            let level = ExportBlock::new(b).list_level().min(8);
             // A list item keeps its own paragraph style when it had one.
             let style = match b.attrs.get(super::paragraph::ATTR_PPR) {
                 Some(AttrVal::Str(kept)) if super::paragraph::has_style(kept) => String::new(),

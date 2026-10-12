@@ -192,8 +192,8 @@ fn render_code(out: &mut String, block: &BlockView) {
 }
 
 fn render_list_item(out: &mut String, block: &BlockView, colors: &ColorTable) {
-    let level = block.int_attr("level").unwrap_or(0).max(0);
-    let ordered = block.flag("ordered");
+    let level = ExportBlock::new(block).list_level();
+    let ordered = ExportBlock::new(block).ordered();
     out.push_str("{\\pard");
     // Hanging indent: left margin one step past the bullet at this nesting level.
     push_indent(out, level.saturating_add(1));

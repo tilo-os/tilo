@@ -815,6 +815,9 @@ impl App {
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);
             }
+            CollabEvent::HistoryAgents { cluster_id, agents } => {
+                crate::history_source::set_room_agents(&cluster_id, agents);
+            }
             CollabEvent::FollowChanged { peer_id } => match peer_id {
                 Some(peer_id) => self.follow(peer_id),
                 None => self.unfollow(),
@@ -1259,6 +1262,9 @@ impl App {
             }
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);
+            }
+            CollabEvent::HistoryAgents { cluster_id, agents } => {
+                crate::history_source::set_room_agents(&cluster_id, agents);
             }
             CollabEvent::Invocation {
                 invocation,

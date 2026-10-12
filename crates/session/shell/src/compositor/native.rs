@@ -3094,7 +3094,11 @@ impl FrameBuilderControlState<'_> {
         // yet: an index build or an app's directory page that would add to it
         // is still on its way. `wait_ms` waits for that.
         answer.insert("revision".into(), format!("{fingerprint:016x}").into());
-        answer.insert("complete".into(), complete.into());
+        answer.insert(
+            "complete".into(),
+            (complete && catalog.completion().complete).into(),
+        );
+        answer.insert("completion".into(), serde_json::json!(catalog.completion()));
         Ok(serde_json::Value::Object(answer))
     }
 }
@@ -16625,6 +16629,7 @@ mod tests {
                 panic!("a waited listing answers with the listing");
             };
             assert_eq!(listing["complete"], true, "{listing}");
+            assert_eq!(listing["completion"]["complete"], true, "{listing}");
             assert_eq!(listing["settled"], true, "{listing}");
             let action_id = listing["actions"]
                 .as_array()
@@ -17408,6 +17413,20 @@ mod tests {
             rows["count"].as_u64().is_some_and(|count| count > 0),
             "{rows}"
         );
+        let completion = &rows["completion"];
+        assert!(
+            completion["complete"].is_boolean(),
+            "admin wire preserves completion: {rows}"
+        );
+        assert!(
+            completion["incomplete"].is_array(),
+            "admin wire preserves provider outcomes: {rows}"
+        );
+        assert_eq!(
+            completion["complete"].as_bool(),
+            completion["incomplete"].as_array().map(Vec::is_empty)
+        );
+        assert_eq!(rows["complete"], completion["complete"]);
         assert!(matches!(
             ask(r#"{"op":"state_dump"}"#),
             test_control::Response::State { .. }

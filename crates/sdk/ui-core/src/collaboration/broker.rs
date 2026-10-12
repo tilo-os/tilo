@@ -1505,6 +1505,19 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             serialized_bytes(event, &mut meter);
             "Realtime"
         }
+        CollabEvent::HistoryAgents { cluster_id, agents } => {
+            meter.string_capacity(cluster_id);
+            meter.add_product(
+                agents.capacity(),
+                std::mem::size_of::<crate::history_source::RosterAgent>(),
+            );
+            for agent in agents {
+                meter.string_capacity(&agent.person_name);
+                meter.string_capacity(&agent.agent_id);
+                meter.string_capacity(&agent.label);
+            }
+            "HistoryAgents"
+        }
     };
     (kind, meter.finish())
 }
@@ -4500,6 +4513,29 @@ async fn spawn_context_stream(
                         }
                     } else {
                         tracing::warn!("collab: malformed handoff request dropped");
+                    }
+                    continue;
+                }
+                if let Some(agents) = context.history_agents {
+                    let agents = agents
+                        .into_iter()
+                        .map(|agent| {
+                            let [_, red, green, blue] = agent.color.to_be_bytes();
+                            crate::history_source::RosterAgent {
+                                device: agent.device,
+                                person: agent.person,
+                                person_name: agent.person_name,
+                                agent_id: agent.agent_id,
+                                label: agent.label,
+                                color: [red, green, blue],
+                            }
+                        })
+                        .collect();
+                    if !tx.send_durable(CollabEvent::HistoryAgents {
+                        cluster_id: route.cluster_id.to_string(),
+                        agents,
+                    }) {
+                        break;
                     }
                     continue;
                 }
