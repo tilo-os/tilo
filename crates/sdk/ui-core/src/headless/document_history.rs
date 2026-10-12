@@ -1141,7 +1141,7 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let output = directory.path().join("inspect.json");
             let spec = Spec {
-                inspect: Some(output.clone()),
+                inspect: Some(output.to_str().unwrap().to_owned()),
                 ..Spec::default()
             };
             write_spec_outputs(&spec, &mut driver).unwrap();
