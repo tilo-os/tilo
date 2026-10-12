@@ -232,7 +232,7 @@ a `tilo-vm` VM does not expose, so it stays in `build-image.yml`.
 
 `run.py --records FILE` writes one record per KPI (`tools/perf/record.py`) from what the
 checks measured, whether they passed or not; the CI run's `perf` job compares them with
-the store (DEVELOPMENT.md, "Performance results") and publishes the nightly run's.
+the store (docs/measurements/performance.md) and publishes the nightly run's.
 
 | KPI | Unit | Check | What |
 |---|---|---|---|

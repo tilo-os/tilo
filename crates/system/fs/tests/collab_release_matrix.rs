@@ -835,7 +835,7 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
 
     assert_eq!(gate(&host_gate, "reconnect"), "connected\n");
     assert_eq!(gate(&peer_gate, "reconnect"), "connected\n");
-    let converged = |mount: &Path| -> Option<(Vec<u8>, fs::HistoryProjectionV1)> {
+    let converged = |mount: &Path| -> Option<(Vec<u8>, fs_protocol::HistoryProjectionV1)> {
         let entries = std::fs::read_dir(mount)
             .ok()?
             .collect::<Result<Vec<_>, _>>()
@@ -848,9 +848,10 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
             .find(|entry| entry.file_name() == "contended.txt")?
             .path();
         let content = std::fs::read(&path).ok()?;
-        let history =
-            fs::HistoryProjectionV1::parse_xattr(&get_xattr(&path, fs::HISTORY_XATTR).ok()?)
-                .ok()?;
+        let history = fs_protocol::HistoryProjectionV1::parse_xattr(
+            &get_xattr(&path, fs_protocol::HISTORY_XATTR).ok()?,
+        )
+        .ok()?;
         let conflict = history.conflicts.iter().find(|conflict| {
             conflict.status == fs_protocol::ConflictStatus::Open && conflict.versions.len() == 2
         })?;
@@ -1016,7 +1017,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         let deleted_manifest_bytes: [u8; 32] = wait_for_process(&mut owner_process, || {
             get_xattr(
                 &owner_mount.join("deleted.txt"),
-                fs::syncstate::CONTENT_HASH_XATTR,
+                fs_protocol::CONTENT_HASH_XATTR,
             )
             .ok()
         })
@@ -1025,7 +1026,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         let deleted_manifest = Hash::from(deleted_manifest_bytes);
         let original_survivor_manifest: [u8; 32] = get_xattr(
             &owner_mount.join("survivor.txt"),
-            fs::syncstate::CONTENT_HASH_XATTR,
+            fs_protocol::CONTENT_HASH_XATTR,
         )
         .unwrap()
         .try_into()
@@ -1055,7 +1056,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         let updated_manifest: [u8; 32] = wait_for_process(&mut owner_process, || {
             let manifest: [u8; 32] = get_xattr(
                 &owner_mount.join("survivor.txt"),
-                fs::syncstate::CONTENT_HASH_XATTR,
+                fs_protocol::CONTENT_HASH_XATTR,
             )
             .ok()?
             .try_into()
@@ -1110,7 +1111,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         reader_process.wait_line("Mounting QuickFS");
         let reader_file = reader_mount.join("survivor.txt");
         let reader_manifest: [u8; 32] = wait_for_process(&mut reader_process, || {
-            get_xattr(&reader_file, fs::syncstate::CONTENT_HASH_XATTR)
+            get_xattr(&reader_file, fs_protocol::CONTENT_HASH_XATTR)
                 .ok()?
                 .try_into()
                 .ok()
@@ -1280,8 +1281,9 @@ fn skewed_clocks_fail_closed_for_receipts_and_grant_expiry() {
     };
     use fs::{
         AuthenticatedFsPeer, AvailabilityRegistry, ReplicaAckError, ReplicaAckRequestV1,
-        ReplicaAckV1, ShareAuthority, ShareGrantStatus,
+        ReplicaAckV1, ShareAuthority,
     };
+    use fs_protocol::ShareGrantStatus;
     use fs_protocol::{
         ContentHash, ContentRevisionV1, FileActor, FileInviteSpec, FileInviteSubject,
         FilePermission, FileRecordId, FileVersionId,

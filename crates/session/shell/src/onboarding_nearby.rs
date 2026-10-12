@@ -369,11 +369,14 @@ impl NearbyPairing {
                 None => self.fail(NearbyFailure::new(NearbyCause::InvalidIdentity)),
             };
         }
-        // The join selects its identity as active as part of its commit. A
-        // verified active identity is a completed join even when its status
-        // update was lost.
-        if let Some(joined) = runtime_identity::resolve_active_identity(&self.identity_dir)
-            .and_then(|path| self.verified(&path, None))
+        // The join selects its identity as active once its commit has written
+        // everything else. A verified active identity is a completed join even
+        // when its status update was lost, but only once the helper has ended
+        // (or run out of time): ending this attempt stops the helper, and one
+        // still running is still finishing its commit and its status.
+        if (exited.is_some() || now >= self.deadline)
+            && let Some(joined) = runtime_identity::resolve_active_identity(&self.identity_dir)
+                .and_then(|path| self.verified(&path, None))
         {
             return NearbyEvent::Joined(joined);
         }
@@ -624,18 +627,53 @@ mod tests {
             );
         }
         // Phase `a_selected_active_identity_completes_a_lost_status_update`.
+        // The helper ended without recording completion.
         {
             let fixture = fixture();
             let record = joined_record(&fixture, [9; 32]);
             runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
                 .expect("select joined identity");
-            let mut pairing = helper(&fixture, "exec sleep 30", PROCESS_BOUND);
+            let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
             assert_eq!(
                 poll_until_over(&mut pairing),
                 NearbyEvent::Joined(MintedIdentity {
                     fingerprint: hex::encode([9; 32]),
                     path: record,
                 })
+            );
+        }
+        // Phase `a_selected_identity_lets_the_helper_finish_its_commit`.
+        // The selection lands while the helper is still committing: the
+        // attempt must not end, and stop the helper, before it has finished
+        // and recorded its status.
+        {
+            let fixture = fixture();
+            let record = joined_record(&fixture, [10; 32]);
+            runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
+                .expect("select joined identity");
+            let finished = fixture.identity_dir.join("helper-finished");
+            let status = serde_json::json!({
+                "state": "complete",
+                "verification_code": "123456",
+                "identity": hex::encode([10; 32]),
+                "record_path": record,
+            });
+            let script = format!(
+                "sleep 1; : > '{}'; printf '%s' '{status}' > \"$1\"",
+                finished.display()
+            );
+            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
+            assert_eq!(pairing.poll(Instant::now()), NearbyEvent::Idle);
+            assert_eq!(
+                poll_until_over(&mut pairing),
+                NearbyEvent::Joined(MintedIdentity {
+                    fingerprint: hex::encode([10; 32]),
+                    path: record,
+                })
+            );
+            assert!(
+                finished.exists(),
+                "the helper was stopped before it finished"
             );
         }
         // Phase `the_recorded_helper_error_is_shown_with_a_retry`.

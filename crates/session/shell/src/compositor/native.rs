@@ -878,6 +878,14 @@ fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
     pipe_ready && frame_pending
 }
 
+/// Whether a tick that is about to park leaves its inputs answered without a
+/// frame: it painted nothing, nothing is dirty (a frame held back by a full
+/// presenter is dirty), and no frame is awaited (no cadence wait is armed and
+/// no redraw was asked for after the paint decision).
+fn unpainted_input_settled(painted: bool, content_changed: bool, frame_awaited: bool) -> bool {
+    !(painted || content_changed || frame_awaited)
+}
+
 /// A transition the presenter could not take stays pending. The park while
 /// the pipe is full with a frame due is not animation time; the next submit
 /// still has the frame run ahead of it. A full pipe before the frame is due is
@@ -13214,6 +13222,17 @@ pub fn run() {
         // left to wake the loop; its frame is due on the next cadence.
         let cadence_needed =
             cadence_needed || cadence_wait_needed(pipe_ready, injected_redraw_pending);
+        // Nothing changed on screen and no frame is waiting, here or behind
+        // the presenter: the inputs handled so far are done without a frame.
+        // Their latency ends here rather than at the next painted frame,
+        // which answers a later input.
+        if unpainted_input_settled(
+            should_paint,
+            content_changed,
+            cadence_needed || injected_redraw_pending,
+        ) {
+            metrics.settle_unpainted_input();
+        }
         // The desktop rested since a frame changed it: draw it as layers for
         // the presenter to warm while nothing else is drawn, so the next
         // strip pan starts by copying. Never under a frame on its way, and
@@ -14169,6 +14188,34 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn presenter_backpressure_and_deadlines_schedule_work() {
+        // Phase `an_input_that_changes_nothing_settles_without_a_frame`.
+        assert!(
+            unpainted_input_settled(false, false, false),
+            "a key release that changes nothing is answered when the loop parks"
+        );
+        assert!(
+            !unpainted_input_settled(true, false, false),
+            "a painted tick closes the latency on its own frame"
+        );
+        assert!(
+            !unpainted_input_settled(false, true, cadence_wait_needed(false, true)),
+            "a frame held back by a full presenter still owes the input its latency"
+        );
+        assert!(
+            !unpainted_input_settled(false, false, cadence_wait_needed(true, true)),
+            "a frame waiting for its cadence still owes the input its latency"
+        );
+        // A redraw a control-socket input asked for after the paint decision,
+        // behind a full presenter (so no cadence wait is armed for it).
+        let control_redraw = true;
+        assert!(
+            !unpainted_input_settled(
+                false,
+                false,
+                cadence_wait_needed(false, control_redraw) || control_redraw
+            ),
+            "a redraw asked for after the paint decision is still owed"
+        );
         // Phase `prepaint_stall_threshold_reports_fifty_milliseconds_and_above`.
         assert!(!slow_prepaint_phase(Duration::from_millis(49)));
         assert!(slow_prepaint_phase(Duration::from_millis(50)));
@@ -14880,7 +14927,11 @@ mod tests {
             let mut services = std::collections::BTreeMap::new();
             services.insert(
                 launcher::services::COLLAB_SERVICE.to_string(),
-                "required@1".to_string(),
+                tilo_app_package::ServiceReq {
+                    protocol: launcher::services::COLLAB_SERVICE.to_string(),
+                    requirement: tilo_app_package::Requirement::Required,
+                    version: 1,
+                },
             );
             let resolved = launcher::services::resolve_service_binds_for_launch(
                 &services,
