@@ -57,10 +57,10 @@ fn press_key(frame: &mut FrameBuilder, key: &Key) {
 /// routes a pointer event to the tile under the pointer, and let it run a
 /// frame for it.
 fn notes_input(frame: &mut FrameBuilder, event: &WindowEvent) {
-    let tile = frame.node_map.values().find_map(|&widget| {
+    let tile = frame.node_map.values_mut().find_map(|widget| {
         // SAFETY: node_map pointers are owned by the live widget tree and
         // remain valid while the frame is exclusively borrowed.
-        let widget = unsafe { &mut *widget };
+        let widget = unsafe { &mut **widget };
         let app = widget
             .as_any_mut()?
             .downcast_mut::<ui::app::EmbeddedApp>()?;
@@ -275,11 +275,11 @@ fn scroll_and_present(
             .unwrap_or_else(|error| panic!("{label}: frame {index}: {error}"));
         run.frames += 1;
         match (presented.last_scroll_copy_work(), &painted.scroll_copies) {
-            (Some((_, copied)), Some(copies)) => {
+            (Some((_, moved_pixels)), Some(copies)) => {
                 let rasterised = covered(&copies.raster, panel);
                 run.copied_frames += 1;
                 run.rasterised += rasterised;
-                run.copied += copied;
+                run.copied += moved_pixels;
                 run.raster_total += rasterised;
             }
             _ => match painted.damage_regions.as_deref() {
