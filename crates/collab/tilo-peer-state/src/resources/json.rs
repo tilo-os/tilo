@@ -10,7 +10,8 @@ pub(crate) struct JsonLimits {
 
 pub(crate) trait Schema: serde::de::DeserializeOwned + serde::Serialize {}
 impl Schema for crate::state::GovernedIdentity {}
-impl Schema for collab_types::caps::CapOverride {}
+impl Schema for tilo_action_policy::Grant {}
+impl Schema for tilo_action_policy::Role {}
 impl Schema for crate::state::RedemptionReceipt {}
 
 /// Decode one governance JSON value within `limits`.

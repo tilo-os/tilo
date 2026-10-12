@@ -77,6 +77,7 @@ path = "src/relay_offers_cli.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
+tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 web-time = { version = "1", features = ["serde"] }
@@ -175,6 +176,8 @@ tilo-environment = { path = "../../runtime/environment" }
 # Members' tool builds: built as the member, signed here.
 env-tools = { path = "../../runtime/env-tools" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
+# App surfaces, fetched by hash from the registry's reviewed payload blobs.
+app-registry = { path = "../../packaging/app-registry" }
 # Exclusive, owner-only publication of the relay's node secret.
 private-fs = { path = "../../system/private-fs" }
 clap.workspace = true

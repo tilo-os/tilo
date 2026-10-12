@@ -18,13 +18,10 @@ use tilo_ui::widget::TaffyTreeExt;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui::State;
 use tilo_ui::headless::FrameHarness;
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 
 /// Fills the window, records every event it is given and, like any widget
@@ -57,16 +54,6 @@ impl Widget for Probe {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = tilo_ui::widget::layout_rect(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui::widget::EventCtx<'_>) {

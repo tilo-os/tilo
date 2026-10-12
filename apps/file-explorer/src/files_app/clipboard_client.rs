@@ -36,7 +36,7 @@ struct UndoJob {
     expires: Instant,
 }
 
-pub(super) struct UndoRequest {
+pub(crate) struct UndoRequest {
     pub redo: bool,
     pub invocation: InvocationId,
     pub operation: String,
@@ -522,54 +522,15 @@ fn selected(path: &Path, retained: &RetainedObject) -> Result<SelectedDescriptor
 }
 
 impl FileExplorerWidget {
-    pub(crate) fn attach_clipboard_compensation(
-        &self,
-        cx: &ui::framework::SurfaceCx<crate::resource::FileExplorer>,
-    ) {
-        let Some(device) = cx.device().map(str::to_owned) else {
-            return;
-        };
-        let queue = self.local_clipboard.undo_queue.clone();
-        cx.drain_causal(
-            move |state: &crate::resource::FilesState| state.pending_clipboard_for(&device),
-            move |(id, operation, undone), cx| {
-                let invocation = cx
-                    .invocation()
-                    .ok_or("clipboard Undo has no current invocation")?;
-                if queue.borrow().len() >= 16 {
-                    return Err("clipboard compensation queue is full".into());
-                }
-                let expected = operation.clone();
-                let reply = cx.reply_then(move |(), output, cx| {
-                    if output
-                        .value
-                        .as_ref()
-                        .and_then(|value| value.get("operation"))
-                        .and_then(serde_json::Value::as_str)
-                        != Some(expected.as_str())
-                    {
-                        return Err(
-                            "clipboard Undo receipt differs from its current consequence".into(),
-                        );
-                    }
-                    let settlement = if undone {
-                        crate::resource::FileExplorer::SETTLE_CLIPBOARD_REDO
-                    } else {
-                        crate::resource::FileExplorer::SETTLE_CLIPBOARD_UNDO
-                    };
-                    cx.invoke(settlement.with((id, expected)));
-                    Ok(ui::framework::Effected::done())
-                });
-                queue.borrow_mut().push(UndoRequest {
-                    redo: undone,
-                    invocation,
-                    operation,
-                    reply,
-                });
-                Ok(ui::framework::Effected::Pending)
-            },
-        );
+    /// Where native Undo and Redo of recorded transfers wait for the host.
+    pub(crate) fn native_undo_queue(&self) -> Rc<RefCell<Vec<UndoRequest>>> {
+        Rc::clone(&self.local_clipboard.undo_queue)
     }
+
+    pub(crate) fn clipboard_device(&self) -> Option<String> {
+        self.device.clone()
+    }
+
     pub(super) fn clipboard_unavailable<A>(
         effect: ui::tilo_resource::ActionRef<crate::effects::FilesEffect, A>,
     ) -> ui::framework::EffectStatus {
@@ -664,19 +625,26 @@ impl FileExplorerWidget {
         }
     }
 
-    pub(crate) fn clipboard_device(&self) -> Option<String> {
-        self.device.clone()
-    }
-
+    /// Show what a native transfer came to.
     pub(crate) fn follow_clipboard_receipt(&mut self, receipt: &Receipt) {
-        self.awaiting_ops.insert(
-            receipt.operation.clone(),
-            super::OpFollowUp::Clipboard {
-                completed: receipt.completed,
-                restore: receipt.restore,
-                error: receipt.error.clone(),
-            },
-        );
+        use crate::i18n::{arg, t_args};
+        let count = ui::num::i64_of_usize(receipt.completed);
+        self.status = Some(match &receipt.error {
+            None => t_args(
+                if receipt.restore {
+                    "files-restored"
+                } else {
+                    "files-pasted"
+                },
+                &[arg("count", count)],
+            ),
+            Some(error) => t_args(
+                "files-clipboard-partial",
+                &[arg("count", count), arg("error", error.clone())],
+            ),
+        });
+        self.refresh();
+        self.structure_dirty = true;
     }
 
     pub(super) fn can_paste_clipboard(&self) -> bool {
@@ -754,7 +722,10 @@ impl FileExplorerWidget {
                     } else {
                         "files-copied"
                     },
-                    &[crate::i18n::arg("count", super::fluent_count(offer.count))],
+                    &[crate::i18n::arg(
+                        "count",
+                        ui::num::i64_of_usize(offer.count),
+                    )],
                 ));
                 self.answer_effect(Ok(()));
             }
@@ -775,7 +746,7 @@ impl FileExplorerWidget {
                 self.refresh();
                 self.status = Some(crate::i18n::t_args(
                     "files-clipboard-recovered",
-                    &[crate::i18n::arg("count", super::fluent_count(completed))],
+                    &[crate::i18n::arg("count", ui::num::i64_of_usize(completed))],
                 ));
                 if let Some(reply) = self.effect_reply.take() {
                     reply.answer(Ok(ui::tilo_actions::ActionOutput {

@@ -7,7 +7,7 @@ use crate::shell::state::FreshId as _;
 use super::*;
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::overview::room_cards;
-use crate::shell::state::{CapOverride, Collaborator, Scope, Subject, Verb, WorkspaceTree};
+use crate::shell::state::{Access, CapOverride, Collaborator, Scope, Subject, WorkspaceTree};
 use tilo_desktop::overview::{room_access_label, room_shares_label};
 use ui::TextRole;
 use ui::widget::Container;
@@ -660,30 +660,23 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
         );
     }
 
-    /// The panel's people come from the room's capabilities, not from
+    /// The panel's people come from the room's membership, not from
     /// whoever this session has happened to hear from. Showing a face on
     /// a room states that person can reach it, which is a claim about
     /// access.
-    fn faces_come_from_capabilities_not_from_the_collaborator_list() {
+    fn faces_come_from_membership_not_from_the_collaborator_list() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        tree.desktop.workspaces[0].owner = None;
-        tree.desktop.workspaces[0].capabilities.clear();
+        tree.desktop.workspaces[0].policy.owner = None;
+        tree.desktop.workspaces[0].policy.members.clear();
         tree.desktop.workspaces[0].collaborators = vec![Collaborator::new("ada", "Ada")];
         assert!(
             room_cards(&tree, &crate::shell::state::local_user_id())[0]
                 .people
                 .is_empty(),
-            "a person with no capability here is not on this room"
+            "a person who is no member here is not on this room"
         );
 
-        let room = tree.desktop.workspaces[0].id.raw().to_string();
-        tree.desktop.workspaces[0]
-            .capabilities
-            .push(CapOverride::grant(
-                Subject::person("ada"),
-                Scope::Room(room),
-                Verb::Write,
-            ));
+        tree.desktop.workspaces[0].admit("ada", crate::shell::state::CapRole::Editor);
         let card = &room_cards(&tree, &crate::shell::state::local_user_id())[0];
         assert_eq!(
             card.people
@@ -691,7 +684,7 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
                 .map(|p| p.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["ada"],
-            "the member who holds a capability is exactly who the room shows"
+            "the member is exactly who the room shows"
         );
         assert_eq!(card.people[0].name, "Ada", "the roster supplies the name");
     }
@@ -701,13 +694,11 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
     fn the_share_list_collapses_rather_than_growing_without_bound() {
         let mut tree = WorkspaceTree::bootstrap_default();
         for i in 0..12 {
-            tree.desktop.workspaces[0]
-                .capabilities
-                .push(CapOverride::grant(
-                    Subject::person("ada"),
-                    Scope::FsPath(format!("/var/workspace/doc{i}")),
-                    Verb::Read,
-                ));
+            tree.desktop.workspaces[0].sandbox.push(CapOverride::grant(
+                Subject::person("ada"),
+                Scope::FsPath(format!("/var/workspace/doc{i}")),
+                Access::Read,
+            ));
         }
         let card = &room_cards(&tree, &crate::shell::state::local_user_id())[0];
         assert_eq!(card.shares.len(), 12, "the model keeps every share");
@@ -729,7 +720,7 @@ fn overview_selection_and_row_content_follow_the_room_and_its_capabilities() {
     opening_seeds_the_selection_from_the_room_you_are_in();
     closing_clears_the_selection();
     a_private_room_says_so_on_its_row();
-    faces_come_from_capabilities_not_from_the_collaborator_list();
+    faces_come_from_membership_not_from_the_collaborator_list();
     the_share_list_collapses_rather_than_growing_without_bound();
     a_room_that_shares_nothing_still_gets_a_row();
 }

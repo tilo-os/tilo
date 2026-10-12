@@ -16,11 +16,9 @@ use ui::widget::{
 };
 
 use super::{BrowserWidget, LibrarySection, library_filter_matches};
-use crate::actions::{
-    BOOKMARKS_SCOPE, BrowserAction, DOWNLOADS_SCOPE, HISTORY_SCOPE, bookmark_resource_id,
-    history_resource_id,
-};
+use crate::actions::{BOOKMARKS_SCOPE, DOWNLOADS_SCOPE, HISTORY_SCOPE, history_resource_id};
 use crate::downloads::DownloadStatus;
+use crate::resource::{Browser, bookmark_resource_id};
 
 /// How many rows a section materialises. The rest stay reachable through
 /// search, which is bounded by its own pages.
@@ -75,9 +73,8 @@ impl BrowserWidget {
             })
             .take(ROW_LIMIT)
             .map(|entry| {
-                // The same normalized identity as the resource surface: legacy
-                // JSON can hold a URL without its canonical trailing slash.
-                let id = bookmark_resource_id(&entry.url);
+                // The bookmark's item resource, which this window's row joins.
+                let id = bookmark_resource_id(&entry.id);
                 let title = if entry.title.trim().is_empty() {
                     entry.url.as_str()
                 } else {
@@ -94,12 +91,9 @@ impl BrowserWidget {
                         &format!("Remove bookmark {title}"),
                     ),
                     &id,
-                    "remove",
+                    "remove-bookmark",
                     self.is_framework_hosted()
-                        .then(|| BrowserAction::RemoveBookmark {
-                            url: entry.url.clone(),
-                            observed_tags: entry.tags.clone(),
-                        }),
+                        .then(|| Browser::REMOVE_BOOKMARK.with(entry.id.clone())),
                 );
                 Box::new(crate::rows::with_buttons(row, vec![remove])) as Element
             })

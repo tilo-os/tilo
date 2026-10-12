@@ -14,11 +14,11 @@ pub(crate) enum Error {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Rule {
-    CapabilitiesAmbiguous,
-    CapabilitiesInvalid,
-    CapabilityAmbiguous,
-    CapabilityMissing,
-    CapabilityInvalid,
+    GrantsAmbiguous,
+    GrantsInvalid,
+    GrantAmbiguous,
+    GrantMissing,
+    GrantInvalid,
     Nonpersistent,
     OwnerAmbiguous,
     OwnerInvalid,
@@ -32,12 +32,12 @@ impl Error {
             Self::Legacy(e) => e.to_string(),
             Self::Encoding(e) => e.to_string(),
             Self::Rule(rule) => match rule {
-                Rule::CapabilitiesAmbiguous => "ambiguous private policy capabilities",
-                Rule::CapabilitiesInvalid => "invalid private policy capabilities",
-                Rule::CapabilityAmbiguous => "ambiguous private policy capability",
-                Rule::CapabilityMissing => "missing private policy capability",
-                Rule::CapabilityInvalid => "invalid private policy capability",
-                Rule::Nonpersistent => "nonpersistent governed private policy capability",
+                Rule::GrantsAmbiguous => "ambiguous private policy grants",
+                Rule::GrantsInvalid => "invalid private policy grants",
+                Rule::GrantAmbiguous => "ambiguous private policy grant",
+                Rule::GrantMissing => "missing private policy grant",
+                Rule::GrantInvalid => "invalid private policy grant",
+                Rule::Nonpersistent => "nonpersistent governed private policy grant",
                 Rule::OwnerAmbiguous => "ambiguous canonical room/owner",
                 Rule::OwnerInvalid => "invalid canonical owner",
                 Rule::OwnerRoot => "owner differs from pinned authority root",
@@ -80,9 +80,9 @@ use super::media::fingerprint::FingerprintRead;
 use super::read::{self, Capacity, ReadError, RoomValue};
 use crate::resources::json;
 use automerge::{ObjType, ReadDoc};
-use collab_types::caps::{CapOverride, Expiry};
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::collections::BTreeMap;
+use tilo_action_policy::{Grant, Lifetime};
 
 fn resource(_: Capacity) -> Error {
     Error::Capacity
@@ -122,32 +122,32 @@ impl PrivateRead for LegacyRead<'_, AutoCommit> {
     }
 }
 trait Decode {
-    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error>;
+    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error>;
 }
 struct LegacyDecode;
 impl Decode for LegacyDecode {
-    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
-        serde_json::from_slice(bytes).map_err(|_| rule(Rule::CapabilityInvalid))
+    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
+        serde_json::from_slice(bytes).map_err(|_| rule(Rule::GrantInvalid))
     }
 }
 struct NativeDecode {
     limits: JsonLimits,
 }
 impl Decode for NativeDecode {
-    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
+    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
         json::decode(bytes, self.limits).map_err(|error| match error {
-            PeerResourceError::Malformed => rule(Rule::CapabilityInvalid),
+            PeerResourceError::Malformed => rule(Rule::GrantInvalid),
             PeerResourceError::Capacity => Error::Decode(PeerResourceError::Capacity),
         })
     }
 }
-fn capabilities<R: PrivateRead, D: Decode>(
+fn grants<R: PrivateRead, D: Decode>(
     read: &R,
     decode: &D,
     work: &mut Collections,
 ) -> Result<Vec<u64>, Error> {
     let mut object = None;
-    let count = read.all(&read.root(), "capabilities", |value| {
+    let count = read.all(&read.root(), "grants", |value| {
         if let RoomValue::Object {
             kind: ObjType::Map,
             object: found,
@@ -158,11 +158,11 @@ fn capabilities<R: PrivateRead, D: Decode>(
         Ok(())
     })?;
     if count > 1 {
-        return Err(rule(Rule::CapabilitiesAmbiguous));
+        return Err(rule(Rule::GrantsAmbiguous));
     }
     let mut expiries = Vec::new();
     if count == 1 {
-        let object = object.ok_or_else(|| rule(Rule::CapabilitiesInvalid))?;
+        let object = object.ok_or_else(|| rule(Rule::GrantsInvalid))?;
         read.visit_keys(&object, |key| {
             // Count and scalar shape precede JSON/persistence, even when the
             // first conflicting value happens to contain malformed bytes.
@@ -172,28 +172,33 @@ fn capabilities<R: PrivateRead, D: Decode>(
                 Ok(())
             })?;
             if count != 1 {
-                return Err(rule(Rule::CapabilityAmbiguous));
+                return Err(rule(Rule::GrantAmbiguous));
             }
             if !bytes_shape {
-                return Err(rule(Rule::CapabilityInvalid));
+                return Err(rule(Rule::GrantInvalid));
             }
             let mut seen = false;
             read.all(&object, key, |value| {
                 let RoomValue::Bytes(bytes) = value else {
-                    return Err(rule(Rule::CapabilityInvalid));
+                    return Err(rule(Rule::GrantInvalid));
                 };
                 seen = true;
-                let cap = decode.capability(bytes)?;
-                if !cap.persists_across_restart() {
-                    return Err(rule(Rule::Nonpersistent));
-                }
-                if let Expiry::AtUnix(at) = cap.expiry {
-                    work.push(&mut expiries, at).map_err(resource)?;
+                let grant = decode.grant(bytes)?;
+                match grant.lifetime {
+                    Lifetime::Once | Lifetime::Session(_) => {
+                        return Err(rule(Rule::Nonpersistent));
+                    }
+                    // Expiries are compared in seconds, rounded up so a grant is
+                    // never reported gone before it is.
+                    Lifetime::Until(at) => work
+                        .push(&mut expiries, at.div_ceil(1000))
+                        .map_err(resource)?,
+                    Lifetime::Task(_) | Lifetime::UntilRevoked => {}
                 }
                 Ok(())
             })?;
             if !seen {
-                return Err(rule(Rule::CapabilityMissing));
+                return Err(rule(Rule::GrantMissing));
             }
             Ok(())
         })
@@ -281,15 +286,23 @@ where
     J: Iterator<Item = &'a RevocationEntry>,
 {
     let owner = canonical_owner(read, meta.room, meta.authority)?;
-    let mut caps = BTreeMap::new();
+    let mut grants = BTreeMap::new();
+    let mut members = BTreeMap::new();
     let mut peers = BTreeMap::new();
     let mut identities = BTreeMap::new();
     read::visit_governance_entries(read, |entry| {
         match entry {
-            read::GovernanceEntry::Owner(_) => (),
-            read::GovernanceEntry::Capability { key, bytes } => {
+            read::GovernanceEntry::Owner(_) | read::GovernanceEntry::Sandbox { .. } => (),
+            read::GovernanceEntry::Grant { key, bytes } => {
                 work.tree_entry::<String, Vec<u8>>().map_err(resource)?;
-                caps.insert(
+                grants.insert(
+                    work.text(key).map_err(resource)?,
+                    work.bytes(bytes).map_err(resource)?,
+                );
+            }
+            read::GovernanceEntry::Member { key, bytes } => {
+                work.tree_entry::<String, Vec<u8>>().map_err(resource)?;
+                members.insert(
                     work.text(key).map_err(resource)?,
                     work.bytes(bytes).map_err(resource)?,
                 );
@@ -333,7 +346,8 @@ where
             meta.room,
             meta.authority,
             owner.as_str(),
-            caps,
+            members,
+            grants,
             peers,
             identities,
             (u8::from(count != 0), media),
@@ -372,7 +386,7 @@ where
     J: Iterator<Item = &'a RevocationEntry>,
 {
     let mut work = Collections::unqualified();
-    let expiries = capabilities(read, &LegacyDecode, &mut work)?;
+    let expiries = grants(read, &LegacyDecode, &mut work)?;
     let revision = revision(read, meta, &mut work)?;
     Ok(LegacyBasis { revision, expiries })
 }
@@ -386,7 +400,7 @@ where
     J: Iterator<Item = &'a RevocationEntry>,
 {
     let mut work = Collections::limited(limits.collections);
-    let expiries = capabilities(
+    let expiries = grants(
         read,
         &NativeDecode {
             limits: limits.json,

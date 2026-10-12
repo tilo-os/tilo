@@ -1,0 +1,1618 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+fields = []
+kind = "settings.root"
+label = "Settings"
+verbs = []
+version = 1
+
+[[resources]]
+kind = "settings.appearance"
+label = "Appearance"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "mode"
+stored = "value"
+title = '`"light"`, `"dark"` or `"automatic"` (light by day, dark by night)'
+type = "String"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "dark_theme"
+stored = "value"
+title = "The theme dark mode shows: a preset id or `custom:<id>`"
+type = "String"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "light_theme"
+stored = "value"
+title = "The theme light mode shows: a preset id or `custom:<id>`"
+type = "String"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "custom_themes"
+readonly = true
+stored = "value"
+title = "The theme documents a `custom:<id>` names. Theme Studio writes them;"
+type = "Vec<CustomTheme>"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "density"
+stored = "value"
+title = "Spacing density over whichever theme is shown: one of"
+type = "f64"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "high_contrast"
+stored = "value"
+title = "Force the high-contrast accessibility palette, overriding the theme"
+type = "bool"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "reduce_motion"
+stored = "value"
+title = "Snap animations to their resting state instead of easing"
+type = "bool"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "reduce_transparency"
+stored = "value"
+title = "Make menus, panels and sheets opaque instead of blurred"
+type = "bool"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "text_scale"
+stored = "value"
+title = "UI text-size multiplier (`1.0` = default). Scales *type only*. Clamped"
+type = "f64"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "ui_scale"
+stored = "value"
+title = 'Global UI-scale multiplier (`1.0` = default) — the "make everything'
+type = "f64"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "schedule"
+stored = "value"
+title = 'When the day ends, for the "Automatic" mode and a scheduled night'
+type = "String"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "sunrise"
+stored = "value"
+title = "Custom sunrise, `HH:MM`; also the fallback when the sun cannot be followed"
+type = "String"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "sunset"
+stored = "value"
+title = "Custom sunset, `HH:MM`; also the fallback when the sun cannot be followed"
+type = "String"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "wallpaper_scope"
+stored = "value"
+title = 'Whether a newly chosen wallpaper covers `"workspace"` (the one Settings'
+type = "String"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "wallpaper_target"
+stored = "value"
+title = "Where a newly chosen wallpaper shows: `background`, `lockscreen` or `both`"
+type = "String"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "distribution_defaults"
+readonly = true
+stored = "value"
+title = "Palette and pins shipped with the OS image"
+type = "Option<ui::theme::DistributionDefaults>"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "forced_colors"
+stored = "value"
+title = "Force theme tokens onto content surfaces, with high contrast"
+type = "bool"
+
+[[resources.fields]]
+owner = "appearance-prefs"
+path = "distinct_letters"
+stored = "value"
+title = '"Always distinguish similar letters": I, l, 1 and 0, O set apart in'
+type = "Option<bool>"
+
+[[resources.verbs]]
+description = "dark by night."
+id = "choose-theme"
+kind = "undoable"
+label = "Set the theme every app draws with; Automatic is light by day and"
+
+[[resources.verbs.params]]
+name = "theme"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources]]
+kind = "settings.accessibility"
+label = "Accessibility"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "large_cursor"
+stored = "value"
+title = "Enlarge the mouse pointer to [`Self::cursor_size`]"
+type = "bool"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "cursor_size"
+stored = "value"
+title = "Pointer size in logical pixels (the compositor's cursor theme size)"
+type = "u32"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "screen_reader"
+readonly = true
+stored = "value"
+title = "Run the AT-SPI screen reader"
+type = "bool"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "on_screen_keyboard"
+stored = "value"
+title = "When the on-screen keyboard runs: automatically on touch-only use,"
+type = "OnScreenKeyboard"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "sticky_keys"
+stored = "value"
+title = "Latch modifier keys so chords can be typed one key at a time"
+type = "bool"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "slow_keys"
+stored = "value"
+title = "Require a key to be held briefly before it registers, ignoring"
+type = "bool"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "bounce_keys"
+stored = "value"
+title = "Ignore a second press of the same key soon after its release"
+type = "bool"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "bounce_keys_delay_ms"
+stored = "value"
+title = "The bounce-keys window in milliseconds"
+type = "u32"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "bounce_keys_alert"
+stored = "value"
+title = "Flash the visual alert when bounce keys ignores a press"
+type = "bool"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "mouse_keys"
+stored = "value"
+title = "Move the pointer with the numeric keypad"
+type = "bool"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "visual_alerts"
+stored = "value"
+title = "Flash the screen instead of (or alongside) an audible alert"
+type = "bool"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "color_filter"
+stored = "value"
+title = "Whole-desktop colour transform owned by the compositor"
+type = "ColorFilter"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "magnifier_zoom"
+stored = "value"
+title = "Desktop magnification factor. `1` means disabled"
+type = "u8"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "magnifier_view"
+stored = "value"
+title = "A lens around the point of interest, or the whole screen magnified"
+type = "settings_store::magnifier::MagnifierView"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "cursor_crosshair"
+stored = "value"
+title = "Paint full-screen guide lines through the hardware pointer"
+type = "bool"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "thick_text_caret"
+stored = "value"
+title = "Make text insertion carets wider in every Tilo toolkit application"
+type = "bool"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "switch_control"
+stored = "value"
+title = "Turn F6/F7 switch signals into standard scan-next/activate actions"
+type = "bool"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "switch_key_pair"
+stored = "value"
+title = "Which ordinary function-key pair a two-switch device emits"
+type = "SwitchKeyPair"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "switch_scan_ms"
+stored = "value"
+title = "Automatic scan period in milliseconds; zero means manual two-switch scanning"
+type = "u16"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "screen_reader_rate"
+readonly = true
+stored = "value"
+title = "Normalised screen-reader speech rate, where 100 is engine default"
+type = "u16"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "screen_reader_voice"
+readonly = true
+stored = "value"
+title = "Backend-neutral voice/language preset"
+type = "ScreenReaderVoice"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "dictation_language"
+stored = "value"
+title = "Personal recognition language; selecting it never grants microphone access"
+type = "settings_store::dictation::DictationLanguage"
+
+[[resources.fields]]
+owner = "accessibility-prefs"
+path = "dictation_literal"
+stored = "value"
+title = "Preserve recognised speech without removing explicit self-repairs"
+type = "bool"
+
+[[resources]]
+kind = "settings.input"
+label = "Input"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "touchpad_natural_scroll"
+stored = "value"
+title = "Touchpad natural scroll"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "mouse_natural_scroll"
+stored = "value"
+title = "Mouse natural scroll"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "tap_to_click"
+stored = "value"
+title = "Tap to click"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "pointer_speed"
+stored = "value"
+title = "0.0..=1.0 pointer acceleration"
+type = "f64"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "touchpad_pointer_speed"
+stored = "value"
+title = "Touchpad pointer speed"
+type = "Option<f64>"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "mouse_pointer_speed"
+stored = "value"
+title = "Mouse pointer speed"
+type = "Option<f64>"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "key_repeat"
+stored = "value"
+title = "0.0..=1.0 key-repeat rate"
+type = "f64"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "key_repeat_delay_ms"
+readonly = true
+stored = "value"
+title = "Exact host-imported repeat pair. A Tilo slider selection clears both"
+type = "Option<u32>"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "key_repeat_rate_hz"
+readonly = true
+stored = "value"
+title = "Key repeat rate hz"
+type = "Option<u32>"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "keyboard_layout"
+readonly = true
+stored = "value"
+title = 'xkb layout code, e.g. `"us"`, `"de"`'
+type = "String"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "tap_drag"
+stored = "value"
+title = "Tap drag"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "tap_drag_lock"
+stored = "value"
+title = "Keep a tap-and-drag going after the finger lifts, until the next tap"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "disable_while_typing"
+stored = "value"
+title = "Disable while typing"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "middle_emulation"
+stored = "value"
+title = "Middle emulation"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "left_handed"
+stored = "value"
+title = "Left handed"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "accel_profile"
+stored = "value"
+title = "`adaptive` or `flat`; capability-gated by libinput"
+type = "String"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "touchpad_gestures"
+stored = "value"
+title = "Touchpad gestures"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "touchpad_enabled"
+stored = "value"
+title = "Whether touchpads send events at all. The touchpad-toggle key writes"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "touchpad_disabled_on_external_mouse"
+stored = "value"
+title = "Switch touchpads off while an external mouse is connected;"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "touchpad_click_method"
+stored = "value"
+title = "Which button a clickpad press means; capability-gated by libinput"
+type = "settings_store::hardware::TouchpadClickMethod"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "touchpad_scroll_method"
+stored = "value"
+title = "Two-finger or edge scrolling; capability-gated by libinput"
+type = "settings_store::hardware::TouchpadScrollMethod"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "scroll_speed"
+stored = "value"
+title = "Scroll-distance multiplier for wheels and touchpads"
+type = "f64"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "compose_key"
+readonly = true
+stored = "value"
+title = "XKB compose option (`ralt`, `menu`, …), or none"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "caps_lock"
+readonly = true
+stored = "value"
+title = "What Caps Lock does (`ctrl`, `escape`, `backspace`), or none for"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "keyboard_layouts"
+readonly = true
+stored = "value"
+title = "Ordered XKB layouts. `keyboard_layout` remains the active first item"
+type = "Vec<String>"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "keyboard_model"
+readonly = true
+stored = "value"
+title = "Explicit physical model; no hardware detection is implied"
+type = "String"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "keyboard_assignments"
+readonly = true
+stored = "value"
+title = "Keyboard assignments"
+type = """
+std::collections::BTreeMap<String, settings_store::keyboard_sources ::
+KeyboardProfile>"""
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "keyboard_preview"
+readonly = true
+stored = "value"
+title = "Layout being inspected without changing the active input source"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "keyboard_preview_extra_levels"
+readonly = true
+stored = "value"
+title = "Inspect the higher native XKB levels without changing typed input"
+type = "bool"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "keyboard_preview_level"
+readonly = true
+stored = "value"
+title = "Ordered native level inspected without changing the live seat"
+type = "usize"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "keyboard_inspected_key"
+readonly = true
+stored = "value"
+title = "Explicit physical position inspected; never follows or records key presses"
+type = "String"
+
+[[resources.fields]]
+owner = "input-prefs"
+path = "tablets"
+readonly = true
+stored = "value"
+title = "Per-tablet mapping, pressure and buttons, keyed by device identity"
+type = """
+std::collections::BTreeMap<String, settings_store::hardware ::
+TabletConfig>"""
+
+[[resources.verbs]]
+description = "delay and rate taken from another system no longer apply."
+id = "set-key-repeat"
+kind = "undoable"
+label = "Set how fast held keys repeat, from slow (0) to fast (1); an exact"
+
+[[resources.verbs.params]]
+name = "rate"
+required = true
+
+[resources.verbs.params.schema]
+type = "number"
+
+[[resources]]
+kind = "settings.text-assistance"
+label = "Spelling and text"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "text-assistance-prefs"
+path = "check_spelling"
+stored = "value"
+title = "Check spelling"
+type = "bool"
+
+[[resources.fields]]
+owner = "text-assistance-prefs"
+path = "auto_correct"
+stored = "value"
+title = "Auto correct"
+type = "bool"
+
+[[resources.fields]]
+owner = "text-assistance-prefs"
+path = "spelling_language"
+stored = "value"
+title = "The language words are checked in (`en_US`, `de_DE`); empty for the"
+type = "String"
+
+[[resources]]
+kind = "settings.power"
+label = "Power"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "auto_suspend"
+stored = "value"
+title = "Master toggle for idle-suspend. `false` disables it regardless of"
+type = "bool"
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "suspend_minutes"
+stored = "value"
+title = "Idle minutes before the session suspends; `0` disables idle-suspend"
+type = "u32"
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "saver_suspend_minutes"
+stored = "value"
+title = "Profile-specific idle suspend. The compositor resolves the active"
+type = "u32"
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "balanced_suspend_minutes"
+stored = "value"
+title = "Balanced suspend minutes"
+type = "u32"
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "performance_suspend_minutes"
+stored = "value"
+title = "Performance suspend minutes"
+type = "u32"
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "blank_minutes"
+stored = "value"
+title = "Idle minutes before the screen blanks; `0` disables blanking"
+type = "u32"
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "lock_minutes"
+stored = "value"
+title = 'Idle minutes before the session locks; `0` is the explicit "Never"'
+type = "u32"
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "lid_close_action"
+stored = "value"
+title = "What to do when the lid closes"
+type = "PowerActionPref"
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "power_key_action"
+stored = "value"
+title = "What to do when the power key is pressed"
+type = "PowerActionPref"
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "low_battery_percent"
+stored = "value"
+title = "Warn (a notification) at or below this battery percentage"
+type = "u32"
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "critical_battery_percent"
+stored = "value"
+title = "Take [`Self::critical_action`] at or below this battery percentage"
+type = "u32"
+
+[[resources.fields]]
+owner = "power-prefs"
+path = "critical_action"
+stored = "value"
+title = "What to do when the battery is critically low"
+type = "PowerActionPref"
+
+[[resources]]
+kind = "settings.updates"
+label = "Updates"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "update-prefs"
+path = "auto"
+readonly = true
+stored = "value"
+title = "Auto"
+type = "bool"
+
+[[resources.fields]]
+owner = "update-prefs"
+path = "channel"
+readonly = true
+stored = "value"
+title = "Legacy serialized field. The actual image reference is managed by"
+type = "String"
+
+[[resources.fields]]
+owner = "update-prefs"
+path = "last_checked"
+readonly = true
+stored = "value"
+title = 'Human-readable timestamp of the last successful check, or `"Never"`'
+type = "String"
+
+[[resources]]
+kind = "settings.notifications"
+label = "Notifications"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "notification-prefs"
+path = "do_not_disturb"
+stored = "value"
+title = 'Master "Do Not Disturb": suppress banners and sounds while set'
+type = "bool"
+
+[[resources.fields]]
+owner = "notification-prefs"
+path = "show_banners"
+stored = "value"
+title = "Show pop-up banners for incoming notifications"
+type = "bool"
+
+[[resources.fields]]
+owner = "notification-prefs"
+path = "show_previews"
+stored = "value"
+title = "Reveal the message body in the banner (off shows only the app name,"
+type = "bool"
+
+[[resources.fields]]
+owner = "notification-prefs"
+path = "play_sounds"
+stored = "value"
+title = "Play a sound when a notification arrives (gated by Do Not Disturb)"
+type = "bool"
+
+[[resources.fields]]
+owner = "notification-prefs"
+path = "show_on_lock_screen"
+stored = "value"
+title = "Mirror notifications onto the lock screen. Off by default — the lock"
+type = "bool"
+
+[[resources.fields]]
+owner = "notification-prefs"
+path = "show_badges"
+stored = "value"
+title = "Whether applications may show an unread-count badge"
+type = "bool"
+
+[[resources.fields]]
+owner = "notification-prefs"
+path = "focus"
+stored = "record"
+title = "Scheduled quiet hours. Per-app priority and temporary mute rules live"
+type = "settings_store::notification_policy::FocusSchedule"
+
+[[resources.fields]]
+owner = "focus-schedule"
+path = "focus.enabled"
+stored = "value"
+title = "Enabled"
+type = "bool"
+
+[[resources.fields]]
+owner = "focus-schedule"
+path = "focus.start_minute"
+stored = "value"
+title = "Minutes after local midnight, clamped to a valid day on load"
+type = "u16"
+
+[[resources.fields]]
+owner = "focus-schedule"
+path = "focus.end_minute"
+stored = "value"
+title = "End minute"
+type = "u16"
+
+[[resources.fields]]
+owner = "focus-schedule"
+path = "focus.weekdays"
+stored = "value"
+title = "Monday is bit zero; zero means every day for backwards-compatible"
+type = "u8"
+
+[[resources.fields]]
+owner = "focus-schedule"
+path = "focus.allow_priority"
+stored = "value"
+title = "Allow priority"
+type = "bool"
+
+[[resources.fields]]
+owner = "notification-prefs"
+path = "per_app"
+stored = "value"
+title = "Rules keyed by the launcher's verified package id. The compositor"
+type = """
+std::collections::BTreeMap<String, settings_store::notification_policy
+::AppNotificationRule,>"""
+
+[[resources.verbs]]
+description = "Mute one app's notifications for a while, counted from when the action was made, or unmute it."
+id = "mute-app"
+kind = "undoable"
+label = "Mute an app"
+
+[[resources.verbs.params]]
+name = "app"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "duration"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources]]
+kind = "settings.audio"
+label = "Sound"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "audio-prefs"
+path = "system_sounds"
+stored = "record"
+title = '"System sounds": master switch, volume, theme and per-event choices'
+type = "settings_store::system_sounds::SystemSoundPrefs"
+
+[[resources.fields]]
+owner = "system-sound-prefs"
+path = "system_sounds.enabled"
+stored = "value"
+title = "Master switch"
+type = "bool"
+
+[[resources.fields]]
+owner = "system-sound-prefs"
+path = "system_sounds.volume"
+stored = "value"
+title = "Linear `0..=1`, relative to the output volume"
+type = "f64"
+
+[[resources.fields]]
+owner = "system-sound-prefs"
+path = "system_sounds.theme"
+stored = "value"
+title = "freedesktop sound theme name; `None` follows [`DEFAULT_THEME`]"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "system-sound-prefs"
+path = "system_sounds.events"
+stored = "record"
+title = "Events"
+type = "SystemSoundEvents"
+
+[[resources.fields]]
+owner = "system-sound-events"
+path = "system_sounds.events.notification"
+stored = "value"
+title = "Notification"
+type = "bool"
+
+[[resources.fields]]
+owner = "system-sound-events"
+path = "system_sounds.events.message"
+stored = "value"
+title = "Message"
+type = "bool"
+
+[[resources.fields]]
+owner = "system-sound-events"
+path = "system_sounds.events.volume_change"
+stored = "value"
+title = "Volume change"
+type = "bool"
+
+[[resources.fields]]
+owner = "system-sound-events"
+path = "system_sounds.events.screenshot"
+stored = "value"
+title = "Screenshot"
+type = "bool"
+
+[[resources.fields]]
+owner = "system-sound-events"
+path = "system_sounds.events.device_connected"
+stored = "value"
+title = "Device connected"
+type = "bool"
+
+[[resources.fields]]
+owner = "system-sound-events"
+path = "system_sounds.events.device_disconnected"
+stored = "value"
+title = "Device disconnected"
+type = "bool"
+
+[[resources.fields]]
+owner = "system-sound-events"
+path = "system_sounds.events.low_battery"
+stored = "value"
+title = "Low battery"
+type = "bool"
+
+[[resources.fields]]
+owner = "system-sound-events"
+path = "system_sounds.events.error"
+stored = "value"
+title = "Error"
+type = "bool"
+
+[[resources.fields]]
+owner = "audio-prefs"
+path = "output_device"
+readonly = true
+stored = "value"
+title = "Label of the last chosen default sink (output device), if any"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "audio-prefs"
+path = "input_device"
+readonly = true
+stored = "value"
+title = "Label of the last chosen default source (input device), if any"
+type = "Option<String>"
+
+[[resources.fields]]
+owner = "audio-prefs"
+path = "balance"
+stored = "value"
+title = "Persistent left/right balance in UI space (`0` left, `0.5` centre,"
+type = "f32"
+
+[[resources.fields]]
+owner = "audio-prefs"
+path = "mono_output"
+readonly = true
+stored = "value"
+title = "Persistent accessibility mono transform. A compositor-session owner"
+type = "bool"
+
+[[resources.fields]]
+owner = "audio-prefs"
+path = "echo_cancellation"
+readonly = true
+stored = "value"
+title = "Give calls an echo-cancelled microphone. The compositor session owns"
+type = "bool"
+
+[[resources]]
+kind = "settings.display"
+label = "Displays"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "display-prefs"
+path = "auto_brightness"
+readonly = true
+stored = "value"
+title = "Auto brightness"
+type = "bool"
+
+[[resources.fields]]
+owner = "display-prefs"
+path = "night_light"
+stored = "value"
+title = "Night light"
+type = "bool"
+
+[[resources.fields]]
+owner = "display-prefs"
+path = "night_light_temperature"
+stored = "value"
+title = "Target correlated colour temperature used by the compositor's"
+type = "u32"
+
+[[resources.fields]]
+owner = "display-prefs"
+path = "night_light_schedule"
+stored = "value"
+title = "Follow the Appearance day/night schedule instead of the manual switch:"
+type = "bool"
+
+[[resources.fields]]
+owner = "display-prefs"
+path = "scale"
+stored = "value"
+title = "`HiDPI` display scale factor: `1.0` = 100 %, `1.25`, `1.5`, `1.75`,"
+type = "f64"
+
+[[resources]]
+kind = "settings.locale"
+label = "Region and language"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "locale"
+path = "currency"
+stored = "value"
+title = "Currency"
+type = "Currency"
+
+[[resources.fields]]
+owner = "locale"
+path = "date_format"
+stored = "value"
+title = "Date format"
+type = "DateStyle"
+
+[[resources.fields]]
+owner = "locale"
+path = "time_format"
+stored = "value"
+title = "Time format"
+type = "TimeStyle"
+
+[[resources.fields]]
+owner = "locale"
+path = "measurement"
+stored = "value"
+title = "Measurement"
+type = "Measurement"
+
+[[resources.fields]]
+owner = "locale"
+path = "number_style"
+stored = "value"
+title = "Number style"
+type = "NumberStyle"
+
+[[resources.fields]]
+owner = "locale"
+path = "first_day_of_week"
+stored = "value"
+title = "First day of week"
+type = "FirstDayOfWeek"
+
+[[resources]]
+kind = "settings.continuity"
+label = "Continuity"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "continuity-privacy"
+path = "enabled"
+readonly = true
+stored = "value"
+title = "Enabled"
+type = "bool"
+
+[[resources.fields]]
+owner = "continuity-privacy"
+path = "clipboard"
+readonly = true
+stored = "value"
+title = "Clipboard"
+type = "bool"
+
+[[resources.fields]]
+owner = "continuity-privacy"
+path = "notifications"
+readonly = true
+stored = "value"
+title = "Notifications"
+type = "bool"
+
+[[resources.fields]]
+owner = "continuity-privacy"
+path = "wifi_settings"
+readonly = true
+stored = "value"
+title = "Wifi settings"
+type = "bool"
+
+[[resources.fields]]
+owner = "continuity-privacy"
+path = "media"
+readonly = true
+stored = "value"
+title = "Media"
+type = "bool"
+
+[[resources.fields]]
+owner = "continuity-privacy"
+path = "display_input"
+readonly = true
+stored = "value"
+title = "Display input"
+type = "bool"
+
+[[resources.fields]]
+owner = "continuity-privacy"
+path = "file_transfer"
+readonly = true
+stored = "value"
+title = "File transfer"
+type = "bool"
+
+[[resources.fields]]
+owner = "continuity-privacy"
+path = "realtime_sessions"
+readonly = true
+stored = "value"
+title = "Realtime sessions"
+type = "bool"
+
+[[resources.fields]]
+owner = "continuity-privacy"
+path = "typed_gamepad"
+readonly = true
+stored = "value"
+title = "Typed gamepad"
+type = "bool"
+
+[[resources.fields]]
+owner = "continuity-privacy"
+path = "app_continuations"
+readonly = true
+stored = "value"
+title = "App continuations"
+type = "bool"
+
+[[resources.fields]]
+owner = "continuity-privacy"
+path = "audit"
+readonly = true
+stored = "value"
+title = "Audit"
+type = "Vec<AuditEntry>"
+
+[[resources.verbs]]
+description = "Allow continuing activities between the person's devices, or stop; the audit trail notes when."
+id = "allow-continuity"
+kind = "undoable"
+label = "Allow Continuity"
+
+[[resources.verbs.params]]
+name = "on"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources.verbs]]
+description = "Allow one kind of Continuity (clipboard, notifications, media…), or stop; the audit trail notes when."
+id = "allow-capability"
+kind = "undoable"
+label = "Allow a kind of Continuity"
+
+[[resources.verbs.params]]
+name = "capability"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "on"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources]]
+kind = "settings.desktop-controls"
+label = "Desktop controls"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "desktop-controls"
+path = "vim_mode"
+stored = "value"
+title = "Vim mode"
+type = "bool"
+
+[[resources]]
+kind = "settings.agent-providers"
+label = "Agent model providers"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "agent-providers"
+path = "config"
+readonly = true
+stored = "record"
+title = "Config"
+type = "ProviderConfig"
+
+[[resources.fields]]
+owner = "provider-config"
+path = "config.profiles"
+stored = "value"
+title = "Profiles"
+type = "Vec<ProviderProfile>"
+
+[[resources.fields]]
+owner = "provider-config"
+path = "config.default_profile"
+stored = "value"
+title = "Default profile"
+type = "Option<String>"
+
+[[resources]]
+kind = "settings.default-apps"
+label = "Default apps"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "default-apps"
+path = "handlers"
+readonly = true
+stored = "value"
+title = "The app each kind of file or link opens with, by the kind's id"
+type = "BTreeMap<String, String>"
+
+[[resources]]
+kind = "settings.display-arrangement"
+label = "Display arrangement"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "shared-display-prefs"
+path = "arrangement"
+readonly = true
+stored = "value"
+title = "Arrangement"
+type = "Arrangement"
+
+[[resources]]
+kind = "settings.automatic-display"
+label = "Automatic display input"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "automatic-display-prefs"
+path = "automatic_display_input"
+readonly = true
+stored = "value"
+title = "A device administrator's choice: changed only through its effect"
+type = "bool"
+
+[[resources]]
+kind = "settings.osk-sources"
+label = "On-screen keyboard layouts"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "osk-source-settings"
+path = "layout"
+readonly = true
+stored = "value"
+title = "Layout"
+type = "String"
+
+[[resources.fields]]
+owner = "osk-source-settings"
+path = "layouts"
+readonly = true
+stored = "value"
+title = "Layouts"
+type = "Vec<String>"
+
+[[resources]]
+kind = "tilo.accounts"
+label = "Accounts"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "person-accounts"
+path = "accounts"
+stored = "collection"
+title = "Keyed by the account's id, the id its secret is kept under"
+type = "Collection<PersonAccount>"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.type_id"
+stored = "value"
+title = 'The kind of account (`"email"`, `"caldav"`, …)'
+type = "String"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.display_name"
+stored = "value"
+title = 'The name shown for it ("Work — Fastmail")'
+type = "String"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.config"
+stored = "value"
+title = "Type-specific connection settings. Never a secret"
+type = "Json<serde_json::Value>"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.enabled"
+stored = "value"
+title = "Whether the person uses it now"
+type = "bool"
+
+[[resources.fields]]
+owner = "person-account"
+path = "accounts.*.tint"
+stored = "value"
+title = "Tints the account's avatar so several read as distinct"
+type = "u8"
+
+[[resources.fields]]
+owner = "person-accounts"
+path = "active"
+stored = "value"
+title = "The active account id per type; a type without one uses its first"
+type = "BTreeMap<String, String>"
+
+[[resources.verbs]]
+description = "This changes the Settings account record only; it creates no credential, certificate, room membership or content key. Republishing preserves a person's disabled choice and chosen account name.  # Errors Refuses malformed public metadata or an occupied identity account id."
+id = "publish-browser-identity"
+kind = "undoable"
+label = "Publish this signed-in identity's public browser connection metadata"
+
+[[resources.verbs.params]]
+name = "root"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "origin"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "save-account"
+kind = "undoable"
+label = "Save an account: add it, or replace the one with its id"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "type_id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "config"
+required = true
+
+[resources.verbs.params.schema]
+
+[[resources.verbs.params]]
+name = "enabled"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources.verbs.params]]
+name = "tint"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 255
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "account. Names are labels; a configured own ACI requires its existing relinking path. This is public metadata, never a credential or grant. # Errors Refuses malformed identities, duplicate scopes or an occupied account ID."
+id = "publish-signal-account"
+kind = "undoable"
+label = "Publish a reviewed new Signal identity without replacing another"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "aci"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "modem paths, phone numbers and SIM identifiers stay in private custody. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+id = "publish-sms-account"
+kind = "undoable"
+label = "Publish a protected native SIM account. The scope is an opaque identity;"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "profile. The caller retains provider proof and credential authority; this record contains no credential, pairing payload or messaging state. # Errors Refuses invalid self identity, generation, name or an occupied account."
+id = "publish-whatsapp-account"
+kind = "undoable"
+label = "Publish the explicitly reviewed self identity of one native `WhatsApp`"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "jid"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+description = "Neither workspace membership nor a label authorizes this account. # Errors Refuses malformed identities, duplicate accounts or an invalid name/generation."
+id = "publish-tilo-account"
+kind = "undoable"
+label = "Publish the original personal Tilo sender with an opaque private scope"
+
+[[resources.verbs.params]]
+name = "id"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "display_name"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "scope"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "generation"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+id = "remove-account"
+kind = "undoable"
+label = "Remove account"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "set-active-account"
+kind = "undoable"
+label = "Use an account for its type"
+
+[[resources.verbs.params]]
+name = "account"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"

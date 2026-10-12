@@ -23,7 +23,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "write",
+        "kind": "undoable",
         "risk": "low",
         "confirmation": {
           "mode": "none"
@@ -33,7 +33,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         }
@@ -50,8 +49,7 @@
           "name": "by",
           "ty": "integer",
           "required": true,
-          "description": "How many",
-          "nullable": false
+          "description": "How many"
         }
       ]
     },
@@ -74,7 +72,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "write",
+        "kind": "undoable",
         "risk": "low",
         "confirmation": {
           "mode": "none"
@@ -84,7 +82,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         }
@@ -111,17 +108,16 @@
         "availability": {
           "state": "available"
         },
-        "permission": "write",
+        "kind": "undoable",
         "risk": "low",
         "confirmation": {
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": false,
+        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         },
@@ -142,8 +138,7 @@
           "name": "action",
           "ty": "object",
           "required": true,
-          "description": "A Shelf action, as JSON",
-          "nullable": false
+          "description": "A Shelf action, as JSON"
         }
       ]
     },
@@ -166,7 +161,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "write",
+        "kind": "undoable",
         "risk": "low",
         "confirmation": {
           "mode": "none"
@@ -176,7 +171,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         },
@@ -211,7 +205,8 @@
                     "action": {
                       "type": "string",
                       "enum": [
-                        "grow"
+                        "grow",
+                        "double"
                       ]
                     },
                     "args": {
@@ -252,8 +247,7 @@
                 }
               ]
             }
-          },
-          "nullable": false
+          }
         }
       ]
     },
@@ -276,7 +270,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "write",
+        "kind": "undoable",
         "risk": "low",
         "confirmation": {
           "mode": "none"
@@ -286,7 +280,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         }
@@ -313,7 +306,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "write",
+        "kind": "undoable",
         "risk": "low",
         "confirmation": {
           "mode": "none"
@@ -323,7 +316,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "none"
         }
@@ -350,7 +342,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "read",
+        "kind": "read",
         "risk": "none",
         "confirmation": {
           "mode": "none"
@@ -360,7 +352,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -379,14 +370,12 @@
         {
           "name": "scale",
           "ty": "number",
-          "required": false,
           "description": "Pixels per point, 0.5 to 2 (default 1)",
           "nullable": true
         },
         {
           "name": "version",
           "ty": "text",
-          "required": false,
           "description": "A past version: change id from history, or checkpoint name",
           "nullable": true
         }
@@ -411,7 +400,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "read",
+        "kind": "read",
         "risk": "none",
         "confirmation": {
           "mode": "none"
@@ -421,7 +410,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -451,7 +439,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "write",
+        "kind": "undoable",
         "risk": "low",
         "confirmation": {
           "mode": "none"
@@ -461,7 +449,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -480,28 +467,24 @@
         {
           "name": "steps",
           "ty": "integer",
-          "required": false,
           "description": "How many steps, newest first",
           "nullable": true
         },
         {
           "name": "run",
           "ty": "text",
-          "required": false,
           "description": "An agent run id from history",
           "nullable": true
         },
         {
           "name": "by",
           "ty": "text",
-          "required": false,
           "description": "Exact author id from history, for steps outside a run",
           "nullable": true
         },
         {
           "name": "to",
           "ty": "text",
-          "required": false,
           "description": "A change id from history, or a checkpoint name",
           "nullable": true
         }
@@ -526,7 +509,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "write",
+        "kind": "undoable",
         "risk": "low",
         "confirmation": {
           "mode": "none"
@@ -536,7 +519,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -555,7 +537,6 @@
         {
           "name": "steps",
           "ty": "integer",
-          "required": false,
           "description": "How many undos, newest first",
           "nullable": true
         }
@@ -580,7 +561,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "write",
+        "kind": "undoable",
         "risk": "low",
         "confirmation": {
           "mode": "none"
@@ -590,7 +571,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -610,13 +590,11 @@
           "name": "version",
           "ty": "text",
           "required": true,
-          "description": "A change id from history, or a checkpoint name",
-          "nullable": false
+          "description": "A change id from history, or a checkpoint name"
         },
         {
           "name": "ids",
           "ty": "array",
-          "required": false,
           "description": "Only these item ids",
           "schema": {
             "type": "array",
@@ -647,7 +625,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "write",
+        "kind": "undoable",
         "risk": "low",
         "confirmation": {
           "mode": "none"
@@ -657,7 +635,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -677,8 +654,7 @@
           "name": "name",
           "ty": "text",
           "required": true,
-          "description": "The name",
-          "nullable": false
+          "description": "The name"
         }
       ]
     },
@@ -701,7 +677,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "read",
+        "kind": "read",
         "risk": "none",
         "confirmation": {
           "mode": "none"
@@ -711,7 +687,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -730,7 +705,6 @@
         {
           "name": "last",
           "ty": "integer",
-          "required": false,
           "description": "How many recent versions (default 50)",
           "nullable": true
         }
@@ -755,7 +729,7 @@
         "availability": {
           "state": "available"
         },
-        "permission": "read",
+        "kind": "read",
         "risk": "none",
         "confirmation": {
           "mode": "none"
@@ -765,7 +739,6 @@
         "execution": {
           "mode": "immediate"
         },
-        "discovery": "live",
         "result": {
           "type": "json",
           "schema": {
@@ -785,13 +758,11 @@
           "name": "from",
           "ty": "text",
           "required": true,
-          "description": "A change id from history, or a checkpoint name",
-          "nullable": false
+          "description": "A change id from history, or a checkpoint name"
         },
         {
           "name": "to",
           "ty": "text",
-          "required": false,
           "description": "The later version (default now)",
           "nullable": true
         }
@@ -821,7 +792,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -831,7 +802,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -854,7 +824,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -864,7 +834,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -887,7 +856,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -897,7 +866,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -920,7 +888,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -930,7 +898,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -963,7 +930,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -973,7 +940,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -996,7 +962,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -1006,7 +972,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1029,7 +994,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -1039,7 +1004,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1062,7 +1026,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -1072,7 +1036,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1105,7 +1068,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -1115,7 +1078,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1138,7 +1100,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -1148,7 +1110,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1171,7 +1132,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -1181,7 +1142,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1204,7 +1164,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -1214,7 +1174,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1247,7 +1206,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -1257,7 +1216,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1280,7 +1238,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -1290,7 +1248,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1313,7 +1270,7 @@
             "availability": {
               "state": "available"
             },
-            "permission": "write",
+            "kind": "undoable",
             "risk": "low",
             "confirmation": {
               "mode": "none"
@@ -1323,7 +1280,6 @@
             "execution": {
               "mode": "immediate"
             },
-            "discovery": "live",
             "result": {
               "type": "none"
             }
@@ -1333,7 +1289,114 @@
         }
       ],
       "views": 0,
-      "children": []
+      "children": [
+        {
+          "id": "shelf/visitor/guest",
+          "kind": "test.shelf.guest",
+          "label": "Guest",
+          "detail": null,
+          "actions": [
+            {
+              "address": {
+                "resource": "shelf/visitor/guest",
+                "action": "mark-left"
+              },
+              "resource_kind": "test.shelf.guest",
+              "resource_label": "Guest",
+              "action_label": "Mark left",
+              "description": null,
+              "locus": "ClientLocal",
+              "kind": "Document",
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "kind": "undoable",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "result": {
+                  "type": "none"
+                }
+              },
+              "input": "None",
+              "params": []
+            },
+            {
+              "address": {
+                "resource": "shelf/visitor/guest",
+                "action": "mark-right"
+              },
+              "resource_kind": "test.shelf.guest",
+              "resource_label": "Guest",
+              "action_label": "Mark right",
+              "description": null,
+              "locus": "ClientLocal",
+              "kind": "Document",
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "kind": "undoable",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "result": {
+                  "type": "none"
+                }
+              },
+              "input": "None",
+              "params": []
+            },
+            {
+              "address": {
+                "resource": "shelf/visitor/guest",
+                "action": "label"
+              },
+              "resource_kind": "test.shelf.guest",
+              "resource_label": "Guest",
+              "action_label": "Label from the right",
+              "description": null,
+              "locus": "ClientLocal",
+              "kind": "Document",
+              "contract": {
+                "availability": {
+                  "state": "available"
+                },
+                "kind": "undoable",
+                "risk": "low",
+                "confirmation": {
+                  "mode": "none"
+                },
+                "retry": "at_most_once",
+                "reversible": true,
+                "execution": {
+                  "mode": "immediate"
+                },
+                "result": {
+                  "type": "none"
+                }
+              },
+              "input": "None",
+              "params": []
+            }
+          ],
+          "views": 0,
+          "children": []
+        }
+      ]
     }
   ]
 }

@@ -1,37 +1,51 @@
 use super::*;
-use crate::{
-    doc::{ChatDoc, NewMessage},
-    model::ChannelKind,
-};
+use crate::model::ChannelKind;
+use crate::record::{Channel, Chat, Message};
 use automerge::{ROOT, transaction::Transactable};
+use ui::tilo_resource::{Atom, Id};
 fn fixture(texts: &[&str]) -> AutoCommit {
-    let mut doc = AutoCommit::new();
-    ChatDoc::insert_channel(&mut doc, "one", "ws", "cat", "One", ChannelKind::Text);
-    ChatDoc::insert_channel(&mut doc, "two", "ws", "cat", "Two", ChannelKind::Text);
-    for (i, text) in texts.iter().enumerate() {
-        ChatDoc::push_message_with_id(
-            &mut doc,
-            "one",
-            &format!("m{i}"),
-            NewMessage {
-                author: "Ada".into(),
-                ts: 17,
-                text: text.to_string(),
-                ..Default::default()
+    let mut chat = Chat::default();
+    for id in ["one", "two"] {
+        chat.channels.push(
+            Id::from_raw(id),
+            Channel {
+                workspace: Id::from_raw("ws"),
+                name: id.to_uppercase(),
+                kind: ChannelKind::Text,
+                ..Channel::default()
             },
         );
     }
-    ChatDoc::push_message_with_id(
-        &mut doc,
-        "two",
-        "private-other",
-        NewMessage {
+    for (i, text) in texts.iter().enumerate() {
+        chat.messages.push(
+            Id::from_raw(format!("m{i}")),
+            Message {
+                channel: Id::from_raw("one"),
+                author: Atom("Ada".into()),
+                ts: 17,
+                text: (*text).to_owned(),
+                ..Message::default()
+            },
+        );
+    }
+    chat.messages.push(
+        Id::from_raw("private-other"),
+        Message {
+            channel: Id::from_raw("two"),
             text: "other channel".into(),
-            ..Default::default()
+            ..Message::default()
         },
     );
-    doc.commit();
+    let mut doc = AutoCommit::new();
+    crate::demo::write(&mut doc, &chat).unwrap();
     doc
+}
+/// The stored message `id`'s fields.
+fn stored(doc: &AutoCommit, id: &str) -> automerge::ObjId {
+    use automerge::ReadDoc;
+    let messages = doc.get(ROOT, "messages").unwrap().unwrap().1;
+    let item = doc.get(&messages, id).unwrap().unwrap().1;
+    doc.get(&item, "v").unwrap().unwrap().1
 }
 fn limits(items: usize) -> Limits {
     Limits {
@@ -190,11 +204,8 @@ fn semantic_read_full_requested_capacity_and_noncanonical_cursor() {
 }
 #[test]
 fn semantic_read_preserves_existing_numeric_timestamp_projection() {
-    use automerge::ReadDoc;
     let mut doc = fixture(&["hello"]);
-    let messages = doc.get(ROOT, "messages").unwrap().unwrap().1;
-    let list = doc.get(&messages, "one").unwrap().unwrap().1;
-    let message = doc.get(&list, 0).unwrap().unwrap().1;
+    let message = stored(&doc, "m0");
     doc.put(&message, "ts", 17u64).unwrap();
     doc.commit();
     assert_eq!(
@@ -214,9 +225,7 @@ fn semantic_read_marked_text_keeps_only_text_and_real_embedded_atoms_across_page
     };
     let plain = "0123456789".repeat(1000);
     let mut doc = fixture(&[&plain]);
-    let messages = doc.get(ROOT, "messages").unwrap().unwrap().1;
-    let list = doc.get(&messages, "one").unwrap().unwrap().1;
-    let message = doc.get(&list, 0).unwrap().unwrap().1;
+    let message = stored(&doc, "m0");
     let text = doc.get(&message, "text").unwrap().unwrap().1;
     doc.split_block(&text, 17).unwrap();
     doc.mark(

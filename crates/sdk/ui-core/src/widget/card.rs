@@ -21,6 +21,7 @@
 //! [`FormSection`]: crate::widget::FormSection
 //! [`StatTile`]: crate::widget::StatTile
 
+use crate::num::f64_of_usize;
 use std::collections::HashMap;
 
 use automerge::ObjId;
@@ -38,11 +39,6 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::activation::{Activation, Interaction, activation_controls};
 use crate::widget::{Button, Element, TaffyTreeExt, Text, Tone, Widget};
-
-/// Lossless `usize -> f64` widening for grid geometry.
-fn usize_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
 
 // ---------------------------------------------------------------------------
 // Pure reflow geometry, shared by CardGrid, MediaGrid and immediate callers.
@@ -70,8 +66,8 @@ pub fn card_columns(avail_w: f64, min_card_w: f64, gap: f64) -> usize {
 /// `avail_w` exactly. Never negative.
 pub fn card_column_width(avail_w: f64, cols: usize, gap: f64) -> f64 {
     let cols = cols.max(1);
-    let total_gap = usize_to_f64(cols.saturating_sub(1)) * gap;
-    ((avail_w - total_gap) / usize_to_f64(cols)).max(0.0)
+    let total_gap = f64_of_usize(cols.saturating_sub(1)) * gap;
+    ((avail_w - total_gap) / f64_of_usize(cols)).max(0.0)
 }
 
 // ---------------------------------------------------------------------------

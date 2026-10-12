@@ -1,0 +1,355 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "clocks.collection"
+label = "Clocks"
+version = 1
+
+[[resources.fields]]
+owner = "clocks"
+path = "world_clocks"
+stored = "collection"
+title = "World clocks"
+type = "Collection<WorldClock>"
+
+[[resources.fields]]
+label = true
+owner = "world-clock"
+path = "world_clocks.*.city"
+stored = "value"
+title = "City"
+type = "String"
+
+[[resources.fields]]
+owner = "world-clock"
+path = "world_clocks.*.timezone"
+readonly = true
+stored = "value"
+title = "The IANA time zone, such as `Asia/Tokyo`"
+type = "Atom"
+
+[[resources.fields]]
+owner = "clocks"
+path = "alarms"
+stored = "collection"
+title = "Alarms"
+type = "Collection<Alarm>"
+
+[[resources.fields]]
+label = true
+owner = "alarm"
+path = "alarms.*.label"
+stored = "value"
+title = "Label"
+type = "String"
+
+[[resources.fields]]
+owner = "alarm"
+path = "alarms.*.hour"
+stored = "value"
+title = "Hour"
+type = "u8"
+
+[[resources.fields]]
+owner = "alarm"
+path = "alarms.*.minute"
+stored = "value"
+title = "Minute"
+type = "u8"
+
+[[resources.fields]]
+owner = "alarm"
+path = "alarms.*.repeat"
+stored = "value"
+title = "The weekdays it repeats on, Monday as bit 0; none rings once"
+type = "u8"
+
+[[resources.fields]]
+owner = "alarm"
+path = "alarms.*.enabled"
+readonly = true
+stored = "value"
+title = "On: turning it on is a verb, which notes when"
+type = "bool"
+
+[[resources.fields]]
+owner = "alarm"
+path = "alarms.*.enabled_at_ms"
+readonly = true
+stored = "value"
+title = "When it was last turned on, so a deadline from before that (a device"
+type = "i64"
+
+[[resources.fields]]
+owner = "clocks"
+path = "timers"
+stored = "collection"
+title = "Timers"
+type = "Collection<Timer>"
+
+[[resources.fields]]
+label = true
+owner = "timer"
+path = "timers.*.label"
+stored = "value"
+title = "Label"
+type = "String"
+
+[[resources.fields]]
+owner = "timer"
+path = "timers.*.duration_ms"
+readonly = true
+stored = "value"
+title = "Duration ms"
+type = "u64"
+
+[[resources.fields]]
+owner = "timer"
+path = "timers.*.ends_at_ms"
+readonly = true
+stored = "value"
+title = "Ends at ms"
+type = "Option<i64>"
+
+[[resources.fields]]
+owner = "timer"
+path = "timers.*.paused_remaining_ms"
+readonly = true
+stored = "value"
+title = "Paused remaining ms"
+type = "Option<u64>"
+
+[[resources.fields]]
+owner = "clocks"
+path = "stopwatch"
+readonly = true
+stored = "record"
+title = "Only its verbs run the stopwatch"
+type = "Stopwatch"
+
+[[resources.fields]]
+owner = "stopwatch"
+path = "stopwatch.accumulated_ms"
+stored = "value"
+title = "Accumulated ms"
+type = "u64"
+
+[[resources.fields]]
+owner = "stopwatch"
+path = "stopwatch.started_at_ms"
+stored = "value"
+title = "Started at ms"
+type = "Option<i64>"
+
+[[resources.fields]]
+owner = "stopwatch"
+path = "stopwatch.laps_ms"
+stored = "value"
+title = "Laps ms"
+type = "Vec<u64>"
+
+[[resources.verbs]]
+id = "add-world-clock"
+kind = "undoable"
+label = "Add a city"
+
+[[resources.verbs.params]]
+name = "city"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "timezone"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "remove-world-clock"
+kind = "undoable"
+label = "Remove city"
+
+[[resources.verbs.params]]
+name = "world_clock"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "add-alarm"
+kind = "undoable"
+label = "Add an alarm"
+
+[[resources.verbs.params]]
+name = "label"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "hour"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 255
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "minute"
+required = true
+
+[resources.verbs.params.schema]
+maximum = 255
+minimum = 0
+type = "integer"
+
+[[resources.verbs.params]]
+name = "weekdays"
+required = true
+
+[resources.verbs.params.schema]
+type = "array"
+
+[resources.verbs.params.schema.items]
+description = "A weekday an alarm repeats on."
+enum = [
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri",
+    "Sat",
+    "Sun",
+]
+type = "string"
+
+[[resources.verbs]]
+id = "set-alarm-enabled"
+kind = "undoable"
+label = "Turn an alarm on or off"
+
+[[resources.verbs.params]]
+name = "alarm"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "enabled"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources.verbs]]
+id = "remove-alarm"
+kind = "undoable"
+label = "Remove alarm"
+
+[[resources.verbs.params]]
+name = "alarm"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "add-timer"
+kind = "undoable"
+label = "Start a timer"
+
+[[resources.verbs.params]]
+name = "label"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "seconds"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+id = "pause-timer"
+kind = "undoable"
+label = "Pause timer"
+
+[[resources.verbs.params]]
+name = "timer"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "resume-timer"
+kind = "undoable"
+label = "Resume timer. A finished timer starts over"
+
+[[resources.verbs.params]]
+name = "timer"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "add-minute"
+kind = "undoable"
+label = "Add one minute"
+
+[[resources.verbs.params]]
+name = "timer"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "remove-timer"
+kind = "undoable"
+label = "Remove timer"
+
+[[resources.verbs.params]]
+name = "timer"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "start-stopwatch"
+kind = "undoable"
+label = "Start the stopwatch"
+params = []
+
+[[resources.verbs]]
+id = "pause-stopwatch"
+kind = "undoable"
+label = "Pause the stopwatch"
+params = []
+
+[[resources.verbs]]
+id = "lap"
+kind = "undoable"
+label = "Record lap"
+params = []
+
+[[resources.verbs]]
+id = "reset-stopwatch"
+kind = "undoable"
+label = "Reset the stopwatch"
+params = []

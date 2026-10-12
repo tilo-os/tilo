@@ -1,5 +1,5 @@
-//! The room gate: which workspace capability an inbound [`NeighbourMsg`]
-//! needs before its variant-specific handler sees it.
+//! The room gate: which action in the room an inbound [`NeighbourMsg`] is
+//! before its variant-specific handler sees it.
 //!
 //! One exhaustive match decides it, with no default arm. Appending a variant
 //! to the wire vocabulary therefore fails to compile here until someone
@@ -8,12 +8,16 @@
 
 use super::ShellNetwork;
 use crate::network::protocol::NeighbourMsg;
-use crate::shell::state::Verb;
+use tilo_action_policy::{ActionKind, TreePath, roles::COMMENTS_FIELD};
+
+/// What a room message is: the node below the room it acts at and the kind
+/// of action it is.
+pub(super) type RoomAction = (TreePath, ActionKind);
 
 impl ShellNetwork {
-    /// The workspace verb `msg` requires of its authenticated sender before
-    /// variant-specific validation, or `None` when it is never admitted as
-    /// room traffic.
+    /// The action `msg` is, which its authenticated sender must be allowed
+    /// before variant-specific validation, or `None` when it is never
+    /// admitted as room traffic.
     ///
     /// Publishing media, injecting input, granting control, writing
     /// documents and changing room state are active collaboration actions
@@ -22,7 +26,7 @@ impl ShellNetwork {
     /// room gate (identity, codec adverts, the person's own lane): one of
     /// those reaching the gate means that earlier dispatch was bypassed, and
     /// it is refused rather than admitted on some default.
-    pub(super) fn required_room_verb(msg: &NeighbourMsg) -> Option<Verb> {
+    pub(super) fn required_room_action(msg: &NeighbourMsg) -> Option<RoomAction> {
         match msg {
             // Room governance, published media, injected input and control
             // consent change what other members see or run.
@@ -31,11 +35,14 @@ impl ShellNetwork {
             | NeighbourMsg::SurfaceStreamStart { .. }
             | NeighbourMsg::SurfaceStreamEnd { .. }
             | NeighbourMsg::RemoteInput { .. }
-            | NeighbourMsg::PermissionGrant { .. } => Some(Verb::Write),
-            // A document op: the lowest verb that emits any (a comment). The
-            // op class is checked again per envelope against the author's
-            // role (`peer_document_role`).
-            NeighbourMsg::AppDocument { .. } => Some(Verb::Comment),
+            | NeighbourMsg::PermissionGrant { .. } => Some((TreePath::root(), ActionKind::Undoable)),
+            // A document op: the least any op is (a comment). What each
+            // envelope changes is decided again against the author's
+            // standing (`peer_document_author`) by the broker.
+            NeighbourMsg::AppDocument { .. } => Some((
+                TreePath::root().field(COMMENTS_FIELD),
+                ActionKind::Undoable,
+            )),
             // Asking for state the sender may read, or answering with
             // content each piece of which is verified on its own (signed
             // ops, content hashes).
@@ -60,7 +67,7 @@ impl ShellNetwork {
             // requests and acks are how a reader obtains and confirms keys.
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
-            | NeighbourMsg::MlsGovernanceAck { .. } => Some(Verb::Read),
+            | NeighbourMsg::MlsGovernanceAck { .. } => Some((TreePath::root(), ActionKind::Read)),
             // Settled before the room gate: identity is how a sender becomes
             // known at all, a codec advert describes the sender's device, and
             // the personal lane is the person's own topic, never a room's.

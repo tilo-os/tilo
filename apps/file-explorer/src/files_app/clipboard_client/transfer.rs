@@ -2,8 +2,11 @@
 
 use super::{Arc, Command, Duration, Instant, Offer, Reply, RetainedObject, SelectedDescriptor};
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, JsonSchema};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// What the native host reports of a transfer it carried out. Settled
+/// metadata only: it grants no authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Receipt {
     pub operation: String,
     pub completed: usize,

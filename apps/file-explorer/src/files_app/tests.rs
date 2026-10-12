@@ -1242,7 +1242,7 @@ mod command_path_tests {
             .expect("verified local undo is exported through the folder resource");
         assert_eq!(undo.kind, OperationKind::Effect);
         assert_eq!(undo.operation_type.as_deref(), Some("files.effects"));
-        assert_eq!(undo.contract.permission, PermissionRequirement::Write);
+        assert_eq!(undo.contract.kind, ActionKind::Outside);
         assert_eq!(
             undo.contract.retry,
             ui::tilo_actions::RetryPolicy::AtMostOnce
@@ -1959,7 +1959,7 @@ mod command_path_tests {
             }
         };
 
-        let opened = show("open", &downloads).unwrap();
+        let opened = show("open-folder", &downloads).unwrap();
         assert_eq!(
             opened["resource"],
             <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND
@@ -2494,7 +2494,7 @@ mod command_path_tests {
                 .iter()
                 .find(|action| action.id == "status")
                 .expect("a read-only status action exists in every phase");
-            assert_eq!(status.contract.permission, PermissionRequirement::Read);
+            assert_eq!(status.contract.kind, ActionKind::Read);
             assert_eq!(status.contract.confirmation, ConfirmationPolicy::None);
             let ActionInput::Immediate(encoded) = &status.input else {
                 panic!("status uses the app's opaque row payload")
@@ -3773,41 +3773,26 @@ mod command_path_tests {
         let source = ui::framework::testing::search_source::<crate::resource::FileExplorer>(
             widget.search_entries_shown(),
         );
-        // Find the collaborative hit by its stable record action rather than
+        // Find the collaborative hit by its stable record anchor rather than
         // by position or a developer's local account settings.
         let hit = ui::search::SearchProvider::search(&source, "renamed")
             .into_iter()
             .find(|result| {
-                result.action_address()
-                    == Some(crate::search_provider::record_reveal_address(record_id))
+                result.action_id == crate::search_provider::record_resource_id(record_id)
             })
             .expect("collaborative record is searchable");
-        let mut doc = automerge::AutoCommit::new();
-        let address = hit.action_address().expect("canonical reveal action");
-        let mut resources = crate::files_app::published::tree(&widget, &doc);
-        resources.push(
-            widget
-                .published_row(&address.resource)
-                .expect("late record materializes exactly for this address"),
+        let row = widget
+            .published_row(&hit.anchor())
+            .expect("late record materializes exactly for this anchor");
+        assert!(
+            row.actions
+                .iter()
+                .any(|spec| spec.id == crate::search_provider::REVEAL_ACTION),
+            "the anchored row reveals the record"
         );
-        let spec = ui::tilo_actions::door::resolve(&resources, &address)
-            .expect("search reveal action is exported");
-        let kind = spec.kind;
-        let encoded =
-            ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
-                .expect("reveal action encodes");
-        assert!(matches!(
-            crate::files_app::published::start(
-                &mut widget,
-                kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::framework::Effected::Done(_))
-        ));
+        widget
+            .open_anchor(&hit.anchor())
+            .expect("opening the anchor reveals the record");
         assert_eq!(widget.current_path, nested);
         assert_eq!(widget.selection.primary(), Some(0));
         assert_eq!(widget.entries[0].path, file);
@@ -6216,7 +6201,7 @@ mod recent_resource_tests {
                 "Recent navigation and device history do not mutate shared files"
             );
         }
-        app.set_role(ui::permissions::Role::Denied);
+        app.leave_room();
         for action in ["reveal", "forget-recent"] {
             assert!(app.call_on(&row, action, serde_json::json!({})).is_err());
         }
@@ -6330,23 +6315,209 @@ fn completed_clipboard_undo_feedback_survives_the_actual_listing_refresh() {
     let home = tempfile::tempdir().unwrap();
     let mut widget = FileExplorerWidget::with_persistence(None, Some(home.path().to_owned()));
     widget.navigate(home.path().to_owned());
-    widget.follow_ops(&[]);
+    widget.follow_ops(&ui::tilo_resource::Outbox::new());
     let operation = "e44ac38c-627f-48a9-ad92-4a6cdf249216".to_owned();
-    let queued = crate::file_ops::QueuedOp {
-        id: "clipboard-undo".into(),
-        device: "local".into(),
-        order: 0,
-        op: crate::file_ops::FileOp::Revert {
-            op: operation.clone(),
+    let mut ops = ui::tilo_resource::Outbox::new();
+    let id = ops.push(
+        ui::tilo_resource::Id::from_raw("clipboard-undo"),
+        crate::resource::FileTask {
+            device: "local".into(),
+            op: crate::file_ops::FileOp::Revert {
+                op: operation.clone(),
+            },
         },
-        outcome: Some(crate::file_ops::Outcome::Done {
-            changes: vec![crate::file_ops::Change::ClipboardUndo { operation }],
-        }),
-    };
-    widget.follow_ops(&[queued]);
+    );
+    ops.settle(
+        &id,
+        ui::tilo_resource::Settled::Done(vec![crate::file_ops::Change::ClipboardUndo {
+            operation,
+        }]),
+    );
+    widget.follow_ops(&ops);
     assert_eq!(
         widget.status.as_deref(),
         Some(t("files-clipboard-undone").as_str())
     );
     assert!(widget.entries.is_empty());
+}
+
+mod oauth_cloud_location_tests {
+    use super::*;
+    use crate::remote_accounts::{self, RemoteAccountHealth};
+
+    const PROVIDERS: [(&str, &str); 4] = [
+        ("a-google", remote_accounts::GOOGLE_DRIVE_TYPE),
+        ("b-onedrive", remote_accounts::ONEDRIVE_TYPE),
+        ("c-dropbox", remote_accounts::DROPBOX_TYPE),
+        ("d-icloud", remote_accounts::ICLOUD_DRIVE_TYPE),
+    ];
+
+    fn fixture_store(root: &Path) -> accounts::AccountStore {
+        let mut store = accounts::AccountStore::new();
+        for (id, provider) in PROVIDERS {
+            let mut account = accounts::Account::new(id, provider);
+            account.display_name = "Cloud".into();
+            // Projection must select only public provider facts, not forward
+            // arbitrary stored configuration or imply authenticated access.
+            account.config = serde_json::json!({"unsupported_private_field":"secret-sentinel"});
+            store.upsert(account);
+        }
+        store.save_in(root).unwrap();
+        accounts::AccountSyncReporter::in_root(accounts::AccountId::from("a-google"), root)
+            .offline()
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn canonical_oauth_accounts_publish_sidebar_resources_and_open_exact_cloud_mounts() {
+        let config = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let _store = fixture_store(config.path());
+        let mut widget = FileExplorerWidget::with_persistence_dirs(
+            None,
+            Some(home.path().to_owned()),
+            favorites::UserDirs::default(),
+        );
+        widget.accounts_root = Some(config.path().to_owned());
+        widget.refresh_external_search_catalogs();
+        let mut document = automerge::AutoCommit::new();
+        let accounts = widget.remote_account_snapshot();
+        assert_eq!(accounts.len(), PROVIDERS.len());
+        let first = accounts
+            .iter()
+            .find(|account| account.id.as_str() == "a-google")
+            .unwrap();
+        assert_eq!(first.health, RemoteAccountHealth::Offline);
+        assert!(
+            accounts
+                .iter()
+                .filter(|account| account.id.as_str() != "a-google")
+                .all(|account| account.health == RemoteAccountHealth::NeverChecked)
+        );
+        for (index, (id, provider)) in PROVIDERS.iter().enumerate() {
+            let account = accounts
+                .iter()
+                .find(|account| account.id.as_str() == *id)
+                .unwrap();
+            assert_eq!(remote_accounts::type_id(account.kind).as_str(), *provider);
+            let name = if index == 0 {
+                "Cloud".into()
+            } else {
+                format!("Cloud ({})", index.checked_add(1).unwrap())
+            };
+            let mount = home.path().join("Remote").join(name);
+            assert_eq!(account.mount.as_ref(), Some(&mount));
+            std::fs::create_dir_all(&mount).unwrap();
+            std::fs::write(mount.join("Selected-provider.txt"), id.as_bytes()).unwrap();
+            let places = widget.current_places().sections();
+            assert!(places.iter().flat_map(|section| &section.items).any(|row| {
+                row.id == format!("loc:{}", mount.display()) && row.label == "Cloud"
+            }));
+            let resource_id = remote_accounts::resource_id(&account.id);
+            let resources = crate::files_app::published::tree(&widget, &document);
+            let resource = resources
+                .iter()
+                .flat_map(|root| &root.children)
+                .find(|resource| resource.id.as_str() == resource_id)
+                .unwrap();
+            assert_eq!(resource.kind, "files.remote-account");
+            let open = resource
+                .actions
+                .iter()
+                .find(|action| action.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION)
+                .unwrap();
+            assert_eq!(open.contract.availability, Availability::Available);
+            assert!(
+                !serde_json::to_string(&resource.presentation)
+                    .unwrap()
+                    .contains("secret-sentinel")
+            );
+            assert!(matches!(
+                crate::files_app::published::invoke(
+                    &mut widget,
+                    &mut document,
+                    &resource_id,
+                    crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                    &serde_json::json!({})
+                )
+                .unwrap(),
+                Some(ui::framework::Effected::Done(_))
+            ));
+            assert_eq!(widget.current_path, mount);
+            assert_eq!(
+                std::fs::read(widget.current_path.join("Selected-provider.txt")).unwrap(),
+                id.as_bytes()
+            );
+        }
+        assert!(
+            !accounts::vault_dir_in(config.path()).exists(),
+            "projection and open must not create credential custody"
+        );
+    }
+
+    #[test]
+    fn disabled_and_removed_oauth_accounts_update_existing_places_and_semantic_actions() {
+        let config = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let mut store = fixture_store(config.path());
+        let mut disabled = store
+            .get(&accounts::AccountId::from("c-dropbox"))
+            .unwrap()
+            .clone();
+        disabled.enabled = false;
+        store.upsert(disabled);
+        store.save_in(config.path()).unwrap();
+        let mut widget = FileExplorerWidget::with_persistence_dirs(
+            None,
+            Some(home.path().to_owned()),
+            favorites::UserDirs::default(),
+        );
+        widget.accounts_root = Some(config.path().to_owned());
+        widget.refresh_external_search_catalogs();
+        let mut document = automerge::AutoCommit::new();
+        let places = widget.current_places().sections();
+        assert!(places.iter().flat_map(|section| &section.items).any(|row| {
+            row.id == "account:c-dropbox" && row.secondary.as_deref() == Some("Disabled")
+        }));
+        let id = remote_accounts::resource_id(&accounts::AccountId::from("c-dropbox"));
+        let resources = crate::files_app::published::tree(&widget, &document);
+        let resource = resources
+            .iter()
+            .flat_map(|root| &root.children)
+            .find(|resource| resource.id.as_str() == id)
+            .unwrap();
+        assert!(resource.actions.iter().any(|action| {
+            action.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION
+                && matches!(&action.contract.availability, Availability::Unavailable { code, .. } if code == "account_disabled")
+        }));
+        store.remove(&accounts::AccountId::from("c-dropbox"));
+        store.save_in(config.path()).unwrap();
+        widget.refresh_external_search_catalogs();
+        assert!(
+            !widget
+                .current_places()
+                .sections()
+                .iter()
+                .flat_map(|section| &section.items)
+                .any(|row| row.id == "account:c-dropbox")
+        );
+        let resources = crate::files_app::published::tree(&widget, &document);
+        assert!(
+            !resources
+                .iter()
+                .flat_map(|root| &root.children)
+                .any(|resource| resource.id.as_str() == id)
+        );
+        assert!(
+            crate::files_app::published::invoke(
+                &mut widget,
+                &mut document,
+                &id,
+                crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                &serde_json::json!({})
+            )
+            .is_err()
+        );
+    }
 }

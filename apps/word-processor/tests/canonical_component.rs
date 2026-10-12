@@ -13,12 +13,10 @@ fn harness() -> (
         .open(definition.app_id, "room")
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "room").unwrap());
-    let permissions = Rc::new(RefCell::new(
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
-            vec![],
-        ),
-    ));
+    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
+        "author",
+        ui::permissions::Role::Owner,
+    )));
     let context = HostContext::prepare(
         definition,
         HostContextInputs {

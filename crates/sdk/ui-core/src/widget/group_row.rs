@@ -380,6 +380,9 @@ struct ApartWindow {
     /// The screen shows another stretch than the lane's last draw did: the
     /// strip is panning, and groups off screen replay their drawings.
     panning: bool,
+    /// `(y0, y1)` of the lane's clip in the row's coordinates: nothing the
+    /// lane draws reaches past them.
+    rows: (f64, f64),
 }
 
 /// Whether `scene` draws an image whose pixels are not in it: a client's
@@ -400,6 +403,9 @@ struct ApartDrawing {
     rect: Rect,
     transform: Affine,
     scene: Scene,
+    /// The damage parts the drawing marked ([`crate::scene_parts`]), which
+    /// a replay marks again.
+    parts: Option<crate::scene_parts::SectionParts>,
     /// The drawing put a secret on screen; a replay notes it again.
     shows_secret: bool,
 }
@@ -3738,11 +3744,12 @@ impl Widget for GroupRow {
             }
             // The stretch of the canvas this draw's pan shows: the
             // viewport, moved by the shift that took the groups there.
-            self.apart_window = unbake.then(|| self.apart_window_of_lane(k, viewport, shift));
             let clip = Rect {
                 x1: clip_right,
                 ..Self::drawn_bounds(viewport)
             };
+            self.apart_window =
+                unbake.then(|| self.apart_window_of_lane(k, viewport, shift, (clip.y0, clip.y1)));
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -4277,8 +4284,15 @@ impl GroupRow {
 
     /// What of lane `k`'s canvas the screen shows, its `viewport` moved by
     /// `shift`, and whether that is another stretch than its last canvas
-    /// draw showed; remembered for the next draw.
-    fn apart_window_of_lane(&mut self, k: usize, viewport: Rect, shift: f64) -> ApartWindow {
+    /// draw showed (remembered for the next draw); `rows` is the lane's
+    /// clip, top to bottom.
+    fn apart_window_of_lane(
+        &mut self,
+        k: usize,
+        viewport: Rect,
+        shift: f64,
+        rows: (f64, f64),
+    ) -> ApartWindow {
         let span = (viewport.x0 + shift, viewport.x1 + shift);
         let bits = |(x0, x1): (f64, f64)| (x0.to_bits(), x1.to_bits());
         let last = self.apart_spans.iter_mut().find(|(lane, _)| *lane == k);
@@ -4289,7 +4303,11 @@ impl GroupRow {
             Some((_, last)) => *last = span,
             None => self.apart_spans.push((k, span)),
         }
-        ApartWindow { span, panning }
+        ApartWindow {
+            span,
+            panning,
+            rows,
+        }
     }
 
     /// Draw group `i` of a row drawn in canvas coordinates, of which the
@@ -4318,6 +4336,18 @@ impl GroupRow {
         let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
         let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
         let on_screen = reach.x1 > window.span.0 && reach.x0 < window.span.1;
+        // The group is a damage part of the strip: a presenter that keeps
+        // the strip's pixels rasterises only where a group's drawing changed
+        // (a window off screen that changed while the strip rested: none of
+        // the screen). Everything it paints stays inside its sprites' reach
+        // and the lane's clip.
+        let key = crate::scene_parts::PartKey::new("ui.strip-group", id);
+        let bounds = vec![transform.transform_rect_bbox(Rect::new(
+            reach.x0,
+            window.rows.0,
+            reach.x1,
+            window.rows.1,
+        ))];
         let kept = self
             .apart_drawings
             .iter()
@@ -4328,7 +4358,14 @@ impl GroupRow {
             && drawing.rect == rect
             && drawing.transform == transform
         {
-            scene.append(&drawing.scene, Some(Affine::IDENTITY));
+            crate::scene_parts::part(scene, key, bounds, |scene| {
+                crate::scene_parts::append(
+                    scene,
+                    &drawing.scene,
+                    drawing.parts.as_ref(),
+                    Some(Affine::IDENTITY),
+                );
+            });
             if drawing.shows_secret {
                 crate::secret_paint::note_secret_painted();
             }
@@ -4341,20 +4378,31 @@ impl GroupRow {
         local.reset();
         crate::backdrop::nest_scene(&local);
         let secrets = crate::secret_paint::SecretPaint::begin();
-        self.groups[i].draw(&mut local, transform, tr, theme, presence);
+        let group = &mut self.groups[i];
+        let ((), parts) = crate::scene_parts::record(&mut local, |local| {
+            group.draw(local, transform, tr, theme, presence);
+        });
         let shows_secret = secrets.finish();
         // A drawing that carries a blurred material is drawn every frame:
         // replayed, the material would lose its backdrop. So is one that
         // draws pixels living outside it (a client's GPU buffer): those are
         // valid only for the frame that drew them, and a replay could read a
         // buffer its client already got back.
-        let carries_material = crate::backdrop::append_nested(scene, &local, Affine::IDENTITY) > 0;
+        let carries_material = crate::scene_parts::part(scene, key, bounds, |scene| {
+            crate::scene_parts::append_with(
+                scene,
+                parts.as_ref(),
+                Some(Affine::IDENTITY),
+                |scene| crate::backdrop::append_nested(scene, &local, Affine::IDENTITY),
+            )
+        }) > 0;
         if !carries_material && !draws_external_pixels(&local) {
             self.apart_drawings.push(ApartDrawing {
                 id,
                 rect,
                 transform,
                 scene: local,
+                parts,
                 shows_secret,
             });
         }
@@ -4858,18 +4906,6 @@ mod tests {
     use super::*;
     use crate::testing::Dispatch;
     use crate::widget::{TabDescriptor, TileContent, WindowWidth, min_group_px};
-
-    /// Narrows a fixture viewport width to the `f32` taffy layout expects.
-    /// Test fixtures only ever pass small literal pixel constants (hundreds
-    /// to low thousands), far inside `f32`'s exact-integer range, so this
-    /// cannot lose precision.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "test fixture viewport widths are small literal pixel constants, always exactly representable in f32"
-    )]
-    fn px32(v: f64) -> f32 {
-        v as f32
-    }
 
     /// `t` minus `ms` milliseconds, saturating rather than panicking in
     /// the astronomically unlikely case the subtraction would underflow
@@ -5400,7 +5436,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -5411,7 +5447,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -5446,7 +5482,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -5457,7 +5493,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -6667,7 +6703,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(600.0),
                 },
                 ..Default::default()
@@ -6678,7 +6714,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -6719,7 +6755,7 @@ mod tests {
             let viewport = taffy.parent_node(
                 Style {
                     size: Size {
-                        width: Dimension::length(px32(viewport_w)),
+                        width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                         height: Dimension::length(600.0),
                     },
                     ..Default::default()
@@ -6730,7 +6766,7 @@ mod tests {
                 .compute_layout_with_measure(
                     viewport,
                     TSize {
-                        width: AvailableSpace::Definite(px32(viewport_w)),
+                        width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                         height: AvailableSpace::Definite(600.0),
                     },
                     |_, _, _, _, _| taffy::Size::ZERO,
@@ -6981,7 +7017,7 @@ mod tests {
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
-                    width: Dimension::length(px32(viewport_w)),
+                    width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
                     height: Dimension::length(1080.0),
                 },
                 ..Default::default()
@@ -6992,7 +7028,7 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(px32(viewport_w)),
+                    width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
                     height: AvailableSpace::Definite(1080.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -7143,6 +7179,69 @@ mod tests {
             row.apart_drawings.is_empty(),
             "a screen-space draw drops the canvas drawings"
         );
+    }
+
+    /// Each window group of a strip drawn in canvas coordinates is a damage
+    /// part of the strip's drawing: drawn again, panned (groups off screen
+    /// replaying their drawings) or held still, the strip shows no damage,
+    /// and a change to one group damages only where that group can paint.
+    #[test]
+    fn each_group_of_a_strip_drawn_in_canvas_coordinates_is_a_damage_part() {
+        fn draw(
+            row: &mut GroupRow,
+            text: &mut TextRenderer,
+        ) -> (Scene, crate::scene_parts::SectionParts) {
+            let mut scene = Scene::new();
+            let ((), parts) = crate::scene_parts::record(&mut scene, |scene| {
+                row.draw(
+                    scene,
+                    Affine::IDENTITY,
+                    text,
+                    &Theme::dark(),
+                    &PresenceCtx::empty(),
+                );
+            });
+            (scene, parts.expect("the strip's parts are well nested"))
+        }
+        let text = &mut TextRenderer::new();
+        let mut row = strip_at(8, 800.0, 0.0, 1000);
+        relayout_strip(&mut row, 800.0);
+        let _scope = crate::retained_present::RetainedScene::begin(true);
+        let (first, first_parts) = draw(&mut row, text);
+        let (again, again_parts) = draw(&mut row, text);
+        assert_eq!(
+            crate::scene_parts::damage(&first, &first_parts, &again, &again_parts),
+            Ok(Vec::new())
+        );
+        row.set_scroll_x_for_test(1300.0);
+        relayout_strip(&mut row, 800.0);
+        let (panned, panned_parts) = draw(&mut row, text);
+        assert!(
+            !row.culled_groups.is_empty(),
+            "groups off screen replay their drawings"
+        );
+        assert_eq!(
+            crate::scene_parts::damage(&first, &first_parts, &panned, &panned_parts),
+            Ok(Vec::new()),
+            "a replayed group marks its part again"
+        );
+        let index = 5;
+        let focused = row.groups[index].focused();
+        let _ = row.groups[index].set_focused(!focused);
+        let (changed, changed_parts) = draw(&mut row, text);
+        let damage = crate::scene_parts::damage(&panned, &panned_parts, &changed, &changed_parts)
+            .expect("a group bounds its change");
+        assert!(!damage.is_empty(), "the group's focus edge changed");
+        let shift = row.canvas_shift();
+        let group = row.groups[index]
+            .get_rect()
+            .inflate(GROUP_SPRITE_REACH_PX, 0.0);
+        for rect in damage {
+            assert!(
+                rect.x0 >= group.x0 + shift - 1e-6 && rect.x1 <= group.x1 + shift + 1e-6,
+                "{rect:?} lies where group {index} paints ({group:?} shifted by {shift})"
+            );
+        }
     }
 
     /// A drawing of a client's GPU buffer (an image with no CPU pixels) is

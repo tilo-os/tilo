@@ -1,10 +1,9 @@
 //! Actual public import, navigation, and refusal paths for detached evidence.
+use crate::tests::Parsed as _;
 use crate::{ChipDesignShell, VerificationRecord};
 use serde_json::{Value, json};
 use sha2::Digest;
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::Action;
-use ui::tilo_resource::{Doc, Resource};
 fn fixture() -> Value {
     serde_json::from_str(include_str!("../fixtures/evidence-flow.json")).unwrap()
 }
@@ -17,7 +16,7 @@ fn import(app: &mut TestApp<ChipDesignShell>, value: &Value) -> String {
 #[test]
 fn public_flow_stage_artifact_search_and_view_preserve_scope() {
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
-    assert!(app.state().verifications.is_empty());
+    assert!(app.parsed().verifications.is_empty());
     let id = import(&mut app, &fixture());
     let child = crate::evidence_flow_view::resource_id(&id, "stage", "physical");
     app.call_on(&child, "inspect-evidence", json!({})).unwrap();
@@ -54,11 +53,11 @@ fn public_flow_stage_artifact_search_and_view_preserve_scope() {
             "missing {key}"
         );
     }
-    let hits = crate::ChipProject::search(&app.state());
-    assert!(
-        hits.iter()
-            .any(|hit| hit.anchor.as_deref() == Some(&format!("{id}/stage/physical")))
-    );
+    let hits = <crate::Project as ui::tilo_resource::Resource>::search(&app.state());
+    assert!(hits.iter().any(|hit| hit.anchor.as_deref()
+        == Some(&crate::evidence_flow_view::resource_id(
+            &id, "stage", "physical"
+        ))));
     app.harness().click_named("flow-stage-cpu").unwrap();
     app.settle();
     let comparison = ui::i18n::I18nManager::lookup_plain("chip-flow-comparison");
@@ -70,7 +69,7 @@ fn public_flow_stage_artifact_search_and_view_preserve_scope() {
         "real graph hit-testing must invoke the same stage inspector"
     );
     assert!(app.undo());
-    assert!(app.state().verifications.is_empty());
+    assert!(app.parsed().verifications.is_empty());
 }
 #[test]
 fn invalid_scope_status_dependency_and_bounds_refuse_public_import() {
@@ -103,7 +102,7 @@ fn invalid_scope_status_dependency_and_bounds_refuse_public_import() {
             app.call("import-verification", json!({"json":value.to_string()}))
                 .is_err()
         );
-        assert!(app.state().verifications.is_empty());
+        assert!(app.parsed().verifications.is_empty());
     }
 }
 #[test]
@@ -147,7 +146,7 @@ fn referenced_subflow_resolves_only_exact_imported_summary_bytes() {
     );
     app.call_on(&link, "open-evidence-subflow", json!({}))
         .unwrap();
-    assert_eq!(app.state().verifications.len(), 2);
+    assert_eq!(app.parsed().verifications.len(), 2);
 }
 
 #[test]
@@ -175,34 +174,23 @@ fn expected_refusal_is_visible_without_completed_outputs() {
 
 #[test]
 fn project_can_retain_root_and_full_layer_flows_but_still_enforces_capacity() {
-    let mut doc = Doc::new();
-    crate::ChipProject::initialize(&mut doc).unwrap();
+    let mut project = ui::tilo_resource::Replica::<crate::Project>::new();
     for layer in 0..128 {
         let mut value = fixture();
         value["evidence_flow"]["title"] = json!(format!("Synthetic bounded layer {layer}"));
-        crate::ProjectAction::ImportVerification {
-            json: value.to_string(),
-        }
-        .apply(&mut doc)
-        .unwrap();
+        project
+            .apply(crate::Project::IMPORT_VERIFICATION.with(value.to_string()))
+            .unwrap();
     }
-    assert_eq!(
-        crate::ChipProject::read(&doc).unwrap().verifications.len(),
-        128
-    );
+    assert_eq!(project.state().unwrap().verifications.len(), 128);
     let mut overflow = fixture();
     overflow["evidence_flow"]["title"] = json!("Synthetic capacity overflow");
     assert!(
-        crate::ProjectAction::ImportVerification {
-            json: overflow.to_string()
-        }
-        .apply(&mut doc)
-        .is_err()
+        project
+            .apply(crate::Project::IMPORT_VERIFICATION.with(overflow.to_string()))
+            .is_err()
     );
-    assert_eq!(
-        crate::ChipProject::read(&doc).unwrap().verifications.len(),
-        128
-    );
+    assert_eq!(project.state().unwrap().verifications.len(), 128);
 }
 
 #[test]
@@ -228,7 +216,7 @@ fn thirty_two_unique_graph_nodes_import_but_thirty_three_refuse() {
         app.call("import-verification", json!({"json":value.to_string()}))
             .is_err()
     );
-    assert_eq!(app.state().verifications.len(), 1);
+    assert_eq!(app.parsed().verifications.len(), 1);
 }
 
 fn contains_target(node: &Value, target: &str) -> bool {
@@ -294,7 +282,7 @@ fn public_host_search_exposes_actual_indexed_evidence_stage() {
             .unwrap()
             .contains("Synthetic CPU comparison")
     );
-    assert_eq!(app.state().verifications.len(), 1);
+    assert_eq!(app.parsed().verifications.len(), 1);
     let audit = app.harness().native_app_audit();
     assert!(
         audit.accessibility.issues.is_empty(),

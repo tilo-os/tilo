@@ -130,9 +130,8 @@ fn typing_splices_the_child_through_the_parents_action() {
         "the rest of the query is untouched"
     );
     assert!(
-        app.versions()
+        app.history()
             .into_iter()
-            .filter_map(|version| version.context)
             .any(|context| context.resource.as_ref().is_some_and(|r| r.id == sql_id())),
         "history names the SQL as the resource edited"
     );

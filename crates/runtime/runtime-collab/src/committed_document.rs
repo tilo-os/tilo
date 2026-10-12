@@ -99,6 +99,14 @@ pub enum Request {
     },
     /// Read only the host-retained window instance for this live connection.
     PrivateWindowBinding,
+    /// Hold until an `Open { known_revision }` would answer anything but
+    /// what the caller already holds (`Unchanged` for that revision, or
+    /// `Unavailable` for `None`), then answer [`Reply::Stale`]. Refused once
+    /// the caller may no longer read. Never carries document bytes and
+    /// never publishes readiness: the caller re-`Open`s.
+    Await {
+        known_revision: Option<[u8; 32]>,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reply {
@@ -128,6 +136,8 @@ pub enum Reply {
     PrivateWindowBinding {
         instance: Option<u64>,
     },
+    /// An [`Request::Await`] ended: what the caller holds may be stale.
+    Stale,
 }
 impl Request {
     /// Encode a valid request for the wire.
@@ -159,7 +169,7 @@ impl Request {
     }
     fn valid(&self) -> bool {
         match self {
-            Self::Open { .. } | Self::PrivateWindowBinding => true,
+            Self::Open { .. } | Self::PrivateWindowBinding | Self::Await { .. } => true,
             Self::Next {
                 capture,
                 offset,
@@ -335,6 +345,29 @@ mod tests {
         // A caller cannot append an instance or identity selector to the unit request.
         assert!(Request::decode(&[4, 42]).is_err());
         assert!(Reply::decode(&[7, 1, 0]).is_err());
+    }
+
+    #[test]
+    fn await_and_stale_are_appended_and_carry_no_bytes() {
+        // Appended after every existing variant: older peers' encodings keep
+        // their tags, and an older broker refuses the unknown request.
+        let request = Request::Await {
+            known_revision: Some([5; 32]),
+        };
+        let encoded = request.encode().unwrap();
+        assert_eq!(encoded[0], 5);
+        assert_eq!(Request::decode(&encoded).unwrap(), request);
+        assert_eq!(
+            Request::Await {
+                known_revision: None
+            }
+            .encode()
+            .unwrap(),
+            [5, 0]
+        );
+        assert_eq!(Reply::Stale.encode().unwrap(), [8]);
+        assert_eq!(Reply::decode(&[8]).unwrap(), Reply::Stale);
+        assert!(Reply::decode(&[8, 0]).is_err());
     }
 
     #[test]

@@ -652,12 +652,7 @@ impl StandaloneHistoryHost {
         }
         let now = crate::time::wall();
         for entry in selected {
-            let action = entry
-                .context
-                .as_ref()
-                .map(|context| context.action_label.as_str())
-                .filter(|label| !label.trim().is_empty())
-                .unwrap_or(&entry.summary);
+            let action = &entry.summary;
             lines.push(format!("{}: {action}", entry.author.name));
             lines.push(crate::widget::history::format_relative_time(
                 entry.timestamp,
@@ -1100,16 +1095,6 @@ impl Widget for PresentationRoots<'_> {
     ) -> NodeId {
         self.layout_root
     }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.clone()
     }
@@ -1344,7 +1329,7 @@ fn review_restore_operation(session: uuid::Uuid) -> ActionSpec {
             .expect("validated history review serializes")
         },
     )
-    .requiring(tilo_actions::PermissionRequirement::Write)
+    .of_kind(tilo_actions::ActionKind::Undoable)
 }
 
 #[expect(
@@ -1360,7 +1345,7 @@ fn restore_operation(session: uuid::Uuid) -> ActionSpec {
         &HistoryCommand::Restore { session },
     )
     .expect("history restore serializes")
-    .requiring(tilo_actions::PermissionRequirement::Write)
+    .of_kind(tilo_actions::ActionKind::Undoable)
     .destructive()
     .reversible()
 }
@@ -1972,10 +1957,7 @@ mod tests {
             .find(|action| action.id == "review_restore")
             .unwrap();
         assert_eq!(review.kind, OperationKind::View);
-        assert_eq!(
-            review.contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
+        assert_eq!(review.contract.kind, tilo_actions::ActionKind::Undoable);
         assert!(review.contract.availability.is_available());
         let restore = session
             .actions
@@ -1983,10 +1965,7 @@ mod tests {
             .find(|action| action.id == "restore")
             .unwrap();
         assert_eq!(restore.kind, OperationKind::Effect);
-        assert_eq!(
-            restore.contract.permission,
-            tilo_actions::PermissionRequirement::Write
-        );
+        assert_eq!(restore.contract.kind, tilo_actions::ActionKind::Undoable);
         assert_eq!(
             restore.contract.confirmation,
             tilo_actions::ConfirmationPolicy::Confirm
@@ -2006,13 +1985,13 @@ mod tests {
         doc.put(ROOT, "value", "before").unwrap();
         doc.commit();
         doc.put(ROOT, "value", "after").unwrap();
-        let context = tilo_actions::ActionContext::for_resource(
-            "Move meeting",
-            "event:one",
-            "calendar.event",
-            "Planning",
-        )
-        .with_app("calendar", "Calendar");
+        let context =
+            tilo_actions::ActionContext::for_resource("event:one", "calendar.event", "Planning")
+                .with_app("calendar", "Calendar")
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new("calendar", "calendar.event", "move-meeting"),
+                    [],
+                )));
         let hash = doc
             .commit_with(
                 automerge::transaction::CommitOptions::default()

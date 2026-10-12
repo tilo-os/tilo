@@ -44,12 +44,6 @@ impl ContactsApp {
     fn perform_effect(&mut self, effect: crate::actions::ContactsEffect) -> Result<(), String> {
         use crate::actions::ContactsEffect;
         match effect {
-            ContactsEffect::Open { contact } => {
-                if self.store.get(contact).is_none() {
-                    return Err("contact no longer exists".into());
-                }
-                self.reveal_contact(contact);
-            }
             ContactsEffect::OpenGroup { name } => self.reveal_group(&name)?,
             ContactsEffect::OpenFavorites => {
                 self.set_group_filter(Some(FAVORITES_FILTER.into()));

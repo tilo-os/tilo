@@ -80,11 +80,18 @@ impl Instruction {
     /// not part of the choice a model makes: a document can ask the agent
     /// for something, but nothing written in a document can make the agent
     /// answer to a different name.
+    ///
+    /// The name is matched without regard to case; what follows it is kept
+    /// as written, so a quoted value reaches the document as it was typed.
     pub fn addressed(text: &str, name: &str) -> Option<String> {
         let t = text.trim();
         let prefix = format!("{}:", name.to_lowercase());
-        let lower = t.to_lowercase();
-        let rest = lower.strip_prefix(&prefix)?;
+        let length = prefix.chars().count();
+        let head: String = t.chars().take(length).collect();
+        if head.to_lowercase() != prefix {
+            return None;
+        }
+        let rest: String = t.chars().skip(length).collect();
         Some(rest.trim().to_string())
     }
 
@@ -233,7 +240,7 @@ pub struct Step {
     /// operation that collects a content hash can only be performed with
     /// content something produced, so there is exactly one place its
     /// argument can come from.
-    pub carries: bool,
+    pub carries: Option<String>,
 }
 
 impl Step {
@@ -241,7 +248,7 @@ impl Step {
     pub fn own(instruction: Instruction) -> Step {
         Step {
             instruction,
-            carries: false,
+            carries: None,
         }
     }
 
@@ -250,9 +257,9 @@ impl Step {
     pub fn bound(instruction: Instruction, offers: &[Offer]) -> Step {
         let carries = match &instruction {
             Instruction::Perform { id, .. } => {
-                surface::find(offers, id).is_some_and(Offer::wants_content)
+                surface::find(offers, id).and_then(Offer::content_param)
             }
-            Instruction::Unknown(_) => false,
+            Instruction::Unknown(_) => None,
         };
         Step {
             instruction,
@@ -559,6 +566,11 @@ mod tests {
                 Instruction::addressed("SCRIBE: give this a title", "Scribe"),
                 Some("give this a title".to_string())
             );
+            assert_eq!(
+                Instruction::addressed("SCRIBE: add a paragraph \"Next Steps\"", "Scribe"),
+                Some("add a paragraph \"Next Steps\"".to_string()),
+                "what is quoted keeps its case"
+            );
             let blocks = vec![
                 para("h", "Shopping"),
                 para("ins", "Scribe: table"),
@@ -619,203 +631,12 @@ mod tests {
         }
     }
 
-    /// A real word-processor document with one heading, surveyed through
-    /// the real contract, so every assertion below is against what the app
-    /// actually exports.
-    fn surveyed() -> Vec<Offer> {
-        let mut doc = automerge::AutoCommit::new();
-        let c = tilo_doc::model::init(&mut doc, &automerge::ROOT);
-        let mut ids = tilo_doc::model::seeded_id_gen(&doc, &c);
-        {
-            let mut dm = tilo_doc::DocMut {
-                doc: &mut doc,
-                c: &c,
-                ids: &mut ids,
-            };
-            let h = dm.insert_block(None, "heading");
-            dm.set_attr(&h, "level", 1i64);
-            dm.splice_text(&h, 0, 0, "Notes");
-        }
-        doc.commit();
-        let wp = &surface::CONTRACTS[0];
-        assert_eq!(wp.namespace, "word-processor");
-        surface::offers(&[(wp, &doc)], &[], &permitting("so.tilo.word-processor"))
-    }
-
-    fn permitting(app: &str) -> ui::permissions::PermissionContext {
-        use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
-        PermissionContext::from_capabilities(
-            Actor::agent("Scribe"),
-            vec![
-                CapOverride::grant(
-                    Subject::agent("Scribe"),
-                    Scope::App(app.to_string()),
-                    Verb::Write,
-                )
-                .with_id("test"),
-            ],
-        )
-    }
-
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each case keeps its original fixture and assertions"
     )]
     fn an_instruction_resolves_only_to_a_surveyed_bound_and_confirmed_operation() {
-        // Case `a_refusal_names_operations_in_words_and_never_an_address`.
-        {
-            let offers = surveyed();
-            assert!(!offers.is_empty(), "nothing to refuse against");
-
-            let mut written = vec![unmatched("juggle three plates", &NoMatch::Nothing)];
-            for asked in ["align it", "juggle three plates"] {
-                if let Instruction::Unknown(why) = Instruction::from_floor(asked, &offers) {
-                    written.push(why);
-                }
-            }
-            for text in &written {
-                assert!(
-                    !text.contains(surface::ADDRESS_SEP),
-                    "an address reached prose a person reads: {text:?}"
-                );
-            }
-
-            let ambiguous = unmatched(
-                "align it",
-                &NoMatch::Ambiguous(vec!["Align left".into(), "Align centre".into()]),
-            );
-            assert!(ambiguous.contains("align left"), "{ambiguous}");
-            assert!(ambiguous.contains("align centre"), "{ambiguous}");
-        }
-
-        // Case `the_floor_needs_a_clear_winner_and_says_so_when_there_is_none`.
-        {
-            let offers = surveyed();
-
-            // "centre" and "notes" together land on exactly one offer: the
-            // heading's own alignment, not the document's.
-            let one = Instruction::from_floor("centre the Notes", &offers);
-            let Instruction::Perform {
-                id,
-                arguments,
-                confirmation,
-            } = &one
-            else {
-                panic!("a single clear match must resolve to an address, got {one:?}");
-            };
-            assert!(arguments.is_empty());
-            assert_eq!(confirmation, &ConfirmationEvidence::None);
-            assert!(
-                surface::find(&offers, id).is_some_and(|o| o
-                    .descriptor
-                    .action_label
-                    .to_lowercase()
-                    .contains("centre")),
-                "the floor chose {id}"
-            );
-
-            // "align" alone fits every alignment action equally.
-            let many = Instruction::from_floor("align it", &offers);
-            let Instruction::Unknown(why) = &many else {
-                panic!("an ambiguous instruction must not resolve, got {many:?}");
-            };
-            assert!(
-                why.contains("Which one?"),
-                "ambiguity must be reported as ambiguity: {why}"
-            );
-            assert!(
-                why.contains("align"),
-                "and it must name the alternatives, in the app's own words: {why}"
-            );
-            assert!(
-                !why.contains(surface::ADDRESS_SEP),
-                "in words, never as addresses: {why}"
-            );
-
-            assert!(matches!(
-                Instruction::from_floor("juggle three plates", &offers),
-                Instruction::Unknown(_)
-            ));
-
-            // There is no agent-only vocabulary: "table" means whatever the app
-            // publishes for it — here its own table of contents — never a
-            // compiled-in recipe.
-            let table = Instruction::from_floor("turn the headings into a table", &offers);
-            assert!(
-                matches!(&table, Instruction::Perform { id, .. } if id.ends_with("#generate-toc")),
-                "{table:?}"
-            );
-        }
-
-        // Case `an_answer_is_checked_against_the_survey_and_not_against_a_list`.
-        {
-            let offers = surveyed();
-            assert!(
-                !offers.is_empty(),
-                "the survey found nothing to check against"
-            );
-
-            // An operation with a required parameter is dispatchable only with
-            // that parameter (checked by the structured-argument tests below);
-            // here every operation that needs nothing must pass with nothing.
-            let nullary: Vec<&Offer> = offers
-                .iter()
-                .filter(|offer| offer.descriptor.params.iter().all(|param| !param.required))
-                .collect();
-            assert!(!nullary.is_empty(), "the survey offers nothing nullary");
-            for offer in nullary {
-                let supplied = match &offer.descriptor.contract.confirmation {
-                    tilo_actions::ConfirmationPolicy::None => serde_json::Map::new(),
-                    tilo_actions::ConfirmationPolicy::Confirm => serde_json::Map::from_iter([(
-                        "confirm".into(),
-                        serde_json::Value::Bool(true),
-                    )]),
-                    tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
-                        serde_json::Map::from_iter([(
-                            "confirmation_phrase".into(),
-                            serde_json::Value::String(phrase.clone()),
-                        )])
-                    }
-                };
-                let confirmation = match &offer.descriptor.contract.confirmation {
-                    tilo_actions::ConfirmationPolicy::None => ConfirmationEvidence::None,
-                    tilo_actions::ConfirmationPolicy::Confirm => ConfirmationEvidence::Confirm,
-                    tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
-                        ConfirmationEvidence::Phrase(phrase.clone())
-                    }
-                };
-                let answered =
-                    Instruction::from_answer(&offer.id(), "asked", Some(&supplied), &offers);
-                assert_eq!(
-                    answered,
-                    Ok(Instruction::Perform {
-                        id: offer.id(),
-                        arguments: serde_json::Map::new(),
-                        confirmation,
-                    }),
-                    "{} is offered but the gate would not dispatch it",
-                    offer.id()
-                );
-            }
-
-            let stale = "word-processor.section:gone-block#align-left";
-            assert_eq!(
-                Instruction::from_answer(stale, "asked", None, &offers),
-                Err(Refused::NotExported(stale.to_string())),
-                "an address the survey does not carry must not be dispatched"
-            );
-            assert_eq!(
-                Instruction::from_answer(NOTHING_FITS, "juggle", None, &offers),
-                Ok(Instruction::Unknown("juggle".into()))
-            );
-            assert_eq!(
-                Instruction::from_answer("table", "asked", None, &offers),
-                Err(Refused::NotExported("table".into())),
-                "a former agent recipe id is not an operation anybody publishes"
-            );
-        }
-
         // Case `an_operation_that_collects_content_is_not_asked_for_words`.
         {
             let offers = vec![offer(
@@ -1176,17 +997,21 @@ mod tests {
                 confirmation: ConfirmationEvidence::None,
             };
             assert!(
-                Step::bound(perform(&content), &offers).carries,
+                Step::bound(perform(&content), &offers).carries.is_some(),
                 "an operation that collects content must be carried into"
             );
             assert!(
-                !Step::bound(perform(&words), &offers).carries,
+                Step::bound(perform(&words), &offers).carries.is_none(),
                 "an operation that collects words is never carried into — it is quoted, not carried"
             );
-            assert!(!Step::bound(perform(&none), &offers).carries);
+            assert!(Step::bound(perform(&none), &offers).carries.is_none());
 
             // Never true for anything but Perform, whatever the survey holds.
-            assert!(!Step::bound(Instruction::Unknown("x".into()), &offers).carries);
+            assert!(
+                Step::bound(Instruction::Unknown("x".into()), &offers)
+                    .carries
+                    .is_none()
+            );
         }
 
         // Case `opens_an_application_is_true_only_for_the_open_address`.

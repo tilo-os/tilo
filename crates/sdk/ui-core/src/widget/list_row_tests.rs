@@ -50,6 +50,34 @@ fn a_title_cut_short_reads_in_full_in_the_tooltip() {
     );
 }
 
+#[test]
+fn a_row_tooltip_reads_anywhere_the_row_has_nothing_closer_to_say() {
+    let theme = crate::theme::Theme::dark();
+    let row = ListRow::new("used", "Deploy").tooltip("Used 3 times");
+    let h = FrameHarness::for_root(crate::State::new(), row, (480, 60), theme);
+    let row = h.root::<ListRow>();
+    let (_, text) = Widget::tooltip_target_at(row, row.text_band().center()).expect("row tooltip");
+    assert_eq!(text, "Used 3 times");
+}
+
+#[test]
+fn a_badge_column_fits_every_badge_of_the_list() {
+    let theme = crate::theme::Theme::dark();
+    let badges: Rc<[String]> = vec!["SH".to_owned(), "RUST".to_owned()].into();
+    let row = ListRow::new("short", "Deploy")
+        .badge("SH")
+        .badge_column(Rc::clone(&badges));
+    let h = FrameHarness::for_root(crate::State::new(), row, (480, 60), theme.clone());
+    let wide = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        badge_column_width(text, &theme, &["SH", "RUST"])
+    });
+    let own = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        badge_column_width(text, &theme, &["SH"])
+    });
+    assert!(wide > own);
+    assert_eq!(h.root::<ListRow>().leading_column, Some(wide));
+}
+
 fn hovered() -> Interaction {
     Interaction {
         hovered: true,

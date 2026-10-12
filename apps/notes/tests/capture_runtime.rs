@@ -6,9 +6,7 @@ fn creating_then_visiting_another_note_keeps_creation_reachable_by_ctrl_z() {
     let checkout = notebook(&fixture);
     let initial = fixture
         .records
-        .read(&checkout.id, |doc| {
-            notes::doc::NotesDoc::list_pages(doc).len()
-        })
+        .read(&checkout.id, |doc| notes::read::list_pages(doc).len())
         .unwrap();
     let mut live = driver(&fixture, 225, &checkout);
 
@@ -17,8 +15,7 @@ fn creating_then_visiting_another_note_keeps_creation_reachable_by_ctrl_z() {
     assert_eq!(
         fixture
             .records
-            .read(&checkout.id, |doc| notes::doc::NotesDoc::list_pages(doc)
-                .len())
+            .read(&checkout.id, |doc| notes::read::list_pages(doc).len())
             .unwrap(),
         initial + 1,
         "the visible new-note affordance creates one canonical note"
@@ -33,8 +30,7 @@ fn creating_then_visiting_another_note_keeps_creation_reachable_by_ctrl_z() {
     assert_eq!(
         fixture
             .records
-            .read(&checkout.id, |doc| notes::doc::NotesDoc::list_pages(doc)
-                .len())
+            .read(&checkout.id, |doc| notes::read::list_pages(doc).len())
             .unwrap(),
         initial,
         "switching notes must not strand the creation outside action history"
@@ -99,7 +95,7 @@ fn text_node(driver: &ui::headless::FrameHarness, target: &str) -> ui::a11y::Acc
     reason = "regression checks both text scales, source preservation, geometry, and rendering together"
 )]
 fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_sizes() {
-    use notes::doc::NotesDoc;
+    use notes::read;
     let source = "message = \"Long Python strings remain completely readable inside a narrow note without adding any source line breaks.\"";
     for scale in [1.0, 2.0] {
         let f = NotebookFixture::rich();
@@ -110,9 +106,7 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
         let checkout = notebook(&f);
         let before = f
             .records
-            .read(&checkout.id, |doc| {
-                NotesDoc::page_block_snapshots(doc, f.child)
-            })
+            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
             .unwrap();
         let mut live = driver(&f, 225, &checkout);
         live.set_theme(
@@ -124,13 +118,7 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
             .with_text_scale(scale),
         );
         live.resize((390, 1500)).unwrap();
-        invoke(
-            &mut live,
-            225,
-            notes::actions::page_resource_id(f.child),
-            "open",
-            None,
-        );
+        open_note(&mut live, 225, f.child, None);
         let target = format!("notes.block-text:{}", before[0].0);
         let next_target = format!("notes.block-text:{}", before[1].0);
         let first = text_node(&live, &target);
@@ -162,9 +150,7 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
         assert_eq!(revision(&f, &checkout), original_revision);
         assert_eq!(
             f.records
-                .read(&checkout.id, |doc| NotesDoc::page_block_snapshots(
-                    doc, f.child
-                ))
+                .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
                 .unwrap(),
             before
         );
@@ -187,9 +173,7 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
         live.set_modifiers(&[]);
         let split = f
             .records
-            .read(&checkout.id, |doc| {
-                NotesDoc::page_block_snapshots(doc, f.child)
-            })
+            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
             .unwrap();
         assert_eq!(split[0], before[0]);
         assert_eq!(split[1].1, "", "Shift+Enter creates a blank source row");
@@ -200,9 +184,7 @@ fn wrapped_code_keeps_source_lines_and_caret_geometry_at_normal_and_large_text_s
         live.type_text("Outside code");
         let after = f
             .records
-            .read(&checkout.id, |doc| {
-                NotesDoc::page_block_snapshots(doc, f.child)
-            })
+            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
             .unwrap();
         assert_eq!(after[0], before[0]);
         assert_eq!(
@@ -263,24 +245,16 @@ fn canonical_typing_records_real_frame_cost_and_visible_content() {
     reason = "test deliberately includes a decomposed accent to exercise grapheme selection"
 )]
 fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_path() {
-    use notes::doc::NotesDoc;
+    use notes::read;
     let f = NotebookFixture::rich();
     f.write_page(f.child, "a👩‍👩‍👧‍👦éz\n\n```python\nprint(1)\n```\n".as_bytes());
     let checkout = notebook(&f);
     let before = f
         .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, f.child)
-        })
+        .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
         .unwrap();
     let mut live = driver(&f, 224, &checkout);
-    invoke(
-        &mut live,
-        224,
-        notes::actions::page_resource_id(f.child),
-        "open",
-        None,
-    );
+    open_note(&mut live, 224, f.child, None);
     let target = format!("notes.block-text:{}", before[0].0);
     let code_target = format!("notes.block-text:{}", before[1].0);
     let initial_revision = revision(&f, &checkout);
@@ -301,9 +275,7 @@ fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_
     live.type_text("X");
     let changed = f
         .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, f.child)
-        })
+        .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
         .unwrap();
     assert_eq!(changed[0], (before[0].0.clone(), "aXz".to_owned()));
     let prior_edit = revision(&f, &checkout);
@@ -316,9 +288,7 @@ fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_
     assert_eq!(revision(&f, &checkout), prior_edit + 1);
     assert_eq!(
         f.records
-            .read(&checkout.id, |doc| NotesDoc::page_block_snapshots(
-                doc, f.child
-            ))
+            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
             .unwrap()[1],
         (before[1].0.clone(), "print(2)".to_owned())
     );
@@ -327,9 +297,7 @@ fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_
     live.set_modifiers(&[]);
     assert_eq!(
         f.records
-            .read(&checkout.id, |doc| NotesDoc::page_block_snapshots(
-                doc, f.child
-            ))
+            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
             .unwrap()[1],
         before[1]
     );
@@ -339,9 +307,7 @@ fn accessible_block_text_edits_and_grapheme_selection_use_the_canonical_history_
     f.records.try_open_record(&checkout).unwrap();
     let reopened = f
         .records
-        .read(&checkout.id, |doc| {
-            NotesDoc::page_block_snapshots(doc, f.child)
-        })
+        .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
         .unwrap();
     assert_eq!(reopened[0], changed[0]);
     assert_eq!(reopened[1], before[1]);

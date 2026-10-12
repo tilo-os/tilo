@@ -19,7 +19,7 @@ fn fixture() -> (
     let mut workspace = Workspace::new(WorkspaceId(71), "MCP");
     let room = workspace.room.to_string();
     let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
-    workspace.owner = Some(actor.clone());
+    workspace.set_owner(actor.clone());
     tree.desktop.workspaces.push(workspace);
     tree.set_active(WorkspaceId(71));
     (
@@ -28,6 +28,22 @@ fn fixture() -> (
         actor,
     )
 }
+/// The next invocation reached the app as the MCP client's agent, recorded
+/// as an agent acting for `person`: never as the person themself.
+fn assert_agent_for(
+    fixture: &mut crate::shell::collab_broker_capnp::tests::LocalDirectoryFixture,
+    person: &str,
+) {
+    let (actor, invoker) = fixture
+        .take_invocation_invoker()
+        .expect("the invocation reached the app");
+    assert!(actor.starts_with("agent:mcp-"), "{actor}");
+    let invoker = invoker.expect("the host records the invoker");
+    assert_eq!(invoker.actor, actor);
+    assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
+    assert_eq!(invoker.on_behalf_of.as_deref(), Some(person));
+}
+
 fn request(method: &str, params: &Value) -> Value {
     json!({"jsonrpc":"2.0", "id":1,"method":method,"params":params})
 }
@@ -190,7 +206,7 @@ async fn protocol_errors_and_request_metadata_are_validated() {
         let invoke = server.handle(invoke);
         let (reply, ()) = tokio::join!(invoke, async { tokio::task::yield_now().await; drain_directory_bridge(&fixture).await; });
         assert_eq!(reply.unwrap()["result"]["isError"], false);
-        assert_eq!(fixture.take_invocation_actor(), Some(actor));
+        assert_agent_for(&mut fixture, &actor);
         let mut spoof = call("tilo_list_apps", &json!({"actor":"foreign"}));
         spoof["params"]["_meta"] = metadata;
         assert_eq!(server.handle(spoof).await.unwrap()["result"]["isError"], true);
@@ -338,7 +354,7 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let mut workspace = Workspace::new(WorkspaceId(71), "First connection");
         let room = workspace.room.to_string();
         let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
-        workspace.owner = Some(actor.clone());
+        workspace.set_owner(actor.clone());
         tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(71));
         let mut fixture = crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_first_allocated_peer(tree.shared());
@@ -369,7 +385,7 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let reply = reply.unwrap();
         assert_eq!(reply["result"]["isError"], false, "{reply}");
         assert_eq!(reply["result"]["structuredContent"]["update"]["state"], "accepted");
-        assert_eq!(fixture.take_invocation_actor(), Some(actor));
+        assert_agent_for(&mut fixture, &actor);
         assert_eq!(fixture.resolve_count(), 2, "invoke must re-resolve, not execute the previous descriptor");
     })).await;
 }
@@ -390,7 +406,7 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
         assert_eq!(reply["result"]["isError"],false,"{reply}");
         let id=reply["result"]["structuredContent"]["invocation_id"].as_str().unwrap().to_owned();
         assert_eq!(reply["result"]["structuredContent"]["update"]["state"],"accepted");
-        assert_eq!(fixture.take_invocation_actor(),Some(actor));
+        assert_agent_for(&mut fixture, &actor);
         assert_eq!(fixture.resolve_count(),1);
         let foreign=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room,"foreign".into());
         for tool in ["tilo_status","tilo_cancel"] {
@@ -410,7 +426,7 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
         let (first,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let first=first.unwrap();
         assert_eq!(first["result"]["structuredContent"]["invocation_id"],id,"{first}");
-        assert_eq!(fixture.take_invocation_actor(),Some(actor));
+        assert_agent_for(&mut fixture, &actor);
         let retry=server.handle(call("tilo_invoke",&args)).await.unwrap();
         assert_eq!(retry["result"]["structuredContent"],first["result"]["structuredContent"]);
         assert_eq!(fixture.take_invocation_actor(),None,"a retry never reaches the app again");
@@ -586,20 +602,50 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
                 .starts_with("TimedOut")
         );
     }
-    // Phase `the_admitted_call_is_the_confirmation_and_terminal_content_survives_the_broker`.
-    // The MCP client's allow/deny decision admitted the call, so an action
-    // whose contract asks for confirmation runs.
+    // Phase `the_person_confirms_on_their_device_and_terminal_content_survives_the_broker`.
+    // The MCP client's own allow/deny decision confirms nothing: an action
+    // whose contract asks for confirmation is put to the person on their
+    // device, and runs on their answer.
     tokio::task::LocalSet::new().run_until(Box::pin(async {
         let (mut fixture,room,actor)=fixture();
         let actor_name=actor.clone();
+        let asked=std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        fixture.broker.set_app_action_consent(std::sync::Arc::new(AnsweringPerson {
+            asked: std::sync::Arc::clone(&asked),
+            answer: AppActionConsent::Deny,
+        }));
         let server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor);
         fixture.set_confirmation_required(true);
         let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{},"wait_ms":0});
         let invoke=server.handle(call("tilo_invoke",&args));
         let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let reply=reply.unwrap();
+        assert_eq!(reply["result"]["isError"],true,"the person declined: {reply}");
+        fixture.broker.set_app_action_consent(std::sync::Arc::new(AnsweringPerson {
+            asked: std::sync::Arc::clone(&asked),
+            answer: AppActionConsent::Once,
+        }));
+        // Resolved twice: asked, then started on the person's answer.
+        let invoke=server.handle(call("tilo_invoke",&args));
+        tokio::pin!(invoke);
+        let reply=loop {
+            tokio::select! {
+                reply = &mut invoke => break reply,
+                () = async {
+                    tokio::task::yield_now().await;
+                    drain_directory_bridge(&fixture).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                } => {}
+            }
+        };
+        let reply=reply.unwrap();
         assert_eq!(reply["result"]["isError"],false,"{reply}");
         assert_eq!(reply["result"]["structuredContent"]["update"]["state"],"accepted");
+        {
+            let asked = asked.lock().unwrap();
+            assert_eq!(asked.len(), 2, "the person was asked each time");
+            assert!(asked.iter().all(|question| question.confirming && question.person == actor_name));
+        }
         fixture.set_confirmation_required(false);
         fixture.set_result_spec(tilo_actions::ResultSpec::Json {schema:json!({"type":"object"})});
         let invoke=server.handle(call("tilo_invoke",&args));
@@ -608,7 +654,12 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         let id=reply["result"]["structuredContent"]["invocation_id"].as_str().unwrap().to_owned();
         let invocation:tilo_actions::InvocationId=serde_json::from_value(reply["result"]["structuredContent"]["update"]["invocation"].clone()).unwrap();
         assert_eq!(invocation.0.to_string(),id,"the update speaks in the caller's invocation id");
-        let job=fixture.broker.statuses(&actor_name).into_iter().map(|(job,_)|job).max().expect("the broker job behind it");
+        // The job is the MCP client's agent's, acting for the person.
+        let tilo_actions::remote::CallerPrincipal::Agent(agent) = server.execution_caller().principal().clone() else {
+            panic!("the MCP client is an agent");
+        };
+        assert_eq!(server.execution_caller().acting_for_person(), Some(actor_name.as_str()));
+        let job=fixture.broker.statuses(&format!("agent:{agent}")).into_iter().map(|(job,_)|job).max().expect("the broker job behind it");
         let output=tilo_actions::ActionOutput {value:Some(json!({"content":"sha256:123","width":200})),resources:vec!["content:sha256:123".into()]};
         // Scoped applications answer with the exact stable UUID they received.
         let (first_job,first_invocation)=fixture.take_invocation_identity().expect("first actual delivery");
@@ -625,3 +676,25 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         assert_eq!(other.handle(call("tilo_status",&json!({"invocation_id":id}))).await.unwrap()["result"]["isError"],true);
     })).await;
 }
+
+/// The person at their device, answering every confirmation `answer`.
+struct AnsweringPerson {
+    asked: std::sync::Arc<
+        std::sync::Mutex<Vec<tilo_action_broker::app_actions::AppActionConsentRequest>>,
+    >,
+    answer: AppActionConsent,
+}
+
+impl tilo_action_broker::app_actions::AppActionConsentPrompter for AnsweringPerson {
+    fn ask(
+        &self,
+        request: tilo_action_broker::app_actions::AppActionConsentRequest,
+    ) -> Option<tokio::sync::oneshot::Receiver<AppActionConsent>> {
+        self.asked.lock().unwrap().push(request);
+        let (answer, asked) = tokio::sync::oneshot::channel();
+        let _ = answer.send(self.answer);
+        Some(asked)
+    }
+}
+
+use tilo_action_broker::app_actions::AppActionConsent;

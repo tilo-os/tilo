@@ -97,7 +97,6 @@ pub mod opcode {
 pub mod notify {
     pub const AUTHORIZED: u8 = 0;
     pub const UNAUTHORIZED: u8 = 1;
-    pub const CONNECTION_INFO: u8 = 2;
 }
 
 /// STREAM sub-opcodes (chunked payloads larger than one packet). Source:

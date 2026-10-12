@@ -36,6 +36,7 @@
 //! list becomes hit-testable and click-outside dismissal works.
 
 use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
@@ -87,13 +88,6 @@ fn menu_min_width() -> f64 {
 }
 
 type SelectionChangeCallback = Box<dyn FnMut(&str)>;
-
-/// Widens a row/option count to `f64` for layout math, through `u32` (exact
-/// in `f64`) with a saturating fallback rather than an `as` cast — a
-/// dropdown never approaches `u32::MAX` options.
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` is pure
 /// `f64` matrix math with no overflow trap, so it cannot panic regardless of
@@ -799,7 +793,7 @@ impl Dropdown {
 
     /// Height of the visible rows of the open list, inside its inset.
     fn rows_height(&self, n: usize) -> f64 {
-        let authored = (count_f64(n.max(1)) * self.item_h).min(MAX_LIST_HEIGHT.max(self.item_h));
+        let authored = (f64_of_usize(n.max(1)) * self.item_h).min(MAX_LIST_HEIGHT.max(self.item_h));
         let Some(viewport) = self.viewport else {
             return authored;
         };
@@ -877,13 +871,13 @@ impl Dropdown {
     }
 
     fn max_scroll(&self, n: usize) -> f32 {
-        let content = count_f64(n) * self.item_h;
+        let content = f64_of_usize(n) * self.item_h;
         f32_of_f64((content - self.rows_height(n)).max(0.0))
     }
 
     fn scroll_metrics(&self, n: usize) -> ScrollMetrics {
         ScrollMetrics::new(
-            count_f64(n) * self.item_h,
+            f64_of_usize(n) * self.item_h,
             self.rows_height(n),
             f64::from(self.scroll),
         )
@@ -920,7 +914,7 @@ impl Dropdown {
     /// Scroll so the row at filtered-position `vi` is fully visible.
     fn ensure_visible(&mut self, vi: usize, n: usize) {
         let box_h = f32_of_f64(self.rows_height(n));
-        let top = f32_of_f64(count_f64(vi) * self.item_h);
+        let top = f32_of_f64(f64_of_usize(vi) * self.item_h);
         let bottom = top + f32_of_f64(self.item_h);
         if top < self.scroll {
             self.scroll = top;
@@ -1517,7 +1511,7 @@ impl Widget for Dropdown {
             );
         } else {
             for (vi, &opt_idx) in filtered.iter().enumerate() {
-                let row_top = rows.y0 + (count_f64(vi) * self.item_h) - f64::from(self.scroll);
+                let row_top = rows.y0 + (f64_of_usize(vi) * self.item_h) - f64::from(self.scroll);
                 let row_bottom = row_top + self.item_h;
                 // Cull rows scrolled out of the box (hundreds of zones).
                 if row_bottom < rows.y0 || row_top > rows.y1 {
@@ -2574,7 +2568,7 @@ mod tests {
             Some(0)
         );
         assert!(
-            (list.height() - (count_f64(n) * ITEM_HEIGHT + 2.0 * LIST_PAD)).abs() < 1e-9,
+            (list.height() - (f64_of_usize(n) * ITEM_HEIGHT + 2.0 * LIST_PAD)).abs() < 1e-9,
             "the list hugs its rows plus the inset: {list:?}"
         );
     }

@@ -14,7 +14,7 @@ pub enum ThemesEffect {
         theme: String,
     },
     /// Export theme JSON.
-    #[effect(returns, permission = "read")]
+    #[effect(returns, kind = "read")]
     Export {
         #[param("Id of the preset or written theme")]
         theme: String,

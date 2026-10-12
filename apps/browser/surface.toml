@@ -1,0 +1,279 @@
+# The app's public surface, written by `tilo-app surface`: its resources' verbs
+# and stored fields. Review changes to it like an API change; `tilo-app check`
+# fails when the code and this file disagree.
+
+[[resources]]
+kind = "browser.application"
+label = "Browser"
+version = 1
+
+[[resources.fields]]
+owner = "browser"
+path = "bookmarks"
+stored = "collection"
+title = "Bookmarks"
+type = "Collection<Bookmark>"
+
+[[resources.fields]]
+owner = "bookmark"
+path = "bookmarks.*.url"
+readonly = true
+stored = "value"
+title = "Address: one absolute http(s) URL in its normalized form, so"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "bookmark"
+path = "bookmarks.*.title"
+stored = "value"
+title = "Title"
+type = "String"
+
+[[resources.fields]]
+owner = "browser"
+path = "preferences"
+stored = "record"
+title = "Preferences"
+type = "Settings"
+
+[[resources.fields]]
+owner = "settings"
+path = "preferences.adblock_enabled"
+stored = "value"
+title = "Ad and tracker blocking: block ads & trackers via the engine's"
+type = "bool"
+
+[[resources.fields]]
+owner = "settings"
+path = "preferences.clear_on_exit"
+stored = "value"
+title = "Clear data on exit: clear browsing history & cookies on exit"
+type = "bool"
+
+[[resources.fields]]
+owner = "settings"
+path = "preferences.search_engine"
+stored = "value"
+title = "Search engine: the query template (e.g. `https://duckduckgo.com/?q=`)"
+type = "String"
+
+[[resources.fields]]
+owner = "settings"
+path = "preferences.homepage"
+stored = "value"
+title = "Homepage: the URL opened on startup / new tab"
+type = "String"
+
+[[resources.fields]]
+owner = "browser"
+path = "site_exceptions"
+readonly = true
+stored = "value"
+title = "Sites without tracker protection, by exact origin"
+type = "Set<String>"
+
+[[resources.verbs]]
+id = "add-bookmark"
+kind = "undoable"
+label = "Bookmark a page"
+
+[[resources.verbs.params]]
+name = "url"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = false
+
+[resources.verbs.params.schema]
+type = [
+    "string",
+    "null",
+]
+
+[[resources.verbs]]
+id = "remove-bookmark"
+kind = "undoable"
+label = "Remove a bookmark"
+
+[[resources.verbs.params]]
+name = "bookmark"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "set-site-protection"
+kind = "undoable"
+label = "Turn tracker protection on or off for a site"
+
+[[resources.verbs.params]]
+name = "origin"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "enabled"
+required = true
+
+[resources.verbs.params.schema]
+type = "boolean"
+
+[[resources]]
+kind = "browser.browsing-history"
+label = "Browsing history"
+person = true
+version = 1
+
+[[resources.fields]]
+owner = "browsing-history"
+path = "visits"
+readonly = true
+stored = "value"
+title = "Visited pages, by URL. Only visiting and forgetting change them"
+type = "BTreeMap<String, Visit>"
+
+[[resources.verbs]]
+description = "Recording a visit is the browser keeping its history, not an edit of the person's to take back."
+id = "visit"
+kind = "undoable"
+label = "Record a visit to a page"
+
+[[resources.verbs.params]]
+name = "url"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "title"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs.params]]
+name = "at"
+required = true
+
+[resources.verbs.params.schema]
+minimum = 0
+type = "integer"
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+label = "Forget one page"
+
+[[resources.verbs.params]]
+name = "url"
+required = true
+
+[resources.verbs.params.schema]
+type = "string"
+
+[[resources.verbs]]
+id = "clear-history"
+kind = "undoable"
+label = "Forget every page"
+params = []
+
+[[resources]]
+kind = "browser.address-book"
+label = "Address book"
+person = true
+verbs = []
+version = 1
+
+[[resources.fields]]
+owner = "address-book"
+path = "enabled"
+stored = "value"
+title = "Address autofill"
+type = "bool"
+
+[[resources.fields]]
+owner = "address-book"
+path = "profiles"
+stored = "keyed"
+title = "Saved addresses, by id"
+type = "Keyed<AddressProfile>"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.id"
+stored = "value"
+title = "The profile's id: letters, digits, `-` and `_`"
+type = "String"
+
+[[resources.fields]]
+label = true
+owner = "address-profile"
+path = "profiles.*.label"
+stored = "value"
+title = "Label"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.full_name"
+stored = "value"
+title = "Full name"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.given_name"
+stored = "value"
+title = "Given name"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.family_name"
+stored = "value"
+title = "Family name"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.street"
+stored = "value"
+title = "Street"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.city"
+stored = "value"
+title = "City"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.region"
+stored = "value"
+title = "Region"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.postal_code"
+stored = "value"
+title = "Postal code"
+type = "String"
+
+[[resources.fields]]
+owner = "address-profile"
+path = "profiles.*.country"
+stored = "value"
+title = "Country"
+type = "String"

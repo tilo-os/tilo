@@ -52,7 +52,7 @@ pub(crate) struct Client {
     busy: bool,
 }
 
-crate::support::wayland::test_client!(Client: registry);
+crate::support::wayland::test_client!(Client: registry, configured);
 
 impl Dispatch<wl_callback::WlCallback, u32> for Client {
     fn event(
@@ -82,22 +82,6 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
             assert!(!state.busy, "a busy client reads no events");
             base.pong(serial);
             state.pongs += 1;
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
-    fn event(
-        state: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-            state.configured = true;
         }
     }
 }

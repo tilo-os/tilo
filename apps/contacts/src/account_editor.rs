@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::resource::Contacts;
 
-ui::embedded_catalog!(pub(crate) static CATALOG, "contacts-accounts", ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "contacts.accounts")]
@@ -387,7 +387,10 @@ pub(crate) fn build(cx: &ViewCx<Contacts>) -> Element {
             move |(_, selection)| panel(&editor, &detail_dispatcher, &actions, selection)
         },
     );
-    cx.surface(crate::app::ContactsApp::new().with_accounts(editor, Box::new(pane)))
+    let app = crate::app::ContactsApp::new().with_accounts(editor, Box::new(pane));
+    // A picked search hit (or an agent's `open`) shows its contact.
+    cx.on_open_item(app.opener());
+    cx.surface(app)
 }
 
 pub(crate) fn review_rows(editor: &Editor) -> Vec<LiveRow> {
@@ -708,14 +711,12 @@ fn review(pending: &Pending, dispatcher: &Dispatcher<Contacts>) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::create_contact_action;
     use crate::app::ContactsApp;
     use crate::model::Contact;
     use crate::resource::ContactsShell;
     use tilo_contact_directory::routing::{AccountChoice, SenderAccount, routes, select_route};
     use ui::framework::ResourceSurface;
     use ui::framework::testing::TestApp;
-    use ui::tilo_resource::Invoke;
 
     fn fixture() -> (TestApp<ContactsShell>, String, String) {
         let mut app =
@@ -725,8 +726,7 @@ mod tests {
         let mut two = Contact::new();
         two.first = "Alex".into();
         for person in [&one, &two] {
-            app.invoke(Invoke::apply(&create_contact_action(person)).unwrap())
-                .unwrap();
+            app.invoke(crate::resource::Contacts::add(person)).unwrap();
         }
         app.settle();
         (app, one.id.to_string(), two.id.to_string())
@@ -1101,30 +1101,23 @@ mod tests {
 #[cfg(test)]
 mod input_journey {
     use super::*;
-    use crate::actions::create_contact_action;
     use crate::app::ContactsApp;
     use crate::model::Contact;
     use crate::resource::ContactsShell;
     use ui::framework::testing::TestApp;
-    use ui::tilo_resource::Invoke;
 
     #[test]
     fn typing_and_reviewing_an_account_uses_shared_controls_without_mutating_early() {
         let mut app = TestApp::<ContactsShell>::for_person("contacts-input-fixture").unwrap();
         let mut contact = Contact::new();
         contact.first = "Sam".into();
-        app.invoke(Invoke::apply(&create_contact_action(&contact)).unwrap())
+        app.invoke(crate::resource::Contacts::add(&contact))
             .unwrap();
         app.settle();
         let open = AccountEffect::OpenAccounts {
             person: contact.id.to_string(),
         };
-        app.call_on(
-            &format!("contacts.contact:{}", contact.id),
-            &open.bound().id,
-            serde_json::json!({}),
-        )
-        .unwrap();
+        app.effect(&open).unwrap();
         app.settle();
         assert!(
             app.with_widget::<ui::widget::NavShell, _>(|shell| shell.is_inspector_open())

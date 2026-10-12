@@ -8,10 +8,10 @@
 //!
 //! ## The address is the one the app already publishes
 //!
-//! The library publishes every photograph as `photos.photo:<content>`,
-//! carrying the operations that can be performed on it — rotate, crop,
-//! reset. A remark minted here names *that same id*, rather than a parallel
-//! spelling. That is
+//! The library publishes every photograph as an item of its own, named by
+//! its content (`photos.library/photos/photos.photo:<content>`), carrying
+//! the operations that can be performed on it — rotate, crop, remove. A
+//! remark minted here names *that same id*, rather than a parallel spelling. That is
 //! the whole point: somebody says "this one, but it needs to be square", and
 //! whoever reads it resolves the address to the resource whose `crop` action
 //! makes it square. Two vocabularies would leave the message pointing at
@@ -55,7 +55,11 @@ use crate::model::LibraryPhoto;
 /// read on, rather than a directory that only existed in the session that
 /// wrote it.
 pub fn photo_reference(photo: &LibraryPhoto) -> ResourceRef {
-    ResourceRef::whole(PHOTO_KIND, photo.id.clone(), photo.image.name.clone())
+    ResourceRef::whole(
+        PHOTO_KIND,
+        crate::resource::photo_resource_id(&photo.id),
+        photo.image.name.clone(),
+    )
 }
 
 impl Referent for PhotosApp {
@@ -69,8 +73,7 @@ impl Referent for PhotosApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::PhotosResources;
-    use crate::doc::PhotosDoc;
+
     use crate::model::OpenImage;
 
     const PATH: &str = "/var/workspace/photos/harbour.png";
@@ -85,9 +88,9 @@ mod tests {
 
     fn doc_with(photo: &LibraryPhoto) -> AutoCommit {
         let mut doc = AutoCommit::new();
-        let mut library = PhotosDoc::library(&doc);
+        let mut library = crate::test_doc::library(&doc);
         library.add_photo(photo.clone());
-        PhotosDoc::set_library(&mut doc, &library);
+        crate::test_doc::set_library(&mut doc, &library);
         doc
     }
 
@@ -99,11 +102,15 @@ mod tests {
         let harbour = photo(PATH);
         let mut doc = doc_with(&harbour);
         let r = photo_reference(&harbour);
-        assert_eq!(r.resource_id().as_str(), harbour.id);
+        assert_eq!(
+            r.resource_id().as_str(),
+            crate::resource::photo_resource_id(&harbour.id)
+        );
         assert_eq!(r.kind, PHOTO_KIND);
 
-        let published = crate::actions::find_resource(
-            &PhotosResources.publish_resources(&doc),
+        let library = crate::test_doc::library(&doc);
+        let published = <crate::model::PhotoLibrary as ui::tilo_resource::Resource>::child(
+            &library,
             r.resource_id().as_str(),
         )
         .unwrap_or_else(|| {
@@ -126,10 +133,11 @@ mod tests {
         assert!(!r.is_partial());
 
         // Editing the photograph does not move its address.
-        let mut library = PhotosDoc::library(&doc);
-        library.photos[0].edits = crate::model::Edits::default().rotated_right();
-        PhotosDoc::set_library(&mut doc, &library);
-        let after = photo_reference(&PhotosDoc::photo(&doc, &harbour.id).unwrap());
+        let mut library = crate::test_doc::library(&doc);
+        library.photos.iter_mut().next().unwrap().1.edits =
+            crate::model::Edits::default().rotated_right();
+        crate::test_doc::set_library(&mut doc, &library);
+        let after = photo_reference(&crate::test_doc::photo(&doc, &harbour.id).unwrap());
         assert_eq!(r.resource_id(), after.resource_id());
     }
 

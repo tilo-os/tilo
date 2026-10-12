@@ -10,7 +10,8 @@
 //! the document, decides when to commit, and stamps history.
 //!
 //! Shape: `{ active: uint, workspaces: [ { id, name, room, owner?,
-//! capabilities: {id → json}, permission_profiles_v1: {key → json},
+//! members: {person → json role}, grants: {id → json}, sandbox: {id → json},
+//! presets_v1: {key → json},
 //! tasks_v1: {id → json}, effect_receipts_v1: {invocation → json},
 //! automations_v1: {shortcut id → json},
 //! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, tile_json } ] } ] } ] } ] }`.
@@ -21,8 +22,8 @@ use std::collections::HashSet;
 use automerge::{
     AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
-use collab_types::PermissionProfile;
 use collab_types::caps::CapOverride;
+use tilo_action_policy::{Grant, GrantId, Preset, Role};
 
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
@@ -36,16 +37,18 @@ use crate::workspace::{UserId, Workspace};
 
 const WORKSPACES_KEY: &str = "workspaces";
 const ACTIVE_KEY: &str = "active";
-const CAPABILITIES_KEY: &str = "capabilities";
-const PERMISSION_PROFILES_KEY: &str = "permission_profiles_v1";
+const MEMBERS_KEY: &str = "members";
+const GRANTS_KEY: &str = "grants";
+const SANDBOX_KEY: &str = "sandbox";
+const PRESETS_KEY: &str = "presets_v1";
 const TASKS_KEY: &str = "tasks_v1";
 const STRIPS_KEY: &str = "strips";
 const GROUPS_KEY: &str = "window_groups";
 const TABS_KEY: &str = "tabs";
 
-/// The map key a permission profile is stored under: a digest of its
+/// The map key a named grant set is stored under: a digest of its
 /// case-folded name, so two spellings of one name share a slot.
-pub fn permission_profile_key(name: &str) -> String {
+pub fn preset_key(name: &str) -> String {
     blake3::hash(name.trim().to_lowercase().as_bytes())
         .to_hex()
         .to_string()
@@ -335,23 +338,41 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     // Room identity travels with the workspace: a reader hydrating from
     // this document must land in this room, not mint its own.
     put_text_if_changed(doc, entry, "room", &ws.room.to_string());
-    match &ws.owner {
+    match ws.owner() {
         Some(owner) => put_text_if_changed(doc, entry, "owner", owner),
         None => delete_if_present(doc, entry, "owner"),
     }
     sync_blob_map(
         doc,
         entry,
-        CAPABILITIES_KEY,
-        ws.capabilities.iter().map(|cap| (cap.id.clone(), cap)),
+        MEMBERS_KEY,
+        ws.policy
+            .members
+            .iter()
+            .map(|(person, role)| (person.clone(), role)),
     );
     sync_blob_map(
         doc,
         entry,
-        PERMISSION_PROFILES_KEY,
-        ws.permission_profiles
+        GRANTS_KEY,
+        ws.policy
+            .grants
             .iter()
-            .map(|profile| (permission_profile_key(&profile.name), profile)),
+            .map(|grant| (grant.id.as_str().to_owned(), grant)),
+    );
+    sync_blob_map(
+        doc,
+        entry,
+        SANDBOX_KEY,
+        ws.sandbox.iter().map(|cap| (cap.id.clone(), cap)),
+    );
+    sync_blob_map(
+        doc,
+        entry,
+        PRESETS_KEY,
+        ws.presets
+            .iter()
+            .map(|preset| (preset_key(&preset.name), preset)),
     );
     sync_blob_map(
         doc,
@@ -427,23 +448,41 @@ fn read_blob_map<T: serde::de::DeserializeOwned>(
     )
 }
 
-/// A workspace's owner and capabilities as the document records them.
-/// Capabilities absent from the document are absent from the answer — what
-/// makes a revocation take effect.
-fn read_capabilities(
+/// A map of JSON blobs keyed by string, with the keys.
+fn read_keyed_blob_map<T: serde::de::DeserializeOwned>(
     doc: &AutoCommit,
-    entry: &ObjId,
-) -> Option<(Option<UserId>, Vec<CapOverride>)> {
-    let owner = text(doc, entry, "owner");
-    let caps = read_blob_map(doc, entry, CAPABILITIES_KEY)?;
-    Some((owner, caps))
+    parent: &ObjId,
+    key: &str,
+) -> Option<Vec<(String, T)>> {
+    let map = obj(doc, parent, key)?;
+    Some(
+        doc.keys(&map)
+            .filter_map(|k| {
+                let value = serde_json::from_slice(&bytes(doc, &map, k.as_str())?).ok()?;
+                Some((k, value))
+            })
+            .collect(),
+    )
 }
 
-fn read_permission_profiles(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<PermissionProfile>> {
-    let mut profiles: Vec<PermissionProfile> = read_blob_map(doc, entry, PERMISSION_PROFILES_KEY)?;
-    profiles.retain(|profile| profile.validate().is_ok());
-    profiles.sort_by_key(|profile| profile.name.to_lowercase());
-    Some(profiles)
+/// A workspace's owner, members and grants as the document records them.
+type StoredPolicy = (Option<UserId>, Vec<(String, Role)>, Vec<Grant>);
+
+/// A workspace's members and grants as the document records them. Grants
+/// absent from the document are absent from the answer — what makes a
+/// revocation take effect.
+fn read_policy(doc: &AutoCommit, entry: &ObjId) -> Option<StoredPolicy> {
+    let owner = text(doc, entry, "owner");
+    let members = read_keyed_blob_map(doc, entry, MEMBERS_KEY).unwrap_or_default();
+    let grants = read_blob_map(doc, entry, GRANTS_KEY)?;
+    Some((owner, members, grants))
+}
+
+fn read_presets(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<Preset>> {
+    let mut presets: Vec<Preset> = read_blob_map(doc, entry, PRESETS_KEY)?;
+    presets.retain(|preset| preset.validate().is_ok());
+    crate::grants::sort_presets(&mut presets);
+    Some(presets)
 }
 
 fn read_tasks(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceTask> {
@@ -481,7 +520,7 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 }
 
 /// Refresh `desktop` from `doc`. The active workspace, names, rooms,
-/// ownership, capabilities, profiles, tasks, receipts and shortcuts come from the
+/// ownership, members, grants, sandbox, grant sets, tasks, receipts and shortcuts come from the
 /// document; `active_strip`, `active_group` and presence stay as the tree
 /// had them. Each workspace keeps its existing strips by id, then the
 /// document's topology and tabs are folded in: width and maximization stay
@@ -512,16 +551,20 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             .and_then(|v| RoomId::parse(v.as_str()))
             .filter(|r| !r.is_nil())
         {
-            ws.room = room;
+            ws.set_room(room);
         }
-        if let Some((owner, caps)) = read_capabilities(doc, entry) {
+        if let Some((owner, members, grants)) = read_policy(doc, entry) {
             if owner.is_some() {
-                ws.owner = owner;
+                ws.policy.owner = owner;
             }
-            ws.capabilities = caps;
+            ws.policy.members = members.into_iter().collect();
+            ws.policy.grants = grants;
         }
-        if let Some(profiles) = read_permission_profiles(doc, entry) {
-            ws.permission_profiles = profiles;
+        if let Some(sandbox) = read_blob_map(doc, entry, SANDBOX_KEY) {
+            ws.sandbox = sandbox;
+        }
+        if let Some(presets) = read_presets(doc, entry) {
+            ws.presets = presets;
         }
         ws.tasks = read_tasks(doc, entry);
         ws.effect_receipts = read_effect_receipts(doc, entry);
@@ -700,36 +743,57 @@ fn upsert_blob(
     doc.put(&map, key, ScalarValue::Bytes(blob)).is_ok()
 }
 
-/// Record a capability. Capabilities are a map keyed by id rather than a
-/// list: deleting a map key merges concurrently, while deleting list index
-/// 3 on two peers removes two different capabilities.
-pub fn insert_capability(
-    doc: &mut AutoCommit,
-    workspace_id: WorkspaceId,
-    cap: &CapOverride,
-) -> bool {
-    upsert_blob(doc, workspace_id, CAPABILITIES_KEY, &cap.id, cap)
-}
-
-/// Delete a capability, so a revocation is not only local.
-pub fn revoke_capability(doc: &mut AutoCommit, workspace_id: WorkspaceId, cap_id: &str) -> bool {
+fn delete_blob(doc: &mut AutoCommit, workspace_id: WorkspaceId, map_key: &str, key: &str) -> bool {
     let Some(entry) = workspace_entry(doc, workspace_id) else {
         return false;
     };
-    let Some(caps) = obj(doc, &entry, CAPABILITIES_KEY) else {
+    let Some(map) = obj(doc, &entry, map_key) else {
         return false;
     };
-    doc.delete(&caps, cap_id).is_ok()
+    doc.delete(&map, key).is_ok()
 }
 
-/// Record a reusable permission profile under its name's key.
-pub fn upsert_permission_profile(
+/// Record a grant. Grants are a map keyed by id rather than a list:
+/// deleting a map key merges concurrently, while deleting list index 3 on
+/// two peers removes two different grants.
+pub fn insert_grant(doc: &mut AutoCommit, workspace_id: WorkspaceId, grant: &Grant) -> bool {
+    upsert_blob(doc, workspace_id, GRANTS_KEY, grant.id.as_str(), grant)
+}
+
+/// Delete a grant, so a revocation is not only local.
+pub fn revoke_grant(doc: &mut AutoCommit, workspace_id: WorkspaceId, id: &GrantId) -> bool {
+    delete_blob(doc, workspace_id, GRANTS_KEY, id.as_str())
+}
+
+/// Record a member's role.
+pub fn set_member(
     doc: &mut AutoCommit,
     workspace_id: WorkspaceId,
-    profile: &PermissionProfile,
+    person: &str,
+    role: Role,
 ) -> bool {
-    let key = permission_profile_key(&profile.name);
-    upsert_blob(doc, workspace_id, PERMISSION_PROFILES_KEY, &key, profile)
+    upsert_blob(doc, workspace_id, MEMBERS_KEY, person, &role)
+}
+
+/// Remove a member.
+pub fn remove_member(doc: &mut AutoCommit, workspace_id: WorkspaceId, person: &str) -> bool {
+    delete_blob(doc, workspace_id, MEMBERS_KEY, person)
+}
+
+/// Record a sandbox capability.
+pub fn insert_sandbox(doc: &mut AutoCommit, workspace_id: WorkspaceId, cap: &CapOverride) -> bool {
+    upsert_blob(doc, workspace_id, SANDBOX_KEY, &cap.id, cap)
+}
+
+/// Delete a sandbox capability.
+pub fn revoke_sandbox(doc: &mut AutoCommit, workspace_id: WorkspaceId, cap_id: &str) -> bool {
+    delete_blob(doc, workspace_id, SANDBOX_KEY, cap_id)
+}
+
+/// Record a named grant set under its name's key.
+pub fn upsert_preset(doc: &mut AutoCommit, workspace_id: WorkspaceId, preset: &Preset) -> bool {
+    let key = preset_key(&preset.name);
+    upsert_blob(doc, workspace_id, PRESETS_KEY, &key, preset)
 }
 
 /// Record a task under its id.
@@ -817,13 +881,28 @@ pub fn apply_tab_move(
     dst_strip: StripId,
     moved: &TabMove,
 ) -> bool {
-    let before = doc.clone();
-    if try_apply_tab_move(doc, src_strip, dst_strip, moved).is_some() {
-        true
-    } else {
-        *doc = before;
-        false
+    all_or_nothing(doc, |doc| {
+        try_apply_tab_move(doc, src_strip, dst_strip, moved)
+    })
+}
+
+/// Run `edit`, leaving `doc` as it was when it gives up: its operations are
+/// rolled back when they are the only uncommitted ones, else `doc` is
+/// restored from a copy.
+fn all_or_nothing(doc: &mut AutoCommit, edit: impl FnOnce(&mut AutoCommit) -> Option<()>) -> bool {
+    if doc.pending_ops() == 0 {
+        let done = edit(doc).is_some();
+        if !done {
+            doc.rollback();
+        }
+        return done;
     }
+    let before = doc.clone();
+    let done = edit(doc).is_some();
+    if !done {
+        *doc = before;
+    }
+    done
 }
 
 fn try_apply_tab_move(
@@ -897,8 +976,7 @@ pub fn move_group(
     group: &WindowGroup,
     index: usize,
 ) -> bool {
-    let before = doc.clone();
-    let moved = (|| {
+    all_or_nothing(doc, |doc| {
         let (_, strip_entry, _) = strip_entries(doc)
             .into_iter()
             .find(|(id, _, _)| *id == strip_id.raw())?;
@@ -908,11 +986,7 @@ pub fn move_group(
         let index = index.min(doc.length(&groups));
         insert_group(doc, &groups, index, group);
         Some(())
-    })();
-    if moved.is_none() {
-        *doc = before;
-    }
-    moved.is_some()
+    })
 }
 
 /// Replace one strip's group list with `groups`, leaving the rest of the

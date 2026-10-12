@@ -7,6 +7,7 @@ license.workspace = true
 description = "Shared person-owned contact identities and explicitly confirmed messaging endpoints"
 
 [dependencies]
+serde.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 uuid.workspace = true
 

@@ -60,6 +60,9 @@ pub struct SessionOptions {
     /// The machine's root. `/` outside tests.
     pub host_root: PathBuf,
     pub verbose: bool,
+    /// The key the shell marks its command runs with for Terminal
+    /// ([`crate::runs`]); `None` marks nothing.
+    pub runs: Option<String>,
     /// Connected participant-private editing endpoint from this served session.
     pub editor: Option<Arc<runtime_portal::editor::Socket>>,
 }
@@ -72,6 +75,9 @@ impl Default for SessionOptions {
             term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
             host_root: PathBuf::from("/"),
             verbose: false,
+            runs: std::env::var(crate::runs::KEY_ENV)
+                .ok()
+                .filter(|key| crate::runs::valid_key(key)),
             editor: None,
         }
     }
@@ -297,8 +303,15 @@ impl Session {
         let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         let runtime_bin = runtime_binary()?;
         let helper_runtime = crate::helper_runtime::HelperRuntime::resolve(&runtime_bin)?;
+        let shell = guest_shell(&images);
+        let runs = self
+            .opts
+            .runs
+            .clone()
+            .filter(|_| self.opts.command.is_empty() && crate::runs::is_bash(&shell));
         Ok(GuestPlan {
-            shell: guest_shell(&images),
+            shell,
+            runs,
             images,
             host_root: self.opts.host_root.clone(),
             session_dir,
@@ -549,6 +562,10 @@ pub enum ServeRequest {
         /// as an earlier answer named it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_session: Option<String>,
+        /// The key the session's shell marks its command runs with
+        /// ([`crate::runs`]), chosen by the app for this session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runs: Option<String>,
         /// Explicit opt-in; existing clients continue to receive exactly one FD.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
@@ -634,6 +651,10 @@ pub enum ServeResponse {
         /// re-attaches to it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_session: Option<String>,
+        /// The session's shell is asked to mark its runs with the key the
+        /// request named. A shell other than `bash` writes no marks.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        runs: bool,
         /// V1 bundles PTY first, private editor second, under this session's lifetime.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
@@ -857,17 +878,34 @@ fn serve_guest_session(
         return Ok(Served::Refused);
     }
 
+    open_environment(stream, writer, store, host_root, environment, &record, req)
+}
+
+/// Build the guest of an environment on this device on a fresh pty and hand
+/// its master to the app; the connection is the session's lifetime.
+fn open_environment(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    host_root: &Path,
+    environment: Option<&str>,
+    record: &str,
+    req: ServeRequest,
+) -> anyhow::Result<Served> {
+    let record = record.to_owned();
     let ServeRequest::OpenSession {
         cols,
         rows,
         term,
         command,
+        runs,
         editor_protocol,
         ..
     } = req
     else {
         return Ok(Served::Done);
     };
+    let runs = runs.filter(|key| command.is_empty() && crate::runs::valid_key(key));
     let (master, slave) = open_pty(cols, rows)?;
     let editor = if editor_protocol == Some(runtime_portal::editor::VERSION) && command.is_empty() {
         Some(runtime_portal::editor::Socket::pair()?)
@@ -888,6 +926,7 @@ fn serve_guest_session(
         term: term.as_deref().unwrap_or("xterm-256color"),
         host_root,
         command: &command,
+        runs: runs.as_deref(),
         editor: editor.as_ref().map(|(_, supervisor)| supervisor),
     };
 
@@ -903,6 +942,7 @@ fn serve_guest_session(
         session: id.clone(),
         environment: record.clone(),
         relay_session: None,
+        runs: runs.is_some(),
         editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
     };
     let handed = if let Some((app, _)) = &editor {
@@ -1107,6 +1147,7 @@ fn serve_host(
         term,
         command,
         requested_by,
+        runs,
         ..
     } = req
     else {
@@ -1151,7 +1192,28 @@ fn serve_host(
         "open-session",
         true,
     ));
-    let child = spawn_on_pty(crate::host::host_command(&account, term, command), &slave)?;
+    let runs = runs
+        .as_deref()
+        .filter(|key| {
+            command.is_empty()
+                && crate::runs::valid_key(key)
+                && crate::runs::is_bash(&account.shell)
+        })
+        .and_then(|key| {
+            let rc = store.session_dir(&id).join("runs.bash");
+            std::fs::create_dir_all(store.session_dir(&id)).ok()?;
+            std::fs::write(&rc, crate::runs::bash_rc(true)).ok()?;
+            Some((key, rc))
+        });
+    let child = spawn_on_pty(
+        crate::host::host_command(
+            &account,
+            term,
+            command,
+            runs.as_ref().map(|(k, rc)| (*k, rc.as_path())),
+        ),
+        &slave,
+    )?;
     drop(slave);
     let handed = reply(
         writer,
@@ -1159,6 +1221,7 @@ fn serve_host(
             session: id.clone(),
             environment: "host".into(),
             relay_session: None,
+            runs: runs.is_some(),
             editor_protocol: None,
         },
         Some(master.as_raw_fd()),
@@ -1175,6 +1238,34 @@ fn serve_host(
         &crate::audit::AuditRecord::new(&id, "host", "close-session", true).because(termination),
     );
     Ok(Served::Done)
+}
+
+/// The relay session a terminal asks for: re-attaching to `relay_session`,
+/// or opening one on the environment `record` (keyed `key`); why not.
+fn relay_session_to(
+    store: &Store,
+    record: Option<&str>,
+    relay_session: Option<&str>,
+    key: &str,
+) -> Result<crate::relay::RelaySession, String> {
+    match relay_session {
+        Some(session) if crate::relay::is_session_id(session) => {
+            Ok(crate::relay::RelaySession::Attach {
+                session: session.to_owned(),
+            })
+        }
+        Some(_) => Err("not a relay session id".into()),
+        None => {
+            // The relay builds the guest from the record as this device
+            // holds it; the default comes into being on first use, as here.
+            Records::at(store.records_root())
+                .resolve(record, &*crate::images::on_this_device())
+                .map_err(|e| e.to_string())?;
+            Ok(crate::relay::RelaySession::Open {
+                record: key.to_owned(),
+            })
+        }
+    }
 }
 
 /// Carry the terminal to an environment session on one of the person's
@@ -1214,26 +1305,12 @@ fn serve_relay(
         return denied(writer, format!("{relay} is not one of your relays"));
     };
     let key = record
-        .clone()
-        .unwrap_or_else(|| tilo_environment::DEFAULT_RECORD.to_owned());
-    let session = match relay_session {
-        Some(session) if crate::relay::is_session_id(session) => {
-            crate::relay::RelaySession::Attach {
-                session: session.clone(),
-            }
-        }
-        Some(_) => return denied(writer, "not a relay session id".into()),
-        None => {
-            // The relay builds the guest from the record as this device
-            // holds it; the default comes into being on first use, as here.
-            let records = Records::at(store.records_root());
-            if let Err(e) = records.resolve(record.as_deref(), &*crate::images::on_this_device()) {
-                return denied(writer, e.to_string());
-            }
-            crate::relay::RelaySession::Open {
-                record: key.clone(),
-            }
-        }
+        .as_deref()
+        .unwrap_or(tilo_environment::DEFAULT_RECORD)
+        .to_owned();
+    let session = match relay_session_to(store, record.as_deref(), relay_session.as_deref(), &key) {
+        Ok(session) => session,
+        Err(reason) => return denied(writer, reason),
     };
     let Some(binary) = crate::relay::bridge_binary() else {
         return denied(
@@ -1271,6 +1348,7 @@ fn serve_relay(
             session: id.clone(),
             environment: key.clone(),
             relay_session: Some(session_id),
+            runs: false,
             editor_protocol: None,
         },
         Some(master.as_raw_fd()),
@@ -1521,6 +1599,8 @@ struct Launch<'a> {
     term: &'a str,
     host_root: &'a Path,
     command: &'a [String],
+    /// The key the session's shell marks its runs with.
+    runs: Option<&'a str>,
     editor: Option<&'a runtime_portal::editor::Socket>,
 }
 
@@ -1561,6 +1641,10 @@ fn spawn_attached(
         cmd.env(crate::store::GRANT_ROOT_ENV, root);
     }
     cmd.env("TERM", launch.term);
+    match launch.runs {
+        Some(key) => cmd.env(crate::runs::KEY_ENV, key),
+        None => cmd.env_remove(crate::runs::KEY_ENV),
+    };
     spawn_on_pty(cmd, slave)
 }
 
@@ -1738,6 +1822,7 @@ mod tests {
                 session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 environment: "default".into(),
                 relay_session: None,
+                runs: false,
                 editor_protocol: None,
             },
             Some(master.as_raw_fd()),
@@ -1769,6 +1854,7 @@ mod tests {
             command: Vec::new(),
             requested_by: crate::host::RequestedBy::Person,
             relay_session: None,
+            runs: None,
             editor_protocol: None,
         }
     }

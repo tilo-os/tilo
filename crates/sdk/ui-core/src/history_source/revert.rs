@@ -258,6 +258,7 @@ fn later_writers(
     doc: &mut AutoCommit,
     after: &[ChangeHash],
     by: Option<&str>,
+    invoker: Option<&str>,
     created: &HashSet<ObjId>,
 ) -> HashMap<Slot, String> {
     let versions = tilo_resource::history::versions(doc);
@@ -277,7 +278,17 @@ fn later_writers(
         let Some(v) = versions.get(i).cloned() else {
             continue;
         };
-        if by.is_some_and(|b| b.eq_ignore_ascii_case(&v.actor)) {
+        // The same writer, or the same authenticated invoker writing from
+        // another of their writers (a mount, a device, their undo), builds
+        // on nobody else's work.
+        if by.is_some_and(|b| b.eq_ignore_ascii_case(&v.actor))
+            || invoker.is_some_and(|invoker| {
+                v.context
+                    .as_ref()
+                    .and_then(|context| context.invoker.as_ref())
+                    .is_some_and(|other| other.actor == invoker)
+            })
+        {
             continue;
         }
         let lo = if i == 0 {
@@ -477,7 +488,7 @@ pub fn plan_revert(
     let forward = doc.diff(&before, &after);
     let created = objects_created(&forward);
     let inverse = doc.diff(&after, &before);
-    let later = later_writers(doc, &after, by, &created);
+    let later = later_writers(doc, &after, by, None, &created);
     Ok(classify(doc, inverse, &later, &after, covered, authors).0)
 }
 
@@ -504,7 +515,7 @@ pub fn revert_run(
     let forward = doc.diff(&before, &after);
     let created = objects_created(&forward);
     let inverse = doc.diff(&after, &before);
-    let later = later_writers(doc, &after, by, &created);
+    let later = later_writers(doc, &after, by, None, &created);
     let (mut outcome, patches) = classify(doc, inverse, &later, &after, covered, authors);
 
     if !patches.iter().any(|(_, apply)| *apply) {
@@ -542,7 +553,10 @@ pub fn revert_changes(
         let forward = doc.diff(&before, &after);
         let created = objects_created(&forward);
         let inverse = doc.diff(&after, &before);
-        let later = later_writers(doc, &after, Some(actor), &created);
+        let invoker = tilo_actions::entry_of(doc.committed_document(), *hash)
+            .and_then(|context| context.invoker)
+            .map(|invoker| invoker.actor);
+        let later = later_writers(doc, &after, Some(actor), invoker.as_deref(), &created);
         let (outcome, patches) = classify(doc, inverse, &later, &after, covered, authors);
         plans.push((outcome, patches, before, after));
     }

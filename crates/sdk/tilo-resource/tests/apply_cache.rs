@@ -20,7 +20,7 @@ use tilo_automerge::ApplyIncoming as _;
 
 use tilo_resource::__private::{Value, forget_all};
 use tilo_resource::{
-    ActionCx, Collection, Doc, Fields, Id, Model, ModelError, Replica, Slot, resource,
+    ActionCx, Collection, Doc, Fields, Grid, Id, Model, ModelError, Replica, Slot, resource,
 };
 
 thread_local! {
@@ -33,6 +33,13 @@ thread_local! {
 pub struct Probe(pub String);
 
 impl Model for Probe {
+    tilo_resource::leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        self.0.to_json()
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        String::from_json(value).map(Self)
+    }
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         LOADS.with(|loads| loads.set(loads.get() + 1));
         String::load(doc, value, id).map(Self)
@@ -157,6 +164,13 @@ impl Checklist {
     }
 }
 
+/// The door publishes from the view state the replica keeps current; it
+/// follows the document here, as an open window does between actions, so
+/// what [`counted`] then sees is the action's own reading and writing.
+fn follow(replica: &mut Replica<Checklist>) {
+    replica.live().unwrap();
+}
+
 /// A checklist of `count` tasks, written straight into a new document.
 fn seeded(count: usize) -> Replica<Checklist> {
     let mut replica = Replica::<Checklist>::new();
@@ -172,6 +186,7 @@ fn seeded(count: usize) -> Replica<Checklist> {
     }
     record.write_fields(replica.doc_mut(), &ROOT).unwrap();
     replica.doc_mut().commit();
+    follow(&mut replica);
     replica
 }
 
@@ -181,17 +196,19 @@ fn apply_reads_only_touched_items() {
     let target = Id::from_raw("task-0500");
 
     // Nothing kept yet: the first action reads every task.
-    let (_, (loads, _)) = counted(|| replica.apply(Checklist::DRAFT.with("h".into())).unwrap());
+    follow(&mut replica);
+    let (_, (loads, _)) = counted(|| replica.apply(Checklist::DRAFT.with("h")).unwrap());
     assert_eq!(loads, 1_000, "the first action reads the record whole");
 
-    let (_, (loads, stores)) =
-        counted(|| replica.apply(Checklist::DRAFT.with("he".into())).unwrap());
+    follow(&mut replica);
+    let (_, (loads, stores)) = counted(|| replica.apply(Checklist::DRAFT.with("he")).unwrap());
     assert_eq!(
         (loads, stores),
         (0, 0),
         "typing into the draft reads and writes no task"
     );
 
+    follow(&mut replica);
     let (_, (loads, stores)) = counted(|| {
         replica
             .apply(Checklist::TOGGLE.with(target.clone()))
@@ -199,6 +216,7 @@ fn apply_reads_only_touched_items() {
     });
     assert_eq!((loads, stores), (0, 0), "a tick touches no title");
 
+    follow(&mut replica);
     let (_, (loads, stores)) = counted(|| {
         replica
             .apply(Checklist::RETITLE.with((target.clone(), "renamed".into())))
@@ -210,8 +228,8 @@ fn apply_reads_only_touched_items() {
         "retitling one task writes one title"
     );
 
-    let (_, (loads, stores)) =
-        counted(|| replica.apply(Checklist::DRAFT.with("hel".into())).unwrap());
+    follow(&mut replica);
+    let (_, (loads, stores)) = counted(|| replica.apply(Checklist::DRAFT.with("hel")).unwrap());
     assert_eq!(
         (loads, stores),
         (1, 0),
@@ -230,15 +248,12 @@ fn apply_reads_only_touched_items() {
 #[test]
 fn a_refused_action_writes_nothing_and_the_next_reads_whole() {
     let mut replica = seeded(10);
-    replica.apply(Checklist::DRAFT.with("kept".into())).unwrap();
+    replica.apply(Checklist::DRAFT.with("kept")).unwrap();
     let heads = replica.heads();
     assert!(replica.apply(Checklist::REFUSE.invoke()).is_err());
     assert_eq!(replica.heads(), heads, "a refusal changes nothing");
-    let (_, (loads, _)) = counted(|| {
-        replica
-            .apply(Checklist::DRAFT.with("kept!".into()))
-            .unwrap()
-    });
+    follow(&mut replica);
+    let (_, (loads, _)) = counted(|| replica.apply(Checklist::DRAFT.with("kept!")).unwrap());
     assert_eq!(loads, 10, "a refusal keeps no record");
     assert_eq!(replica.state().unwrap().draft, "kept!");
 }
@@ -359,6 +374,7 @@ fn cached_apply_is_replay_identical() {
             let Some(invoke) = random_invoke(&live, &mut rng, round * 10 + step) else {
                 continue;
             };
+            follow(&mut live);
             let (_, (loads, _)) = counted(|| live.apply(invoke).unwrap());
             live_loads += loads;
             let envelope = live.log().last().unwrap().clone();
@@ -379,4 +395,223 @@ fn cached_apply_is_replay_identical() {
         live_loads * 4 < cold_loads,
         "the live replica read {live_loads} titles, the cold one {cold_loads}"
     );
+}
+
+/// Text made the first time as a change of its own beside the action that
+/// stores it (as a deterministic slot is), merged in while the action runs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MergedText(pub String);
+
+impl Model for MergedText {
+    tilo_resource::leaf_paths!();
+    fn to_json(&self) -> serde_json::Value {
+        self.0.to_json()
+    }
+    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
+        String::from_json(value).map(Self)
+    }
+    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
+        String::load(doc, value, id).map(Self)
+    }
+    fn missing() -> Result<Self, ModelError> {
+        Ok(Self::default())
+    }
+    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
+        if let Slot::Key(parent, key) = slot
+            && doc.pending_ops() == 0
+            && doc.get(parent, key)?.is_none()
+        {
+            let heads = doc.get_heads();
+            let mut made = doc
+                .fork_at(&heads)?
+                .with_actor(automerge::ActorId::from(b"merged-slot".as_slice()));
+            let text = made.put_object(parent, key, ObjType::Text)?;
+            made.splice_text(&text, 0, 0, &self.0)?;
+            made.commit();
+            doc.merge_incoming(&mut made)?;
+            return Ok(());
+        }
+        self.0.store(doc, slot)
+    }
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Texts {
+    pub texts: std::collections::BTreeMap<String, MergedText>,
+    pub count: i64,
+}
+
+#[resource(kind = "test.merged-texts", label = "Texts")]
+impl Texts {
+    /// Keep a text under a key, the first time.
+    #[action]
+    pub fn keep_text(&mut self, key: String, text: String) {
+        self.texts.entry(key).or_insert(MergedText(text));
+    }
+
+    /// Count once more.
+    #[action]
+    pub fn bump(&mut self) {
+        self.count += 1;
+    }
+}
+
+/// An action whose write merged a change of its own (a text made beside
+/// it) moved its base while it ran: it keeps no record for the next action,
+/// which must still see the text rather than write over it.
+#[test]
+fn a_record_kept_across_a_merged_slot_does_not_lose_it() {
+    let mut texts = Replica::<Texts>::new();
+    // A record kept from this action is what the next one would start from.
+    texts.apply(Texts::BUMP.invoke()).unwrap();
+    let keep = |key: &str, text: &str| Texts::KEEP_TEXT.with((key.to_owned(), text.to_owned()));
+    texts.apply(keep("readme", "hello")).unwrap();
+    // The next action writes the map the text is in.
+    texts.apply(keep("notes", "later")).unwrap();
+    let state = texts.state().unwrap();
+    assert_eq!(
+        state.texts.get("readme").map(|text| text.0.as_str()),
+        Some("hello"),
+        "the next action keeps the text the last one merged"
+    );
+    assert_eq!(
+        state.texts.get("notes").map(|text| text.0.as_str()),
+        Some("later")
+    );
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Table {
+    pub cells: Grid<Probe>,
+    pub title: String,
+}
+
+#[resource(kind = "test.cached-table", label = "Table")]
+impl Table {
+    /// Add a row.
+    #[action]
+    pub fn add_row(&mut self, cx: &mut ActionCx) {
+        let at = self.cells.rows().len();
+        self.cells.insert_row(at, cx.id());
+    }
+
+    /// Add a column.
+    #[action]
+    pub fn add_column(&mut self, cx: &mut ActionCx) {
+        let at = self.cells.columns().len();
+        self.cells.insert_column(at, cx.id());
+    }
+
+    /// Write a cell, or clear it with no text.
+    #[action]
+    pub fn write(&mut self, cell: (String, String), text: String) {
+        let value = (!text.is_empty()).then_some(Probe(text));
+        self.cells
+            .set_cell(&Id::from_raw(cell.0), &Id::from_raw(cell.1), value);
+    }
+
+    /// Remove a row.
+    #[action]
+    pub fn drop_row(&mut self, line: String) {
+        self.cells.remove_row(&Id::from_raw(line));
+    }
+
+    /// Rename the table.
+    #[action]
+    pub fn rename(&mut self, title: String) {
+        self.title = title;
+    }
+}
+
+fn random_table_invoke(
+    replica: &Replica<Table>,
+    rng: &mut Lcg,
+    step: usize,
+) -> tilo_resource::Invoke<Table> {
+    let state = replica.state().unwrap();
+    let rows: Vec<Id> = state.cells.rows().cloned().collect();
+    let columns: Vec<Id> = state.cells.columns().cloned().collect();
+    let cell = |rng: &mut Lcg| {
+        let row = rows.get(rng.next(rows.len()))?;
+        let column = columns.get(rng.next(columns.len()))?;
+        Some((row.as_str().to_owned(), column.as_str().to_owned()))
+    };
+    match rng.next(9) {
+        0 => Table::ADD_ROW.with(()),
+        1 => Table::ADD_COLUMN.with(()),
+        2 => match rows.get(rng.next(rows.len())) {
+            Some(row) => Table::DROP_ROW.with(row.as_str().to_owned()),
+            None => Table::ADD_ROW.with(()),
+        },
+        3 => Table::RENAME.with(format!("table {step}")),
+        4 => match cell(rng) {
+            Some(cell) => Table::WRITE.with((cell, String::new())),
+            None => Table::ADD_COLUMN.with(()),
+        },
+        _ => match cell(rng) {
+            Some(cell) => Table::WRITE.with((cell, format!("v{step}"))),
+            None => Table::ADD_ROW.with(()),
+        },
+    }
+}
+
+#[test]
+fn cached_grid_apply_is_replay_identical() {
+    let mut rng = Lcg(31);
+    let mut live = Replica::<Table>::new();
+    let mut cold = live.fork();
+    let mut remote = live.fork();
+    let mut replayed = 0;
+    for round in 0..40 {
+        let invoke = random_table_invoke(&remote, &mut rng, 1_000 + round);
+        remote.apply(invoke).unwrap();
+        if round % 2 == 0 {
+            live.doc_mut().merge_incoming(remote.doc_mut()).unwrap();
+            cold.doc_mut().merge_incoming(remote.doc_mut()).unwrap();
+        }
+        for step in 0..5 {
+            let invoke = random_table_invoke(&live, &mut rng, round * 10 + step);
+            live.live().unwrap();
+            live.apply(invoke).unwrap();
+            let envelope = live.log().last().unwrap().clone();
+            forget_all();
+            cold.replay(&envelope).unwrap();
+            replayed += 1;
+            assert_eq!(
+                live.heads(),
+                cold.heads(),
+                "round {round} step {step}: the replayed change differs"
+            );
+            assert_eq!(live.state().unwrap(), cold.state().unwrap());
+        }
+    }
+    assert!(replayed > 100, "only {replayed} actions replayed");
+}
+
+#[test]
+fn writing_one_cell_writes_only_that_cell() {
+    let mut replica = Replica::<Table>::new();
+    replica.apply(Table::ADD_COLUMN.with(())).unwrap();
+    for _ in 0..100 {
+        replica.apply(Table::ADD_ROW.with(())).unwrap();
+    }
+    let state = replica.state().unwrap();
+    let rows: Vec<String> = state
+        .cells
+        .rows()
+        .map(|row| row.as_str().to_owned())
+        .collect();
+    let column = state.cells.columns().next().unwrap().as_str().to_owned();
+    for (n, row) in rows.iter().enumerate() {
+        replica
+            .apply(Table::WRITE.with(((row.clone(), column.clone()), format!("cell {n}"))))
+            .unwrap();
+    }
+    replica.live().unwrap();
+    let (_, (_, stores)) = counted(|| {
+        replica
+            .apply(Table::WRITE.with(((rows[50].clone(), column.clone()), "changed".into())))
+            .unwrap()
+    });
+    assert_eq!(stores, 1, "one cell written");
 }

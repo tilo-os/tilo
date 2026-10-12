@@ -18,6 +18,7 @@ use tilo_messaging_protocol::supervisor::whatsapp::WhatsappLinking;
 use tokio::sync::oneshot;
 const ORIGIN: &str = "https://web.whatsapp.com";
 const CAPACITY: usize = 8;
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(90);
 type Reply<T> = oneshot::Sender<Result<T, SendError>>;
 enum Request {
     Prepare(Reply<EnrollmentReview>),
@@ -37,54 +38,32 @@ struct Port {
     states: Arc<Mutex<BTreeMap<ServiceAccount, Projection>>>,
     wake: Wake,
 }
-async fn answer<T>(
-    receiver: oneshot::Receiver<Result<T, SendError>>,
-    submitted: bool,
-) -> Result<T, SendError> {
-    if !submitted {
-        return Err(SendError::Unavailable);
-    }
-    tokio::time::timeout(Duration::from_secs(90), receiver)
-        .await
-        .map_err(|_| SendError::Unavailable)?
-        .map_err(|_| SendError::Unavailable)?
-}
 impl EnrollmentHost for Port {
     fn prepare(&self, service: String) -> EnrollmentReviewFuture {
         if service != "whatsapp" {
             return Box::pin(async { Err(SendError::InvalidRequest) });
         }
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self.sender.try_send(Request::Prepare(reply)).is_ok();
-        (self.wake)();
-        Box::pin(answer(receiver, submitted))
+        super::ask_owner(&self.sender, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Prepare(reply)
+        })
     }
     fn begin(&self, service: String) -> PairingFuture {
         if service != "whatsapp" {
             return Box::pin(async { Err(SendError::InvalidRequest) });
         }
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self.sender.try_send(Request::Begin(reply)).is_ok();
-        (self.wake)();
-        Box::pin(answer(receiver, submitted))
+        super::ask_owner(&self.sender, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Begin(reply)
+        })
     }
     fn finish(&self, account: ServiceAccount, attempt: String) -> EnrollmentReviewFuture {
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self
-            .sender
-            .try_send(Request::Finish(account, attempt, reply))
-            .is_ok();
-        (self.wake)();
-        Box::pin(answer(receiver, submitted))
+        super::ask_owner(&self.sender, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Finish(account, attempt, reply)
+        })
     }
     fn review(&self, account: ServiceAccount, name: String) -> EnrollmentApprovalFuture {
-        let (reply, receiver) = oneshot::channel();
-        let submitted = self
-            .sender
-            .try_send(Request::Review(account, name, reply))
-            .is_ok();
-        (self.wake)();
-        Box::pin(answer(receiver, submitted))
+        super::ask_owner(&self.sender, &self.wake, ANSWER_TIMEOUT, |reply| {
+            Request::Review(account, name, reply)
+        })
     }
     fn phase(&self, account: &ServiceAccount) -> EnrollmentPhase {
         let Some((phase, cancelled, native)) = self.states.lock().ok().and_then(|states| {

@@ -1,24 +1,9 @@
 //! `tilo-agent` — a participant without a window.
 //!
-//! The agent joins a word-processor document the way a second copy of the
-//! app would: it connects to the compositor's collaboration broker,
-//! announces the same route `(app, room, record)`, asks the room for the
-//! current state, and from then on holds a live replica of the document.
-//! It never sees a pixel and never touches a pointer. When the document
-//! contains an instruction addressed to it — a paragraph that starts with
-//! its name, `Claude: turn the bullets into a table` — it edits the
-//! document with the word processor's own exported actions, under its own
-//! actor, so every change is attributed to it in the history strip and its
-//! caret shows up in the other participants' windows while it works.
-//!
-//! With `app_id = "so.tilo.chat"` and no record, the same Session reads the
-//! canonical package-primary Chat document. Structured mentions target the
-//! stable admitted `agent_id`; name addressing uses the display name. Replies
-//! and `AgentWork` live in that document and conservatively prevent repeats
-//! after restart, including an unfinished dispatch. This bounded mode only
-//! executes broker-published document actions. External effects, pause/resume,
-//! authenticated agent roster projection, and durable delegated effect
-//! admission remain separate integrations.
+//! The agent connects to the compositor's collaboration broker and carries
+//! out broker-leased tasks (`--task-runs`) under its own actor, so every
+//! change is attributed to it. It never sees a pixel and never touches a
+//! pointer.
 //!
 //! *Which* published operations answer a request is decided by a model
 //! (`model`) that discovers, invokes and observes the live, permission-filtered
@@ -59,8 +44,6 @@
 #[cfg(test)]
 extern crate self as tilo_agent;
 
-pub mod apply;
-pub mod listen;
 pub mod live;
 pub mod memory;
 pub mod model;

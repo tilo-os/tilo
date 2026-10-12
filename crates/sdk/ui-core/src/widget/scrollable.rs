@@ -195,6 +195,21 @@ pub struct Scrollable {
     /// follows its layout node, so no control inside it has a durable
     /// identity and none is published as an action resource.
     semantic_key: Option<String>,
+    /// What the frame being drawn shows of the content, and what the last
+    /// frame the host presented showed: a scroll between the two that moved
+    /// nothing else is offered to the host as a copy
+    /// ([`crate::scroll_copy::offer`]).
+    shown_drawing: Option<Shown>,
+    shown_presented: Option<Shown>,
+}
+
+/// Where a frame shows the content: its offset, the clip it paints into and
+/// the transform it is drawn with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Shown {
+    offset: (f32, f32),
+    clip: Rect,
+    transform: Affine,
 }
 
 impl Scrollable {
@@ -250,6 +265,8 @@ impl Scrollable {
             bottom_content_inset: 0.0,
             compact_bottom_content_inset: None,
             semantic_key: None,
+            shown_drawing: None,
+            shown_presented: None,
         }
     }
     pub fn new_vertical() -> Self {
@@ -906,6 +923,47 @@ impl Scrollable {
             }
         }
         edges
+    }
+
+    /// Where the content paints and how far it moved on screen, when the
+    /// frame being drawn shows it at another offset than the last presented
+    /// frame did, in the same clip and with the same transform.
+    fn scrolled_since_presented(&self) -> Option<(Shown, vello::kurbo::Vec2)> {
+        let (drawing, presented) = (self.shown_drawing?, self.shown_presented?);
+        if drawing.clip != presented.clip
+            || drawing.transform != presented.transform
+            || drawing.offset == presented.offset
+        {
+            return None;
+        }
+        Some((
+            drawing,
+            vello::kurbo::Vec2::new(
+                f64::from(presented.offset.0) - f64::from(drawing.offset.0),
+                f64::from(presented.offset.1) - f64::from(drawing.offset.1),
+            ),
+        ))
+    }
+
+    /// What this view paints over its content inside `clip` that does not
+    /// move with it: its bars' tracks and the bands its edge fades cover.
+    fn copy_overlays(&self, clip: Rect) -> Vec<Rect> {
+        let mut overlays: Vec<Rect> = [self.vertical_track(), self.horizontal_track()]
+            .into_iter()
+            .flatten()
+            .collect();
+        if self.edge_fade {
+            let reach = crate::surface::CONTENT_FADE_PX;
+            if self.axis_has_vertical() {
+                overlays.push(Rect::new(clip.x0, clip.y0, clip.x1, clip.y0 + reach));
+                overlays.push(Rect::new(clip.x0, clip.y1 - reach, clip.x1, clip.y1));
+            }
+            if self.axis_has_horizontal() {
+                overlays.push(Rect::new(clip.x0, clip.y0, clip.x0 + reach, clip.y1));
+                overlays.push(Rect::new(clip.x1 - reach, clip.y0, clip.x1, clip.y1));
+            }
+        }
+        overlays
     }
 
     fn draw_edge_fades(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
@@ -1610,12 +1668,18 @@ impl Widget for Scrollable {
         presence: &PresenceCtx,
     ) {
         self.reduce_motion_active = theme.reduce_motion;
+        let clip = self.paint_clip_rect(theme);
+        self.shown_drawing = Some(Shown {
+            offset: (self.offset_x, self.offset_y),
+            clip,
+            transform: crate::scroll_copy::on_screen(transform),
+        });
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             BlendMode::default(),
             1.0,
             transform,
-            &self.paint_clip_rect(theme),
+            &clip,
         );
         let previous_viewport = presence.push_viewport(self.content_viewport_rect());
         if let Some(c) = &mut self.child {
@@ -1845,6 +1909,28 @@ impl Widget for Scrollable {
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.scroll_dirty {
+            if let Some((shown, delta)) = self.scrolled_since_presented()
+                && crate::scroll_copy::offer(
+                    self,
+                    shown.clip,
+                    delta,
+                    self.copy_overlays(shown.clip),
+                    shown.transform,
+                )
+            {
+                // What changed in the content besides moving, where its
+                // widgets say; the host carries it with the copy.
+                if let Some(child) = &self.child {
+                    let first = regions.len();
+                    child.collect_damage(regions);
+                    if let Some(changed) = regions.get_mut(first..) {
+                        for rect in changed {
+                            *rect = rect.intersect(shown.clip);
+                        }
+                    }
+                }
+                return;
+            }
             regions.push(self.rect);
             return;
         }
@@ -1883,6 +1969,10 @@ impl Widget for Scrollable {
     }
 
     fn mark_drawn(&mut self) {
+        // Not drawn this frame (hidden, culled, or a cache above it reused),
+        // what the screen shows where it lies is not known to be its content:
+        // the next scroll repaints its viewport before copies resume.
+        self.shown_presented = self.shown_drawing.take();
         self.scroll_dirty = false;
         self.bar_dirty = false;
         self.terminal_fade_damage.set(false);
@@ -1940,6 +2030,17 @@ impl Widget for Scrollable {
         self.child
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty())
+    }
+
+    /// The view adds no structure of its own: a change its content can
+    /// describe (a long list mounting the rows a scroll brought near) stays
+    /// described.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        self.child
+            .as_mut()
+            .map_or(crate::widget::StructureChange::None, |child| {
+                child.take_structure_change()
+            })
     }
 }
 
@@ -2086,16 +2187,6 @@ mod tests {
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
             self.clip.set(crate::widget::layout_clip());
-        }
-
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
         }
 
         fn name(&self) -> &'static str {

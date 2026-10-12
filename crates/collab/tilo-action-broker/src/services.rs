@@ -275,6 +275,18 @@ pub trait DocumentImports: Send + Sync {
     ) -> DesktopCommandFuture;
 }
 
+/// Where the view of a launched app opens: next to where the actor that
+/// needs it already is, so the person and every actor keep their place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LaunchPlace {
+    /// Where the person on this device is looking: their own invocation,
+    /// from the palette, a chord or a click.
+    Focus,
+    /// Beside the view of `app_id` the actor works in, on whichever strip
+    /// holds it, which need not be the one the person is looking at.
+    Beside { app_id: String },
+}
+
 #[derive(Clone)]
 pub struct LaunchableApplication {
     pub package_id: String,
@@ -430,12 +442,19 @@ pub struct AuthenticatedApplicationLaunch {
 
 pub trait LauncherServices: Send + Sync {
     fn applications(&self) -> Vec<LaunchableApplication>;
-    /// Launches `app` into `workspace`.
+    /// Launches `app` into `workspace`, its view of `record` (else the
+    /// record it opens by default) opening at `place`.
     ///
     /// # Errors
     ///
     /// Returns a message when the host cannot launch the application.
-    fn launch(&self, app: &str, workspace: &Workspace) -> Result<(), String>;
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &Workspace,
+        record: Option<&str>,
+        place: &LaunchPlace,
+    ) -> Result<(), String>;
     /// Launch an exact installed package, or an ordinary host application,
     /// and observe its real startup in the authenticated workspace.
     ///
@@ -471,10 +490,10 @@ pub trait LauncherServices: Send + Sync {
         }
         self.begin_launch(app, package_root, workspace, author)
     }
-    /// Launch `app` into `workspace`, opening the content-addressed bytes
-    /// `content` names read-only, read through the calling application's own
-    /// scope. An empty hash is a plain launch. A host that cannot stage
-    /// content refuses one.
+    /// Launch `app` into `workspace` at `place`, opening the
+    /// content-addressed bytes `content` names read-only, read through the
+    /// calling application's own scope. An empty hash is a plain launch. A
+    /// host that cannot stage content refuses one.
     ///
     /// # Errors
     ///
@@ -484,9 +503,10 @@ pub trait LauncherServices: Send + Sync {
         app: &str,
         workspace: &Workspace,
         content: LaunchContent<'_>,
+        place: &LaunchPlace,
     ) -> Result<(), String> {
         if content.hash.is_empty() {
-            self.launch(app, workspace)
+            self.launch(app, workspace, None, place)
         } else {
             Err("opening launch content is unsupported on this host".into())
         }
@@ -905,8 +925,7 @@ pub struct FileClipboardContext {
     pub(crate) workspace: String,
     pub(crate) owner: String,
     pub(crate) history_compensation: bool,
-    pub(crate) check:
-        Arc<dyn Fn(tilo_actions::PermissionRequirement) -> Result<(), String> + Send + Sync>,
+    pub(crate) check: Arc<dyn Fn(tilo_actions::ActionKind) -> Result<(), String> + Send + Sync>,
 }
 impl FileClipboardContext {
     pub fn window(&self) -> &str {
@@ -917,9 +936,9 @@ impl FileClipboardContext {
     /// # Errors
     /// Refuses retired authority or unavailable peer descriptors.
     pub fn duplicate_selected(&self, descriptor: u32) -> Result<std::fs::File, String> {
-        self.authorize(tilo_actions::PermissionRequirement::Read)?;
+        self.authorize(tilo_actions::ActionKind::Read)?;
         let file = (self.duplicate)(descriptor)?;
-        self.authorize(tilo_actions::PermissionRequirement::Read)?;
+        self.authorize(tilo_actions::ActionKind::Read)?;
         Ok(file)
     }
     pub fn peer(&self) -> u64 {
@@ -940,7 +959,7 @@ impl FileClipboardContext {
     ///
     /// # Errors
     /// Refuses retired, revoked, expired or insufficient authority.
-    pub fn authorize(&self, permission: tilo_actions::PermissionRequirement) -> Result<(), String> {
+    pub fn authorize(&self, permission: tilo_actions::ActionKind) -> Result<(), String> {
         (self.check)(permission)
     }
 }
@@ -960,22 +979,21 @@ pub trait FileClipboardServices: Send + Sync {
 /// recorded. The broker decides whether to ask and builds the grant; the
 /// host owns the workspace records it lands in.
 pub trait AppActionGrants: Send + Sync {
-    /// Whether this machine governs `room` and `person` may administer it,
+    /// Whether this machine governs `room` and `person` may grant in it,
     /// so a grant they give can be recorded here.
     fn may_grant(&self, room: &str, person: &str) -> bool;
-    /// Record `capability` in `request.room` as granted by
-    /// `request.person`, and note `answer` in the workspace's history.
-    /// The recorded capability's id, or `None` when it could not be
-    /// recorded.
+    /// Record `grant` in `request.room` as given by `request.person`, and
+    /// note `answer` in the workspace's history. The recorded grant's id, or
+    /// `None` when it could not be recorded.
     fn record(
         &self,
         request: &crate::app_actions::AppActionConsentRequest,
-        capability: collab_types::caps::CapOverride,
+        grant: tilo_action_policy::Grant,
         answer: crate::app_actions::AppActionConsent,
     ) -> Option<String>;
-    /// Remove the grant `capability` from `room`: a grant given once, now
-    /// that its call was decided.
-    fn revoke(&self, room: &str, capability: &str);
+    /// Remove the grant `grant` from `room`: a grant given once, now that
+    /// its call was decided.
+    fn revoke(&self, room: &str, grant: &str);
 }
 /// Identity of an exact private Settings worker, derived by the broker.
 #[derive(Clone, Debug)]

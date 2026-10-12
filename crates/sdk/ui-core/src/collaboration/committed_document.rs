@@ -22,6 +22,10 @@ struct Progress {
     closed: AtomicBool,
     changes: std::sync::Mutex<u64>,
     changed: std::sync::Condvar,
+    /// Wakes a route's reader waiting for its committed read to change when
+    /// something here changes instead: closure, a downgrade, a staged
+    /// capture, or the owner asking for a fresh read.
+    reader: tokio::sync::Notify,
 }
 #[derive(Clone)]
 enum Gate {
@@ -106,6 +110,16 @@ impl Reads {
         *changes = changes.wrapping_add(1);
         drop(changes);
         self.5.changed.notify_all();
+        self.5.reader.notify_waiters();
+    }
+    /// A wait for the next [`Self::progressed`] or refresh request. Enable it
+    /// before checking the state it guards, so a change in between is kept.
+    fn reader_wake(&self) -> tokio::sync::futures::Notified<'_> {
+        self.5.reader.notified()
+    }
+    /// Whether the owner asked for a fresh read, without consuming the ask.
+    fn refresh_pending(&self, key: &str) -> bool {
+        self.2.lock().is_ok_and(|requests| requests.contains(key))
     }
     pub(super) fn readiness_diagnostic(&self, key: &str) -> Option<ReadinessDiagnostic> {
         let required = self
@@ -229,6 +243,7 @@ impl Reads {
             if let Ok(mut refresh) = self.2.lock() {
                 refresh.insert(key.into());
             }
+            self.5.reader.notify_waiters();
         }
         None
     }
@@ -1038,8 +1053,9 @@ fn capture_budget() -> &'static ByteBudget {
 /// acknowledgement; equal to the polling Open deadline.
 const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
 
-/// Only local deadlines permit retiring a capture and renewing its read epoch.
-/// Broker refusals, invalid replies and authority failures remain terminal.
+/// Only local deadlines permit retiring a capture and renewing its read epoch,
+/// or retrying a renewal. Broker refusals, invalid replies and authority
+/// failures remain terminal.
 #[derive(Debug)]
 enum CaptureFailure {
     Deadline(&'static str),
@@ -1223,7 +1239,7 @@ impl NativeReadJoin {
         &self,
         spec: &RouteSpec,
         reads: &Reads,
-    ) -> Result<runtime_collab::ChannelHandle, String> {
+    ) -> Result<runtime_collab::ChannelHandle, CaptureFailure> {
         let key = spec.channel_id();
         let expected_instance = reads.private_window(&key);
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -1249,16 +1265,85 @@ impl NativeReadJoin {
             {
                 return Err("renewed committed read launcher instance changed".into());
             }
-            Ok(channel)
+            Ok::<_, String>(channel)
         })
         .await
-        .map_err(|_| "original committed read renewal deadline elapsed")?
+        .map_err(|_| CaptureFailure::Deadline("original committed read renewal deadline elapsed"))?
+        .map_err(CaptureFailure::Rejected)
     }
 }
 
 /// How often a reader waiting for the owner's merge re-checks that its route
 /// is still healthy and current. The merge itself wakes it at once.
 const MERGE_RECHECK: Duration = Duration::from_millis(100);
+
+/// The shortest gap between two Opens of one route, however often its
+/// document changes, and how often a reader re-Opens when its broker cannot
+/// hold an `Await` (an older shell).
+const READ_RECHECK: Duration = Duration::from_millis(200);
+
+/// How long a reader waits for a change before it confirms its read with an
+/// Open anyway. Every change it depends on ends the wait at once; this only
+/// bounds how long a broker that stopped answering (a wedged owner) goes
+/// unnoticed, which the Open's own deadline then turns into the renewal it
+/// always was. 2 requests per 30 s instead of 5 per second.
+const AWAIT_KEEPALIVE: Duration = Duration::from_secs(30);
+
+/// What ended a reader's wait for its committed read to change.
+#[derive(Debug, PartialEq, Eq)]
+enum Woke {
+    /// The broker says an Open would now answer differently: a new
+    /// revision, a refusal, the record becoming readable.
+    Stale,
+    /// Something on this side changed: the route closed or was replaced,
+    /// or the owner asked for a fresh read.
+    Local,
+    /// Nothing changed for [`AWAIT_KEEPALIVE`]: confirm the read.
+    Keepalive,
+    /// The broker did not hold the wait (an older broker refuses the
+    /// request), or the call failed: the next Open decides.
+    Refused,
+}
+
+/// Wait, without traffic and without a timer, until an Open of this route
+/// would answer differently from the `known` revision the reader holds
+/// (`None` after `Unavailable`), or until something on this side changes.
+/// The answer is never a read: the caller Opens, under its delivery turn,
+/// and only that Open publishes readiness or hands out bytes.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc channel futures are !Send by design; driven only on the shovel LocalSet"
+)]
+async fn until_stale(
+    channel: &runtime_collab::ChannelHandle,
+    known: Option<[u8; 32]>,
+    inbound: &InboundBridge,
+    key: &str,
+    ready: &Arc<AtomicBool>,
+) -> Woke {
+    let reads = &inbound.state.document_reads;
+    let local = reads.reader_wake();
+    tokio::pin!(local);
+    // Enabled before looking: a change between the look and the wait wakes
+    // it rather than being missed.
+    local.as_mut().enable();
+    if !inbound.state.is_healthy() || !reads.current(key, ready) || reads.refresh_pending(key) {
+        return Woke::Local;
+    }
+    let request = Request::Await {
+        known_revision: known,
+    };
+    tokio::select! {
+        () = &mut local => Woke::Local,
+        reply = tokio::time::timeout(AWAIT_KEEPALIVE, channel.committed_document(&request)) => {
+            match reply {
+                Ok(Ok(Reply::Stale)) => Woke::Stale,
+                Ok(_) => Woke::Refused,
+                Err(_) => Woke::Keepalive,
+            }
+        }
+    }
+}
 
 /// Wait until the owner merged `read` ([`CommittedDocument::applied`]), or
 /// `live` says the route is gone. The owner's component factory waits for
@@ -1305,10 +1390,20 @@ pub(super) async fn install(
     let spec = spec.clone();
     let inbound = inbound.clone();
     tokio::task::spawn_local(async move {
+        // One renewal per healthy read: a deadline renews unless the previous
+        // renewal has not yet produced a ready read. Readiness published on a
+        // renewed channel restores the budget, so a runner that stalls twice
+        // or a laptop that suspends twice recovers both times, while two
+        // deadlines with no successful read between them still close.
         let mut renewed = false;
         let mut current = initial;
         let mut revision = revision;
-        loop {
+        // Whether the broker holds `Await`. An Open that answers right
+        // after a refused Await says it does not, and the reader polls.
+        let mut awaits = true;
+        let mut probing = false;
+        let mut last_open;
+        'read: loop {
             if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
                 break;
             }
@@ -1358,6 +1453,7 @@ pub(super) async fn install(
             if refresh {
                 set_read_ready(&inbound, &ready, false);
             }
+            last_open = crate::time::now();
             let result = tokio::time::timeout(
                 Duration::from_secs(2),
                 channel.committed_document(&Request::Open {
@@ -1365,9 +1461,20 @@ pub(super) async fn install(
                 }),
             )
             .await;
+            if std::mem::take(&mut probing)
+                && matches!(
+                    result,
+                    Ok(Ok(Reply::Unchanged { .. }
+                        | Reply::Chunk { .. }
+                        | Reply::Unavailable))
+                )
+            {
+                awaits = false;
+            }
             let renew = match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
                     set_read_ready(&inbound, &ready, true);
+                    renewed = false;
                     false
                 }
                 Ok(Ok(reply @ Reply::Chunk { .. })) => {
@@ -1435,20 +1542,55 @@ pub(super) async fn install(
                     break;
                 };
                 ready = next_ready;
-                if let Ok(next) = join.renew(&spec, &inbound.state.document_reads).await {
-                    channel = next;
-                    revision = None;
-                    #[cfg(any(test, feature = "test-support"))]
-                    tracing::warn!("original committed read generation renewed");
-                    continue;
+                let mut turn = Some(turn);
+                loop {
+                    match join.renew(&spec, &inbound.state.document_reads).await {
+                        Ok(next) => {
+                            channel = next;
+                            revision = None;
+                            #[cfg(any(test, feature = "test-support"))]
+                            tracing::warn!("original committed read generation renewed");
+                            continue 'read;
+                        }
+                        // A slow rejoin is an unknown outcome, not a refusal.
+                        // Readiness stays withheld and no capture exists in
+                        // this generation; release the delivery turn and
+                        // rejoin again. Every attempt is a fresh admission
+                        // the broker re-verifies, so a revoked peer is still
+                        // refused by the first rejoin that is answered.
+                        Err(CaptureFailure::Deadline(_)) => {
+                            #[cfg(any(test, feature = "test-support"))]
+                            tracing::warn!("committed read renewal deadline elapsed; rejoining");
+                            drop(turn.take());
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            if !inbound.state.is_healthy()
+                                || !inbound.state.document_reads.current(&key, &ready)
+                            {
+                                break 'read;
+                            }
+                        }
+                        Err(CaptureFailure::Rejected(_)) => {
+                            inbound
+                                .state
+                                .fail_closed("committed read renewal unavailable");
+                            break 'read;
+                        }
+                    }
                 }
-                inbound
-                    .state
-                    .fail_closed("committed read renewal unavailable");
-                break;
             }
             drop(turn);
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            if !awaits {
+                tokio::time::sleep(READ_RECHECK).await;
+                continue;
+            }
+            // Nothing to do until the read changes: wait for the broker to
+            // say so instead of asking five times a second.
+            if until_stale(&channel, revision, &inbound, &key, &ready).await == Woke::Refused {
+                probing = true;
+                continue;
+            }
+            let since = crate::time::now().saturating_duration_since(last_open);
+            tokio::time::sleep(READ_RECHECK.saturating_sub(since)).await;
         }
         set_read_ready(&inbound, &ready, false);
         if inbound.state.document_reads.current(&key, &ready) {

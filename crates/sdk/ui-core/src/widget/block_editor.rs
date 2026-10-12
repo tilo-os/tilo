@@ -3391,6 +3391,17 @@ impl BlockEditor {
         painted
     }
 
+    /// Where the drag handle the pointer's block shows was painted, if any:
+    /// it follows the pointer, not the text, so a host that copies a scroll
+    /// of the text repaints it where it is and where it was.
+    pub fn hover_handle(&self) -> Option<Rect> {
+        if self.block_drag.is_some() {
+            return None;
+        }
+        self.hovered_block()
+            .and_then(|index| self.block_drag_handle_rect(index))
+    }
+
     fn hovered_block(&self) -> Option<usize> {
         (0..self.blocks.len()).find_map(|index| {
             let line = self.block_paint_rect(index)?;
@@ -7150,18 +7161,6 @@ impl Widget for BlockStackLeaf {
     /// children, so its dirtiness alone would leave this leaf's cached size.
     fn layout_needs_measure(&self) -> bool {
         self.editor().is_some_and(Widget::layout_needs_measure)
-    }
-
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn name(&self) -> &'static str {

@@ -1321,7 +1321,7 @@ mod tests {
 
     impl Widget for Rows {
         crate::provides!(dyn Filterable);
-        crate::testing::inert_widget_methods!(leaf_layout, apply_layout, draw, get_rect);
+        crate::testing::inert_widget_methods!(leaf_layout);
         fn name(&self) -> &'static str {
             "rows"
         }

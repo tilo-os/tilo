@@ -184,7 +184,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
     let tags = vec!["desktop".into(), "session".into(), id.into()];
     match action {
         os_actions::SessionAction::Lock => tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Write,
+            kind: tilo_actions::ActionKind::Undoable,
             risk: tilo_actions::RiskLevel::Low,
             confirmation: tilo_actions::ConfirmationPolicy::None,
             retry: tilo_actions::RetryPolicy::Idempotent,
@@ -192,7 +192,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
             ..tilo_actions::ActionContract::default()
         },
         os_actions::SessionAction::Suspend => tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Admin,
+            kind: tilo_actions::ActionKind::Outside,
             risk: tilo_actions::RiskLevel::Low,
             confirmation: tilo_actions::ConfirmationPolicy::Confirm,
             retry: tilo_actions::RetryPolicy::AtMostOnce,
@@ -200,7 +200,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
             ..tilo_actions::ActionContract::default()
         },
         _ => tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Admin,
+            kind: tilo_actions::ActionKind::Outside,
             risk: tilo_actions::RiskLevel::Destructive,
             confirmation: tilo_actions::ConfirmationPolicy::Confirm,
             retry: tilo_actions::RetryPolicy::AtMostOnce,
@@ -212,7 +212,7 @@ fn queued_contract(id: &str, action: os_actions::SessionAction) -> tilo_actions:
 
 fn logout_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Admin,
+        kind: tilo_actions::ActionKind::Outside,
         risk: tilo_actions::RiskLevel::Destructive,
         confirmation: tilo_actions::ConfirmationPolicy::Confirm,
         retry: tilo_actions::RetryPolicy::AtMostOnce,

@@ -1,8 +1,8 @@
 //! Real public resource edits of matrix metadata; no weight allocation or execution.
 use crate::operator_graph::RESOURCE_ID;
-use crate::{ChipDesignShell, OperatorAction, OperatorNode, ProjectAction};
+use crate::tests::Parsed as _;
+use crate::{ChipDesignShell, OperatorNode, Project as ChipProject};
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::Invoke;
 
 fn add(
     app: &mut TestApp<ChipDesignShell>,
@@ -13,17 +13,17 @@ fn add(
 ) -> Result<Option<serde_json::Value>, ui::tilo_actions::DoorError> {
     let mut args = serde_json::json!({
         "node":id,"kind":kind,"shape":shape,
-        "normalization_width":shape.last().copied().unwrap_or(0),"x":0,"y":0
+        "x":0,"y":0
     });
     if let Some(width) = output {
         args["output_width"] = width.into();
     }
-    app.call_on(RESOURCE_ID, "add-node", args)
+    crate::tests::graph(app, "add-node", args)
 }
 
 fn connect(app: &mut TestApp<ChipDesignShell>, source: &str, port: &str, dest: &str, input: &str) {
-    app.call_on(
-        RESOURCE_ID,
+    crate::tests::graph(
+        app,
         "connect",
         serde_json::json!({
             "from_node":source,"from_port":port,"to_node":dest,"to_port":input
@@ -67,16 +67,16 @@ fn public_matrix_projection_preserves_large_geometry_without_payloads() {
         content["graph"]["nodes"]["projection"]["outputs"][0]["data_type"],
         "f32[2, 98304]"
     );
-    assert_eq!(app.state().operator_graph.active.len(), 2);
-    assert_eq!(app.state().operator_graph.nodes["weights"].shape, [2048]);
+    assert_eq!(app.parsed().operator_graph.active.len(), 2);
+    assert_eq!(app.parsed().operator_graph.nodes["weights"].shape, [2048]);
     assert!(
-        serde_json::to_vec(&app.state().operator_graph)
+        serde_json::to_vec(&app.parsed().operator_graph)
             .unwrap()
             .len()
             < 4096
     );
     assert!(app.undo());
-    assert_eq!(app.state().operator_graph.active.len(), 1);
+    assert_eq!(app.parsed().operator_graph.active.len(), 1);
 }
 
 #[test]
@@ -99,23 +99,23 @@ fn projection_resize_keeps_rejected_candidate_and_undo_restores_connection() {
     )
     .unwrap();
     connect(&mut app, "weights", "weights", "projection", "weights");
-    app.call_on(
-        RESOURCE_ID,
+    crate::tests::graph(
+        &mut app,
         "set-output-width",
         serde_json::json!({"node":"projection","width":65536}),
     )
     .unwrap();
-    let state = &app.state().operator_graph;
+    let state = &app.parsed().operator_graph;
     assert!(state.active.is_empty());
     assert_eq!(state.candidates.len(), 1);
     assert_eq!(state.rejected.len(), 1);
     assert_eq!(state.rejected[0].reason, "type_mismatch");
     assert_eq!(state.nodes["projection"].output_width, Some(65536));
     assert!(app.undo());
-    assert_eq!(app.state().operator_graph.active.len(), 1);
-    assert!(app.state().operator_graph.rejected.is_empty());
+    assert_eq!(app.parsed().operator_graph.active.len(), 1);
+    assert!(app.parsed().operator_graph.rejected.is_empty());
     assert_eq!(
-        app.state().operator_graph.nodes["projection"].output_width,
+        app.parsed().operator_graph.nodes["projection"].output_width,
         Some(98_304)
     );
 }
@@ -132,7 +132,7 @@ fn matrix_metadata_bounds_refuse_bad_public_edits_without_mutation() {
         ("input", vec![8], Some(8)),
     ] {
         assert!(add(&mut app, "bad", kind, &shape, width).is_err());
-        assert!(app.state().operator_graph.nodes.is_empty());
+        assert!(app.parsed().operator_graph.nodes.is_empty());
     }
     add(
         &mut app,
@@ -143,20 +143,20 @@ fn matrix_metadata_bounds_refuse_bad_public_edits_without_mutation() {
     )
     .unwrap();
     assert!(
-        app.call_on(
-            RESOURCE_ID,
+        crate::tests::graph(
+            &mut app,
             "set-output-width",
             serde_json::json!({"node":"boundary","width":262_145})
         )
         .is_err()
     );
     assert_eq!(
-        app.state().operator_graph.nodes["boundary"].output_width,
+        app.parsed().operator_graph.nodes["boundary"].output_width,
         Some(262_144)
     );
     assert!(
-        app.call_on(
-            RESOURCE_ID,
+        crate::tests::graph(
+            &mut app,
             "set-output-width",
             serde_json::json!({"node":"missing","width":8})
         )
@@ -177,24 +177,18 @@ fn legacy_node_json_remains_loadable_and_omits_matrix_metadata() {
             .is_none()
     );
     let mut app = TestApp::<ChipDesignShell>::new().unwrap();
-    app.invoke(
-        Invoke::apply(&ProjectAction::EditGraph {
-            edit: OperatorAction::AddNode { node },
-        })
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(app.state().operator_graph.nodes["legacy"].shape, [4, 8]);
+    app.invoke(ChipProject::ADD_NODE.with(node)).unwrap();
+    assert_eq!(app.parsed().operator_graph.nodes["legacy"].shape, [4, 8]);
     assert!(
-        app.call_on(
-            RESOURCE_ID,
+        crate::tests::graph(
+            &mut app,
             "set-output-width",
             serde_json::json!({"node":"legacy","width":8})
         )
         .is_err()
     );
     assert_eq!(
-        app.state().operator_graph.nodes["legacy"].output_width,
+        app.parsed().operator_graph.nodes["legacy"].output_width,
         None
     );
 }
@@ -233,12 +227,12 @@ fn inspector_input_invokes_the_same_matrix_edit_and_system_undo() {
     app.harness().commit_text("16384");
     app.settle();
     assert_eq!(
-        app.state().operator_graph.nodes["weights"].output_width,
+        app.parsed().operator_graph.nodes["weights"].output_width,
         Some(16384)
     );
     assert!(app.undo());
     assert_eq!(
-        app.state().operator_graph.nodes["weights"].output_width,
+        app.parsed().operator_graph.nodes["weights"].output_width,
         Some(8192)
     );
 }
@@ -263,37 +257,37 @@ fn public_input_reshape_retypes_ports_and_preserves_legacy_bounds() {
     )
     .unwrap();
     connect(&mut app, "weights", "weights", "projection", "weights");
-    app.call_on(
-        RESOURCE_ID,
+    crate::tests::graph(
+        &mut app,
         "set-shape",
         serde_json::json!({"node":"weights","shape":[4096]}),
     )
     .unwrap();
     assert_eq!(
-        app.state().operator_graph.nodes["weights"].normalization_width,
+        app.parsed().operator_graph.nodes["weights"].normalization_width,
         4096
     );
     assert_eq!(
-        app.state().operator_graph.rejected[0].reason,
+        app.parsed().operator_graph.rejected[0].reason,
         "type_mismatch"
     );
     for shape in [vec![], vec![0], vec![2, 32769], vec![2, 4096]] {
         assert!(
-            app.call_on(
-                RESOURCE_ID,
+            crate::tests::graph(
+                &mut app,
                 "set-shape",
                 serde_json::json!({"node":"weights","shape":shape})
             )
             .is_err()
         );
-        assert_eq!(app.state().operator_graph.nodes["weights"].shape, [4096]);
+        assert_eq!(app.parsed().operator_graph.nodes["weights"].shape, [4096]);
     }
     assert!(app.undo());
     assert_eq!(
-        app.state().operator_graph.nodes["weights"].normalization_width,
+        app.parsed().operator_graph.nodes["weights"].normalization_width,
         2048
     );
-    assert_eq!(app.state().operator_graph.active.len(), 1);
+    assert_eq!(app.parsed().operator_graph.active.len(), 1);
 }
 
 #[test]
@@ -314,15 +308,15 @@ fn inspector_shape_field_edits_input_geometry_through_the_resource() {
     app.harness().set_modifiers(&[]);
     app.harness().commit_text("[4096]");
     app.settle();
-    assert_eq!(app.state().operator_graph.nodes["weights"].shape, [4096]);
+    assert_eq!(app.parsed().operator_graph.nodes["weights"].shape, [4096]);
     assert_eq!(
-        app.state().operator_graph.nodes["weights"].normalization_width,
+        app.parsed().operator_graph.nodes["weights"].normalization_width,
         4096
     );
     assert_eq!(
-        app.state().operator_graph.nodes["weights"].output_width,
+        app.parsed().operator_graph.nodes["weights"].output_width,
         Some(8192)
     );
     assert!(app.undo());
-    assert_eq!(app.state().operator_graph.nodes["weights"].shape, [8]);
+    assert_eq!(app.parsed().operator_graph.nodes["weights"].shape, [8]);
 }

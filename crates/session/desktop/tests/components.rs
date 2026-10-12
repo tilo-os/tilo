@@ -44,15 +44,10 @@ impl ComponentContextSource for Host {
                 views: self.views.clone(),
                 device_id: "device".into(),
                 instance_id: request.tab.id,
-                permissions: Rc::new(RefCell::new(
-                    ui::permissions::PermissionContext::from_capabilities(
-                        ui::permissions::Actor::person(
-                            Some(ui::permissions::Role::Owner),
-                            "author",
-                        ),
-                        vec![],
-                    ),
-                )),
+                permissions: Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
+                    "author",
+                    ui::permissions::Role::Owner,
+                ))),
                 author: ui::permissions::UserId("author".into()),
                 action_context: tilo_actions::ActionContext::default(),
             },
@@ -92,9 +87,9 @@ fn fixture() -> (
         store.with(&checkout.id, |doc| match i {
             0 => word_processor::initialize_empty_document(doc).unwrap(),
             1 => {
-                chat::doc::ChatDoc::seed_starter(doc, "author", "Author", "AU");
+                chat::demo::start(doc, "author", "Author", "AU").unwrap();
             }
-            _ => notes::notebook::initialize_empty(doc).unwrap(),
+            _ => notes::read::initialize(doc),
         });
         retained_records.push(store);
         tabs.push(Tab {
@@ -291,14 +286,21 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
     let surface = DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 720));
-    for (instance, resource, action, value) in [
+    for (instance, resource, action, param, value) in [
         (
             11,
-            "chat.channel:c_general",
+            chat::projection::item_id("channels", "c_general"),
             "post",
+            "text",
             "Shared desktop message",
         ),
-        (12, "notes.notebook", "new-page", "Shared desktop page"),
+        (
+            12,
+            "notes.notebook".to_owned(),
+            "new-note",
+            "title",
+            "Shared desktop page",
+        ),
     ] {
         frame
             .invoke_bound_action(
@@ -306,7 +308,7 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
                     instance_id: instance,
                     address: tilo_actions::ActionAddress::new(resource, action),
                 },
-                serde_json::json!({"value":value}).as_object().unwrap(),
+                serde_json::json!({ param: value }).as_object().unwrap(),
             )
             .unwrap();
     }

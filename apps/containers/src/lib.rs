@@ -34,7 +34,7 @@
 pub mod actions;
 pub mod app;
 mod create_form;
-pub mod doc;
+pub mod draft;
 pub mod model;
 pub mod podman;
 pub mod resource;

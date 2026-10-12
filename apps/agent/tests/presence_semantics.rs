@@ -49,7 +49,7 @@ fn send_until_presence(
 fn keyed_pointer_and_typing_survive_the_native_broker() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("collab.capnp");
-    let _broker = typed_peer::spawn(&socket);
+    let _broker = typed_peer::spawn_with_agent_actions(&socket, &[]);
 
     let mut alice = TypedPeer::connect(&socket);
     let mut bob = TypedPeer::connect(&socket);

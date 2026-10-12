@@ -1,6 +1,6 @@
 //! Actual Notes input → canonical body → history and Markdown projection.
-use notes::actions::new_page_action;
-use notes::doc::NotesDoc;
+use notes::actions::create_page_action;
+use notes::read;
 use notes::{NotesShell, PageId};
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
@@ -9,7 +9,7 @@ fn open() -> (TestApp<NotesShell>, PageId) {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::new().unwrap();
     let page = PageId::new_v4();
-    app.invoke(Invoke::apply(&new_page_action(page, None, "a".into(), "Outline")).unwrap())
+    app.invoke(Invoke::apply(&create_page_action(page, None, "Outline")).unwrap())
         .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
@@ -18,7 +18,7 @@ fn open() -> (TestApp<NotesShell>, PageId) {
 
 fn rows(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, String, u8)> {
     app.read_document(|doc| {
-        NotesDoc::page_blocks(doc, page)
+        read::page_blocks(doc, page)
             .into_iter()
             .map(|block| (block.id, block.text, block.nesting))
             .collect()
@@ -96,7 +96,7 @@ fn backspace_outdents_before_joining_and_keeps_both_blocks_formatting() {
     assert_eq!(joined.len(), 1);
     assert_eq!(joined[0].1, "Parenté😀 child");
     app.read_document(|doc| {
-        let blocks = NotesDoc::page_blocks(doc, page);
+        let blocks = read::page_blocks(doc, page);
         assert!(
             blocks[0].marks.iter().any(|span| {
                 span.mark == ui::widget::marks::Mark::Bold && span.range == (6..18)
@@ -117,7 +117,7 @@ fn nesting_survives_concurrent_text_and_markdown_roundtrip_and_refuses_viewers()
     app.harness().type_text("Child");
     let before = rows(&app, page);
     let mut peer = app.peer_document();
-    NotesDoc::edit_page_body(
+    crate::component_support::edit_page_body(
         &mut peer,
         page,
         &tilo_document::RichTextAction::SpliceText {
@@ -137,12 +137,9 @@ fn nesting_survives_concurrent_text_and_markdown_roundtrip_and_refuses_viewers()
         (before[1].0.clone(), "同僚 Child".into(), 1)
     );
     app.read_document(|doc| {
-        assert_eq!(
-            NotesDoc::page_blocks(doc, page),
-            NotesDoc::page_blocks(&peer, page)
-        );
+        assert_eq!(read::page_blocks(doc, page), read::page_blocks(&peer, page));
         let mut editor = ui::widget::BlockEditor::new();
-        editor.present_blocks(&NotesDoc::page_blocks(doc, page));
+        editor.present_blocks(&read::page_blocks(doc, page));
         let specs = notes::markdown::blocks_to_specs(editor.blocks());
         let source = notes::markdown::serialize(&specs);
         assert_eq!(notes::markdown::parse(&source), specs, "{source}");

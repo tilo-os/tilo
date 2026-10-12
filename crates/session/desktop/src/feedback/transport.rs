@@ -5,14 +5,15 @@ use std::rc::Rc;
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::{Caller, CallerPrincipal};
-use tilo_app::feedback::{Error, FeedbackHost, MaskedScreenshot, Receipt, ReviewText, Submission};
-use ui::permissions::{CapDecision, PermissionContext, ResourceRef, Verb};
+use tilo_app::feedback::{
+    Error, FeedbackHost, MaskedScreenshot, Receipt, ReviewText, Submission, destination,
+};
+use ui::permissions::{ActionKind, Answer, PermissionContext, TreePath};
 use ui::record::{RecordId, RecordStore};
 
 use super::{Destination, DurableStore, PrivateFeedback, StorageKey};
 
 const DOMAIN: &[u8] = b"tilo-feedback-canonical-receipt-v1\0";
-const CHAT_PACKAGE: &str = "so.tilo.chat";
 
 /// Current enrollment, sampled by the existing authenticated transport.
 /// This is intentionally not deserializable from a request or launch config.
@@ -22,9 +23,6 @@ pub struct Enrollment {
     pub owner: Caller,
     pub reporter: Caller,
     pub permissions: PermissionContext,
-    /// The actual publication requirement. Browser Splice requires Write;
-    /// permission to invoke a Comment action does not supply it.
-    pub publication: Verb,
 }
 
 impl Enrollment {
@@ -51,7 +49,6 @@ impl Enrollment {
             destination: self.destination.clone(),
             owner: identity(&self.owner)?,
             reporter: identity(&self.reporter)?,
-            publication: self.publication,
         })
     }
 
@@ -63,7 +60,6 @@ impl Enrollment {
             .map_err(|_| Error::Invalid("feedback policy time unavailable"))?;
         if self.permissions.role().is_none()
             || self.permissions.user().0 != hex::encode(pin.reporter.user)
-            || !matches!(self.publication, Verb::Comment | Verb::Write)
         {
             return Err(Error::Invalid("reporter admission required"));
         }
@@ -72,12 +68,13 @@ impl Enrollment {
 
     fn authorize_startup(&self) -> Result<Pin, Error> {
         let (pin, permissions) = self.admitted_pin()?;
-        let resource = ResourceRef::Action {
-            app: CHAT_PACKAGE.into(),
-            resource: format!("chat.channel:{}", self.destination.channel),
-            action: "submit-feedback".into(),
-        };
-        if permissions.decide(&resource, Verb::Read) != CapDecision::Allow {
+        let submit = chat_action(
+            destination::CHANNELS,
+            &self.destination.channel,
+            Some(destination::SUBMIT_FIELD),
+            destination::SUBMIT,
+        );
+        if permissions.answer(&submit, ActionKind::Read) != Answer::Allow {
             return Err(Error::Invalid("feedback destination not authorized"));
         }
         Ok(pin)
@@ -86,27 +83,28 @@ impl Enrollment {
     fn authorize(&self) -> Result<Pin, Error> {
         let pin = self.authorize_startup()?;
         let (_, permissions) = self.admitted_pin()?;
-        let resource = ResourceRef::Action {
-            app: CHAT_PACKAGE.into(),
-            resource: format!("chat.channel:{}", self.destination.channel),
-            action: "submit-feedback".into(),
-        };
-        for verb in [Verb::Comment, self.publication] {
-            if permissions.decide(&resource, verb) != CapDecision::Allow {
-                return Err(Error::Invalid("feedback destination not authorized"));
-            }
+        // Publishing the report edits the channel: reading it is not enough.
+        let submit = chat_action(
+            destination::CHANNELS,
+            &self.destination.channel,
+            Some(destination::SUBMIT_FIELD),
+            destination::SUBMIT,
+        );
+        if permissions.answer(&submit, ActionKind::Undoable) != Answer::Allow {
+            return Err(Error::Invalid("feedback destination not authorized"));
         }
         Ok(pin)
     }
 
     fn authorize_receipt(&self, submission: &Submission) -> Result<Pin, Error> {
         let (pin, permissions) = self.admitted_pin()?;
-        let resource = ResourceRef::Action {
-            app: CHAT_PACKAGE.into(),
-            resource: format!("chat.feedback:{}", submission.id),
-            action: "read-feedback-receipt".into(),
-        };
-        if permissions.decide(&resource, Verb::Read) != CapDecision::Allow {
+        let read = chat_action(
+            destination::REPORTS,
+            &submission.id,
+            None,
+            destination::READ_RECEIPT,
+        );
+        if permissions.answer(&read, ActionKind::Read) != Answer::Allow {
             return Err(Error::Invalid("feedback receipt not authorized"));
         }
         Ok(pin)
@@ -124,7 +122,24 @@ struct Pin {
     destination: Destination,
     owner: Identity,
     reporter: Identity,
-    publication: Verb,
+}
+
+/// The resource id of the destination's item `id` in `field`.
+fn chat_item(field: &str, id: &str) -> String {
+    destination::item(field, id)
+}
+
+/// The node of `action` on the destination's item `id` in `field`, below
+/// the field `under` it writes, if any.
+fn chat_action(field: &str, id: &str, under: Option<&str>, action: &str) -> TreePath {
+    tilo_actions::action_node(
+        &TreePath::root(),
+        destination::PACKAGE,
+        &format!("{}.{field}", destination::RESOURCE_KIND),
+        &chat_item(field, id),
+        under,
+        action,
+    )
 }
 
 /// Wire acknowledgment signed only after the canonical owner's current save.
@@ -301,8 +316,8 @@ impl Transport for SessionTransport {
         let target = tilo_actions::remote::RemoteActionTarget {
             provider: enrollment.destination.provider,
             address: tilo_actions::ActionAddress::new(
-                format!("chat.channel:{}", enrollment.destination.channel),
-                "submit-feedback",
+                chat_item(destination::CHANNELS, &enrollment.destination.channel),
+                destination::SUBMIT,
             ),
         };
         (self.send)(&target, submission)
@@ -377,7 +392,7 @@ impl CanonicalDestination {
             || owner.user_public_key().is_none()
             || owner.device_public_key().is_none()
             || owner != *signer.owner()
-            || source.namespace() != (CHAT_PACKAGE.into(), destination.room.clone())
+            || source.namespace() != (destination::PACKAGE.into(), destination.room.clone())
         {
             return Err(Error::ReceiptMismatch);
         }
@@ -444,7 +459,7 @@ impl CanonicalDestination {
     }
 
     fn current_report(&self, submission: &Submission) -> Result<(Receipt, String), Error> {
-        if self.source.namespace() != (CHAT_PACKAGE.into(), self.destination.room.clone()) {
+        if self.source.namespace() != (destination::PACKAGE.into(), self.destination.room.clone()) {
             return Err(Error::ReceiptMismatch);
         }
         self.source.current_report(submission)

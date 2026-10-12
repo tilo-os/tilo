@@ -1,10 +1,8 @@
 //! Governor-only registration of a currently admitted writer's own windows.
-use super::{
-    Actor, AutoCommit, CapDecision, ObjType, ROOT, ReadDoc, ResourceRef, StatePeer, SystemTime,
-    Verb, decide_capability, err, now_secs,
-};
+use super::{ObjType, ROOT, ReadDoc, StatePeer, SystemTime, err};
 use automerge::transaction::Transactable as _;
 use ed25519_dalek::SigningKey;
+use tilo_action_policy::{ActionKind, TreePath};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
@@ -13,8 +11,9 @@ impl StatePeer {
     /// This grants no room, app, record, input or enrollment permission.
     ///
     /// # Errors
-    /// Refuses stale certificates, missing membership, denied workspace Write,
-    /// zero/conflicting namespaces or unavailable pinned governor custody.
+    /// Refuses stale certificates, missing membership, a caller not granted
+    /// undoable changes in the room, zero/conflicting namespaces or
+    /// unavailable pinned governor custody.
     pub fn claim_topology_namespace(
         &mut self,
         caller: &DeviceCert,
@@ -25,26 +24,12 @@ impl StatePeer {
         if salt == 0 {
             return Err("topology namespace must be nonzero".into());
         }
-        if self
-            .core
-            .certificates
-            .get(&caller.device_public_key)
-            .map(AsRef::as_ref)
-            != Some(caller)
-        {
+        if self.certificate(&caller.device_public_key, now)? != caller {
             return Err("topology caller is not current admitted evidence".into());
         }
-        let (role, caps, person) = self.permissions(caller.device_public_key, now)?;
-        let actor = Actor::person(Some(role), person).in_room(self.core.room.clone());
-        if decide_capability(
-            &actor,
-            &ResourceRef::Workspace,
-            Verb::Write,
-            &caps,
-            Some(now_secs(now)),
-        ) != CapDecision::Allow
-        {
-            return Err("topology namespace requires current workspace Write".into());
+        let member = self.permissions(caller.device_public_key, now)?;
+        if !member.allows(&TreePath::room(&self.core.room), ActionKind::Undoable, now) {
+            return Err("topology namespace requires changing this workspace".into());
         }
         self.require_governance_writer(key, now)?;
         let mut doc = self
@@ -52,6 +37,7 @@ impl StatePeer {
             .room_doc
             .clone()
             .ok_or("room governance missing")?;
+        let before = doc.get_heads();
         let owners = match doc.get(ROOT, "contents_owners_v1").map_err(err)? {
             Some((automerge::Value::Object(ObjType::Map), object)) => object,
             Some(_) => return Err("topology ownership registry is malformed".into()),
@@ -68,10 +54,6 @@ impl StatePeer {
                 Err("topology namespace belongs to another device".into())
             };
         }
-        let before = self
-            .admitted_room()
-            .map(AutoCommit::base_heads)
-            .ok_or("room governance missing")?;
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
@@ -84,7 +66,7 @@ impl StatePeer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::caps::{CapOverride, Scope, Subject};
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject};
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     #[test]
@@ -157,17 +139,18 @@ mod tests {
     )]
     fn topology_namespace_retry_rechecks_deny_biased_write_before_observing_ownership() -> TestResult
     {
-        let (mut peer, governor, _, caller, now) = crate::admission_tests::seeded();
+        let (mut peer, governor, _, caller, now) = crate::admission_tests::seeded_editor();
         assert!(peer.claim_topology_namespace(&caller, 42, &governor, now)?);
-        let (_, _, person) = peer.permissions(caller.device_public_key, now)?;
-        peer.put_governed_capabilities(
-            &[CapOverride::new(
-                Subject::person(person),
-                Scope::Workspace,
-                collab_types::caps::Effect::Restrict,
-                Verb::Read,
-            )
-            .with_id("fixture-topology-deny")],
+        let person = peer.permissions(caller.device_public_key, now)?.person;
+        peer.put_governed_grants(
+            &[Grant::new(
+                "fixture-topology-deny",
+                Subject::Person(person),
+                TreePath::room(peer.room()),
+                KindSet::ALL,
+                Answer::Deny,
+                Subject::person("fixture-governor"),
+            )],
             &governor,
             now,
         )?;

@@ -1,5 +1,5 @@
 use crate::component_support::*;
-use notes::{actions, doc::NotesDoc, markdown};
+use notes::{markdown, read};
 use ui::widget::{BlockEditor, BlockKind};
 
 #[allow(
@@ -188,19 +188,13 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             .records
             .read(&checkout.id, |doc| {
                 (
-                    NotesDoc::page_block_snapshots(doc, f.child)[1].0.clone(),
-                    NotesDoc::page_block_marks(doc, f.child),
+                    read::page_block_snapshots(doc, f.child)[1].0.clone(),
+                    read::page_block_marks(doc, f.child),
                 )
             })
             .unwrap();
         let mut live = driver(&f, 95, &checkout);
-        invoke(
-            &mut live,
-            95,
-            actions::block_resource_id(f.child, &id),
-            "open",
-            None,
-        );
+        open_note(&mut live, 95, f.child, Some(&id));
         let rect = semantic_rect(&live, &format!("notes.block:{id}"));
         live.click_at(rect.x0 + 8.0, rect.center().y);
         live.key("Home");
@@ -214,17 +208,14 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
         );
         let page = f.child;
         let verify = |doc: &automerge::AutoCommit| {
-            notes::notebook::validate(doc).unwrap();
+            notes::read::validate(doc).unwrap();
+            assert_eq!(read::page_blocks(doc, page)[1].kind.stored(), "numbered:1");
             assert_eq!(
-                NotesDoc::page_blocks(doc, page)[1].kind.stored(),
-                "numbered:1"
-            );
-            assert_eq!(
-                NotesDoc::page_block_snapshots(doc, page)[1],
+                read::page_block_snapshots(doc, page)[1],
                 (id.clone(), "Böld and italic with site".into()),
                 "the block keeps its identity"
             );
-            assert_eq!(NotesDoc::page_block_marks(doc, page), original_marks);
+            assert_eq!(read::page_block_marks(doc, page), original_marks);
         };
         f.records.read(&checkout.id, verify).unwrap();
         live.set_modifiers(&["ctrl".into()]);
@@ -255,37 +246,31 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
                 .records
                 .read(&checkout.id, |doc| {
                     (
-                        NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone(),
-                        NotesDoc::page_block_marks(doc, f.child),
+                        read::page_block_snapshots(doc, f.child)[0].0.clone(),
+                        read::page_block_marks(doc, f.child),
                     )
                 })
                 .unwrap();
             let mut live = driver(&f, 97, &checkout);
-            invoke(
-                &mut live,
-                97,
-                actions::block_resource_id(f.child, &id),
-                "open",
-                None,
-            );
+            open_note(&mut live, 97, f.child, Some(&id));
             let rect = semantic_rect(&live, &format!("notes.block:{id}"));
             live.click_at(rect.x0 + 8.0, rect.center().y);
             live.key("Home");
             live.type_text(prefix);
             f.records
                 .read(&checkout.id, |doc| {
-                    notes::notebook::validate(doc).unwrap();
+                    notes::read::validate(doc).unwrap();
                     assert_eq!(
-                        NotesDoc::page_blocks(doc, f.child)[0].kind.stored(),
+                        read::page_blocks(doc, f.child)[0].kind.stored(),
                         expected_kind,
                         "{prefix}"
                     );
                     assert_eq!(
-                        NotesDoc::page_block_snapshots(doc, f.child)[0],
+                        read::page_block_snapshots(doc, f.child)[0],
                         (id.clone(), "Böld and italic with site".into()),
                         "{prefix}"
                     );
-                    assert_eq!(NotesDoc::page_block_marks(doc, f.child), marks, "{prefix}");
+                    assert_eq!(read::page_block_marks(doc, f.child), marks, "{prefix}");
                 })
                 .unwrap();
             let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
