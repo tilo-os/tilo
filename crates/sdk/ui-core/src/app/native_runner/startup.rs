@@ -45,7 +45,7 @@ pub(crate) struct RendererPreparation {
 
 impl RendererPreparation {
     /// What the preparation made, once it has.
-    pub(super) fn wait(&mut self) -> Result<Result<StartupRender, String>, mpsc::RecvError> {
+    pub(super) fn wait(self) -> Result<Result<StartupRender, String>, mpsc::RecvError> {
         self.result.recv()
     }
 }
