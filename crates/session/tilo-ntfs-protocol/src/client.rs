@@ -1,19 +1,25 @@
 //! Authenticated Linux client; owns only an IPC socket, never an NTFS device FD.
 use crate::{CHUNK_BYTES, Identity, Issue, Operation, Reply, Request, Response, SCHEMA, socket};
+use rustix::{
+    fs::{Mode, OFlags, open, openat},
+    process::geteuid,
+};
 use sha2::{Digest, Sha256};
-use std::os::unix::ffi::OsStrExt;
 use std::{
     collections::BTreeMap,
-    ffi::CString,
-    fs::{File, OpenOptions},
-    io, mem,
+    fs::File,
+    io,
     os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
-        unix::fs::{MetadataExt, OpenOptionsExt},
+        fd::{AsRawFd, OwnedFd},
+        unix::fs::MetadataExt,
     },
     path::{Component, Path},
     time::{Duration, Instant},
 };
+const DIRECTORY: OFlags = OFlags::PATH
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
 fn bad() -> io::Error {
     io::Error::other("invalidated administrative NTFS client")
 }
@@ -42,10 +48,7 @@ impl Client {
         {
             return Err(bad());
         }
-        let mut directory = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open("/")?;
+        let mut directory = File::from(open("/", DIRECTORY, Mode::empty())?);
         let mut components = path.components().peekable();
         while let Some(component) = components.next() {
             if component == Component::RootDir {
@@ -60,38 +63,16 @@ impl Client {
                 }
                 break;
             }
-            let name = CString::new(name.as_bytes()).map_err(io::Error::other)?;
-            let raw = unsafe {
-                libc::openat(
-                    directory.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            if raw < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            directory = unsafe { File::from_raw_fd(raw) };
+            directory = File::from(openat(&directory, name, DIRECTORY, Mode::empty())?);
             let m = directory.metadata()?;
             if m.uid() != 0 || m.mode() & 0o022 != 0 {
                 return Err(bad());
             }
         }
-        let fd = socket::create()?;
-        let address = socket::address(&format!(
+        let fd = socket::connect(&format!(
             "/proc/self/fd/{}/read.sock",
             directory.as_raw_fd()
         ))?;
-        if unsafe {
-            libc::connect(
-                fd.as_raw_fd(),
-                (&raw const address).cast(),
-                libc::socklen_t::try_from(mem::size_of_val(&address)).map_err(io::Error::other)?,
-            )
-        } != 0
-        {
-            return Err(io::Error::last_os_error());
-        }
         if socket::peer_uid(&fd)? != 0 {
             return Err(bad());
         }
@@ -109,7 +90,7 @@ impl Client {
                 backend,
                 acceptance,
             } if identity == client.identity
-                && client_uid == unsafe { libc::geteuid() }
+                && client_uid == geteuid().as_raw()
                 && backend == "native-exclusive-read"
                 && acceptance == "native-runtime-unverified" =>
             {
