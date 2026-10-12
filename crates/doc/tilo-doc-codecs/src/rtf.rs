@@ -15,35 +15,13 @@
 //! `list_item` if bulleted). `export` is `Unsupported`: RTF export is
 //! [`crate::export_rtf::render_rtf`] (needs a materialized snapshot a
 //! `FormatProvider` doesn't get).
-use crate::format::{CodecError, Confidence, FormatProvider};
+use crate::format::{CodecError, FormatProvider};
 use tilo_content::{ContentInputs, ContentSource};
 use tilo_doc::model::{DocMut, DocRef};
 
 pub struct RtfCodec;
 
 impl FormatProvider for RtfCodec {
-    fn schema_id(&self) -> &str {
-        tilo_doc::schema::SCHEMA_ID
-    }
-
-    fn detect(&self, head: &[u8]) -> Confidence {
-        let s = head
-            .iter()
-            .take_while(|b| b.is_ascii())
-            .copied()
-            .collect::<Vec<u8>>();
-        let trimmed = s
-            .iter()
-            .skip_while(|b| b.is_ascii_whitespace())
-            .copied()
-            .collect::<Vec<u8>>();
-        if trimmed.starts_with(b"{\\rtf") {
-            Confidence::High
-        } else {
-            Confidence::None
-        }
-    }
-
     fn import(
         &self,
         bytes: &[u8],
@@ -653,12 +631,6 @@ mod tests {
 
     #[test]
     fn rtf_import_paragraphs_text_and_destinations() {
-        // Phase `detect_recognizes_rtf_signature`.
-        {
-            assert_eq!(RtfCodec.detect(b"{\\rtf1\\ansi"), Confidence::High);
-            assert_eq!(RtfCodec.detect(b"   {\\rtf1"), Confidence::High);
-            assert_eq!(RtfCodec.detect(b"not rtf"), Confidence::None);
-        }
         // Phase `plain_paragraph_text`.
         {
             let snap = import("{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Hello world\\par}}");

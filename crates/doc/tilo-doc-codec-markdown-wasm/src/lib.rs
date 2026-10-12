@@ -19,16 +19,13 @@ mod guest {
     struct Markdown;
 
     impl Provider for Markdown {
-        fn detect(head: &[u8]) -> Detected {
-            // qdoc's confidence enum maps onto a coarse (tier, score).
-            let (tier, score) = match MarkdownCodec.detect(head) {
-                tilo_doc_codecs::Confidence::None => (0, 0.0),
-                tilo_doc_codecs::Confidence::Low => (0, 0.25),
-                tilo_doc_codecs::Confidence::Medium => (1, 0.5),
-                tilo_doc_codecs::Confidence::High => (2, 0.9),
-            };
+        fn detect(_head: &[u8]) -> Detected {
+            // Markdown has no signature: any text may be it, so a middling claim.
             Detected {
-                confidence: Confidence { tier, score },
+                confidence: Confidence {
+                    tier: 1,
+                    score: 0.5,
+                },
                 mime: Some("text/markdown".to_owned()),
             }
         }
