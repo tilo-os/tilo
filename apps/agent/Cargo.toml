@@ -57,7 +57,8 @@ runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
-# typed_peer drives the shell's in-process broker, which runs on Linux.
+# The broker tests (typed_peer and the tests built on it) drive the shell's
+# in-process broker, which runs on Linux.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }
 
