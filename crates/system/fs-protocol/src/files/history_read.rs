@@ -38,6 +38,12 @@ pub struct FileHistoryPageV1 {
     pub heads: Vec<FileVersionId>,
     pub current_revision: Option<super::ContentRevisionV1>,
     pub next_after: Option<FileVersionId>,
+    /// The agents behind those of [`Self::versions`] an agent caused, as
+    /// each version's own signing device recorded it. Absent from every
+    /// page without one, so a reader that predates it reads the page as
+    /// before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributions: Vec<super::FileVersionAttributionV1>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileHistoryReadErrorV1 {
@@ -198,5 +204,75 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    /// A page carries the agents behind its versions only when there are
+    /// some, so a page without any reads exactly as before; an attribution
+    /// names an agent, never a person or an unpresentable actor.
+    #[test]
+    fn pages_carry_agent_attributions_additively() {
+        use crate::files::{FileAttributionV1, FileVersionAttributionV1};
+        let page = FileHistoryPageV1 {
+            scope: FileHistoryReadScopeV1 {
+                workspace_id: Uuid::from_u128(1),
+                mount_lifetime: Uuid::from_u128(2),
+                record_id: FileRecordId(Uuid::from_u128(3)),
+                frontier: [0xab; 32],
+            },
+            versions: vec![],
+            total_versions: 0,
+            heads: vec![],
+            current_revision: None,
+            next_after: None,
+            attributions: vec![],
+        };
+        let plain = serde_json::to_string(&page).unwrap();
+        assert!(!plain.contains("attributions"), "{plain}");
+        assert_eq!(
+            serde_json::from_str::<FileHistoryPageV1>(&plain).unwrap(),
+            page
+        );
+
+        let scribe = FileAttributionV1 {
+            actor: "agent:scribe".into(),
+            label: "Scribe".into(),
+            color: [10, 20, 30],
+        };
+        assert_eq!(scribe.validate(), Ok(()));
+        assert_eq!(scribe.agent_id(), Some("scribe"));
+        let attributed = FileHistoryPageV1 {
+            attributions: vec![FileVersionAttributionV1 {
+                version_id: FileVersionId(Uuid::from_u128(4)),
+                attribution: scribe.clone(),
+            }],
+            ..page
+        };
+        let bytes = serde_json::to_vec(&attributed).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<FileHistoryPageV1>(&bytes).unwrap(),
+            attributed
+        );
+
+        for actor in ["ada", "agent:", "agent: scribe", "agent:sc\u{7}ribe"] {
+            let forged = FileAttributionV1 {
+                actor: actor.into(),
+                ..scribe.clone()
+            };
+            assert_eq!(
+                forged.validate(),
+                Err(crate::FileRecordError::InvalidAttribution),
+                "{actor:?}"
+            );
+        }
+        let unnamed = FileAttributionV1 {
+            label: " ".into(),
+            ..scribe.clone()
+        };
+        assert!(unnamed.validate().is_err());
+        let long = FileAttributionV1 {
+            label: "x".repeat(crate::files::MAX_ATTRIBUTION_TEXT_BYTES + 1),
+            ..scribe
+        };
+        assert!(long.validate().is_err());
     }
 }

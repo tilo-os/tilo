@@ -397,7 +397,37 @@ pub trait BlobBackend: Send + Sync + 'static {
     ) -> BlobFuture<ReadOutcome>;
     fn has(self: Arc<Self>, scope: BlobScope, hash: String) -> BlobFuture<bool>;
     fn size(self: Arc<Self>, scope: BlobScope, hash: String) -> BlobFuture<Option<u64>>;
+    /// The session names the agent behind this device's next writes to some
+    /// paths ([`BlobClient::attribute_writes`]). Only a session connection
+    /// reaches this; a backend without write attribution refuses it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's refusal.
+    fn attribute_writes(&self, attribution: WriteAttribution) -> Result<(), BlobError> {
+        let _ = attribution;
+        Err(BlobError::Refused("write attribution unsupported".into()))
+    }
 }
+
+/// The agent the session says causes this device's next writes to `paths`.
+/// Presentation only: it grants nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriteAttribution {
+    /// Absolute paths under the workspace mount; a folder covers its subtree.
+    pub paths: Vec<String>,
+    /// `agent:<id>`.
+    pub actor: String,
+    /// How the agent is shown.
+    pub label: String,
+    /// Its presence colour, sRGB.
+    pub color: [u8; 3],
+    /// How long the lease lasts.
+    pub ttl: Duration,
+}
+
+/// Most paths one write attribution names.
+pub const MAX_ATTRIBUTION_PATHS: usize = 256;
 
 /// Serve `listener` on a dedicated thread. Cap'n Proto servers are `!Send`,
 /// so connections are driven by a single-threaded `LocalSet`; backend work
@@ -811,6 +841,35 @@ impl session_blobs::Server for SessionServer {
             Err(error) => Promise::err(error),
         }
     }
+
+    fn attribute_writes(
+        self: Rc<Self>,
+        params: session_blobs::AttributeWritesParams,
+        _results: session_blobs::AttributeWritesResults,
+    ) -> Promise<(), capnp::Error> {
+        let attribution = params.get().and_then(|request| {
+            let rows = request.get_paths()?;
+            if rows.len() as usize > MAX_ATTRIBUTION_PATHS {
+                return Err(capnp::Error::failed("too many attributed paths".into()));
+            }
+            let paths = rows.iter().map(text_param).collect::<Result<Vec<_>, _>>()?;
+            let [_, red, green, blue] = request.get_color().to_be_bytes();
+            Ok(WriteAttribution {
+                paths,
+                actor: text_param(request.get_actor())?,
+                label: text_param(request.get_label())?,
+                color: [red, green, blue],
+                ttl: Duration::from_millis(u64::from(request.get_ttl_ms())),
+            })
+        });
+        match attribution {
+            Ok(attribution) => match self.backend.attribute_writes(attribution) {
+                Ok(()) => Promise::ok(()),
+                Err(error) => Promise::err(refuse(&error)),
+            },
+            Err(error) => Promise::err(error),
+        }
+    }
 }
 
 type Reply<T> = std::sync::mpsc::SyncSender<Result<T, BlobError>>;
@@ -840,6 +899,10 @@ enum Job {
     Scope {
         scope: BlobScope,
         reply: Reply<u64>,
+    },
+    Attribute {
+        attribution: WriteAttribution,
+        reply: Reply<()>,
     },
 }
 
@@ -967,6 +1030,25 @@ impl BlobClient {
             worker: Arc::clone(&self.worker),
             target,
         })
+    }
+
+    /// For a session client: name the agent behind this device's next writes
+    /// to `attribution.paths`, as the session authenticated it from the
+    /// action those writes run for.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::InvalidScope`] for a client that is not a session
+    /// root, [`BlobError::Refused`] for too many paths or the daemon's
+    /// refusal, or a connection error.
+    pub fn attribute_writes(&self, attribution: WriteAttribution) -> Result<(), BlobError> {
+        if !self.worker.session || self.target != ROOT {
+            return Err(BlobError::InvalidScope);
+        }
+        if attribution.paths.len() > MAX_ATTRIBUTION_PATHS {
+            return Err(BlobError::Refused("too many attributed paths".into()));
+        }
+        self.call(|reply| Job::Attribute { attribution, reply })
     }
 
     fn data_target(&self) -> Result<u64, BlobError> {
@@ -1512,6 +1594,34 @@ async fn run_job(job: Job, connection: &Connection) {
                 let id = connection.issue_id();
                 connection.scopes.borrow_mut().insert(id, client);
                 Ok(id)
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        Job::Attribute { attribution, reply } => {
+            let result = async {
+                let root = connection
+                    .session_root
+                    .as_ref()
+                    .ok_or(BlobError::InvalidScope)?;
+                let mut request = root.attribute_writes_request();
+                {
+                    let mut params = request.get();
+                    let count = u32::try_from(attribution.paths.len())
+                        .map_err(|_| BlobError::Refused("too many attributed paths".into()))?;
+                    let mut paths = params.reborrow().init_paths(count);
+                    for (index, path) in (0..count).zip(&attribution.paths) {
+                        paths.set(index, path.as_str());
+                    }
+                    params.set_actor(attribution.actor.as_str());
+                    params.set_label(attribution.label.as_str());
+                    let [red, green, blue] = attribution.color;
+                    params.set_color(u32::from_be_bytes([0, red, green, blue]));
+                    params
+                        .set_ttl_ms(u32::try_from(attribution.ttl.as_millis()).unwrap_or(u32::MAX));
+                }
+                request.send().promise.await?;
+                Ok(())
             }
             .await;
             let _ = reply.send(result);

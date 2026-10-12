@@ -25,7 +25,7 @@ required-features = ["filesystem"]
 [features]
 default = ["filesystem"]
 # The document-media capability over the content store, without the mount.
-document-media = ["dep:runtime-fs"]
+document-media = ["dep:runtime-fs", "dep:fs-protocol", "dep:thiserror"]
 filesystem = [
     "dep:clap",
     "dep:iroh",

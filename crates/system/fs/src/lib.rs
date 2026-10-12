@@ -134,6 +134,8 @@ pub mod transport_gate;
 pub mod unsaved;
 #[cfg(feature = "filesystem")]
 pub mod workspace_authority;
+#[cfg(any(feature = "filesystem", feature = "document-media"))]
+pub mod write_attribution;
 
 #[cfg(test)]
 #[cfg(feature = "filesystem")]

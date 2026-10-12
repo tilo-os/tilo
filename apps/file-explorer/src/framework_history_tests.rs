@@ -428,6 +428,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
                 heads: vec![id],
                 current_revision: None,
                 next_after: None,
+                attributions: vec![],
             });
             xattr::set(
                 path,

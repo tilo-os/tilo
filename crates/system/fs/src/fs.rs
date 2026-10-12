@@ -574,6 +574,9 @@ pub struct QuickFS {
     )>,
     /// Signed exact-record projection used by partial-share network sessions.
     record_publisher: Option<Arc<crate::record_publisher::RecordPublisher>>,
+    /// Which agent the desktop session says caused the writes to some paths
+    /// ([`crate::write_attribution`]).
+    write_attributions: Option<Arc<crate::write_attribution::WriteAttributions>>,
     replacement_transactions: Option<ReplacementTransactionRuntime>,
     checked_history_workspace: Option<uuid::Uuid>,
     mount_lifetime: uuid::Uuid,
@@ -650,6 +653,7 @@ impl QuickFS {
             share_authority: None,
             history: None,
             record_publisher: None,
+            write_attributions: None,
             replacement_transactions: None,
             checked_history_workspace: None,
             mount_lifetime: uuid::Uuid::new_v4(),
@@ -2121,6 +2125,47 @@ impl QuickFS {
         Ok(self)
     }
 
+    /// Attribute this mount's versions of the paths the desktop session
+    /// leases to the agent each lease names ([`crate::write_attribution`]).
+    #[must_use]
+    pub fn with_write_attributions(
+        mut self,
+        attributions: Arc<crate::write_attribution::WriteAttributions>,
+    ) -> Self {
+        self.write_attributions = Some(attributions);
+        self
+    }
+
+    /// Record which agent caused this device's `version`, when a session
+    /// lease covers `path` (or, without one, the record's current path).
+    /// Signed by this device like the version itself. A failure leaves the
+    /// version the person's and never fails the write.
+    fn attribute_version(&self, version: &fs_protocol::FileVersionV1, path: Option<&str>) {
+        let (Some(attributions), Some(publisher)) =
+            (&self.write_attributions, &self.record_publisher)
+        else {
+            return;
+        };
+        let path = match path {
+            Some(path) => Some(path.to_owned()),
+            None => {
+                let namespace = self.ns();
+                namespace
+                    .ino_for_record_id(version.record_id)
+                    .and_then(|ino| namespace.path_for(ino))
+            }
+        };
+        let Some(attribution) = path.and_then(|path| attributions.for_path(&path)) else {
+            return;
+        };
+        if let Err(error) = publisher.attribute(version.record_id, version.id, &attribution) {
+            eprintln!(
+                "could not attribute version {:?} to {}: {error}",
+                version.id, attribution.actor
+            );
+        }
+    }
+
     /// Attach the signed record publisher and backfill locally authored
     /// history that predates the record transport.
     ///
@@ -2538,6 +2583,7 @@ impl QuickFS {
                 }
             })?;
         }
+        self.attribute_version(&version, None);
         history.append(version)?;
         if let Some(registry) = &self.availability {
             let mut registry = registry
@@ -4843,7 +4889,7 @@ impl QuickFS {
             };
             let record_id = fs_protocol::FileRecordId::new();
             let metadata_digest = VersionMetadataDigest {
-                path: Some(path),
+                path: Some(path.clone()),
                 kind: 2,
                 byte_len,
                 deleted: false,
@@ -4888,6 +4934,7 @@ impl QuickFS {
                     std::slice::from_ref(&version),
                 )
                 .map_err(|_| EIO)?;
+            self.attribute_version(&version, Some(&path));
             history.append(version).map_err(|_| EIO)?;
             let revision = publisher
                 .snapshot(record_id)
@@ -4941,7 +4988,7 @@ impl QuickFS {
             };
             let record_id = fs_protocol::FileRecordId::new();
             let metadata_digest = VersionMetadataDigest {
-                path: Some(path),
+                path: Some(path.clone()),
                 kind: 1,
                 byte_len: 0,
                 deleted: false,
@@ -4975,6 +5022,7 @@ impl QuickFS {
             publisher
                 .publish_structural_version(&version)
                 .map_err(|_| EIO)?;
+            self.attribute_version(&version, Some(&path));
             history.append(version).map_err(|_| EIO)?;
             let mut namespace = self.ns();
             if namespace.lookup_kind(parent, name).is_some() {

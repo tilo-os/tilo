@@ -1135,8 +1135,10 @@ fn spawn_workspace_authority_reload(
 fn spawn_document_media(
     socket: &Path,
     store: &Arc<ContentStore>,
+    attributions: (Arc<fs::write_attribution::WriteAttributions>, PathBuf),
 ) -> Option<std::thread::JoinHandle<()>> {
-    let media = fs::document_media::DocumentMedia::new(Arc::clone(store));
+    let media = fs::document_media::DocumentMedia::new(Arc::clone(store))
+        .with_write_attributions(attributions);
     match fs::document_media::serve_socket(socket, media) {
         Ok(handle) => Some(handle),
         Err(error) => {
@@ -2012,9 +2014,16 @@ async fn serve(
                 .map(|authority| authority.handle())
         })
         .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
-    let _media = blob_sock
-        .as_deref()
-        .and_then(|socket| spawn_document_media(socket, &store));
+    // The session names the agent behind writes it runs for, over the same
+    // session-only socket; the mount attributes its versions accordingly.
+    let write_attributions = Arc::new(fs::write_attribution::WriteAttributions::default());
+    let _media = blob_sock.as_deref().and_then(|socket| {
+        spawn_document_media(
+            socket,
+            &store,
+            (Arc::clone(&write_attributions), mount_point.clone()),
+        )
+    });
     let (workspace, ticket, joined_remote) = match (record_services, remote_ticket) {
         (Some(records), Some(ticket)) => (
             Workspace::join_with_records(
@@ -2207,6 +2216,7 @@ async fn serve(
             history: history.map(|history| (history, history_actor)),
             record_publisher,
             replacement_transactions,
+            write_attributions: Some(write_attributions),
             rebind: managed_service.then_some(rebind_rx),
         },
     )
@@ -2373,9 +2383,16 @@ async fn mount(
         .as_ref()
         .map(|records| Arc::clone(&records.repository));
     let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
-    let _media = blob_sock
-        .as_deref()
-        .and_then(|socket| spawn_document_media(socket, &store));
+    // The session names the agent behind writes it runs for, over the same
+    // session-only socket; the mount attributes its versions accordingly.
+    let write_attributions = Arc::new(fs::write_attribution::WriteAttributions::default());
+    let _media = blob_sock.as_deref().and_then(|socket| {
+        spawn_document_media(
+            socket,
+            &store,
+            (Arc::clone(&write_attributions), mount_point.clone()),
+        )
+    });
     let workspace = match record_services {
         Some(records) => {
             Workspace::join_with_records(
@@ -2452,6 +2469,7 @@ async fn mount(
             history: history.map(|history| (history, history_actor)),
             record_publisher,
             replacement_transactions,
+            write_attributions: Some(write_attributions),
             rebind: None,
         },
     )
@@ -2625,6 +2643,7 @@ async fn mount_share(
             history: Some((history, actor)),
             record_publisher: None,
             replacement_transactions: None,
+            write_attributions: None,
             rebind: None,
         },
     )
@@ -3533,6 +3552,8 @@ struct MountServices {
     history: Option<(Arc<FileHistoryStore>, fs_protocol::FileActor)>,
     record_publisher: Option<Arc<RecordPublisher>>,
     replacement_transactions: Option<(Arc<Mutex<fs::RecordTransactionJournal>>, PathBuf)>,
+    /// What the desktop session says caused writes to some paths.
+    write_attributions: Option<Arc<fs::write_attribution::WriteAttributions>>,
     rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
 }
 
@@ -3565,6 +3586,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         history,
         record_publisher,
         replacement_transactions,
+        write_attributions,
         mut rebind,
     } = services;
     if !mount_point.exists() {
@@ -3611,6 +3633,10 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     };
     let fs = match record_publisher {
         Some(publisher) => fs.with_record_publisher(publisher)?,
+        None => fs,
+    };
+    let fs = match write_attributions {
+        Some(attributions) => fs.with_write_attributions(attributions),
         None => fs,
     };
     let fs = match replacement_transactions {

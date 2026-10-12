@@ -98,6 +98,10 @@ impl QuickFS {
         let (scope, snapshot, current_revision) = self.history_read_snapshot(ino)?;
         match query {
             Query::Page { cursor } => {
+                // Read after the history snapshot released the namespace and
+                // history locks: the record repository is never taken under
+                // them.
+                let attributions = self.version_attributions(scope.record_id);
                 let start = match cursor {
                     None => 0,
                     Some((expected, id)) => {
@@ -127,6 +131,15 @@ impl QuickFS {
                     } else {
                         None
                     };
+                    let attributions = attributions
+                        .iter()
+                        .filter(|attributed| {
+                            versions
+                                .iter()
+                                .any(|version| version.id == attributed.version_id)
+                        })
+                        .cloned()
+                        .collect();
                     let value = Value::Page(FileHistoryPageV1 {
                         scope,
                         versions,
@@ -134,6 +147,7 @@ impl QuickFS {
                         heads: snapshot.heads.clone(),
                         current_revision,
                         next_after,
+                        attributions,
                     });
                     let size = serde_json::to_vec(&FileHistoryReadResponseV1 {
                         schema_version: 1,
@@ -167,6 +181,20 @@ impl QuickFS {
             Query::Preview { .. } => Err(Error::InvalidRequest),
         }
     }
+    /// Who caused each of `record_id`'s versions an agent caused, as the
+    /// version's own signing device recorded it in the signed record
+    /// (`AttributeVersion`). Empty without signed records.
+    fn version_attributions(
+        &self,
+        record_id: fs_protocol::FileRecordId,
+    ) -> Vec<fs_protocol::FileVersionAttributionV1> {
+        self.record_publisher
+            .as_ref()
+            .and_then(|publisher| publisher.snapshot(record_id).ok().flatten())
+            .map(|record| record.attributions)
+            .unwrap_or_default()
+    }
+
     /// Read a version preview, provided the history frontier still matches.
     ///
     /// # Errors
