@@ -8,13 +8,13 @@ use automerge::{ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use crate::action::{ActionCx, Refusal};
+use crate::action::ActionCx;
 use crate::delta::{Delta, Touch};
 use crate::model::LocatedAt as _;
 use crate::model::{Doc, Model, ModelError, Slot, Stores, read_key};
 use crate::order;
 use crate::path::{EditOp, Segment, Settable};
-use crate::table::{ModelOps, ModelTable, Run};
+use crate::table::{ModelOps, ModelTable};
 use std::any::Any;
 
 /// A stable identity for an item in a resource. Minted deterministically by
@@ -1063,107 +1063,9 @@ impl<T: Model> Model for Collection<T> {
     // Run by one set of functions for every collection, over `T`'s table.
     const TABLE: &'static ModelTable = &CollectionOf::<T>::TABLE;
     crate::model::leaf_paths!();
-    #[inline]
-    fn op_coalesces(
-        path: &[Segment],
-        previous: &serde_json::Value,
-        next: &serde_json::Value,
-    ) -> Option<bool> {
-        Run(Self::TABLE).op_coalesces(path, previous, next)
-    }
-    #[inline]
-    fn op_continuable(path: &[Segment], op: &serde_json::Value) -> Option<bool> {
-        Run(Self::TABLE).op_continuable(path, op)
-    }
-    #[inline]
-    fn op_describe(path: &[Segment], op: &serde_json::Value) -> Option<crate::path::OpDescription> {
-        Run(Self::TABLE).op_describe(path, op)
-    }
-    #[inline]
-    fn op_lands(&self, path: &[Segment], op: &serde_json::Value) -> Option<crate::Place> {
-        Run(Self::TABLE).op_lands(self, path, op)
-    }
-    #[inline]
-    fn op_schemas(prefix: &str, out: &mut Vec<(String, serde_json::Value)>) {
-        Run(Self::TABLE).op_schemas(prefix, out);
-    }
-    /// `[{ "id": .., "value": .. }, ..]` in collection order.
-    #[inline]
-    fn to_json(&self) -> serde_json::Value {
-        Run(Self::TABLE).to_json(self)
-    }
-    #[inline]
-    fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
-        Run(Self::TABLE).from_json(value)
-    }
-    #[inline]
-    fn edit(
-        doc: &mut Doc,
-        slot: Slot<'_>,
-        path: &[Segment],
-        op: &EditOp,
-        cx: &mut ActionCx,
-    ) -> Result<(), ModelError> {
-        Run(Self::TABLE).edit(doc, slot, path, op, cx)
-    }
-    #[inline]
-    fn check(&self) -> Result<(), Refusal> {
-        Run(Self::TABLE).check(self)
-    }
-    #[inline]
-    fn get_at(&self, path: &[Segment]) -> Option<&dyn std::any::Any> {
-        Run(Self::TABLE).get_at(self, path)
-    }
-    #[inline]
-    fn diff<R>(&self, after: &Self, path: &[Segment], out: &mut Vec<crate::Edit<R>>) {
-        Run(Self::TABLE).diff(self, after, path, out);
-    }
-    #[inline]
-    fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
-        Run(Self::TABLE).load(doc, value, id)
-    }
-    /// Only the entries `delta` touched are read again
-    /// ([`COLLECTION_OPS`]).
-    #[inline]
-    fn refresh(
-        &mut self,
-        doc: &Doc,
-        value: &Value<'_>,
-        id: &ObjId,
-        delta: &Delta,
-    ) -> Result<(), ModelError> {
-        Run(Self::TABLE).refresh(self, doc, value, id, delta)
-    }
+    crate::model::table_functions!();
     fn missing() -> Result<Self, ModelError> {
         Ok(Self::default())
-    }
-    #[inline]
-    fn store(&self, doc: &mut Doc, slot: Slot<'_>) -> Result<(), ModelError> {
-        Run(Self::TABLE).store(self, doc, slot)
-    }
-    /// Equal ids in equal order, each item storing as before, over order
-    /// keys a write would keep.
-    #[inline]
-    fn stores_as(&self, before: &Self) -> bool {
-        Run(Self::TABLE).stores_as(self, before)
-    }
-    /// What [`store`](Model::store) writes, from `before` (which knows every
-    /// stored entry and order key) instead of listing the stored entries:
-    /// only new, moved and changed items are visited, and an item someone
-    /// else touched (`dirty`) is written as `store` writes it.
-    #[inline]
-    fn store_changed(
-        &self,
-        before: &Self,
-        doc: &mut Doc,
-        slot: Slot<'_>,
-        dirty: &Delta,
-    ) -> Result<(), ModelError> {
-        Run(Self::TABLE).store_changed(self, before, doc, slot, dirty)
-    }
-    #[inline]
-    fn collect_text(&self, out: &mut Vec<String>) {
-        Run(Self::TABLE).collect_text(self, out);
     }
 }
 
