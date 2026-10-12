@@ -230,6 +230,62 @@ class AppSdkAffectedTests(unittest.TestCase):
         consumer.write_text('const FIXTURE: &str = include_str!("peer_sync_test.rs");\n')
         self.assertTrue(self.check('crates/session/shell/tests/peer_sync_test.rs'))
 
+    def shell_unit_fixture(self):
+        shell = next(p for p in self.metadata['packages'] if p['name'] == 'shell')
+        directory = Path(shell['manifest_path']).parent
+        Path(shell['manifest_path']).write_bytes((ROOT / 'crates/session/shell/Cargo.toml').read_bytes())
+        host = directory / 'src/shell/frame.rs'
+        host.parent.mkdir(parents=True)
+        host.write_text('#[cfg(test)]\n#[path = "frame_retained_tests.rs"]\nmod retained_tests;\n')
+        module = host.parent / 'frame_retained_tests.rs'
+        module.write_text('#[test]\nfn paints_real_frames() {}\n')
+        library = directory / 'src/lib.rs'
+        library.write_text('#[path = "shell/frame.rs"]\nmod frame;\n')
+        shell['targets'] = [{'kind': ['lib'], 'src_path': str(library), 'test': True}]
+        # Make the SDK consumer reachable so an unaudited shell input keeps it.
+        cli = next(p for p in self.metadata['packages'] if p['name'] == 'tilo-app-cli')
+        cli['dependencies'].append({'name': 'shell', 'path': str(directory)})
+        return module.relative_to(self.root).as_posix(), host, directory
+
+    def test_shell_unit_oracle_omits_sdk_and_retains_ordinary_native_tests(self):
+        from ci.affected_packages import make_plan
+        path, _, _ = self.shell_unit_fixture()
+        self.assertFalse(self.check(path))
+        self.assertFalse(self.linux(path))
+        plan = make_plan(self.metadata, self.root, [path], 2)
+        self.assertIn('shell', plan['selected'])
+        self.assertIn('shell', plan['tested'])
+        self.assertFalse(plan['full'])
+        self.assertTrue(self.check(path, 'crates/session/shell/src/shell/frame.rs'))
+
+    def test_shell_unit_manifest_or_automatic_build_script_restores_sdk(self):
+        path, _, directory = self.shell_unit_fixture()
+        script = directory / 'build.rs'
+        script.write_text('fn main() {}\n')
+        self.assertTrue(self.check(path))
+        self.assertTrue(self.linux(path))
+        script.unlink()
+        manifest = directory / 'Cargo.toml'
+        manifest.write_text(manifest.read_text() + '\n# Different inputs need another audit.\n')
+        self.assertTrue(self.check(path))
+
+    def test_shell_unit_custom_build_target_restores_sdk(self):
+        path, _, directory = self.shell_unit_fixture()
+        shell = next(p for p in self.metadata['packages'] if p['name'] == 'shell')
+        shell['targets'] = [{'kind': ['custom-build'], 'src_path': str(directory / 'generator.rs')}]
+        self.assertTrue(self.check(path))
+
+    def test_shell_unit_guard_or_sdk_reader_restores_sdk(self):
+        path, host, _ = self.shell_unit_fixture()
+        host.write_text('#[path = "frame_retained_tests.rs"]\nmod production;\n')
+        self.assertTrue(self.check(path))
+        host.write_text('#[cfg(test)]\n#[path = "frame_retained_tests.rs"]\nmod retained_tests;\n')
+        reader = self.root / 'crates/dev/tilo-app-cli/src/reader.rs'
+        reader.parent.mkdir(parents=True)
+        reader.write_text('const INPUT: &str = include_str!("frame_retained_tests.rs");\n')
+        self.assertTrue(self.check(path))
+        self.assertTrue(self.linux(path))
+
     def unit_module_fixture(self):
         self.other_app()
         ui = next(p for p in self.metadata['packages'] if p['name'] == 'ui')
