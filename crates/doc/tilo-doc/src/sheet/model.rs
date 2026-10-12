@@ -5,7 +5,7 @@
 //! sheets, each a sparse map of A1-keyed cells.
 
 use crate::document::DocError;
-use crate::model::{map_at, required_map, str_at, str_entries};
+use crate::model::required_map;
 use crate::sheet::schema::{
     CELL_FORMULA, CELL_STYLE, CELL_TYPE, CELL_VALUE, KEY_SHEET_META, KEY_SHEET_PRESERVED,
     KEY_SHEET_PROPS, KEY_SHEET_SCHEMA, KEY_SHEET_SCHEMA_VERSION, KEY_SHEETS, SHEET_CELLS,
@@ -15,6 +15,7 @@ use crate::sheet::snapshot::{CellType, CellView, SheetView, WorkbookSnapshot};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
+use tilo_automerge::read::{map_at, str_at, str_entries};
 
 /// The data written into a cell: its value + type, an optional preserved formula
 /// (source without the leading `=`), and an optional opaque style ref.

@@ -24,6 +24,7 @@
 
 #[cfg(feature = "heap-probe")]
 pub mod heap;
+pub mod read;
 
 use automerge::sync::{self, SyncDoc};
 use automerge::{AutoCommit, AutomergeError, Change, ChangeHash};
