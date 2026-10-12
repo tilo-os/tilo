@@ -277,3 +277,39 @@ fn a_renderer_that_defers_everything_builds_what_a_frame_dispatches() {
         "the frame built exactly what it dispatched: {after:?}"
     );
 }
+
+/// What a window on a software adapter does: everything deferred, the build
+/// started at once. A first frame drawn meanwhile waits for the build rather
+/// than compiling pipelines itself, and draws what an eager renderer draws.
+#[test]
+fn a_build_started_at_once_serves_the_first_frame() {
+    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context");
+    let mut eager = Renderer::new(&gpu.device, options()).unwrap();
+    let window = window_scene();
+    let expected = draw(&gpu, &mut eager, &window);
+
+    let mut early = Renderer::new_deferring(&gpu.device, options(), PipelineDeferral::All).unwrap();
+    let (built, finished) = std::sync::mpsc::channel();
+    early.start_deferred_pipelines(&gpu.device, move || {
+        let _ = built.send(());
+    });
+    assert_same(
+        "a window frame",
+        &draw(&gpu, &mut early, &window),
+        &expected,
+    );
+    assert_eq!(
+        early.deferred_pipelines().built_inline,
+        0,
+        "with the build running, a frame waits for it and builds nothing itself"
+    );
+    finished
+        .recv_timeout(crate::HANG_BOUND)
+        .expect("the build reports it built every deferred pipeline");
+    assert_eq!(early.deferred_pipelines().pending, 0);
+    assert_same(
+        "many clips after the build",
+        &draw(&gpu, &mut early, &many_clips_scene()),
+        &draw(&gpu, &mut eager, &many_clips_scene()),
+    );
+}

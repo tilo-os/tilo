@@ -423,17 +423,11 @@ pub trait SearchProvider {
         let emitted = total.min(budget.max_results);
         results.truncate(emitted);
         let exhausted = emitted == total;
-        SearchPage {
-            revision: revision.clone(),
+        SearchPage::continuing(
+            revision,
             results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision: revision.clone(),
-                token: "legacy-truncated".into(),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+            (!exhausted).then(|| "legacy-truncated".into()),
+        )
     }
     /// Top of this provider's own score scale. Scores are only meaningful
     /// within one provider — files award 120 for a leaf-name prefix while

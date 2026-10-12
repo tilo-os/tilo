@@ -7,8 +7,12 @@ use sha2::{Digest as _, Sha256};
 
 #[path = "mounted_code/acknowledgement_recovery.rs"]
 mod acknowledgement_recovery;
+#[path = "mounted_code/active_reads.rs"]
+mod active_reads;
 #[path = "mounted_code/blocked_read.rs"]
 mod blocked_read;
+#[path = "mounted_code/idle_reads.rs"]
+mod idle_reads;
 #[path = "mounted_code/read_recovery.rs"]
 mod read_recovery;
 
@@ -66,6 +70,12 @@ pub(super) enum Journey {
     ReadRecovery,
     Run,
     AcknowledgementRecovery,
+    IdleReads,
+    IdleReadsAnnounced,
+    /// A collaborator edits a shared document of this many lines.
+    ActiveReads {
+        lines: usize,
+    },
 }
 
 pub(super) struct Context<'a> {
@@ -161,16 +171,24 @@ struct Mounted {
     network: Arc<ShellNetwork>,
     actor: tokio::task::JoinHandle<()>,
     acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
+    idle_reads: Option<Arc<idle_reads::Counter>>,
+    active_reads: Option<Arc<active_reads::Meter>>,
 }
 
 impl Mounted {
-    async fn new(device: &Device, profile: &std::path::Path) -> Self {
-        Self::new_with_acknowledgement_gate(device, profile, None).await
-    }
     async fn new_with_acknowledgement_gate(
         device: &Device,
         profile: &std::path::Path,
         acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
+    ) -> Self {
+        Self::new_observed(device, profile, acknowledgement_gate, None, None).await
+    }
+    async fn new_observed(
+        device: &Device,
+        profile: &std::path::Path,
+        acknowledgement_gate: Option<Arc<acknowledgement_recovery::Gate>>,
+        idle_reads: Option<Arc<idle_reads::Counter>>,
+        active_reads: Option<Arc<active_reads::Meter>>,
     ) -> Self {
         let (commands, actor) = Actor::spawn_reporting_addrs(
             device.endpoint.clone(),
@@ -213,13 +231,17 @@ impl Mounted {
             &network,
             acknowledgement_gate
                 .as_ref()
-                .map(acknowledgement_recovery::Gate::wrapper),
+                .map(acknowledgement_recovery::Gate::wrapper)
+                .or_else(|| idle_reads.as_ref().map(idle_reads::Counter::wrapper))
+                .or_else(|| active_reads.as_ref().map(active_reads::Meter::wrapper)),
         );
         Self {
             code,
             network,
             actor,
             acknowledgement_gate,
+            idle_reads,
+            active_reads,
         }
     }
 
@@ -274,6 +296,8 @@ impl Mounted {
             network,
             actor,
             acknowledgement_gate: _,
+            idle_reads: _,
+            active_reads: _,
         } = self;
         drop(code);
         async move {
@@ -313,6 +337,18 @@ async fn finish_journey(
         read_recovery::run(first, &mut mounted[0]).await;
     } else if matches!(context.journey, Journey::Run) {
         run_and_settle(&mut mounted[0]).await;
+    } else if matches!(
+        context.journey,
+        Journey::IdleReads | Journey::IdleReadsAnnounced
+    ) {
+        idle_reads::run(
+            first,
+            &mut mounted[0],
+            matches!(context.journey, Journey::IdleReadsAnnounced),
+        )
+        .await;
+    } else if let Journey::ActiveReads { lines } = context.journey {
+        active_reads::run(first, &mut mounted[0], lines).await;
     } else {
         edit_and_converge(context, authority, owner, refreshes, mounted).await;
     }
@@ -344,9 +380,16 @@ pub(super) async fn run(
     };
     eprintln!("mounted journey: mounting both original Code roots");
     let mut mounted = vec![
-        Mounted::new(
+        Mounted::new_observed(
             &first,
             &context.directory.path().join("mounted-first-profile"),
+            None,
+            matches!(
+                context.journey,
+                Journey::IdleReads | Journey::IdleReadsAnnounced
+            )
+            .then(idle_reads::Counter::new),
+            matches!(context.journey, Journey::ActiveReads { .. }).then(active_reads::Meter::new),
         )
         .await,
         Mounted::new_with_acknowledgement_gate(

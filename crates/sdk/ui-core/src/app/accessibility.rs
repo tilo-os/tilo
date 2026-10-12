@@ -3,7 +3,7 @@
 impl App {
     fn configured_screen_reader() -> crate::screen_reader::ScreenReader {
         let mut reader = crate::screen_reader::ScreenReader::new();
-        reader.configure(&settings_store::screen_reader::ScreenReaderSettings::load());
+        reader.configure(&settings_store::accessibility::ScreenReaderSettings::load());
         reader
     }
 
@@ -283,6 +283,7 @@ impl App {
         }
     }
     fn update_focusable_order(&mut self) {
+        let _profile = tilo_resource::profiling::Phase::start("ui.focus_order");
         if self
             .actions
             .action_palette

@@ -159,7 +159,6 @@ fn run_app_preserves_arguments_cwd_and_connected_descriptors() {
     let profile = DaemonProfile::new();
     let output = host(profile.path())
         .env_remove("TILO_WORKSPACE_ID")
-        .env_remove("QUICK_CLUSTER_ID")
         .env_remove("TILO_PARTICIPATION")
         .current_dir("/tmp")
         .args(["--run-app", "dev.tilo.argv", "--", "/bin/sh", "-c", "printf '%s\\n' \"$PWD\" \"$1\" \"$2\" \"$3\" \"$TILO_PACKAGE_ID\" \"$TILO_PARTICIPATION\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\"", "sentinel", "two words", "--strange=✓", "--apps"])

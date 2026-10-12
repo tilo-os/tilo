@@ -274,9 +274,16 @@ pub struct LiveOutputPlacement {
 
 crate::read_through_json_value!(LiveOutputPlacement);
 
+/// The display snapshot this process last published.
+static PUBLISHED_DISPLAYS: crate::published::Published<DisplayHardwareSnapshot> =
+    crate::published::Published::new();
+
 impl DisplayHardwareSnapshot {
+    /// The live publisher's snapshot, read from its runtime file. The
+    /// publishing process itself reads [`Self::published`] instead.
     pub fn load() -> Option<Self> {
         let path = display_snapshot_path()?;
+        crate::published::note_file_read();
         let snapshot: Self = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
         publisher_live_in(
             path.parent()?,
@@ -293,9 +300,22 @@ impl DisplayHardwareSnapshot {
     pub fn save(&self) -> std::io::Result<()> {
         let path = display_snapshot_path()
             .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
+        PUBLISHED_DISPLAYS.set(&path, self.clone());
         let mut body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
         body.push(b'\n');
         tilo_files::native::atomic::write_creating_parent(&path, &body)
+    }
+
+    /// The snapshot this process last [`saved`](Self::save), from memory:
+    /// the compositor's own readers take its displays from here, never from
+    /// the file it wrote for Settings.
+    pub fn published() -> Option<std::sync::Arc<Self>> {
+        PUBLISHED_DISPLAYS.get(&display_snapshot_path()?)
+    }
+
+    /// Moves every time this process publishes a snapshot.
+    pub fn published_generation() -> u64 {
+        PUBLISHED_DISPLAYS.generation()
     }
 }
 
@@ -1307,14 +1327,6 @@ pub fn scroll_speed_to_slider(speed: f64) -> f64 {
     let span = SCROLL_SPEED_MAX.log2();
     f64::midpoint(clamp_scroll_speed(speed).log2() / span, 1.0).clamp(0.0, 1.0)
 }
-
-/// Default bounce-keys window: a second press of the same key this soon
-/// after its release is treated as a bounce, not a keystroke.
-pub const BOUNCE_KEYS_DEFAULT_DELAY_MS: u32 = 300;
-/// Shortest bounce-keys window Settings offers.
-pub const BOUNCE_KEYS_MIN_DELAY_MS: u32 = 50;
-/// Longest bounce-keys window Settings offers.
-pub const BOUNCE_KEYS_MAX_DELAY_MS: u32 = 1_000;
 
 fn default_scroll_speed() -> f64 {
     1.0

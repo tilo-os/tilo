@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionSpec, Resource};
 use ui::semantic_document_read::{
-    MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
+    ReadPage, RegisteredSemanticReader, SemanticReadError, decode_request,
 };
 
 const OPERATION: &str = "chat.feedback.destination";
@@ -18,11 +18,7 @@ struct Request {
 }
 
 fn validate(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
-    if payload.len() > MAX_REQUEST_BYTES {
-        return Err(SemanticReadError::Limit);
-    }
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
     let named =
         ui::tilo_resource::items::item_of_resource::<crate::resource::Chat>(resource.id.as_str());
     if request.channel.is_empty()
@@ -59,8 +55,7 @@ fn project(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<ReadPage, SemanticReadError> {
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
     let document = document
         .clone()
         .fork_at(heads)
@@ -83,11 +78,7 @@ fn project(
 fn schema() -> &'static serde_json::Value {
     static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let mut schema = crate::semantic_read::action::result_schema().clone();
-        let Some(properties) = schema.get_mut("properties").and_then(serde_json::Value::as_object_mut) else { return serde_json::json!(false); };
-        properties.insert("content".into(), serde_json::json!({"type":"object","additionalProperties":false,"required":["channel","kind"],"properties":{"channel":{"type":"string","minLength":1,"maxLength":256},"kind":{"const":"text"}}}));
-        properties.insert("nextCursor".into(),serde_json::json!({"type":"null"}));
-        schema
+        ui::semantic_document_read::result_schema(serde_json::json!({"type":"object","additionalProperties":false,"required":["channel","kind"],"properties":{"channel":{"type":"string","minLength":1,"maxLength":256},"kind":{"const":"text"}}}), false)
     })
 }
 

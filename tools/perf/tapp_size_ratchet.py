@@ -33,7 +33,7 @@ pull request.
 measurement plus `headroom`, rounded up to 64 KiB. `raises/<change>.toml`
 adds bytes to apps or fleet ceilings, one file per change, so concurrent
 changes never edit the same line. When an app shrinks, `measure` and `fleet`
-print the lower budget to commit. DEVELOPMENT.md ("App package size") says how
+print the lower budget to commit. docs/measurements/app-package-size.md says how
 to raise a budget.
 
 The population is the default collection's apps: what Release / apps builds
@@ -201,7 +201,7 @@ def run_label() -> str:
 
 def raise_hint(over: dict[str, int], arch: str) -> str:
     lines = [f"A deliberate growth adds one raise file for the change, {DIRECTORY}/raises/<change>.toml",
-             "(the other architecture's job prints its own lines; DEVELOPMENT.md, \"App package size\"):",
+             "(the other architecture's job prints its own lines; docs/measurements/app-package-size.md):",
              '    reason = "<why these apps grew, at least 20 characters>"',
              f"    run = {run_label()}"]
     for app, added in sorted(over.items()):

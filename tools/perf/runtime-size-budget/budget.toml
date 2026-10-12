@@ -19,7 +19,7 @@
 # A budget is a measurement plus `headroom`, rounded up to 64 KiB (a count to
 # 64). Budgets only decrease. Intended growth adds raises/<change>.toml, one
 # file per change; when the runtime shrinks, both gates print the lower budget
-# to commit here. DEVELOPMENT.md ("Runtime size") has the steps.
+# to commit here. docs/measurements/runtime-size.md has the steps.
 headroom = 0.01
 architectures = ["x86_64", "aarch64"]
 

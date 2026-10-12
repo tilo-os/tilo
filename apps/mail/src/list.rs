@@ -217,6 +217,13 @@ pub struct MessageList {
     /// The selection the list last scrolled into view.
     revealed: Option<MessageId>,
     dirty: bool,
+    /// Only the region's offset changed since the frame on screen: a host
+    /// that copies what stays on screen may move the rows instead.
+    scrolled: bool,
+    /// The row under the pointer as this frame paints it and as the frame
+    /// on screen did: its lift and actions follow the pointer, not the rows.
+    hovered_drawing: Option<Rect>,
+    hovered_presented: Option<Rect>,
 }
 
 impl MessageList {
@@ -232,6 +239,9 @@ impl MessageList {
             press: None,
             revealed: None,
             dirty: true,
+            scrolled: false,
+            hovered_drawing: None,
+            hovered_presented: None,
         }
     }
 
@@ -502,7 +512,13 @@ impl Widget for MessageList {
             slots.push(slot);
         }
         ctx.scene.pop_layer();
+        self.region.note_shown(t, theme);
         self.region.paint_bars(ctx.scene, t, theme);
+        self.hovered_drawing = self
+            .pointer
+            .filter(|point| r.contains(*point))
+            .and_then(|point| slots.iter().find(|slot| slot.rect.contains(point)))
+            .map(|slot| slot.band.union(slot.rect).inflate(2.0, 2.0));
         self.slots = slots;
     }
 
@@ -511,8 +527,13 @@ impl Widget for MessageList {
             return;
         }
         let theme = self.theme.clone();
+        let offset = self.region.offset();
         if self.region.handle_event(event, ctx, &theme) {
-            self.dirty = true;
+            if self.region.offset() == offset {
+                self.dirty = true;
+            } else {
+                self.scrolled = true;
+            }
         }
         if *ctx.handled {
             return;
@@ -605,7 +626,31 @@ impl Widget for MessageList {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.shared.borrow().dirty
+        self.dirty || self.scrolled || self.shared.borrow().dirty
+    }
+
+    /// A scroll that changed nothing else offers the host a copy of the
+    /// rows that stay on screen; the row under the resting pointer, whose
+    /// lift and actions do not move with the rows, repaints where it is and
+    /// was.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if !self.needs_redraw() {
+            return;
+        }
+        if self.scrolled
+            && !self.dirty
+            && self.press.is_none()
+            && !self.shared.borrow().dirty
+            && self.region.offer_copy(self, regions)
+        {
+            regions.extend(
+                self.hovered_drawing
+                    .into_iter()
+                    .chain(self.hovered_presented),
+            );
+            return;
+        }
+        regions.push(self.rect);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -617,7 +662,10 @@ impl Widget for MessageList {
     }
 
     fn mark_drawn(&mut self) {
+        self.region.mark_presented();
+        self.hovered_presented = self.hovered_drawing.take();
         self.dirty = false;
+        self.scrolled = false;
     }
 }
 
@@ -672,6 +720,54 @@ mod tests {
             shared.borrow().mailbox.get(first).map(|m| m.folder),
             Some(Folder::Archive)
         );
+    }
+
+    /// A scroll that changes nothing else offers the host a copy of the
+    /// rows, damaging only the bar's track and the row under the resting
+    /// pointer; a host that does not copy, or any other change, repaints the
+    /// list.
+    #[test]
+    fn a_scroll_alone_offers_a_copy_of_the_rows() {
+        let shared = shared();
+        let mut list = MessageList::new(shared.clone());
+        list.rect = Rect::new(0.0, 0.0, 340.0, 400.0);
+        let frame = |list: &mut MessageList| {
+            draw(list);
+            list.mark_drawn();
+            shared.borrow_mut().dirty = false;
+        };
+        frame(&mut list);
+        list.pointer = Some(Point::new(120.0, 220.0));
+        frame(&mut list);
+        assert!(
+            list.region.scroll_by(vello::kurbo::Vec2::new(0.0, 40.0)),
+            "the sample mailbox overflows the list"
+        );
+        list.scrolled = true;
+        draw(&mut list);
+        let mut regions = Vec::new();
+        let offers = ui::scroll_copy::accepting(|| list.collect_damage(&mut regions));
+        assert_eq!(offers.len(), 1, "the scroll is offered");
+        assert_eq!(offers[0].delta(), vello::kurbo::Vec2::new(0.0, -40.0));
+        let hovered = list.hovered_drawing.expect("a row is under the pointer");
+        assert!(
+            regions
+                .iter()
+                .all(|rect| rect.area() <= hovered.area() * 1.5 || rect.width() < 40.0),
+            "only the track and the hovered row repaint: {regions:?}"
+        );
+        let mut plain = Vec::new();
+        list.collect_damage(&mut plain);
+        assert_eq!(
+            plain,
+            vec![list.rect],
+            "a host that does not copy repaints the list"
+        );
+        list.dirty = true;
+        let mut changed = Vec::new();
+        let offers = ui::scroll_copy::accepting(|| list.collect_damage(&mut changed));
+        assert!(offers.is_empty(), "another change repaints the list");
+        assert_eq!(changed, vec![list.rect]);
     }
 
     #[test]

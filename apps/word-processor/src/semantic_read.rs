@@ -107,16 +107,6 @@ pub struct Page {
     pub next: Option<Cursor>,
 }
 /// The SDK's refusal for a projection error.
-pub(crate) fn read_error(error: &ReadError) -> ui::semantic_document_read::SemanticReadError {
-    use ui::semantic_document_read::SemanticReadError;
-    match error {
-        ReadError::Pending => SemanticReadError::Pending,
-        ReadError::StaleCursor => SemanticReadError::StaleCursor,
-        ReadError::InvalidCursor => SemanticReadError::InvalidRequest,
-        ReadError::Limit => SemanticReadError::Limit,
-        ReadError::Malformed => SemanticReadError::Malformed,
-    }
-}
 use automerge::{ObjId, ObjType, ROOT};
 use std::{cmp::Ordering, ops::ControlFlow};
 use tilo_doc::semantic_read::{

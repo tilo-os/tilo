@@ -3,7 +3,7 @@
 A follow-up of [the first image-size receipt](os-image-size-2026-10-09.md), whose
 "other redundant payload" table this change works down. The nightly records
 `footprint.image.*` in `tilo-perf-results` hold the current values
-(DEVELOPMENT.md, "OS image size").
+(docs/measurements/os-image-size.md).
 
 ## Method
 

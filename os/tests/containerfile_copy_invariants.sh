@@ -155,7 +155,9 @@ containerfile="$repo/os/Containerfile"
 # tilo-network-start.service replaces tilo-network-start.timer: the network is
 # queued once logins are allowed instead of at OnBootSec=0, where it held the
 # greeter through network.target.
-expected_contract=0d1f26b3729368602066f2a95a54f9283ee8c2be31ae6626786b3c4161ae2b42
+# The installer locale list is copied from the install-profile-model crate,
+# which compiles it in; the installed path is unchanged.
+expected_contract=034b3e3003b9077e17f816fdf1f4e466f0b2b86b38b74da7047d10ef1686c69e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

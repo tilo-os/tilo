@@ -288,6 +288,15 @@ impl ToastStack {
         }
     }
 
+    /// Every pixel the stack's cards paint, their shadows included: what a
+    /// host repaints where the stack appears, changes or goes. `None` with
+    /// no card showing.
+    #[must_use]
+    pub fn painted_bounds(&self, theme: &Theme) -> Option<Rect> {
+        (!self.toasts.is_empty() && self.rect.area() > 0.0)
+            .then(|| crate::widget::floating_surface::painted_bounds(self.rect, theme))
+    }
+
     /// Place this overlay inside `area` without making it a layout child.
     /// Useful for app-level notification stacks that must float above their
     /// content rather than reserve document space.
@@ -850,13 +859,12 @@ fn paint_card_surface(scene: &mut Scene, transform: Affine, rect: Rect, alpha: f
     let radius = card_radius(theme);
     let faded = alpha < 0.999;
     if faded {
-        let reach = crate::widget::floating_surface::shadow_reach(theme);
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
             alpha,
             transform,
-            &rect.inflate(reach, reach),
+            &crate::widget::floating_surface::painted_bounds(rect, theme),
         );
     }
     crate::surface::shadow(

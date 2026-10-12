@@ -136,10 +136,15 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   Achieved by: base pinned by **digest** against our mirror (below), Rust resolve pinned
   (the tracked `Cargo.lock`), a deterministic compile (`CARGO_INCREMENTAL=0`,
   `--remap-path-prefix=/build=.`, `LC_ALL=C.UTF-8`, `TZ=UTC`), and a
-  `SOURCE_DATE_EPOCH` derived from the HEAD commit time with layer/image
-  timestamps clamped to it (`podman --source-date-epoch --rewrite-timestamp`;
-  buildkit honours `SOURCE_DATE_EPOCH` + `provenance: false` in CI).
-  Reproduce: `SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) ./os/dev/build-image.sh`
+  `SOURCE_DATE_EPOCH` with layer/image timestamps clamped to it
+  (`podman --source-date-epoch --rewrite-timestamp`; buildkit honours
+  `SOURCE_DATE_EPOCH` + `provenance: false` in CI). CI derives the epoch from
+  the pinned inputs, not the commit: `os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF"`,
+  the newest creation time of the base and the RPM snapshot. Content embeds it
+  (the UKI's initramfs, the rpmdb, the fontconfig caches), so with the commit
+  time every release re-sent those layers unchanged; the commit time stays in
+  `org.opencontainers.image.created`.
+  Reproduce: `SOURCE_DATE_EPOCH=$(os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF") ./os/dev/build-image.sh`
   twice → identical `podman image inspect --format '{{.Id}}'`.
 - **Cross-time reproducibility (frozen RPM repo).** Package versions are frozen
   too, so a rebuild *weeks later* is still byte-identical. The exact resolved RPM

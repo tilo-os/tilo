@@ -431,64 +431,73 @@ fn undo_targets(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Vec<Versio
 /// per change, not the whole entry.
 struct Step {
     hash: ChangeHash,
-    /// Shared by every change of the same author.
-    actor: std::rc::Rc<str>,
+    /// Its author, in [`StepIndex::actors`].
+    actor: u32,
     time_ms: i64,
-    /// Of its entry, when it has one.
-    entry: Option<Box<StepEntry>>,
-    /// The raw message of a change without an entry.
-    message: Option<Box<str>>,
-}
-
-struct StepEntry {
-    group: Option<tilo_actions::ActionGroup>,
-    invoker: Option<tilo_actions::ActionInvoker>,
+    /// The step its entry recorded it belongs to.
     gesture: Option<tilo_actions::ActionId>,
+    /// Its entry's run and invoker; shared with the change before when they
+    /// are the same, as they are for every change of one run or one person.
+    shared: Option<std::rc::Rc<Shared>>,
     kind: Option<tilo_actions::ActionKind>,
     change: tilo_actions::ChangeKind,
+    /// Whether the change has an entry.
+    entry: bool,
+}
+
+/// What consecutive changes usually have in common: who ran them and in
+/// which run.
+#[derive(PartialEq)]
+struct Shared {
+    group: Option<tilo_actions::ActionGroup>,
+    invoker: Option<tilo_actions::ActionInvoker>,
 }
 
 impl Step {
-    fn of(version: Version, actor: std::rc::Rc<str>) -> Self {
-        let entry = version.context.map(|context| {
-            Box::new(StepEntry {
+    fn of(version: &mut Version, actor: u32, last: Option<&std::rc::Rc<Shared>>) -> Self {
+        let entry = version.context.is_some();
+        let context = version.context.take().unwrap_or_default();
+        let shared = (context.group.is_some() || context.invoker.is_some()).then(|| {
+            let shared = Shared {
                 group: context.group,
                 invoker: context.invoker,
-                gesture: context.gesture,
-                kind: context.kind,
-                change: context.change,
-            })
+            };
+            match last {
+                Some(last) if **last == shared => std::rc::Rc::clone(last),
+                _ => std::rc::Rc::new(shared),
+            }
         });
         Self {
             hash: version.hash,
             actor,
             time_ms: version.time_ms,
-            message: version
-                .message
-                .filter(|_| entry.is_none())
-                .map(String::into_boxed_str),
+            gesture: context.gesture,
+            shared,
+            kind: context.kind,
+            change: context.change,
             entry,
         }
     }
 
-    /// The change as a version holding what the index keeps of it.
-    fn version(&self) -> Version {
+    /// The change as a version holding what the index keeps of it: its
+    /// author `actor`, and `message` when it has no entry.
+    fn version(&self, actor: &str, message: Option<&str>) -> Version {
         Version {
             hash: self.hash,
-            actor: self.actor.to_string(),
+            actor: actor.to_owned(),
             time_ms: self.time_ms,
-            context: self
-                .entry
-                .as_deref()
-                .map(|entry| tilo_actions::ActionContext {
-                    group: entry.group.clone(),
-                    invoker: entry.invoker.clone(),
-                    gesture: entry.gesture,
-                    kind: entry.kind,
-                    change: entry.change,
+            context: self.entry.then(|| {
+                let shared = self.shared.as_deref();
+                tilo_actions::ActionContext {
+                    group: shared.and_then(|shared| shared.group.clone()),
+                    invoker: shared.and_then(|shared| shared.invoker.clone()),
+                    gesture: self.gesture,
+                    kind: self.kind,
+                    change: self.change,
                     ..tilo_actions::ActionContext::default()
-                }),
-            message: self.message.as_deref().map(str::to_owned),
+                }
+            }),
+            message: message.map(str::to_owned),
         }
     }
 }
@@ -500,14 +509,33 @@ impl Step {
 #[derive(Default)]
 pub struct StepIndex {
     steps: Vec<Step>,
-    actors: HashSet<std::rc::Rc<str>>,
-    positions: std::collections::HashMap<ChangeHash, usize>,
-    kinds: std::collections::HashMap<ChangeHash, Kind>,
+    /// The authors of the changes, each once.
+    actors: Vec<std::rc::Rc<str>>,
+    actor_ids: std::collections::HashMap<std::rc::Rc<str>, u32>,
+    /// The raw messages of the changes without an entry, by position.
+    messages: std::collections::HashMap<u32, Box<str>>,
+    /// Each change's position, by the first eight bytes of its hash (a
+    /// change hash is uniformly random); a change whose prefix another
+    /// change already has is in `colliding`.
+    positions: std::collections::HashMap<u64, u32>,
+    colliding: std::collections::HashMap<ChangeHash, u32>,
+    /// Where each gesture's first entry sits, by its author and gesture:
+    /// what a continuation of it reads as.
+    firsts: std::collections::HashMap<(u32, tilo_actions::ActionId), u32>,
+    /// The kinds read so far, by position.
+    kinds: std::collections::HashMap<u32, Kind>,
     heads: Vec<ChangeHash>,
     /// The changes last read whole, newest last: an undo or redo asks for
     /// the same few again (its targets, their labels, what they brought
     /// back). Bounded, so the index stays small however long the history.
     read_whole: std::cell::RefCell<std::collections::VecDeque<Version>>,
+}
+
+/// The first eight bytes of a change hash: as random as the whole hash.
+fn prefix(hash: &ChangeHash) -> u64 {
+    let mut bytes = [0; 8];
+    bytes.copy_from_slice(&hash.0[..8]);
+    u64::from_le_bytes(bytes)
 }
 
 /// How many changes [`StepIndex::full`] keeps read whole.
@@ -523,21 +551,81 @@ impl StepIndex {
         let document = doc.committed_document();
         let fresh = document.get_changes_meta(&self.heads);
         for meta in &fresh {
-            if self.positions.contains_key(&meta.hash) {
+            if self.position(&meta.hash).is_some() {
                 continue;
             }
-            let version = tilo_resource::history::version_of(document, meta);
-            let actor = if let Some(actor) = self.actors.get(version.actor.as_str()) {
-                std::rc::Rc::clone(actor)
-            } else {
-                let actor: std::rc::Rc<str> = version.actor.as_str().into();
-                self.actors.insert(std::rc::Rc::clone(&actor));
+            let hex = meta.actor.to_hex_string();
+            let actor = if let Some(&actor) = self.actor_ids.get(hex.as_str()) {
                 actor
+            } else {
+                let id = u32::try_from(self.actors.len()).unwrap_or(u32::MAX);
+                let actor: std::rc::Rc<str> = hex.as_str().into();
+                self.actors.push(std::rc::Rc::clone(&actor));
+                self.actor_ids.insert(actor, id);
+                id
             };
-            self.positions.insert(version.hash, self.steps.len());
-            self.steps.push(Step::of(version, actor));
+            let position = u32::try_from(self.steps.len()).unwrap_or(u32::MAX);
+            // Only what a step keeps of its entry is read; a continuation is
+            // its gesture's first entry again, read before it in causal order.
+            let message = meta.message.as_deref();
+            let context = match message {
+                Some(text) if text.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
+                    ActionContext::continued_gesture(text)
+                        .and_then(|gesture| self.firsts.get(&(actor, gesture)))
+                        .and_then(|&first| self.version_at(first as usize))
+                        .and_then(|first| first.context)
+                }
+                text => text.and_then(ActionContext::head_of_change_message),
+            };
+            if let Some(gesture) =
+                context
+                    .as_ref()
+                    .and_then(|context| context.gesture)
+                    .filter(|_| {
+                        !message
+                            .is_some_and(|text| text.starts_with(tilo_actions::CONTINUATION_PREFIX))
+                    })
+            {
+                self.firsts.insert((actor, gesture), position);
+            }
+            let mut version = Version {
+                hash: meta.hash,
+                actor: String::new(),
+                time_ms: meta.timestamp.saturating_mul(1000),
+                context,
+                message: message.map(str::to_owned),
+            };
+            match self.positions.entry(prefix(&version.hash)) {
+                std::collections::hash_map::Entry::Vacant(vacant) => {
+                    vacant.insert(position);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    self.colliding.insert(version.hash, position);
+                }
+            }
+            let last = self.steps.last().and_then(|step| step.shared.as_ref());
+            let step = Step::of(&mut version, actor, last);
+            if let Some(message) = version.message.filter(|_| !step.entry) {
+                self.messages.insert(position, message.into_boxed_str());
+            }
+            self.steps.push(step);
         }
         self.heads = heads;
+    }
+
+    /// The change at `position` as a version holding what the index keeps
+    /// of it.
+    fn version_at(&self, position: usize) -> Option<Version> {
+        let step = self.steps.get(position)?;
+        let actor = self
+            .actors
+            .get(step.actor as usize)
+            .map_or("", |actor| actor);
+        let message = u32::try_from(position)
+            .ok()
+            .and_then(|at| self.messages.get(&at))
+            .map(|message| &**message);
+        Some(step.version(actor, message))
     }
 
     /// How many changes the index holds.
@@ -586,15 +674,26 @@ impl StepIndex {
 
     /// Where a change sits in causal order.
     pub fn position(&self, hash: &ChangeHash) -> Option<usize> {
-        self.positions.get(hash).copied()
+        let at = self.positions.get(&prefix(hash)).copied()?;
+        if self
+            .steps
+            .get(at as usize)
+            .is_some_and(|step| step.hash == *hash)
+        {
+            return Some(at as usize);
+        }
+        self.colliding.get(hash).map(|&at| at as usize)
     }
 
     fn kind(&mut self, doc: &AutoCommit, version: &Version) -> Kind {
-        if let Some(kind) = self.kinds.get(&version.hash) {
+        let position = self.position(&version.hash).map(|at| at as u32);
+        if let Some(kind) = position.and_then(|at| self.kinds.get(&at)) {
             return kind.clone();
         }
         let kind = kind_in(doc.committed_document(), version);
-        self.kinds.insert(version.hash, kind.clone());
+        if let Some(at) = position {
+            self.kinds.insert(at, kind.clone());
+        }
         kind
     }
 
@@ -616,7 +715,7 @@ impl StepIndex {
         let mut steps: Vec<Vec<Version>> = Vec::new();
         let mut gesture = None;
         for index in (0..self.steps.len()).rev() {
-            let Some(version) = self.steps.get(index).map(Step::version) else {
+            let Some(version) = self.version_at(index) else {
                 continue;
             };
             if !owns(&version) {
@@ -678,7 +777,7 @@ impl StepIndex {
             if targets.len() >= limit {
                 break;
             }
-            let Some(version) = self.steps.get(index).map(Step::version) else {
+            let Some(version) = self.version_at(index) else {
                 continue;
             };
             if !owns(&version) {

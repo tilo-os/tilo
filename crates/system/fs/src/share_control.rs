@@ -434,7 +434,8 @@ mod tests {
 
     use super::*;
     use crate::record_publisher::RecordPublisher;
-    use crate::share_authority::{ShareAuthority, ShareGrantStatus};
+    use crate::share_authority::ShareAuthority;
+    use fs_protocol::ShareGrantStatus;
 
     const NOW: u64 = 20_000;
 

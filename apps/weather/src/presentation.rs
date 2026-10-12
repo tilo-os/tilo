@@ -100,7 +100,7 @@ pub(crate) fn morning_preview(
     notice: Option<crate::core::ForecastNotice>,
 ) -> ui::tilo_actions::ResourcePresentation {
     use ui::i18n::ArgValue;
-    ui::embedded_catalog!(static CATALOG, "weather-morning-summary", ["en-US", "de-DE"]);
+    ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
     let temperature = format!(
         "{:.0}{}",
         snapshot.temp_in(snapshot.current.temperature, units),

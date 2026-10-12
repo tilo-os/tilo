@@ -39,7 +39,7 @@ min_delta = 0.0
 # Perf / scheduled (.forgejo/workflows/perf-scheduled.yml): one job per group,
 # selected by its `kpis` input; its `compare` job runs with the default lane.
 [lanes.perf-scheduled]
-groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "hosting"]
+groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting"]
 
 # Dev / VM acceptance (.forgejo/workflows/vm-acceptance.yml): the installed
 # desktop in a KVM guest. Its R04 measures compositor CPU per painted frame on
@@ -174,6 +174,65 @@ p99_tolerance = 2.0
 min_delta = 1.0
 source = "CONFLICT_SCAN_LONGEST_HOLD_SLO"
 
+# Document media after a daemon restart: the empty-range status read an
+# app's draw path makes, and one 4 MiB range near the end of a 64 MiB
+# attachment (the capability's limit). Each verifies only the chunk groups it
+# returns; loading the attachment whole instead takes the gate's reported
+# document-media-whole-blob-load-64m (464.5 ms on the first CI run).
+# Provisional ceilings until CI runs give a p99, derived beside the
+# constants; tests/document_media_footprint.rs gates the daemon heap of the
+# same reads.
+[kpi."fs.document-media-cold-64m-status"]
+unit = "ms"
+max = 5.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "MEDIA_STATUS_SLO"
+
+[kpi."fs.document-media-cold-64m-tail-4m-read"]
+unit = "ms"
+max = 40.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "MEDIA_TAIL_READ_SLO"
+
+# fs daemon heap (tests/document_media_footprint.rs, which asserts the same
+# ceilings on every run): what storing a 64 MiB attachment leaves behind,
+# the peak of uploading one over the app capability (the app's client
+# included), and what many large loose-blob reads leave behind. Before the
+# blob cache was bounded by bytes and uploads streamed: 64 MiB left behind,
+# a peak past 64 MiB, and every blob read kept.
+[kpi."fs.document-media-store-64m-retained-heap"]
+unit = "MiB"
+max = 0.25
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "STORE_RETAINED_HEAP_SLO"
+
+[kpi."fs.document-media-upload-64m-peak-heap"]
+unit = "MiB"
+max = 16.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "UPLOAD_PEAK_HEAP_SLO"
+
+[kpi."fs.blob-cache-large-reads-retained-heap"]
+unit = "MiB"
+max = 33.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "CACHE_RETAINED_HEAP_SLO"
+
 # App package size: bytes of the newest signed tapp per app in the public
 # registry index, over the apps of tools/perf/tapp-size-budget/ (the default
 # collection; runtime and provider stubs and withdrawn packages are not apps).
@@ -289,6 +348,36 @@ p50_tolerance = 1.05
 p99_tolerance = 1.05
 source = "9,067,894,573 B on db91126b44, plus 5 %; one package layer: -83,213,633 B"
 
+# OS update size: what a device on main's previous build downloads to reach
+# the newest (image_size.py --update-from-previous: the layers the newest
+# image has and the image of the newest earlier first-parent commit lacks).
+# How much changed between two builds varies with the commits between them,
+# so the rule is a ceiling, with a wide relative tolerance that still fails
+# when updates stay several times larger: before content-based layers an update
+# re-sent 3.7 GB; a per-build app key re-sent 215 MB of identical apps; the
+# release lane's commit-time epoch renewed the 116 MB UKI and the rpmdb in
+# every build. Consecutive rechunked main builds on 10-10 and 10-11 sent
+# 420-830 MB (x86_64) and 420-820 MB (aarch64), before the runtimes and Tilo's
+# programs got layers of their own.
+
+[kpi."footprint.image.update_bytes.x86_64"]
+unit = "bytes"
+max = 900000000.0
+enforce = true
+p50_tolerance = 3.0
+p99_tolerance = 3.0
+min_delta = 100000000.0
+source = "consecutive rechunked main builds 421,875,787-828,748,091 B before the runtime and Tilo trees"
+
+[kpi."footprint.image.update_bytes.aarch64"]
+unit = "bytes"
+max = 900000000.0
+enforce = true
+p50_tolerance = 3.0
+p99_tolerance = 3.0
+min_delta = 100000000.0
+source = "consecutive rechunked main builds 418,858,093-819,840,811 B before the runtime and Tilo trees"
+
 # Agent round trip (scripts/perf/agent_rtt.py): one headless compositor on
 # the shared `runner` class, a release build with `dev-overrides` and thin
 # LTO, timed from the client's side of the control socket. Targets from the
@@ -359,6 +448,32 @@ p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 0.5
 source = "KPI target: MCP tool call <= local invoke + 2 ms"
+
+# Pipelined invokes (apps/agent `pipelined_task_benchmark`, a release test
+# on `runner`): the agent's own task loop with a scripted model and a broker
+# whose applications take 100 ms per step, one turn of three steps on three
+# records, timed for the whole task. `pipelined` is the plan as the model
+# marks it (independent steps run alongside each other), `sequential` the
+# same plan unmarked (each step waits for the one before to settle). The
+# floor is one step's 100 ms when pipelined and three steps' 300 ms in
+# order; the pipelined ceiling allows the loop 50 ms of its own on top of
+# one step. Reported, not enforced, until three nightly records exist.
+[kpi."agent.task.pipelined.wall"]
+unit = "ms"
+p50 = 150.0
+p99 = 200.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "floor: one 100 ms step, plus 50 ms of the agent loop's own"
+
+[kpi."agent.task.sequential.wall"]
+unit = "ms"
+p50 = 400.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "the same plan in order, for comparison: three 100 ms steps, plus the loop's own"
 
 # Latency, compositor side (scripts/perf/latency_bench.py): a headless dev
 # build on the shared `runner` class, input through the control socket,
@@ -436,6 +551,72 @@ unit = "per_s"
 max = 1.0
 min_delta = 1.0
 source = "the frame loop parks while idle"
+
+# Files search's name index under file changes (the shell unit test
+# a_watched_change_costs_one_record_not_a_rebuild, through adapters.py
+# files-name-index): process CPU in a debug lib-test build on the shared
+# `runner` class, with an index of 50,000 names (the walk's MAX_ENTRIES).
+# A watched change upserts or removes its own records and commits
+# incrementally; before, every change rebuilt the whole index, which
+# `rebuild_cpu_ms` still measures (a walk or rescan builds it so).
+# Measured in two Dev / focused test runs of the test at 50,000 names
+# (Oct 2026, 14 change samples): change 8.6-34.4 ms, unchanged 0.02-0.26 ms,
+# rename 10.1-36.0 ms, 64-file burst 19.9-28.7 ms, whole build 4,053-4,544 ms.
+# Enforced ceilings are about twice the measured maximum, as the tilo-fs
+# gate's are; a regression to whole rebuilds lands two orders above them.
+# The build's ceiling is twice its maximum too, reported only.
+# Since each index keeps one writer and builds a commit's segment to its
+# batch's size (tilo-search), Perf / scheduled mode ab, 8 rounds on one
+# runner against the writer-per-commit base (Oct 2026): change 4.8-19.2 ms
+# (the first change of a run opens the writer; 4.8-7.5 ms after it; base
+# 9.7-131.8 ms), rename 5.8-14.7 ms, burst 17.0-35.7 ms, unchanged
+# 0.02-0.31 ms. Change and rename ceilings tightened to about twice that
+# maximum; the burst (60 ms) and unchanged (1 ms) ceilings already sit
+# below twice theirs.
+
+[kpi."search.files_name_index.change_cpu_ms.50k"]
+unit = "ms"
+max = 40.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "one watched new file, 50,000 names"
+
+[kpi."search.files_name_index.unchanged_cpu_ms.50k"]
+unit = "ms"
+max = 1.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "one watched file growing within its recency band, 50,000 names"
+
+[kpi."search.files_name_index.rename_cpu_ms.50k"]
+unit = "ms"
+max = 30.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "one watched rename (two paths), 50,000 names"
+
+[kpi."search.files_name_index.burst64_cpu_ms.50k"]
+unit = "ms"
+max = 60.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 5.0
+source = "a watched folder of 64 new files in one batch, 50,000 names"
+
+[kpi."search.files_name_index.rebuild_cpu_ms.50k"]
+unit = "ms"
+max = 9100.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 50.0
+source = "a whole-index build of 50,000 names: a walk or rescan, and what every change cost before"
 
 # Latency on reference hardware (scripts/perf/device_latency_bench.py,
 # docs/benchmarks/reference-hardware.md): kernel input event to KMS
@@ -520,7 +701,11 @@ source = "KPI target: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; rep
 # frame rasterises the columns it uncovered (35,904 px measured, 0.4 % of the
 # output, run 95313), and one that goes back to repainting the strip
 # (8,294,400 px) fails the run at once. The p99 is a frame whose chrome or
-# strips changed during the pan, rasterised whole, and is not budgeted.
+# strips changed during the pan: since a changed chrome is rasterised in the
+# tiles that changed and a changed strip where its changed window groups
+# show, it is about the median too (37,656 px, Perf / scheduled 100497;
+# 8,345,850 px at 150 % and 8,365,240 at 200 % before, run 100092), and is
+# enforced about 60 % above it.
 
 [kpi."render.shell.pan_us.4k"]
 unit = "us"
@@ -533,6 +718,7 @@ source = "KPI target: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; rep
 [kpi."render.shell.pan_pixels.4k"]
 unit = "pixels"
 p50 = 100000.0
+p99 = 60000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -551,6 +737,7 @@ source = "strip_pan_bench, pixels a 4K six-window pan frame rasterises"
 [kpi."render.shell.pan_pixels.4k_s150"]
 unit = "pixels"
 p50 = 80000.0
+p99 = 100000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -560,6 +747,7 @@ source = "strip_pan_bench, pixels a 4K six-window pan frame at 150 % rasterises"
 [kpi."render.shell.pan_pixels.4k_s200"]
 unit = "pixels"
 p50 = 100000.0
+p99 = 160000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -569,6 +757,7 @@ source = "strip_pan_bench, pixels a 4K six-window pan frame at 200 % rasterises"
 [kpi."render.shell.pan_pixels.4k_strips2"]
 unit = "pixels"
 p50 = 135000.0
+p99 = 150000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -578,6 +767,7 @@ source = "strip_pan_bench, pixels a 4K pan frame of two strips rasterises"
 [kpi."render.shell.pan_pixels.4k_s200_strips2"]
 unit = "pixels"
 p50 = 265000.0
+p99 = 320000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -664,18 +854,28 @@ min_delta = 1000.0
 source = "KPI target: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
 
 # A pan's first frame from rest (strip_pan_bench `start` and `restart`: the
-# first pan's and a second pan's, two samples per case). The presenter warms
+# first pan's and a second pan's, two samples per case, each after a rest as
+# long as the session waits before it warms the layers). The presenter warms
 # its layers once the desktop rests, so a first frame copies and composites
 # like any pan frame instead of rasterising the backdrop, strips and chrome
-# whole (25.6 M px, 376-572 ms on this runner before). The max is enforced
-# below two whole layers: in the bench's fixture the strips' drawing still
-# changes in its very first pan (the strips' layer, about 8.3 M px, is then
-# rasterised again), and a frame that rasterises every layer fails at once.
-# Frame time is reported like the pan frames'.
+# whole (25.6 M px, 376-572 ms on this runner before). Each window group is a
+# damage part of its strip, so a window that changed off screen since the
+# warm (an app the warm drew for the first time presenting its content)
+# rasterises nothing: the strips' layer is no longer rasterised again in a
+# desktop's first pan (8.03 M px before, run 100092; 155,628 px at 100 %,
+# 231,684 at 150 %, 334,264 at 200 % after, run 100497). On two strips a
+# window on screen in the still strip changed between the warm and the first
+# pan (2.2-2.5 M px, its group's area): an in-process app's content, made on
+# its own thread, landed while the 4K warm ran, and the bench, which has no
+# event loop to draw it as it lands, left it to the pan's first frame. The
+# bench now rests and warms again until a frame after the warm changes
+# nothing, as a session reaches rest (`rest_and_warm`); the two-strip maxima
+# stay until a run measures that. The max is enforced about 50 % above
+# those. Frame time is reported like the pan frames'.
 
 [kpi."render.shell.pan_start_pixels.4k"]
 unit = "pixels"
-max = 12000000.0
+max = 240000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -692,7 +892,7 @@ source = "KPI target: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-w
 
 [kpi."render.shell.pan_start_pixels.4k_s150"]
 unit = "pixels"
-max = 12000000.0
+max = 350000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -709,7 +909,7 @@ source = "KPI target: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-w
 
 [kpi."render.shell.pan_start_pixels.4k_s200"]
 unit = "pixels"
-max = 12000000.0
+max = 500000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -726,7 +926,7 @@ source = "KPI target: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-w
 
 [kpi."render.shell.pan_start_pixels.4k_strips2"]
 unit = "pixels"
-max = 12000000.0
+max = 3700000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -743,7 +943,7 @@ source = "KPI target: Frame time p99 at 4K/144 Hz, the first frame of a 4K pan o
 
 [kpi."render.shell.pan_start_pixels.4k_s200_strips2"]
 unit = "pixels"
-max = 12000000.0
+max = 3700000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -905,6 +1105,53 @@ p99_tolerance = 2.0
 min_delta = 10000.0
 source = "framework-scaling scroll, pixels one copied scroll frame repaints, 5,000 items"
 
+# The same list shown in a region of a host's scene, as the shell shows an
+# in-process app (`FRAMEWORK-SCROLL-HOSTED`): each frame's section is compared
+# with the last (scene_parts::damage_with_copies) and presented over it as a
+# host that keeps its target presents it, copies first (present_copies).
+# A frame repaints the strip the scroll exposed, the bar's track and the
+# tile's edge bands: 158,040 px p50 of the 1280x800 region on an M-series Mac
+# (985,280 for a host that does not copy). Enforced about 40 % above that.
+[kpi."render.framework_scroll.hosted_pixels.5k"]
+unit = "pixels"
+p50 = 220000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "framework-scaling scroll shown in a host's scene, pixels one copied scroll frame repaints, 5,000 items"
+
+[kpi."render.framework_scroll.hosted_whole_frames.5k"]
+unit = "count"
+max = 0.0
+p50_tolerance = 1.5
+p99_tolerance = 1.5
+min_delta = 2.0
+source = "framework-scaling scroll shown in a host's scene, frames repainted whole in 120, 5,000 items (reported)"
+
+# The same window scrolled with a collaborator's pointer and name resting over
+# the list, painted over the widgets as a window paints them
+# (`FRAMEWORK-SCROLL-PEER`): the copies go on, and the mark repaints where it
+# is and where the copy took it. 109,168 px p50 of the 1280x800 window on an
+# M-series Mac (99,792 alone; 983,616 when a peer on screen refused every copy).
+# Enforced about 40 % above that.
+[kpi."render.framework_scroll.peer_pixels.5k"]
+unit = "pixels"
+p50 = 153000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "framework-scaling scroll beside a collaborator's pointer, pixels one copied scroll frame repaints, 5,000 items"
+
+[kpi."render.framework_scroll.peer_whole_frames.5k"]
+unit = "count"
+max = 0.0
+p50_tolerance = 1.5
+p99_tolerance = 1.5
+min_delta = 2.0
+source = "framework-scaling scroll beside a collaborator's pointer, frames repainted whole in 120, 5,000 items (reported)"
+
 [kpi."render.framework_scroll.whole_frames.5k"]
 unit = "count"
 max = 0.0
@@ -928,6 +1175,95 @@ p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 2.0
 source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 items (lavapipe; reported)"
+
+# The keyboard focus order of a long framework list: the framework-scaling
+# example (`focus` mode) mounts every row of a 500, 1,000 and 2,500 item
+# checklist (about four widgets an item), through adapters.py framework-focus
+# in the render job. Recomputing the order is one pass over the layout: on an
+# M5 Max 0.26 ms at 500 items (natively and in the test harness), 0.54-0.60 ms
+# at 1,000 and 2.0-2.3 ms at 2,500 (from 0.29-0.33, 0.70-0.83 and 1.9-2.4 ms
+# when the History-owned sort and its capture filter re-walked History per
+# node; about 25 ms at 500 when every node re-enumerated History). The 500 item
+# recomputations are enforced at 2 ms p95, far under what a per-node walk costs
+# and well over a slower runner's single pass; the 0.3 ms at 2,000 widgets and
+# 1.5 ms at 10,000 targets are reported. Adding one item through an agent call
+# is reported against a 16 ms frame: 8.9 / 17.7 / 240 ms at 500 / 1,000 /
+# 2,500 items (from 25 / 82 / 619 ms, when recovering focus after the rebuild
+# asked History about every node), most of it now layout and text shaping.
+
+[kpi."render.framework_focus.recompute_ms.500"]
+unit = "ms"
+p95 = 2.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.1
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 500 items (about 2,000 widgets)"
+
+[kpi."render.framework_focus.native_recompute_ms.500"]
+unit = "ms"
+p95 = 2.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.1
+source = "framework-scaling focus, one focus-order recomputation of the live window, 500 items (about 2,000 widgets)"
+
+[kpi."render.framework_focus.recompute_ms.1k"]
+unit = "ms"
+p50 = 0.6
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.2
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 1,000 items (reported)"
+
+[kpi."render.framework_focus.native_recompute_ms.1k"]
+unit = "ms"
+p50 = 0.6
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.2
+source = "framework-scaling focus, one focus-order recomputation of the live window, 1,000 items (reported)"
+
+[kpi."render.framework_focus.recompute_ms.2500"]
+unit = "ms"
+p50 = 1.5
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 2,500 items (about 10,000 widgets; reported)"
+
+[kpi."render.framework_focus.native_recompute_ms.2500"]
+unit = "ms"
+p50 = 1.5
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "framework-scaling focus, one focus-order recomputation of the live window, 2,500 items (about 10,000 widgets; reported)"
+
+[kpi."render.framework_focus.add_item_ms.500"]
+unit = "ms"
+p50 = 16.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+source = "framework-scaling focus, an agent call adding one item end to end, 500 items (reported)"
+
+[kpi."render.framework_focus.add_item_ms.1k"]
+unit = "ms"
+p50 = 16.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 4.0
+source = "framework-scaling focus, an agent call adding one item end to end, 1,000 items (reported)"
+
+[kpi."render.framework_focus.add_item_ms.2500"]
+unit = "ms"
+p50 = 16.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 40.0
+source = "framework-scaling focus, an agent call adding one item end to end, 2,500 items (reported)"
 
 # The installed desktop: Dev / VM acceptance's nightly run on the newest
 # published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
@@ -1185,6 +1521,17 @@ source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted fra
 # 9.50 MB, max within 0.5 % of p50), so their ceilings sit about 15 % above:
 # a delta resent whole or a presence storm fails at once. CPU and latency
 # share the runner and get the fs gate's wider tolerances.
+#
+# Baseline change, 2026-10-11: the nightly runs the relay on two CPUs
+# (`relay_load --relay-cpus 2`, record meta `relay_cpus = "2"`), the priced
+# 2-vCPU VM's shape, where it had run on all of the runner's (four runtime
+# workers, meta `relay_cpus = "all"` or absent). A scratch profile on the same
+# commit (Perf / scheduled 97584) measured 13.9 s CPU per collaborator-hour at
+# four workers and 12.4 s at two CPUs, fan-out p99 75.9 ms and 138.1 ms: fewer
+# idle workers woken to steal work, more queueing. The first two-CPU run
+# (Perf / scheduled on main, kpis=hosting, accept=all) starts the new
+# baseline, so neither series is compared with the other; the ceilings below
+# hold for both.
 
 [kpi."hosting.relay.cpu_s_per_collab_hour.n100"]
 unit = "s"
@@ -1215,6 +1562,46 @@ unit = "bytes"
 p50 = 10900000.0
 enforce = true
 source = "relay_load: framed bytes written to peer sessions per active collaborator-hour"
+
+# Packets (the levers after bytes): a change that sends the same bytes in more
+# packets passes every byte budget, and costs egress, relay CPU and client
+# radio time all the same. Counted on the collaborators' QUIC connections
+# (`Connection::stats`; loopback, so what they received is what the relay
+# sent). The relay's ACK-only datagrams answer client packets that carried
+# nothing to acknowledge back, so a client sending more packets shows twice.
+#
+# Measured in Perf / scheduled A/B runs 97792 and 97793 (8 rounds each): client
+# packets 23,838-23,923, of which data 6,188-6,210; relay datagrams
+# 26,652-26,736, of which ACK-only 7,790-8,103 (p99 up to 8,230). The first
+# three vary by under 1 % between rounds, so their ceilings sit about 15 %
+# above, as the byte budgets do; ACK-only datagrams follow timing (which
+# packets an ACK can ride) and vary by about 5 %, so theirs sits about 20 %
+# above. Run 97792's base, the bench on the commit before client pointer
+# pacing, measured 27,753 client packets, 9,086 data packets and 10,995
+# ACK-only datagrams: undoing that pacing fails three of the four at once.
+[kpi."hosting.relay.client_packets_per_collab_hour.n100"]
+unit = "count"
+p50 = 27500.0
+enforce = true
+source = "relay_load: UDP datagrams the collaborators sent the relay per active collaborator-hour"
+
+[kpi."hosting.relay.client_data_packets_per_collab_hour.n100"]
+unit = "count"
+p50 = 7150.0
+enforce = true
+source = "relay_load: collaborator datagrams carrying stream data per active collaborator-hour"
+
+[kpi."hosting.relay.datagrams_per_collab_hour.n100"]
+unit = "count"
+p50 = 30700.0
+enforce = true
+source = "relay_load: UDP datagrams the relay sent the collaborators per active collaborator-hour"
+
+[kpi."hosting.relay.ack_only_datagrams_per_collab_hour.n100"]
+unit = "count"
+p50 = 9700.0
+enforce = true
+source = "relay_load: relay datagrams carrying only acknowledgements per active collaborator-hour"
 
 [kpi."hosting.relay.fanout_ms.n100"]
 unit = "ms"

@@ -53,7 +53,7 @@ suites = ["os/tests/flight_recorder_test.py"]
 
 [[group]]
 name = "runtime-dependency-closure"
-inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime-bundle.sh", "dist/apps/package-apps.sh"]
+inputs = ["os/scripts/collect-runtime-dependencies.py", "os/scripts/bake-runtime-bundle.sh", "os/scripts/verify-runtime-bundle-closure.sh", "dist/apps/package-apps.sh"]
 suites = ["os/tests/test_runtime_dependency_closure.py"]
 
 [[group]]
@@ -414,6 +414,8 @@ suites = [
   "scripts/vm-acceptance/test_lock_guard.py",
   "scripts/vm-acceptance/test_dialog_guard.py",
   "scripts/vm-acceptance/test_session_restart.py",
+  "scripts/vm-acceptance/test_ui.py",
+  "scripts/vm-acceptance/test_vm_actions.py",
 ]
 
 [[group]]
@@ -427,6 +429,8 @@ inputs = [
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_gate.rs",
   "crates/session/shell/src/compositor/switch_latency.rs",
+  # ... the FILES-NAME-INDEX parser equal to the Files search test's line,
+  "crates/session/shell/src/shell/search/providers/files.rs",
   # ... and the hosting-load KPI ids equal to the relay load bench's.
   "crates/hosting/tilo-relay/examples/relay_load/main.rs",
   # scripts/perf/render_bench_test.py keeps the parsed lines equal to the harnesses'.
@@ -753,7 +757,6 @@ inputs = [
   "crates/system/fs-native/",
   "crates/system/fs/",
   "crates/system/power/",
-  "crates/system/private-fs/",
   "crates/system/sandbox-core/",
   "crates/system/secret-vault/",
   "crates/system/settings-store/",
@@ -823,27 +826,28 @@ readers = ["crates/runtime/legacy-vm/src/image.rs"]
 
 [[cargo]]
 package = "installer"
-inputs = ["os/usr/share/tilo/installer-locales.txt", "crates/system/block-devices/tests/fixtures/installer.json"]
-readers = ["crates/session/installer/src/disks.rs", "crates/session/installer/src/locales.rs"]
+inputs = ["crates/system/block-devices/tests/fixtures/installer.json"]
+readers = ["crates/session/installer/src/disks.rs"]
 
 [[cargo]]
 package = "imager"
 inputs = [
-  "os/usr/share/tilo/installer-locales.txt", "crates/system/block-devices/tests/fixtures/imager.json",
+  "crates/system/block-devices/tests/fixtures/imager.json",
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
 ]
 readers = [
-  "apps/imager/src/model.rs", "apps/imager/src/probe.rs", "apps/imager/src/setup/desktop_install.rs",
+  "apps/imager/src/probe.rs", "apps/imager/src/setup/desktop_install.rs",
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
 ]
 
 [[cargo]]
 package = "tilo-imager-profile"
-# Compiles the imager's profile modules, which include the locale list.
+# Compiles the imager's profile modules, whose rules include the locale list.
 inputs = [
   "apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs",
-  "os/usr/share/tilo/installer-locales.txt", "os/usr/libexec/tilo-installer-profile-extract",
+  "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt",
+  "os/usr/libexec/tilo-installer-profile-extract",
 ]
 readers = ["tools/imager-profile/src/main.rs", "tools/imager-profile/tests/embed.rs"]
 

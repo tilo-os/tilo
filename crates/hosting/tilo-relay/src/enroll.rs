@@ -306,6 +306,7 @@ enum PersonalCommitCheckpoint {
     Registry,
     UserPublicKey,
     PerUserCert,
+    PersonalPeers,
     DefaultCert,
 }
 
@@ -363,6 +364,93 @@ fn fleet_revokes_device(
             .context("device fleet contains an invalid revocation")?;
     }
     Ok(revocations.is_revoked(&device))
+}
+
+/// Whether a certificate names one of this person's own devices: one that
+/// holds their workspaces, as opposed to an always-on host (recorded as a home
+/// peer instead), an administering machine, or someone else's device.
+fn certifies_personal_device(cert: &DeviceCert) -> bool {
+    cert.capabilities.can_own_workspaces
+        && !cert.capabilities.can_act_as_host
+        && !cert.capabilities.foreign
+}
+
+/// The devices a joining device records as its personal peers: itself, and
+/// every personal device the approver's fleet certifies under this identity's
+/// root, valid now and not revoked. A device the fleet merely names, without
+/// a certificate that verifies under `user`, is never included.
+fn certified_personal_devices(
+    fleet: &[u8],
+    user: [u8; 32],
+    this_device: [u8; 32],
+    now_ns: u64,
+) -> anyhow::Result<Vec<[u8; 32]>> {
+    if fleet.len() > 1024 * 1024 {
+        bail!("staged device fleet exceeds 1 MiB");
+    }
+    let fleet: FleetProjection =
+        serde_json::from_slice(fleet).context("staged device fleet is invalid")?;
+    if fleet.schema_version != 1
+        || fleet.identity_id != hex::encode(user)
+        || fleet.certificates.len() > 256
+        || fleet.revocations.len() > 256
+    {
+        bail!("staged device fleet violates its bounded schema");
+    }
+    let mut revocations = RevocationList::new();
+    for entry in fleet.revocations {
+        if entry.user_public_key != user {
+            bail!("staged device fleet contains a revocation from another identity");
+        }
+        revocations
+            .insert(entry)
+            .context("staged device fleet contains an invalid revocation")?;
+    }
+    let mut devices = vec![this_device];
+    for cert in &fleet.certificates {
+        if cert.user_public_key == user
+            && certifies_personal_device(cert)
+            && verify_device_cert_at(cert, now_ns).is_ok()
+            && !revocations.is_revoked(&cert.device_public_key)
+            && !devices.contains(&cert.device_public_key)
+        {
+            devices.push(cert.device_public_key);
+        }
+    }
+    Ok(devices)
+}
+
+/// Record `devices` in this device's personal device list, the authorization
+/// input that decides which devices remote actions may address. Repeatable:
+/// a device already listed is kept once.
+fn remember_personal_devices(
+    identity_root: &std::path::Path,
+    devices: &[[u8; 32]],
+) -> anyhow::Result<PathBuf> {
+    let path = tilo_relay_protocol::personal_device_peer_path(identity_root);
+    for device in devices {
+        tilo_relay_protocol::remember_personal_device(&path, *device)
+            .context("record the paired device as a personal device")?;
+    }
+    Ok(path)
+}
+
+/// Record this joining device and the personal devices its staged fleet
+/// certifies, once the enrollment is committing.
+fn remember_staged_personal_devices(
+    identity_root: &std::path::Path,
+    stage_dir: &std::path::Path,
+    marker: &PersonalEnrollmentMarker,
+) -> anyhow::Result<PathBuf> {
+    remember_personal_devices(
+        identity_root,
+        &certified_personal_devices(
+            &std::fs::read(staged(stage_dir, "fleet.json"))?,
+            marker.user_public_key,
+            marker.device_public_key,
+            now_ns()?,
+        )?,
+    )
 }
 
 /// Give one file or directory this enrollment created the owner and group of
@@ -903,18 +991,6 @@ fn commit_staged_personal_enrollment(
         &std::fs::read(staged(&stage_dir, "registry.json"))?,
         0o600,
     )?;
-    // The joined identity is the one this device now acts for: select it, or
-    // the next login resolves the absent default and asks to create one. Only
-    // the directory's owner can select (the selector is theirs alone); a
-    // root-run join into someone else's directory leaves it to them.
-    if owns_directory(&marker.identity_dir)? {
-        let record_id = record
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .context("joined identity record has no runtime id")?;
-        runtime_identity::set_active_identity(&marker.identity_dir, record_id)
-            .context("select the joined identity")?;
-    }
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
     // The public key and certificates are public, whatever the umask this
     // commit runs under: the session reads them to verify the device, and
@@ -937,9 +1013,28 @@ fn commit_staged_personal_enrollment(
         &std::fs::read(staged(&stage_dir, "per-user-cert.bin"))?,
         public,
     )?;
+    // This device and the approver become each other's personal devices. The
+    // approver's certificate comes from the root-signed fleet staged with this
+    // enrollment and must verify under the identity this device joins.
+    checkpoint(PersonalCommitCheckpoint::PersonalPeers)?;
+    let personal_peers = remember_staged_personal_devices(identity_root, &stage_dir, marker)?;
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
     tilo_files::native::atomic::write_with_mode(&paths.device_cert, &cert_bytes, public)?;
+    // The joined identity is the one this device now acts for: select it, or
+    // the next login resolves the absent default and asks to create one. The
+    // first-use UI reads a selected joined identity as a finished join, so it
+    // is selected only once every file of the join is in place. Only the
+    // directory's owner can select (the selector is theirs alone); a root-run
+    // join into someone else's directory leaves it to them.
+    if owns_directory(&marker.identity_dir)? {
+        let record_id = record
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .context("joined identity record has no runtime id")?;
+        runtime_identity::set_active_identity(&marker.identity_dir, record_id)
+            .context("select the joined identity")?;
+    }
     // A root-run (headless) enrollment wrote these as root. Restore each
     // one's directory owner and group before the marker is cleared, so
     // recovery repeats this step if it is interrupted. Parents come before
@@ -950,6 +1045,7 @@ fn commit_staged_personal_enrollment(
         fleet,
         marker.identity_dir.join("registry.json"),
         tilo_relay::home_peer_registry_path(identity_root),
+        personal_peers,
         paths.user_pubkey.clone(),
         per_user_cert
             .parent()
@@ -2479,18 +2575,30 @@ fn commit_approval(
             prepared.signed.payload.relay_service_node_id,
             &identity.relay_workspace_ids,
         )?,
-        EnrollmentKind::PersonalDevice => commit_personal_device(
-            options
-                .identity_dir
-                .context("identity directory is required")?,
-            identity.user_public_key,
-            prepared
-                .signed
-                .payload
-                .fleet_json
-                .as_deref()
-                .context("fleet is required")?,
-        )?,
+        EnrollmentKind::PersonalDevice => {
+            commit_personal_device(
+                options
+                    .identity_dir
+                    .context("identity directory is required")?,
+                identity.user_public_key,
+                prepared
+                    .signed
+                    .payload
+                    .fleet_json
+                    .as_deref()
+                    .context("fleet is required")?,
+            )?;
+            // The device acknowledged the certificate this device just issued
+            // under the identity's root: both are now this person's devices.
+            let personal_peers = remember_personal_devices(
+                options.identity_root,
+                &[
+                    identity.device.verifying_key().to_bytes(),
+                    prepared.signed.payload.cert.device_public_key,
+                ],
+            )?;
+            restore_owner_from_parent(&personal_peers)?;
+        }
     }
     consume_nonce(
         options.identity_root,
@@ -3276,6 +3384,12 @@ mod tests {
             .unwrap();
             assert_eq!(std::fs::read(&paths.user_pubkey).unwrap(), before_key);
             assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
+            let personal_peers =
+                tilo_relay_protocol::personal_device_peer_path(identity_root.path());
+            assert!(
+                !personal_peers.exists(),
+                "an unconfirmed enrollment records no personal device"
+            );
 
             let marker = authorize_personal_commit(&marker_path, &marker, Some(lease)).unwrap();
             assert!(
@@ -3295,6 +3409,13 @@ mod tests {
                 .is_err()
             );
             assert_eq!(std::fs::read(&paths.device_cert).unwrap(), before_cert);
+            // First use reads a selected joined identity as a finished join;
+            // an interrupted commit has selected nothing yet.
+            assert_eq!(
+                runtime_identity::resolve_active_identity(identity_dir.path()),
+                None,
+                "an unfinished join selected its identity"
+            );
             requester.kill().unwrap();
             requester.wait().unwrap();
             assert!(lease.validate().is_err());
@@ -3320,6 +3441,7 @@ mod tests {
                 paths.user_pubkey.clone(),
                 paths.device_cert.clone(),
                 paths.device_cert_for_user(&root.verifying_key().to_bytes()),
+                personal_peers.clone(),
             ] {
                 use std::os::unix::fs::PermissionsExt as _;
                 assert_eq!(
@@ -3338,6 +3460,16 @@ mod tests {
                     .unwrap()
                     .device_public_key,
                 member.verifying_key().to_bytes()
+            );
+            let recorded: Vec<String> =
+                serde_json::from_slice(&std::fs::read(&personal_peers).unwrap()).unwrap();
+            assert_eq!(
+                recorded,
+                vec![hex::encode(member.verifying_key().to_bytes())]
+            );
+            assert!(
+                runtime_identity::resolve_active_identity(identity_dir.path()).is_some(),
+                "the finished join selects its identity"
             );
         }
         // Phase `personal_projection_loads_without_root_signing_material`.
@@ -3748,6 +3880,103 @@ mod tests {
                 .sign(b"root/admin signing must stay unavailable")
                 .is_err()
         );
+        // Each machine now lists the other, and itself, as this person's
+        // devices: the list remote actions and wake address. The always-on
+        // home peer is a home peer, not a personal device.
+        let personal = |root: &std::path::Path| -> Vec<String> {
+            serde_json::from_slice(
+                &std::fs::read(tilo_relay_protocol::personal_device_peer_path(root))
+                    .expect("pairing recorded the personal devices"),
+            )
+            .unwrap()
+        };
+        let approver_key = hex::encode(issuer.verifying_key().to_bytes());
+        let new_key = hex::encode(new_device.verifying_key().to_bytes());
+        assert_eq!(
+            personal(approver_root.path()),
+            vec![approver_key.clone(), new_key.clone()]
+        );
+        assert_eq!(personal(new_root.path()), vec![new_key, approver_key]);
+    }
+
+    /// A joining device records only the personal devices whose certificates
+    /// verify under the identity it joined, are valid now and are not
+    /// revoked; a malformed fleet records nothing.
+    #[test]
+    fn a_joining_device_records_only_certified_live_personal_devices() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
+        let user = root.verifying_key().to_bytes();
+        let cert =
+            |device: u8, capabilities: DeviceCapabilities, signer: &ed25519_dalek::SigningKey| {
+                let mut cert = DeviceCert {
+                    user_public_key: signer.verifying_key().to_bytes(),
+                    device_public_key: [device; 32],
+                    device_label: format!("Device {device}"),
+                    capabilities,
+                    issued_at_ns: 1,
+                    expires_at_ns: None,
+                    signature: [0; 64],
+                };
+                sign_device_cert(&mut cert, signer).unwrap();
+                cert
+            };
+        let approver = cert(1, DeviceCapabilities::primary(), &root);
+        let sibling = cert(2, DeviceCapabilities::member(), &root);
+        let revoked = cert(3, DeviceCapabilities::member(), &root);
+        let host = cert(4, DeviceCapabilities::host(), &root);
+        let administrator = cert(5, DeviceCapabilities::administrator(), &root);
+        let foreign_root = cert(6, DeviceCapabilities::member(), &stranger);
+        let mut forged = cert(7, DeviceCapabilities::member(), &root);
+        forged.device_public_key = [8; 32];
+        let mut expired = cert(9, DeviceCapabilities::member(), &root);
+        expired.expires_at_ns = Some(2);
+        sign_device_cert(&mut expired, &root).unwrap();
+        let mut revocation = RevocationEntry {
+            user_public_key: user,
+            revoked_device_public_key: revoked.device_public_key,
+            revoked_at_ns: 2,
+            reason: RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut revocation, &root).unwrap();
+        let fleet = |revocations: Vec<RevocationEntry>| {
+            serde_json::to_vec(&FleetProjection {
+                schema_version: 1,
+                identity_id: hex::encode(user),
+                certificates: vec![
+                    approver.clone(),
+                    sibling.clone(),
+                    revoked.clone(),
+                    host.clone(),
+                    administrator.clone(),
+                    foreign_root.clone(),
+                    forged.clone(),
+                    expired.clone(),
+                ],
+                revocations,
+            })
+            .unwrap()
+        };
+        let now = now_ns().unwrap();
+        assert_eq!(
+            certified_personal_devices(&fleet(vec![revocation.clone()]), user, [10; 32], now)
+                .unwrap(),
+            vec![[10; 32], [1; 32], [2; 32]]
+        );
+
+        let mut tampered = revocation;
+        tampered.revoked_device_public_key = [2; 32];
+        assert!(certified_personal_devices(&fleet(vec![tampered]), user, [10; 32], now).is_err());
+        let other_identity = serde_json::to_vec(&FleetProjection {
+            schema_version: 1,
+            identity_id: hex::encode(stranger.verifying_key().to_bytes()),
+            certificates: vec![approver],
+            revocations: Vec::new(),
+        })
+        .unwrap();
+        assert!(certified_personal_devices(&other_identity, user, [10; 32], now).is_err());
+        assert!(certified_personal_devices(b"[]", user, [10; 32], now).is_err());
     }
 
     #[test]

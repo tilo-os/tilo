@@ -99,9 +99,6 @@ data-encoding.workspace = true
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 data-encoding-macro.workspace = true
 
-[target.'cfg(windows)'.dependencies]
-private-fs = { version = "0.1.0", path = "../../system/private-fs" }
-
 # The login Keychain keeps a Tilo runtime's device key on macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }

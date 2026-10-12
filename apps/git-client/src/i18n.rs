@@ -5,7 +5,7 @@
 //! manager. The locale follows the usual POSIX variables and falls back per
 //! message to `en-US`.
 
-ui::embedded_catalog!(pub fn, "git-remote-running", ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 /// Select `locale` (BCP-47 or POSIX) on this thread.
 pub fn set_locale(locale: &str) {

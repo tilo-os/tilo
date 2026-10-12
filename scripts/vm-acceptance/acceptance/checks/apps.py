@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 
@@ -132,11 +133,21 @@ def _notifications(st) -> list:
     return st["chrome"].get("notifications") or []
 
 
-def _is_undo_close(toast: dict, title: str) -> bool:
-    """The transient "Closed X — select to undo" toast a close is meant to raise."""
-    return (toast.get("severity") == "Info" and not toast.get("persistent")
-            and (bool(title) and title in (toast.get("title") or "")
-                 or "Super+Shift+T" in (toast.get("body") or "")))
+def _is_undo_close(toast: dict, title: str, tab_count: int = 1) -> bool:
+    """A transient undo toast for a captured title, with any reopen binding.
+
+    Match the English/German shell messages, including the unbound hint. A
+    title substring or a shortcut alone cannot identify the close's toast.
+    """
+    if (not title or not title.strip() or toast.get("severity") != "Info"
+            or toast.get("persistent")):
+        return False
+    english = f"Closed {tab_count} tabs" if tab_count > 1 else f"Closed {title}"
+    german = f"{tab_count} Tabs geschlossen" if tab_count > 1 else f"{title} geschlossen"
+    messages = ((english, r"Select to undo(?:, or press .+ later)?"),
+                (german, r"Zum Rückgängigmachen auswählen(?: oder später .+ drücken)?"))
+    return any(toast.get("title") == heading and re.fullmatch(hint, toast.get("body") or "")
+               is not None for heading, hint in messages)
 
 
 def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign: bool,
@@ -220,13 +231,17 @@ def _app_procs(ctx, before: dict, app_id: str):
                     if p in first and first[p].cmd == c.cmd}, now
 
 
-def close_group(ctx, gid) -> None:
+def close_group(ctx, gid, before_close=None) -> None:
     """Close one window group through its close action.
 
     Closing one window of an app can take its others with it (Wine File's
     windows all end with its process), so a group already gone is closed, not
     an unknown action."""
-    if core.group_by_id(ctx.state(), gid) is None:
+    st = ctx.state()
+    if before_close is not None:
+        if before_close(st) is False:
+            return
+    if core.group_by_id(st, gid) is None:
         return
     try:
         ctx.vm.invoke("desktop-windows", f"group.close:{gid}")
@@ -235,23 +250,84 @@ def close_group(ctx, gid) -> None:
             raise
 
 
+def _process_app_ids(proc: Proc) -> set[str]:
+    """Executable/launcher identities, including Wine's Windows executable paths."""
+    args = proc.cmd.split()
+    names = {proc.exe.replace("\\", "/").rsplit("/", 1)[-1].lower()}
+    for flag in ("--app-id", "--desktop-id"):
+        if flag in args and args.index(flag) + 1 < len(args):
+            names.add(args[args.index(flag) + 1].lower())
+    return names - {""}
+
+
 def _close(ctx, res, label, gid, app_procs, toasts0):
-    title = (core.group_by_id(ctx.state(), gid) or {"tabs": [{}]})["tabs"][0].get("title") or ""
-    # Windows the app raised on its own (a first-run dialog) are closed with it.
+    # The app can raise a dialog between our first snapshot and a close's guard.
+    # Discover it from each fresh snapshot, without taking unrelated windows.
     before = ctx.facts.get(f"groups_before:{label}", set())
-    extra = [g["id"] for g in core.all_groups(ctx.state()) if g["id"] not in before and g["id"] != gid]
-    res.metrics["extra_windows"] = len(extra)
-    for other in [gid, *extra]:
-        close_group(ctx, other)
-    ctx.wait_state(lambda s: core.group_by_id(s, gid) is None, 10, f"{label}'s window gone after close")
     launch = ctx.facts[f"launch:{label}"]
+    queue = [gid]
+    closed = {}
+    invoked = set()
+    examined = set(before)
+
+    def observe(st, closing=None):
+        groups = core.all_groups(st)
+        candidates = [g for g in groups if g["id"] != gid and g["id"] not in invoked and
+                      (g["id"] in queue or g["id"] not in examined)]
+        eligible = set()
+        if candidates:
+            procs = _procs(ctx)
+            owned = launch.members(procs)
+            own_ids = set().union(*(_process_app_ids(p) for p in owned.values()))
+            other_ids = set().union(*(_process_app_ids(p) for pid, p in procs.items() if pid not in owned))
+            exclusive_ids = own_ids - other_ids
+            for group in candidates:
+                examined.add(group["id"])
+                apps = [(core.tab_app(tab) or "").lower() for tab in group["tabs"]]
+                if apps and all(app in exclusive_ids for app in apps):
+                    eligible.add(group["id"])
+                    if group["id"] not in queue:
+                        queue.append(group["id"])
+        # Capture all pending titles before invoking a close: it can end dialogs too.
+        for group in groups:
+            group_id = group["id"]
+            if group_id in invoked:
+                continue
+            if group_id == gid or group_id in eligible:
+                closed[group_id] = [tab.get("title") or "" for tab in group["tabs"]]
+            elif group_id in queue:
+                # A pending group can acquire an unrelated tab or lose exclusive
+                # attribution. Do not close it or accept its later notifications.
+                closed.pop(group_id, None)
+        res.metrics["closed_titles"] = [title for titles in closed.values() for title in titles]
+        res.metrics["extra_windows"] = sum(group_id != gid for group_id in closed)
+        return closing is None or closing == gid or closing in eligible
+
+    observe(ctx.state())
+    deadline = time.monotonic() + 10
+    for other in queue:
+        expect(time.monotonic() < deadline, f"new app windows kept appearing while closing {label} for 10 s")
+        def guard(st):
+            accepted = observe(st, other)
+            if accepted and core.group_by_id(st, other) is not None:
+                # Foreign process exit and compositor group removal can happen
+                # separately. Once issued, retain this close's captured metadata.
+                invoked.add(other)
+            return accepted
+
+        close_group(ctx, other, guard)
+        observe(ctx.state())
+    ctx.wait_state(lambda s: core.group_by_id(s, gid) is None, 10, f"{label}'s window gone after close")
     left = wait_until(lambda: not lingering(_procs(ctx), launch, app_procs) or None, CLOSE_GRACE_S, 1.0)
     still = {} if left else lingering(_procs(ctx), launch, app_procs)
     res.metrics["lingering_after_close"] = [c.cmd for c in still.values()]
     st = ctx.state()
     toasts = _notifications(st)[toasts0:]
-    res.metrics["undo_toasts"] = [t for t in toasts if _is_undo_close(t, title)]
-    false = [t for t in toasts if not _is_undo_close(t, title)]
+    def expected_undo(toast):
+        return any(titles and _is_undo_close(toast, titles[0], len(titles)) for titles in closed.values())
+
+    res.metrics["undo_toasts"] = [t for t in toasts if expected_undo(t)]
+    false = [t for t in toasts if not expected_undo(t)]
     res.metrics["toasts"] = false
     expect(not still,
            f"{label}'s processes still running {CLOSE_GRACE_S} s after close: "

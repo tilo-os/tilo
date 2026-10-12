@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tilo on-screen keyboard — data-driven layouts, responsive sizing, customizable toolbar."
+description = "On-screen keyboard: data-driven layouts, responsive sizing, toolbar"
 
 # The app uses the protocol types through ui's canonical re-export.
 [package.metadata.cargo-machete]

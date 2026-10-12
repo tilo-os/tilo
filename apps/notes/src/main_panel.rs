@@ -252,18 +252,20 @@ fn notes_editor(
 
 /// Where a frame shows the note's body: its scroll offset, the clip it
 /// paints into, the thumb's track with its reach, the pinned title's rule
-/// with its reach when it is shown, the transform, and the drag handle the
-/// pointer's block shows.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// with its reach when it is shown, the transform, and what the blocks
+/// paint for where the pointer is.
+#[derive(Clone, Debug, PartialEq)]
 struct BodyShown {
     scroll_y: f64,
     clip: Rect,
     track: Rect,
     rule: Option<Rect>,
     transform: Affine,
-    /// The drag handle the block under the pointer shows: it stays with the
-    /// pointer while the text moves.
-    handle: Option<Rect>,
+    /// What the blocks paint for the pointer rather than the text (the
+    /// drag handle of the block under it, a code run's lit copy chrome, a
+    /// table's add controls, an image's button): it stays with the pointer
+    /// while the text moves.
+    pointer_chrome: Vec<Rect>,
 }
 
 /// A scroll of the note's body that a host keeping its last frame may copy
@@ -848,20 +850,14 @@ impl MainPanel {
     /// clip, track and transform, and nothing in the body, its header or
     /// over it changed besides.
     pub(crate) fn scroll_copy(&self) -> Option<ScrollCopy> {
-        let (drawing, presented) = (self.body_drawing?, self.body_presented?);
-        // Paragraphs and headings paint nothing that follows the pointer but
-        // the drag handle; other blocks' hover chrome (a code block's copy
-        // button, a table's controls, an image's) is not followed here.
+        let (drawing, presented) = (self.body_drawing.as_ref()?, self.body_presented.as_ref()?);
+        // What a block paints for the pointer rather than the text is
+        // repainted where it is and was (`pointer_chrome`); anything else
+        // that changed in the body is the editor's own redraw.
         let quiet = self.scroll_moved
             && !self.dirty
             && !self.editor.needs_redraw()
             && !self.has_editor_popup()
-            && self.editor.blocks().iter().all(|block| {
-                matches!(
-                    block.kind,
-                    ui::widget::BlockKind::Paragraph | ui::widget::BlockKind::Heading(_)
-                )
-            })
             && self
                 .header
                 .built()
@@ -877,8 +873,9 @@ impl MainPanel {
                 track: drawing.track,
                 transform: drawing.transform,
                 // The thumb moved within its track, the pinned title's rule
-                // came or went, and the pointer's drag handle is where it is
-                // and no longer where it was (the host carries that).
+                // came or went, and what the blocks paint for the pointer is
+                // where it is and no longer where it was (the host carries
+                // that).
                 damage: std::iter::once(drawing.track)
                     .chain(
                         (drawing.rule != presented.rule)
@@ -886,8 +883,8 @@ impl MainPanel {
                             .into_iter()
                             .flatten(),
                     )
-                    .chain(drawing.handle)
-                    .chain(presented.handle)
+                    .chain(drawing.pointer_chrome.iter().copied())
+                    .chain(presented.pointer_chrome.iter().copied())
                     .collect(),
             })
     }
@@ -1174,6 +1171,40 @@ impl MainPanel {
         self.follow_caret = true;
         self.dirty = true;
         true
+    }
+
+    /// Test hook: why a wheel over the body might not scroll it: the
+    /// offset and how far it can go, where the panel last saw the pointer
+    /// against the body's viewport, and what holds the input instead.
+    #[doc(hidden)]
+    pub fn scroll_state_for_test(&self) -> String {
+        let blocks = self.editor.editor().blocks();
+        format!(
+            "blocks={} measured={} content_bottom={} editor={:?} content_h={} \
+             scroll_y={} max={} pointer={:?} viewport={:?} popup={} title_editing={} rect={:?}",
+            blocks.len(),
+            blocks
+                .iter()
+                .filter(|block| block.line.get_rect().height() > 0.0)
+                .count(),
+            self.editor.editor().content_bottom(),
+            self.editor.get_rect(),
+            self.scroll_content_height,
+            self.scroll_y,
+            self.scroll_metrics().max_scroll(),
+            self.last_pointer,
+            self.scroll_viewport(),
+            self.has_editor_popup(),
+            self.title_label.is_editing(),
+            self.rect,
+        )
+    }
+
+    /// Test hook: how far the body can scroll, as the last layout measured
+    /// it.
+    #[doc(hidden)]
+    pub fn max_scroll_for_test(&self) -> f64 {
+        self.scroll_metrics().max_scroll()
     }
 
     /// Test hook: the panel's current vertical scroll offset in px.
@@ -1630,7 +1661,7 @@ impl Widget for MainPanel {
                 rule: (self.scroll_y > f64::EPSILON)
                     .then(|| Rect::new(pinned.x0, pinned.y1 - track_reach, pinned.x1, pinned.y1)),
                 transform: ui::scroll_copy::on_screen(transform),
-                handle: None,
+                pointer_chrome: Vec::new(),
             });
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -1662,9 +1693,9 @@ impl Widget for MainPanel {
             let mut editor_scene = Scene::new();
             self.editor
                 .draw(&mut editor_scene, transform, text_renderer, theme, presence);
-            let handle = self.editor.editor().hover_handle();
+            let pointer_chrome = self.editor.editor().pointer_chrome();
             if let Some(body) = &mut self.body_drawing {
-                body.handle = handle;
+                body.pointer_chrome = pointer_chrome;
             }
             scene.append(&editor_scene, None);
             scene.pop_layer();

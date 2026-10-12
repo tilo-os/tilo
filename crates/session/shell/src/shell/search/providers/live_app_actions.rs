@@ -304,6 +304,8 @@ pub struct LiveAppActionsProvider {
     action_sessions: ActionSessionSource,
     directory_pages: RefCell<HashMap<DirectoryCacheKey, CataloguePage>>,
     directory_pending: RefCell<HashMap<DirectoryCacheKey, PendingDirectoryPage>>,
+    /// Directory contracts are valid only for the publication they describe.
+    directory_source_generation: Cell<(u64, u64)>,
     /// The palette owns at most one needle's directory projection.
     /// Keeping previous query terms made rapid typing retain unbounded pages
     /// and receivers even though no result could ever be rendered again.
@@ -526,11 +528,16 @@ impl LiveAppActionsProvider {
     }
 
     pub fn new(broker: AppActionBroker) -> Self {
+        let directory_source_generation = Cell::new((
+            broker.surfaces_generation(),
+            broker.action_directory_root_page(None, 0).generation,
+        ));
         Self {
             action_sessions: ActionSessionSource::new(broker.clone()),
             broker,
             directory_pages: RefCell::new(HashMap::new()),
             directory_pending: RefCell::new(HashMap::new()),
+            directory_source_generation,
             directory_query: RefCell::new(None),
             resource_kinds: vec![
                 ResourceKind::Action,
@@ -955,6 +962,19 @@ impl LiveAppActionsProvider {
     }
 
     fn poll_directory_pages_at(&self, now: Instant) {
+        let source = (
+            self.broker.surfaces_generation(),
+            self.broker.action_directory_root_page(None, 0).generation,
+        );
+        if self.directory_source_generation.replace(source) != source {
+            // A native edit can change Undo availability without changing the
+            // query, publisher or action address. Retire both old pages and
+            // outstanding replies before observing their previous contracts.
+            self.directory_pages.borrow_mut().clear();
+            self.directory_pending.borrow_mut().clear();
+            self.auxiliary_snapshot.borrow_mut().take();
+            self.directory_epoch.fetch_add(1, Ordering::Relaxed);
+        }
         let mut ready = Vec::new();
         let mut expired = false;
         let mut spent = Vec::new();
@@ -3430,6 +3450,70 @@ mod tests {
     }
 
     #[test]
+    fn changed_native_history_retires_the_cached_directory_contract() {
+        let chrome = chrome();
+        let broker = broker_for(&chrome);
+        let state = chrome.borrow();
+        let room = state.tree().desktop.workspaces[0].room.to_string();
+        let actor = state.local_user_for_room(&state.tree().desktop.workspaces[0].room);
+        let mut action = local_action("Undo", "undo");
+        action.resource = "tilo.host:edit".into();
+        action.contract.availability = tilo_actions::Availability::Unavailable {
+            code: "nothing_to_undo".into(),
+            reason: "No native edit yet".into(),
+        };
+        let mut surface = PublishedSurface {
+            peer_id: 7,
+            app_id: "so.tilo.terminal".into(),
+            route: CrdtRoute::app("so.tilo.terminal", &room),
+            actions: vec![action.clone()],
+            live: true,
+        };
+        broker.replace_published_surfaces_for_test(vec![surface.clone()]);
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 7,
+            app_id: surface.app_id.clone(),
+            cluster_id: room,
+            record_id: surface.route.record_id.clone(),
+        }]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let mut descriptor = exported("Undo", "undo");
+        descriptor.address.resource = action.resource.clone();
+        descriptor.contract = action.contract.clone();
+        let row = CatalogueRow {
+            provider: "7".into(),
+            app_id: surface.app_id.clone(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: action.resource.clone(),
+                kind: "tilo.host.edit".into(),
+                label: "Edit".into(),
+                presentation: None,
+            },
+            action: Some(descriptor),
+            has_children: false,
+            visibility: None,
+        };
+        provider.directory_pages.borrow_mut().insert(
+            (7, actor, String::new(), Vec::new()),
+            page(vec![row], Vec::new()),
+        );
+        let doc = AutoCommit::new();
+        let id = "directory\u{1f}7\u{1f}r1\u{1f}tilo.host:edit\u{1f}undo";
+        let old = provider.resolve(id, context("", &state, &doc)).unwrap();
+        assert_eq!(
+            old.contract.unwrap().availability,
+            action.contract.availability
+        );
+        surface.actions[0].contract.availability = tilo_actions::Availability::Available;
+        broker.replace_published_surfaces_for_test(vec![surface]);
+        assert!(
+            provider.resolve(id, context("", &state, &doc)).is_none(),
+            "the unchanged query must not retain the pre-edit Undo contract"
+        );
+    }
+
+    #[test]
     fn completed_directory_page_survives_idle_poll() {
         let provider = LiveAppActionsProvider::new(
             crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
@@ -3788,7 +3872,6 @@ mod tests {
         {
             let chrome = chrome();
             let broker = broker_for(&chrome);
-            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
             let chrome = chrome.borrow();
             let cluster_id = chrome.tree().desktop.workspaces[0].room.to_string();
             let actor = chrome.local_user_for_room(&chrome.tree().desktop.workspaces[0].room);
@@ -3799,6 +3882,7 @@ mod tests {
                 record_id: "root".into(),
             };
             broker.replace_action_directory_roots_for_test(vec![root]);
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
             let row = |label: &str, action: &str| CatalogueRow {
                 provider: "9".into(),
                 app_id: "so.tilo.remote".into(),
@@ -3894,7 +3978,6 @@ mod tests {
     fn programmatic_directory_actions_resolve_without_entering_palette_search() {
         let chrome = chrome();
         let broker = broker_for(&chrome);
-        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
         let state = chrome.borrow();
         let workspace_room = state.tree().desktop.workspaces[0].room;
         let actor = state.local_user_for_room(&workspace_room);
@@ -3905,6 +3988,7 @@ mod tests {
             record_id: "root".into(),
         };
         broker.replace_action_directory_roots_for_test(vec![root]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
         let mut descriptor = exported("Read page content", "read");
         descriptor
             .contract
@@ -4923,7 +5007,6 @@ mod tests {
         {
             let chrome = chrome();
             let broker = broker_for(&chrome);
-            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
             let cluster_id = chrome.borrow().tree().desktop.workspaces[0]
                 .room
                 .to_string();
@@ -4937,6 +5020,7 @@ mod tests {
                 record_id: "library".into(),
             };
             broker.replace_action_directory_roots_for_test(vec![root]);
+            let provider = LiveAppActionsProvider::new_with_fixture_identity(broker);
             provider.directory_pages.borrow_mut().insert(
                 (9, actor, "book".into(), Vec::new()),
                 page(

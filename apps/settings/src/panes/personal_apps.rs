@@ -9,11 +9,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
 use serde::{Deserialize, Serialize};
-use taffy::{NodeId, TaffyTree};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, LiveRow};
 use ui::i18n::ArgValue;
-use ui::theme::Theme;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{AppModel, Button, Dropdown, ModelPath, Widget};
@@ -478,19 +476,7 @@ impl Widget for PersonalAppsPane {
         self.composed.sync(state, root);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let composition = self.build_composition();
-        let child = self
-            .composed
-            .build_layout(composition, taffy, theme, node_map);
-        crate::panes::pane_node(taffy, child, node_map, self)
-    }
-    ui::forward_to_composed!(composed);
+    crate::panes::composed_pane!();
 
     fn name(&self) -> &'static str {
         "PersonalAppsPane"

@@ -14,8 +14,8 @@
 # that adds a few bytes passes, and real growth fails. Budgets only decrease.
 # Intended growth adds raises/<change>.toml, one file per change, so
 # concurrent changes never edit the same line. When an app shrinks, both
-# gates print the lower budget to commit here. DEVELOPMENT.md ("App package
-# size") has the steps.
+# gates print the lower budget to commit here. docs/measurements/app-package-size.md
+# has the steps.
 #
 # The population is the default collection's apps. The runtime package
 # (so.tilo.runtime, measured as the runtime's own KPI) and the
