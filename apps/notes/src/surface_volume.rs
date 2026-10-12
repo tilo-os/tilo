@@ -121,7 +121,7 @@ fn a_many_note_notebook_publishes_a_small_surface_and_an_edit_only_its_note() {
     let rich = rich_text_catalogue(&first);
     eprintln!("surface-volume rich-text catalogue: {rich} bytes");
     assert!(
-        rich < 72 * 1024,
+        rich < 56 * 1024,
         "the rich-text catalogue takes {rich} bytes"
     );
     assert!(
