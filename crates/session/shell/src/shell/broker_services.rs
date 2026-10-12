@@ -148,6 +148,89 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
 }
 
 impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitService {
+    fn checkpoint_result_access(
+        &self,
+        room: &str,
+        caller: &tilo_user_identity::DeviceCert,
+        id: uuid::Uuid,
+        mutation: bool,
+    ) -> Result<(), String> {
+        let owner = self
+            .owner
+            .as_ref()
+            .ok_or("native checkpoint governor unavailable")?;
+        owner.health()?;
+        let room_id = super::state::RoomId::parse(room).ok_or("invalid checkpoint room")?;
+        if let Some(network) = self.network.as_ref() {
+            network.check_native_custody(owner, room_id)?;
+            if network.governed_elsewhere(room_id) {
+                return Err("checkpoint requires the governing owner".into());
+            }
+        }
+        owner.with_current(room_id, |view| {
+            if view.device() != view.governor() {
+                return Err("native checkpoint requires the actual governing owner".into());
+            }
+            Ok(())
+        })?;
+        let (key, governor) = tilo_identity_host::broker::trusted_current_device(room)
+            .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
+        let now = std::time::SystemTime::now();
+        owner.with_current(room_id, |view| {
+            if view.device() != view.governor() || view.governor() != &governor {
+                return Err("checkpoint governor custody changed".into());
+            }
+            view.peer().check_checkpoint_writer(&key, now)?;
+            if mutation {
+                view.peer().check_checkpoint_namer(caller, now)?;
+            }
+            Ok(())
+        })?;
+        owner.read_checkpoint(room_id, caller, id, now)?;
+        Ok(())
+    }
+
+    fn checkpoint(
+        &self,
+        request: tilo_peer_state::workspace_checkpoint::CheckpointRequest,
+    ) -> tilo_peer_state::workspace_checkpoint::CheckpointFuture {
+        let owner = self.owner.clone();
+        let network = self.network.clone();
+        Box::pin(async move {
+            let owner = owner.ok_or("native checkpoint governor unavailable")?;
+            owner.health()?;
+            let room =
+                super::state::RoomId::parse(&request.room).ok_or("invalid checkpoint room")?;
+            if let Some(network) = network.as_ref() {
+                network.check_native_custody(&owner, room)?;
+                if network.governed_elsewhere(room) {
+                    return Err("native checkpoint requires the actual governing owner".into());
+                }
+            }
+            owner.with_current(room, |view| {
+                if view.device() != view.governor() {
+                    return Err("native checkpoint requires the actual governing owner".into());
+                }
+                Ok(())
+            })?;
+            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
+                .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
+            owner.with_current(room, |view| {
+                if view.governor() != &governor {
+                    return Err("checkpoint governor custody changed".into());
+                }
+                Ok(())
+            })?;
+            let result = owner.execute_checkpoint(&request, &key, std::time::SystemTime::now())?;
+            if request.command.mutates()
+                && let Some(network) = network
+            {
+                network.schedule_native_owner_publication(room);
+            }
+            Ok(result)
+        })
+    }
+
     fn requires_room(&self, room: &str) -> bool {
         tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
     }

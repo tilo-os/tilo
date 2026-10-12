@@ -693,6 +693,7 @@ fn an_invocation_id_two_callers_share_continues_neither() {
                 "test:block-a",
                 "update",
                 InvocationInputs {
+                    original_request: None,
                     requested: Some(shared),
                     caller: Some(&caller),
                     execution: ExecutionScope::for_call(&caller, shared),
