@@ -59,12 +59,12 @@ use super::credential::{
     REJECTED_LINE, REPLY_PREFIX, ToMount, WireCredential, capabilities_line, line, reply_line,
 };
 use super::providers::{self, MountSpec};
-use super::volume::{CloudVolume, DEFAULT_IDLE_POLL_MAX, Health, VolumeConfig};
+use super::volume::{CloudVolume, DEFAULT_IDLE_POLL_MAX, VolumeConfig};
 
 /// What a running mount tells the service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MountEvent {
-    Health(Health),
+    Health(MountHealth),
     CredentialRejected,
     CredentialExpired,
     /// The answer to a [`ToMount::Request`].
@@ -146,7 +146,7 @@ struct Mounted {
     dir_name: String,
     running: Box<dyn RunningMount>,
     /// The health the mount last reported.
-    health: Option<Health>,
+    health: Option<MountHealth>,
 }
 
 enum Signal {
@@ -409,11 +409,11 @@ impl CloudService {
                 }
                 let reporter = self.reporter(id);
                 let _ = match health {
-                    Health::Syncing => reporter.started(),
-                    Health::Healthy => reporter.succeeded(),
-                    Health::Offline => reporter.offline(),
-                    Health::NeedsAuthentication => reporter.needs_authentication(),
-                    Health::Error => reporter.failed(),
+                    MountHealth::Syncing => reporter.started(),
+                    MountHealth::Healthy => reporter.succeeded(),
+                    MountHealth::Offline => reporter.offline(),
+                    MountHealth::NeedsAuthentication => reporter.needs_authentication(),
+                    MountHealth::Error => reporter.failed(),
                 };
             }
             MountEvent::CredentialRejected | MountEvent::CredentialExpired => {
@@ -459,7 +459,7 @@ impl CloudService {
             .map(|(id, mounted)| CloudMount {
                 account: id.clone(),
                 mount_point: self.config.mounts_root.join(&mounted.dir_name),
-                health: mounted.health.map(wire_health),
+                health: mounted.health,
                 paused: self.paused.contains(id),
                 capabilities: mounted.running.capabilities(),
             })
@@ -579,7 +579,12 @@ impl CloudService {
 
     /// Handle events until `account_id` reports `health`, for at most
     /// `timeout`. Returns whether it did.
-    pub fn wait_for_health(&mut self, account_id: &str, health: Health, timeout: Duration) -> bool {
+    pub fn wait_for_health(
+        &mut self,
+        account_id: &str,
+        health: MountHealth,
+        timeout: Duration,
+    ) -> bool {
         let deadline = std::time::Instant::now().checked_add(timeout);
         loop {
             let left = deadline.map_or(timeout, |deadline| {
@@ -673,16 +678,6 @@ impl CloudService {
         for id in ids {
             self.unmount(&id, false);
         }
-    }
-}
-
-fn wire_health(health: Health) -> MountHealth {
-    match health {
-        Health::Syncing => MountHealth::Syncing,
-        Health::Healthy => MountHealth::Healthy,
-        Health::Offline => MountHealth::Offline,
-        Health::NeedsAuthentication => MountHealth::NeedsAuthentication,
-        Health::Error => MountHealth::Error,
     }
 }
 
@@ -997,7 +992,7 @@ impl Launcher for ProcessLauncher {
                 } else if line == EXPIRED_LINE {
                     events(MountEvent::CredentialExpired);
                 } else if let Some(state) = line.strip_prefix(HEALTH_PREFIX)
-                    && let Some(health) = Health::parse(state)
+                    && let Some(health) = MountHealth::parse(state)
                 {
                     events(MountEvent::Health(health));
                 }

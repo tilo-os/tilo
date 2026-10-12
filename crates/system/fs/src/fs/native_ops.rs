@@ -11,7 +11,7 @@
 
 use std::path::{Component, Path};
 
-use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, now_ms};
+use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, document_codec_for, now_ms};
 use crate::namespace::{
     ContentAuthority, LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease,
 };
@@ -811,9 +811,7 @@ impl QuickFS {
         if self.signed() || self.ns().content_authority() != ContentAuthority::LegacyNamespace {
             return None;
         }
-        std::str::from_utf8(name)
-            .ok()
-            .and_then(|name| self.document_codec_for(name))
+        std::str::from_utf8(name).ok().and_then(document_codec_for)
     }
 
     /// Creates the document `name` in `parent` with `data` as its content,

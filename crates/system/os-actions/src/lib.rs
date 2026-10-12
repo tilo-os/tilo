@@ -55,6 +55,7 @@ pub mod linux_physical_gamepad;
 pub mod linux_virtual_gamepad;
 pub mod modem;
 pub mod network;
+pub mod network_wake;
 pub mod orientation;
 pub mod peripheral_forwarding;
 pub mod power;

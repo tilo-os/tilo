@@ -2,7 +2,7 @@
 """Finish a chunkah re-layering of the OS image and prove it is the same tree.
 
 os/Containerfile.rechunk writes the raw image's root again as content-based
-layers (TIL-747). Before that layout is published, this script
+layers. Before that layout is published, this script
 
 1. replays the raw image's layers (whiteouts and opaque directories applied)
    and the chunked layers, hashing every regular file;
@@ -75,7 +75,7 @@ PRUNED = "sysroot/"
 # longer carries (chunkah's own guidance for a pruned /sysroot).
 DROPPED_LABELS = ("ostree.commit", "ostree.final-diffid")
 LAYERING_LABEL = "org.tilo.layering"
-DIRECTORY_LAYER = "oci-rechunk: every directory's mode, owner, time and xattrs, from the raw image (TIL-747)"
+DIRECTORY_LAYER = "oci-rechunk: every directory's mode, owner, time and xattrs, from the raw image"
 SHOWN = 40
 
 

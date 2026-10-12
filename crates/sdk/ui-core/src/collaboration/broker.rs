@@ -48,7 +48,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use runtime_portal::RawFd;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -521,6 +521,16 @@ impl CollabTransport for BrokerTransport {
             .swap(false, Ordering::AcqRel)
     }
 
+    fn action_directory_publication_counts(&self) -> Option<(u64, u64)> {
+        self.state
+            .directory_observation_enabled
+            .store(true, Ordering::Release);
+        Some((
+            self.state.directory_rpc_successes.load(Ordering::Acquire),
+            self.state.directory_rpc_failures.load(Ordering::Acquire),
+        ))
+    }
+
     fn send_native_media(
         &mut self,
         channel: String,
@@ -987,16 +997,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             json_map_bytes(arguments, &mut meter);
             json_bytes(confirmation, &mut meter);
         }
-        CollabRequest::SubscribeEnrolledTasks { .. } => {}
-        CollabRequest::AcceptEnrolledTask { acceptance, .. } => {
-            serialized_bytes(acceptance, &mut meter)
-        }
-        CollabRequest::ReportEnrolledTask {
-            acceptance, update, ..
-        } => {
-            serialized_bytes(acceptance, &mut meter);
-            serialized_bytes(update, &mut meter);
-        }
         CollabRequest::ReportTaskRun { lease, update, .. } => {
             meter.string_capacity(lease);
             serialized_bytes(update, &mut meter);
@@ -1443,33 +1443,12 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             }
             "InstalledApplicationLaunchResult"
         }
-        CollabEvent::TaskActionInvocationResult {
-            result,
-            continuation,
-            ..
-        } => {
+        CollabEvent::TaskActionInvocationResult { result, .. } => {
             match result {
                 Ok((_, update)) => serialized_bytes(update, &mut meter),
                 Err(error) => meter.string_capacity(error),
             }
-            if let Some(continuation) = continuation {
-                meter.add(continuation.capacity());
-            }
             "TaskActionInvocationResult"
-        }
-        CollabEvent::EnrolledTask(run) => {
-            serialized_bytes(run, &mut meter);
-            "EnrolledTask"
-        }
-        CollabEvent::EnrolledTaskReply { result, .. } => {
-            if let Err(error) = result {
-                meter.string_capacity(error);
-            }
-            "EnrolledTaskReply"
-        }
-        CollabEvent::EnrolledTaskDisconnected { detail } => {
-            meter.string_capacity(detail);
-            "EnrolledTaskDisconnected"
         }
         CollabEvent::TaskRun(run) => {
             task_run_bytes(run, &mut meter);
@@ -1536,6 +1515,19 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             serialized_bytes(event, &mut meter);
             "Realtime"
         }
+        CollabEvent::HistoryAgents { cluster_id, agents } => {
+            meter.string_capacity(cluster_id);
+            meter.add_product(
+                agents.capacity(),
+                std::mem::size_of::<crate::history_source::RosterAgent>(),
+            );
+            for agent in agents {
+                meter.string_capacity(&agent.person_name);
+                meter.string_capacity(&agent.agent_id);
+                meter.string_capacity(&agent.label);
+            }
+            "HistoryAgents"
+        }
     };
     (kind, meter.finish())
 }
@@ -1559,6 +1551,9 @@ struct BridgeState {
     /// The broker refused or failed an action-surface publication; the owner
     /// takes this and republishes.
     action_surface_failed: Arc<AtomicBool>,
+    directory_rpc_successes: Arc<AtomicU64>,
+    directory_rpc_failures: Arc<AtomicU64>,
+    directory_observation_enabled: Arc<AtomicBool>,
     command_bytes: ByteBudget,
     event_bytes: ByteBudget,
     document_command_bytes: ByteBudget,
@@ -1706,6 +1701,9 @@ impl BridgeState {
             healthy: Arc::new(AtomicBool::new(true)),
             publication_failure: Arc::new(std::sync::Mutex::new(None)),
             action_surface_failed: Arc::new(AtomicBool::new(false)),
+            directory_rpc_successes: Arc::new(AtomicU64::new(0)),
+            directory_rpc_failures: Arc::new(AtomicU64::new(0)),
+            directory_observation_enabled: Arc::new(AtomicBool::new(false)),
             command_bytes: ByteBudget::with_room_wake(outbound_room.clone()),
             event_bytes: ByteBudget::new(),
             document_command_bytes: ByteBudget::with_room_wake(outbound_room),
@@ -4047,7 +4045,23 @@ async fn drive_shovel(
                     .publish_action_directory(&app_id, directory)
                     .await
                 {
+                    inbound_tx
+                        .state
+                        .directory_rpc_failures
+                        .fetch_add(1, Ordering::AcqRel);
                     tracing::warn!(%error, "collab: publishing pull resource/action directory failed");
+                } else {
+                    inbound_tx
+                        .state
+                        .directory_rpc_successes
+                        .fetch_add(1, Ordering::AcqRel);
+                }
+                if inbound_tx
+                    .state
+                    .directory_observation_enabled
+                    .load(Ordering::Acquire)
+                {
+                    inbound_tx.state.notify_events();
                 }
             }
             SdkCommand::WifiContinuity {
@@ -4531,6 +4545,29 @@ async fn spawn_context_stream(
                         }
                     } else {
                         tracing::warn!("collab: malformed handoff request dropped");
+                    }
+                    continue;
+                }
+                if let Some(agents) = context.history_agents {
+                    let agents = agents
+                        .into_iter()
+                        .map(|agent| {
+                            let [_, red, green, blue] = agent.color.to_be_bytes();
+                            crate::history_source::RosterAgent {
+                                device: agent.device,
+                                person: agent.person,
+                                person_name: agent.person_name,
+                                agent_id: agent.agent_id,
+                                label: agent.label,
+                                color: [red, green, blue],
+                            }
+                        })
+                        .collect();
+                    if !tx.send_durable(CollabEvent::HistoryAgents {
+                        cluster_id: route.cluster_id.to_string(),
+                        agents,
+                    }) {
+                        break;
                     }
                     continue;
                 }
@@ -5982,30 +6019,6 @@ fn parse_task_update(id: u64, update: &str) -> TaskActionResult {
         .map_err(|error| error.to_string())
 }
 
-/// Project a stepped task reply onto the event fields: a committed step
-/// carries its continuation; a pending or lost step asks the caller to
-/// re-send the identical step.
-fn task_step_event(
-    reply: Result<runtime_collab::TaskStepReply, String>,
-) -> (TaskActionResult, Option<Vec<u8>>, bool) {
-    match reply {
-        Ok(runtime_collab::TaskStepReply::Committed {
-            update_json,
-            continuation,
-        }) => (
-            parse_task_update(0, &update_json),
-            Some(continuation),
-            false,
-        ),
-        Ok(runtime_collab::TaskStepReply::Retry) => (
-            Err("task step pending; retry the same step".into()),
-            None,
-            true,
-        ),
-        Err(error) => (Err(error), None, false),
-    }
-}
-
 // Not `Send`: `route.channel` wraps a capnp-rpc handle (`Rc`-based,
 // `!Send`), and this only ever runs inside the shovel thread's `LocalSet`.
 #[allow(
@@ -6402,43 +6415,11 @@ async fn dispatch_sdk_request(
         }
         #[cfg(unix)]
         CollabRequest::ManagedInvocationAttempt { attempt } => {
-            use crate::host_worker::managed_sender::{AttemptFailure, RequestView};
-            use managed_sender_transport::{Failure, Request};
             let result = match attempt.claim(&route.spec) {
                 None => return true, // A clone cannot dispatch the same local attempt twice.
                 Some(Err(error)) => Err(error),
-                Some(Ok(view)) => {
-                    let request = match view {
-                        RequestView::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        } => Request::Invoke {
-                            invocation,
-                            binding,
-                            revision,
-                            resource,
-                            action,
-                            argument,
-                            confirmation_json,
-                        },
-                        RequestView::Observe { host, invocation } => {
-                            Request::Observe { host, invocation }
-                        }
-                        RequestView::Cancel { host, invocation } => {
-                            Request::Cancel { host, invocation }
-                        }
-                    };
-                    managed_sender_transport::send(route, request, attempt.deadline())
-                        .await
-                        .map_err(|error| match error {
-                            Failure::Deadline => AttemptFailure::Deadline,
-                            Failure::Unavailable => AttemptFailure::Unavailable,
-                        })
+                Some(Ok(request)) => {
+                    managed_sender_transport::send(route, request, attempt.deadline()).await
                 }
             };
             if let Some(result) = attempt.finish(result) {
@@ -6589,66 +6570,6 @@ async fn dispatch_sdk_request(
             let _ = inbound_tx
                 .send_durable(CollabEvent::InstalledApplicationLaunchResult { request_id, result });
         }
-        CollabRequest::SubscribeEnrolledTasks { request_id } => {
-            let result = route
-                .channel
-                .subscribe_enrolled_tasks()
-                .await
-                .map_err(|error| error.to_string());
-            let reply = match result {
-                Ok(stream) => {
-                    let tx = inbound_tx.clone();
-                    tokio::task::spawn_local(async move {
-                        loop {
-                            match stream.read().await {
-                                Ok(run) => {
-                                    if !tx.send_durable(CollabEvent::EnrolledTask(run)) {
-                                        break;
-                                    }
-                                }
-                                Err(error) => {
-                                    let _ =
-                                        tx.send_durable(CollabEvent::EnrolledTaskDisconnected {
-                                            detail: error.to_string(),
-                                        });
-                                    break;
-                                }
-                            }
-                        }
-                    });
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            };
-            let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply {
-                request_id,
-                result: reply,
-            });
-        }
-        CollabRequest::AcceptEnrolledTask {
-            request_id,
-            acceptance,
-        } => {
-            let result = route
-                .channel
-                .accept_enrolled_task(&acceptance)
-                .await
-                .map_err(|error| error.to_string());
-            let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply { request_id, result });
-        }
-        CollabRequest::ReportEnrolledTask {
-            request_id,
-            acceptance,
-            sequence,
-            update,
-        } => {
-            let result = route
-                .channel
-                .report_enrolled_task(&acceptance, sequence, &update)
-                .await
-                .map_err(|error| error.to_string());
-            let _ = inbound_tx.send_durable(CollabEvent::EnrolledTaskReply { request_id, result });
-        }
         CollabRequest::ReportTaskRun {
             request_id,
             run_id,
@@ -6672,11 +6593,63 @@ async fn dispatch_sdk_request(
             invocation,
             run_id,
             lease,
-            step,
             peer_id,
             resource,
             action,
             arguments,
+            wait: Some(wait),
+        } => {
+            // The broker holds this answer until the child moves; the
+            // connection's other traffic must not wait behind it. Polled
+            // once here, so the re-ask still goes out in the order it was
+            // asked, as a waiting remote action does.
+            let channel = route.channel.clone();
+            let mut round_trip = Box::pin(async move {
+                let argument = format!(
+                    "{}{}",
+                    tilo_actions::ARGUMENTS_JSON_PREFIX,
+                    serde_json::Value::Object(arguments)
+                );
+                let target = runtime_collab::TaskAction {
+                    peer_id,
+                    resource: &resource,
+                    action: &action,
+                    argument: Some(&argument),
+                };
+                channel
+                    .observe_task_child(run_id, &lease, target, &invocation.0.to_string(), wait)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|(id, update)| parse_task_update(id, &update))
+            });
+            let first = std::future::poll_fn(|context| {
+                std::task::Poll::Ready(round_trip.as_mut().poll(context))
+            })
+            .await;
+            let event =
+                move |result| CollabEvent::TaskActionInvocationResult { request_id, result };
+            match first {
+                std::task::Poll::Ready(result) => {
+                    let _ = inbound_tx.send_durable(event(result));
+                }
+                std::task::Poll::Pending => {
+                    let inbound = inbound_tx.clone();
+                    tokio::task::spawn_local(async move {
+                        let _ = inbound.send_durable(event(round_trip.await));
+                    });
+                }
+            }
+        }
+        CollabRequest::InvokeTaskAction {
+            request_id,
+            invocation,
+            run_id,
+            lease,
+            peer_id,
+            resource,
+            action,
+            arguments,
+            ..
         } => {
             let argument = format!(
                 "{}{}",
@@ -6689,31 +6662,14 @@ async fn dispatch_sdk_request(
                 action: &action,
                 argument: Some(&argument),
             };
-            let (result, continuation, retry_step) = match step {
-                Some(step) => task_step_event(
-                    route
-                        .channel
-                        .invoke_task_step(run_id, &lease, step, target)
-                        .await
-                        .map_err(|error| error.to_string()),
-                ),
-                None => (
-                    route
-                        .channel
-                        .invoke_task_action(run_id, &lease, target, "", &invocation.0.to_string())
-                        .await
-                        .map_err(|error| error.to_string())
-                        .and_then(|(id, update)| parse_task_update(id, &update)),
-                    None,
-                    false,
-                ),
-            };
-            let _ = inbound_tx.send_durable(CollabEvent::TaskActionInvocationResult {
-                request_id,
-                result,
-                continuation,
-                retry_step,
-            });
+            let result = route
+                .channel
+                .invoke_task_action(run_id, &lease, target, "", &invocation.0.to_string())
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|(id, update)| parse_task_update(id, &update));
+            let _ = inbound_tx
+                .send_durable(CollabEvent::TaskActionInvocationResult { request_id, result });
         }
         CollabRequest::TaskRunCancellation {
             request_id,
@@ -7067,6 +7023,9 @@ mod tests {
         refuse_action_publications: usize,
         refused_action_publications: usize,
         action_directories: Vec<String>,
+        refuse_action_directories: usize,
+        directory_attempts: Vec<std::time::Instant>,
+        directory_ack: Option<Arc<tokio::sync::Notify>>,
         action_catalogue_fixture: Option<Vec<String>>,
         action_catalogue_subscriptions: usize,
         action_catalogue_reads: usize,
@@ -7581,12 +7540,27 @@ mod tests {
             _results: channel_handle::PublishActionDirectoryResults,
         ) -> Promise<(), capnp::Error> {
             let request = params.get().unwrap();
-            self.captures
-                .lock()
-                .unwrap()
+            let mut captures = self.captures.lock().unwrap();
+            captures.directory_attempts.push(std::time::Instant::now());
+            let refused = captures.refuse_action_directories > 0;
+            if refused {
+                captures.refuse_action_directories -= 1;
+            }
+            captures
                 .action_directories
                 .push(request.get_app_id().unwrap().to_str().unwrap().to_owned());
-            Promise::ok(())
+            let ack = captures.directory_ack.clone();
+            drop(captures);
+            Promise::from_future(async move {
+                if let Some(ack) = ack {
+                    ack.notified().await;
+                }
+                if refused {
+                    Err(capnp::Error::failed("fixture directory refusal".into()))
+                } else {
+                    Ok(())
+                }
+            })
         }
 
         #[cfg(unix)]
@@ -9269,7 +9243,7 @@ mod tests {
         (manager, asked, thread)
     }
 
-    /// TIL-598: an endpoint holding its route's keys asks for them again only
+    /// #3964: an endpoint holding its route's keys asks for them again only
     /// when the broker says the channel changed, once per change, and never
     /// on a timer: an idle app costs the identity service nothing.
     #[test]
@@ -11162,6 +11136,87 @@ mod tests {
     }
 
     #[test]
+    fn native_admission_ack_wakes_parked_owner_without_an_action() {
+        held_directory_observation(false);
+    }
+
+    #[test]
+    fn native_admission_failure_wakes_owner_without_claiming_retry() {
+        held_directory_observation(true);
+    }
+
+    fn held_directory_observation(refused: bool) {
+        let ack = Arc::new(tokio::sync::Notify::new());
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                directory_ack: Some(ack.clone()),
+                refuse_action_directories: usize::from(refused),
+                ..Captures::default()
+            })),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (scope, wakes) = wake_channel();
+        let _entry = scope.enter();
+        let (fd, captures, worker) = stand_up_fake_broker(broker);
+        let manager = CollaborationManager::from_sdk_fd_for_test(
+            fd,
+            &crate::collaboration::local_app_id(),
+            Uuid::new_v4(),
+        );
+        let mut app = crate::App::with_collaboration_manager(
+            crate::State::new(),
+            Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
+            manager,
+        );
+        crate::app::draw_prepared_component_test_frame(&mut app);
+        eventually("directory RPC reaches actual host", || {
+            !captures.lock().unwrap().directory_attempts.is_empty()
+        });
+        app.pump_collab_presence();
+        let before = app.native_admission_snapshot();
+        while wakes.try_recv().is_ok() {}
+        ack.notify_one();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let observed = loop {
+            if wakes
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .is_err()
+            {
+                break false;
+            }
+            app.pump_collab_presence();
+            let snapshot = app.native_admission_snapshot();
+            if snapshot.directory.transport_directory_rpc_successes == Some(u64::from(!refused))
+                && snapshot.directory.transport_directory_rpc_failures == Some(u64::from(refused))
+            {
+                break true;
+            }
+        };
+        drop(app);
+        worker.join().unwrap();
+        assert_eq!(
+            before.directory.transport_directory_rpc_successes,
+            Some(0),
+            "enqueue is not RPC success"
+        );
+        assert_eq!(before.directory.transport_directory_rpc_failures, Some(0));
+        assert!(before.directory.directory_enqueued);
+        assert!(before.connection.manager_connected);
+        assert!(
+            observed,
+            "actual RPC result must wake the profiled owner before any app action"
+        );
+        assert_eq!(
+            captures.lock().unwrap().directory_attempts.len(),
+            1,
+            "observation introduces no retries"
+        );
+    }
+
+    #[test]
     fn disconnected_manager_is_a_no_op() {
         // No SDK, no legacy socket set — falls through to `Backend::Disabled`.
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -12079,34 +12134,6 @@ mod tests {
             assert_eq!(parse_invocation_context(8, "  "), None);
             assert_eq!(parse_invocation_context(9, "{not-json"), None);
         }
-    }
-
-    #[test]
-    fn task_step_replies_keep_committed_and_retry_apart() {
-        let update = serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
-            invocation: tilo_actions::InvocationId::new(),
-            output: tilo_actions::ActionOutput::default(),
-        })
-        .unwrap();
-        let (result, continuation, retry) =
-            task_step_event(Ok(runtime_collab::TaskStepReply::Committed {
-                update_json: update,
-                continuation: b"{\"succeeded\":{}}".to_vec(),
-            }));
-        assert!(matches!(
-            result,
-            Ok((0, tilo_actions::InvocationUpdate::Succeeded { .. }))
-        ));
-        assert_eq!(continuation.as_deref(), Some(&b"{\"succeeded\":{}}"[..]));
-        assert!(!retry);
-
-        let (result, continuation, retry) =
-            task_step_event(Ok(runtime_collab::TaskStepReply::Retry));
-        assert!(result.is_err() && continuation.is_none() && retry);
-
-        let (result, _, retry) = task_step_event(Err("task action is no longer live".into()));
-        assert_eq!(result.unwrap_err(), "task action is no longer live");
-        assert!(!retry, "a refusal is terminal, not a pending step");
     }
 
     fn assert_document_publication_failure(manager: &mut CollaborationManager, expected: &str) {

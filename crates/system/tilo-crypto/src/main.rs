@@ -21,6 +21,8 @@ const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
 const EFI_IMAGE_SECURITY_DATABASE_GUID: &str = "d719b2cb-3d3a-4596-a3bc-dad00e67656f";
 const SECURE_BOOT_ATTRIBUTES: u32 = 0x27;
 
+// Deliberately not `tilo_files::native::nofollow`: the signing tool depends on
+// no workspace crate, so development-signing builds stay off workspace-hack.
 fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<fs::File> {
     const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
     const RESOLVE_NO_SYMLINKS: u64 = 0x04;

@@ -67,24 +67,17 @@ impl Account {
         }
     }
 
-    /// Display label for the account header: the display name, falling back to
-    /// the email, falling back to a generic placeholder.
-    pub fn label(&self) -> &str {
-        if !self.config.display_name.is_empty() {
-            &self.config.display_name
-        } else if !self.config.email.is_empty() {
-            &self.config.email
-        } else {
-            "New account"
-        }
-    }
-
     /// The opaque, secret-free config payload persisted into a shared
     /// [`StoredAccount`]. The password is `#[serde(skip)]` on [`AccountConfig`],
     /// so it never reaches this JSON — it lives only in the vault.
     fn to_stored(&self) -> StoredAccount {
-        let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), TYPE_ID);
-        stored.display_name = self.label().to_string();
+        let type_id = if self.config.import_pending {
+            accounts::thunderbird::PENDING_TYPE
+        } else {
+            TYPE_ID
+        };
+        let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), type_id);
+        stored.display_name = self.config.label().to_string();
         stored.tint = self.tint;
         stored.set_config(&StoredConfig {
             config: self.config.clone(),
@@ -98,7 +91,10 @@ impl Account {
     fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
         let payload = stored.config_as::<StoredConfig>()?;
         let mut config = payload.config;
-        if let Some(secret) = vault.get(&stored.id) {
+        config.import_pending |= stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
+        if !config.import_pending
+            && let Some(secret) = vault.get(&stored.id)
+        {
             config.password = secret.password;
         }
         Some(Self {
@@ -165,6 +161,7 @@ impl AccountStore {
         let accounts: Vec<Account> = shared
             .list(&ty)
             .into_iter()
+            .chain(shared.list(&accounts::thunderbird::PENDING_TYPE.into()))
             .filter_map(|stored| Account::from_stored(stored, vault))
             .collect();
         // Map the shared store's active-id back to Mail's active-index.
@@ -224,6 +221,9 @@ impl AccountStore {
         for acct in &self.accounts {
             let id = AccountId::from(acct.id.clone());
             shared.upsert(acct.to_stored());
+            if acct.config.import_pending {
+                continue;
+            }
             // Keep an existing sealed OAuth token intact: an OAuth account has
             // no password, and its token was sealed by the sign-in flow — do
             // not clobber it. Only manage the password secret here.
@@ -294,6 +294,9 @@ impl AccountStore {
             vault.remove(id);
         }
         for acct in &self.accounts {
+            if acct.config.import_pending {
+                continue;
+            }
             let id = AccountId::from(acct.id.clone());
             if acct.config.password.is_empty() {
                 if acct.config.auth != crate::model::AuthMethod::OAuth {
@@ -663,3 +666,6 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 }
+
+#[cfg(test)]
+mod import_tests;

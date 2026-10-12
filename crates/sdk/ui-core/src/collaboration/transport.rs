@@ -213,6 +213,14 @@ pub trait CollabTransport: Send {
         false
     }
 
+    /// Actual successful/failed pull-directory RPCs for this transport lifetime.
+    /// None means this transport does not expose the observation. Observing
+    /// enables an owner wake for later acknowledgements; unobserved callers
+    /// retain their original scheduling.
+    fn action_directory_publication_counts(&self) -> Option<(u64, u64)> {
+        None
+    }
+
     /// Whether committed-document custody allows publishing a document
     /// mutation on `channel` (the primary route when `None` is not yet
     /// acknowledged). Transports without committed reads always allow it.
