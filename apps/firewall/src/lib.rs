@@ -1,7 +1,8 @@
 //! Firewall — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
-//! A firewalld/nftables front-end: a zone rail, a per-zone rules table, a
-//! toggleable services panel, a posture summary, and an add-rule form. The
+//! A firewalld/nftables front-end: the zones in a sidebar, and for the open
+//! zone its state, a rules table with an add-rule form, and the services it
+//! lets through, each with a switch. The
 //! configuration lives in a field-addressable shared Automerge document (see
 //! [`doc`]), so two instances pointed at one collab socket edit independent
 //! rules and services without clobbering each other. The live app reads/applies via
@@ -26,29 +27,24 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
-pub mod actions;
 pub mod app;
 pub mod backend;
-pub mod doc;
+pub mod locales;
 pub mod model;
-pub mod paint;
 pub mod resource;
 pub mod sample;
+mod view;
 
 pub use app::FirewallApp;
 pub use resource::{Firewall, FirewallShell};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<FirewallShell>()
+    ui::built_in_definition!(FirewallShell)
 }

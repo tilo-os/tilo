@@ -24,7 +24,6 @@ jobs:
     container:
       image: ${{ needs.builder.outputs.image }}
     env:
-      CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
       RUST_BACKTRACE: "1"
     steps:
@@ -51,7 +50,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -62,6 +61,7 @@ jobs:
         run: cargo fmt --check
 
   complete:
+    needs: builder
     strategy:
       fail-fast: false
       matrix:
@@ -75,12 +75,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     container:
-      # Visual goldens are meaningful only when fonts, Mesa and the software
-      # renderer are byte-for-byte identical to the reviewed refresh job.
-      # Advance this digest together with dev-visual-baselines.yml.
-      image: registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+      # The goldens' step checks this is the image they were rendered on
+      # (.config/visual-goldens-image).
+      image: ${{ needs.builder.outputs.image }}
     env:
-      CARGO_HOME: /cargo-home
       # Both disk-class slots have the memory for four compiler processes;
       # one left the aarch64 workspace build alone at 130 minutes.
       CARGO_BUILD_JOBS: "4"
@@ -123,13 +121,13 @@ jobs:
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
 
-      # This golden-pinned image predates the audio fixture. Install only new
+      # A builder that predates the audio fixture gets it here. Install only new
       # packages or replace the audio daemon: never update fonts, Mesa or libraries.
       # A dependency requiring an existing package upgrade must fail the job.
       - name: Ensure isolated audio test dependency
         run: bash tools/ensure-headless-audio.sh
 
-      # The same image predates the private session bus tests (tilo-os-search)
+      # Likewise for the private session bus tests (tilo-os-search)
       # and the launcher's bus-filter tests (xdg-dbus-proxy).
       - name: Ensure session-bus test tools
         run: bash tools/ci/ensure-session-bus-tools.sh
@@ -193,7 +191,10 @@ jobs:
       # so every nightly reports each suite's own result.
       - name: Verify visual goldens on an idle renderer
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
         run: >-
+          bash tools/ci/golden-image.sh check "$BUILDER_IMAGE" &&
           bash tools/ci/measure.sh "nightly isolated visual goldens" --
           bash scripts/ci-run.sh "cargo nextest visual goldens" --
           bash tools/test-env.sh cargo nextest run --workspace --locked --profile ci
@@ -298,8 +299,5 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          path: ${{ steps.rust-build.outputs.cargo-cache-paths }}
+          key: ${{ steps.rust-build.outputs.cargo-cache-key }}

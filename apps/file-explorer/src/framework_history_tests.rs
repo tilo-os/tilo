@@ -1,11 +1,20 @@
-//! Real accepted backend connected to the production Files registration and host.
+//! The file history Files names for the framework's History: a real accepted
+//! backend and mounted projections, restored through the hosted app.
 use super::*;
-use collab_types::files::*;
+use crate::FileExplorerShell;
+use fs_protocol::files::*;
 use std::sync::{Arc, Mutex};
-use ui::history_mode::{
-    ManagedRoot,
-    checked_files::{FileHistoryTarget, FileHistoryTransport},
-};
+use ui::history_mode::checked_files::{FileHistorySource, FileHistoryTarget, FileHistoryTransport};
+use ui::prelude::TestApp;
+
+/// Files hosted by the framework, and the file history its surface names.
+fn hosted() -> (TestApp<FileExplorerShell>, FileHistorySource) {
+    let mut app = TestApp::<FileExplorerShell>::new().unwrap();
+    let source = app
+        .with_surface(|files: &mut FileExplorerWidget| files.framework_history.clone())
+        .unwrap();
+    (app, source)
+}
 
 /// Submits a transport returned. A checked restore is durable backend work:
 /// the accepted backend commits a phased, fsynced transaction and the mounted
@@ -49,7 +58,7 @@ impl FileHistoryTransport for Backend {
     fn preview(
         &self,
         scope: FileHistoryReadScopeV1,
-        version: collab_types::FileVersionId,
+        version: fs_protocol::FileVersionId,
     ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
         self.fs.read_file_history_preview(self.ino, scope, version)
     }
@@ -90,7 +99,7 @@ impl FileHistoryTransport for Counted {
     fn preview(
         &self,
         scope: FileHistoryReadScopeV1,
-        version: collab_types::FileVersionId,
+        version: fs_protocol::FileVersionId,
     ) -> Result<Vec<u8>, FileHistoryReadErrorV1> {
         self.inner.preview(scope, version)
     }
@@ -126,7 +135,9 @@ fn confirm(driver: &mut ui::headless::FrameHarness, phase: &str) {
         "confirmation missing in {phase}: {}",
         driver.inspection_json().unwrap()
     );
-    driver.key("Enter");
+    driver
+        .click_named("history-restore-review.primary")
+        .expect("the retained primary restore button is activated explicitly");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -135,7 +146,6 @@ fn confirm(driver: &mut ui::headless::FrameHarness, phase: &str) {
     reason = "end-to-end restore/undo/redo/reopen scenario reads top to bottom"
 )]
 async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_reopen() {
-    use automerge::transaction::Transactable;
     let directory = tempfile::tempdir().unwrap();
     let endpoint = iroh::Endpoint::bind(iroh::endpoint::presets::N0)
         .await
@@ -156,11 +166,31 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         .create_file(fs::ROOT_INO, "report.txt", Some(&live_hash), 20, 1)
         .unwrap();
     let record = namespace.record_id_for(ino).unwrap();
-    let old = collab_types::FileVersionId(uuid::Uuid::from_u128(101));
-    let current = collab_types::FileVersionId(uuid::Uuid::from_u128(102));
-    let actor = collab_types::FileActor {
-        person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-        device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+    let old = fs_protocol::FileVersionId(uuid::Uuid::from_u128(101));
+    let current = fs_protocol::FileVersionId(uuid::Uuid::from_u128(102));
+    let workspace = uuid::Uuid::new_v4();
+    let device = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+    let actor = fs_protocol::FileActor {
+        person: fs_protocol::Ed25519PublicKey::from_bytes(
+            ed25519_dalek::SigningKey::from_bytes(&[1; 32])
+                .verifying_key()
+                .to_bytes(),
+        ),
+        device: fs_protocol::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+    };
+    let publisher = || {
+        Arc::new(
+            fs::RecordPublisher::new(
+                Arc::new(
+                    fs::record_repository::RecordRepository::open(directory.path().join("records"))
+                        .unwrap(),
+                ),
+                workspace,
+                actor,
+                device.clone(),
+            )
+            .unwrap(),
+        )
     };
     let history =
         Arc::new(fs::FileHistoryStore::open(directory.path().join("history.json")).unwrap());
@@ -170,25 +200,25 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             vec![],
             old_hash,
             1,
-            collab_types::FileProvenance::Create,
+            fs_protocol::FileProvenance::Create,
         ),
         (
             current,
             vec![old],
             live_hash,
             2,
-            collab_types::FileProvenance::Edit,
+            fs_protocol::FileProvenance::Edit,
         ),
     ] {
         history
-            .append(collab_types::FileVersionV1 {
+            .append(fs_protocol::FileVersionV1 {
                 id,
                 record_id: record,
                 parents,
                 actor,
                 timestamp_ms: time,
-                content_hash: Some(collab_types::ContentHash(*hash.as_bytes())),
-                metadata_hash: collab_types::ContentHash([7; 32]),
+                content_hash: Some(fs_protocol::ContentHash(*hash.as_bytes())),
+                metadata_hash: fs_protocol::ContentHash([7; 32]),
                 provenance,
             })
             .unwrap();
@@ -196,7 +226,6 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     let namespace = Arc::new(Mutex::new(namespace));
     let hydrator = Arc::new(fs::Hydrator::new(endpoint.clone(), content));
     let heuristics = Arc::new(fs::Heuristics::new(hydrator.clone()));
-    let workspace = uuid::Uuid::new_v4();
     let journal = Arc::new(Mutex::new(
         fs::record_transaction::RecordTransactionJournal::open(
             directory.path().join("transactions"),
@@ -208,6 +237,8 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             .with_history(history.clone(), actor)
             .unwrap()
             .with_checked_history_workspace(workspace)
+            .with_record_publisher(publisher())
+            .unwrap()
             .with_replacement_transactions(journal, directory.path().join("namespace.am"))
             .unwrap(),
     );
@@ -219,32 +250,20 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         lookups: Mutex::new(vec![]),
         returned: SubmitReturns::default(),
     });
-    let root = FileExplorerWidget::new();
-    root.framework_history.set_target(Some(FileHistoryTarget {
+    let (mut app, source) = hosted();
+    source.set_target(Some(FileHistoryTarget {
         binding: uuid::Uuid::new_v4(),
         record,
         label: "report.txt".into(),
         transport: transport.clone(),
+        authors: ui::history_source::AuthorDirectory::new(),
     }));
-    let registration = ui::history_mode::capability::history_registration(&root)
-        .unwrap()
-        .unwrap();
-    let mut state = ui::State::new();
-    state
-        .doc
-        .put(automerge::ROOT, "incidental-view-state", "untouched")
-        .unwrap();
-    state.doc.commit();
-    let original_heads = state.doc.get_heads();
-    let mut driver = ui::headless::FrameHarness::from_managed_root(
-        state,
-        ManagedRoot::new(Box::new(root), registration),
-        (1100, 750),
-    )
-    .unwrap();
-    driver.click_named("history-open").unwrap();
+    let driver = app.harness();
+    driver.relayout();
+    let original_heads = driver.state_mut().doc.get_heads();
+    source.open(None);
     let target = format!("timeline-entry:{}", old.0.simple());
-    wait(&mut driver, &target);
+    wait(driver, &target);
     driver
         .perform_semantic_named(
             "activity_timeline",
@@ -252,16 +271,16 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             &ui::a11y::Action::Activate,
         )
         .unwrap();
-    wait(&mut driver, "old exact file content");
+    wait(driver, "old exact file content");
     assert_eq!(driver.state_mut().doc.get_heads(), original_heads);
     driver.click_named("history-restore").unwrap();
-    confirm(&mut driver, "backend restore");
+    confirm(driver, "backend restore");
     // Confirming relabels the dialog at once; the submit runs in the
     // background. Wait for it, then for its (deliberately hidden)
     // acknowledgement to reach the session.
-    wait(&mut driver, "Refresh review");
-    transport.returned.wait(&mut driver, 1);
-    wait(&mut driver, UNAVAILABLE_ACK);
+    wait(driver, "Refresh review");
+    transport.returned.wait(driver, 1);
+    wait(driver, UNAVAILABLE_ACK);
     let submitted = transport.submitted.lock().unwrap().clone();
     assert_eq!(submitted.len(), 1);
     assert_eq!(
@@ -271,7 +290,7 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     );
     driver.key("Escape");
     driver.click_named("history-files-result").unwrap();
-    wait(&mut driver, "Restored revision");
+    wait(driver, "Restored revision");
     assert_eq!(
         *transport.lookups.lock().unwrap(),
         vec![submitted[0].intent_id],
@@ -290,18 +309,18 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     );
     driver.key("Escape");
     driver.click_named("history-files-undo").unwrap();
-    confirm(&mut driver, "backend undo");
-    transport.returned.wait(&mut driver, 2);
+    confirm(driver, "backend undo");
+    transport.returned.wait(driver, 2);
     assert_eq!(history.snapshot(record).unwrap().versions.len(), 4);
     driver.key("Escape");
-    wait(&mut driver, "history-files-redo");
+    wait(driver, "history-files-redo");
     assert_eq!(history.snapshot(record).unwrap().versions.len(), 4);
     driver.click_named("history-files-redo").unwrap();
-    confirm(&mut driver, "backend redo");
-    transport.returned.wait(&mut driver, 3);
+    confirm(driver, "backend redo");
+    transport.returned.wait(driver, 3);
     assert_eq!(history.snapshot(record).unwrap().versions.len(), 5);
     driver.key("Escape");
-    wait(&mut driver, "history-files-undo");
+    wait(driver, "history-files-undo");
     assert_eq!(history.snapshot(record).unwrap().versions.len(), 5);
     driver.click_named("history-back-live").unwrap();
     assert_eq!(driver.state_mut().doc.get_heads(), original_heads);
@@ -320,6 +339,8 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         .with_history(reopened_history.clone(), actor)
         .unwrap()
         .with_checked_history_workspace(workspace)
+        .with_record_publisher(publisher())
+        .unwrap()
         .with_replacement_transactions(
             Arc::new(Mutex::new(
                 fs::record_transaction::RecordTransactionJournal::open(
@@ -363,72 +384,13 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     endpoint.close().await;
 }
 
-/// Production registration rejects foreign witnesses, the embedded root shares an entry, and round-1 targets recover sessions after A/B/A.
+/// Production targets recover a pending and an applied restore after A/B/A.
 #[expect(
     clippy::too_many_lines,
     reason = "end-to-end A/B/A session recovery scenario reads top to bottom"
 )]
 #[test]
-fn framework_history_production_registration_and_session_recovery() {
-    // --- phase: framework_history_production_registration_rejects_foreign_or_replaced_source_witness ---
-    {
-        let root = FileExplorerWidget::new();
-        let registration = ui::history_mode::capability::history_registration(&root)
-            .unwrap()
-            .unwrap();
-        let foreign = FileExplorerWidget::new();
-        assert!(matches!(
-            ui::headless::FrameHarness::from_managed_root(
-                ui::State::new(),
-                ManagedRoot::new(Box::new(foreign), registration),
-                (900, 650)
-            ),
-            Err(ui::history_mode::HistoryRegistrationError::UnsupportedOwner)
-        ));
-        let mut root = FileExplorerWidget::new();
-        let registration = ui::history_mode::capability::history_registration(&root)
-            .unwrap()
-            .unwrap();
-        root.framework_history = ui::history_mode::checked_files::FileHistorySource::default();
-        assert!(matches!(
-            ui::headless::FrameHarness::from_managed_root(
-                ui::State::new(),
-                ManagedRoot::new(Box::new(root), registration),
-                (900, 650)
-            ),
-            Err(ui::history_mode::HistoryRegistrationError::UnsupportedOwner)
-        ));
-    }
-
-    // --- phase: framework_history_embedded_files_root_has_shared_entry_and_preserves_incidental_document ---
-    {
-        let directory = tempfile::tempdir().unwrap();
-        let mut owners = ui::record::RecordOwners::new(directory.path().to_path_buf());
-        let store = owners
-            .open("so.tilo.file-explorer", "embedded-history-test")
-            .unwrap();
-        let checkout = ui::RecordCheckout::new(
-            ui::RecordId::for_tab(501),
-            ui::RecordKind::new("files-view-state"),
-        );
-        let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(
-            FileExplorerWidget::new(),
-        )));
-        tile.bind_or_create_record(store, checkout);
-        let mut driver =
-            ui::headless::FrameHarness::new(ui::State::new(), Box::new(tile), (1000, 700));
-        assert!(driver.targets().contains_key("history-open"));
-        let heads = driver.state_mut().doc.get_heads();
-        driver.click_named("history-open").unwrap();
-        assert!(
-            driver
-                .inspection_json()
-                .unwrap()
-                .contains("Select a file with versioned history")
-        );
-        assert_eq!(driver.state_mut().doc.get_heads(), heads);
-    }
-
+fn framework_history_recovers_sessions_after_a_b_a() {
     // --- phase: round1_production_targets_recover_pending_and_applied_session_after_a_b_a ---
     // Ordinary xattrs exercise production target construction/session routing,
     // not backend authority. The separate `QuickFS` fixture proves real operations.
@@ -436,9 +398,9 @@ fn framework_history_production_registration_and_session_recovery() {
         fn install(
             path: &std::path::Path,
             record: u128,
-        ) -> (collab_types::FileRecordId, collab_types::FileVersionId) {
-            let record_id = collab_types::FileRecordId(uuid::Uuid::from_u128(record));
-            let id = collab_types::FileVersionId(uuid::Uuid::from_u128(record + 100));
+        ) -> (fs_protocol::FileRecordId, fs_protocol::FileVersionId) {
+            let record_id = fs_protocol::FileRecordId(uuid::Uuid::from_u128(record));
+            let id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(record + 100));
             std::fs::write(path, b"live file").unwrap();
             let scope = FileHistoryReadScopeV1 {
                 workspace_id: uuid::Uuid::from_u128(1),
@@ -446,18 +408,18 @@ fn framework_history_production_registration_and_session_recovery() {
                 record_id,
                 frontier: [record as u8; 32],
             };
-            let version = collab_types::FileVersionV1 {
+            let version = fs_protocol::FileVersionV1 {
                 id,
                 record_id,
                 parents: vec![],
-                actor: collab_types::FileActor {
-                    person: collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-                    device: collab_types::Ed25519PublicKey::from_bytes([2; 32]),
+                actor: fs_protocol::FileActor {
+                    person: fs_protocol::Ed25519PublicKey::from_bytes([1; 32]),
+                    device: fs_protocol::Ed25519PublicKey::from_bytes([2; 32]),
                 },
                 timestamp_ms: 1,
-                content_hash: Some(collab_types::ContentHash([5; 32])),
-                metadata_hash: collab_types::ContentHash([6; 32]),
-                provenance: collab_types::FileProvenance::Create,
+                content_hash: Some(fs_protocol::ContentHash([5; 32])),
+                metadata_hash: fs_protocol::ContentHash([6; 32]),
+                provenance: fs_protocol::FileProvenance::Create,
             };
             let page = FileHistoryReadValueV1::Page(FileHistoryPageV1 {
                 scope,
@@ -526,7 +488,13 @@ fn framework_history_production_registration_and_session_recovery() {
         let (record_b, version_b) = install(&b, 4);
         let returned = Arc::new(SubmitReturns::default());
         let target = |path: &std::path::Path, record, label: &str| {
-            let target = crate::framework_history::target(path, record, label.into()).unwrap();
+            let target = crate::framework_history::target(
+                path,
+                record,
+                label.into(),
+                ui::history_source::AuthorDirectory::new(),
+            )
+            .unwrap();
             FileHistoryTarget {
                 transport: Arc::new(Counted {
                     inner: target.transport.clone(),
@@ -535,21 +503,12 @@ fn framework_history_production_registration_and_session_recovery() {
                 ..target
             }
         };
-        let root = FileExplorerWidget::new();
-        let source = root.framework_history.clone();
+        let (mut app, source) = hosted();
         source.set_target(Some(target(&a, record_a, "A")));
-        let registration = ui::history_mode::capability::history_registration(&root)
-            .unwrap()
-            .unwrap();
-        let mut driver = ui::headless::FrameHarness::from_managed_root(
-            ui::State::new(),
-            ManagedRoot::new(Box::new(root), registration),
-            (1100, 750),
-        )
-        .unwrap();
-        driver.click_named("history-open").unwrap();
+        let driver = app.harness();
+        source.open(None);
         let select = format!("timeline-entry:{}", version_a.0.simple());
-        wait(&mut driver, &select);
+        wait(driver, &select);
         driver
             .perform_semantic_named(
                 "activity_timeline",
@@ -557,20 +516,17 @@ fn framework_history_production_registration_and_session_recovery() {
                 &ui::a11y::Action::Activate,
             )
             .unwrap();
-        wait(&mut driver, "historical bytes");
+        wait(driver, "historical bytes");
         source.open(Some(version_a));
         driver.relayout();
-        wait(&mut driver, "historical bytes");
+        wait(driver, "historical bytes");
         driver.click_named("history-restore").unwrap();
-        confirm(
-            &mut driver,
-            "production initial restore after repeated open",
-        );
+        confirm(driver, "production initial restore after repeated open");
         // Confirming relabels the dialog at once; the submit that writes the
         // request runs in the background and settles with the missing receipt.
-        wait(&mut driver, "Refresh review");
-        returned.wait(&mut driver, 1);
-        wait(&mut driver, UNAVAILABLE_ACK);
+        wait(driver, "Refresh review");
+        returned.wait(driver, 1);
+        wait(driver, UNAVAILABLE_ACK);
         driver.key("Escape");
         let original: CheckedHistoryRequestV1 = serde_json::from_slice(
             &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
@@ -583,16 +539,13 @@ fn framework_history_production_registration_and_session_recovery() {
         // exposes the earlier write.
         xattr::remove(&a, CHECKED_HISTORY_RESTORE_XATTR).unwrap();
         source.set_target(Some(target(&b, record_b, "B")));
-        wait(
-            &mut driver,
-            &format!("timeline-entry:{}", version_b.0.simple()),
-        );
+        wait(driver, &format!("timeline-entry:{}", version_b.0.simple()));
         source.set_target(Some(target(&a, record_a, "A again")));
         // The result button survives target changes. Wait for A's immutable
         // timeline entry instead so the A -> B -> A reconciliation has completed
         // before the retry command is produced; commands from the superseded B
         // presentation are deliberately discarded by the host.
-        wait(&mut driver, &select);
+        wait(driver, &select);
         assert!(
             !driver.inspection_json().unwrap().contains(UNAVAILABLE_ACK),
             "the reloaded timeline replaced the earlier report, so the next one is the retry's"
@@ -606,8 +559,8 @@ fn framework_history_production_registration_and_session_recovery() {
             .unwrap();
         // The retry writes the request and then looks the receipt up. Let its
         // report reach the session so it cannot land on the steps below.
-        returned.wait(&mut driver, 2);
-        wait(&mut driver, UNAVAILABLE_ACK);
+        returned.wait(driver, 2);
+        wait(driver, UNAVAILABLE_ACK);
         let retry: CheckedHistoryRequestV1 = serde_json::from_slice(
             &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
                 .unwrap()
@@ -615,7 +568,7 @@ fn framework_history_production_registration_and_session_recovery() {
         )
         .unwrap();
         assert_eq!(retry, original);
-        wait(&mut driver, &select);
+        wait(driver, &select);
         driver
             .perform_semantic_named(
                 "activity_timeline",
@@ -623,10 +576,10 @@ fn framework_history_production_registration_and_session_recovery() {
                 &ui::a11y::Action::Activate,
             )
             .unwrap();
-        wait(&mut driver, "historical bytes");
+        wait(driver, "historical bytes");
         driver.click_named("history-restore").unwrap();
-        confirm(&mut driver, "production replacement-intent refusal");
-        wait(&mut driver, "An earlier restore is still pending");
+        confirm(driver, "production replacement-intent refusal");
+        wait(driver, "An earlier restore is still pending");
         driver.key("Escape");
         assert_eq!(
             serde_json::from_slice::<CheckedHistoryRequestV1>(
@@ -637,13 +590,13 @@ fn framework_history_production_registration_and_session_recovery() {
             .unwrap(),
             original
         );
-        let revision = |id| collab_types::ContentRevisionV1 {
+        let revision = |id| fs_protocol::ContentRevisionV1 {
             schema_version: 1,
             record_id: record_a,
-            version_id: collab_types::FileVersionId(uuid::Uuid::from_u128(id)),
-            content_hash: Some(collab_types::ContentHash([5; 32])),
+            version_id: fs_protocol::FileVersionId(uuid::Uuid::from_u128(id)),
+            content_hash: Some(fs_protocol::ContentHash([5; 32])),
             byte_len: 16,
-            metadata_hash: collab_types::ContentHash([6; 32]),
+            metadata_hash: fs_protocol::ContentHash([6; 32]),
         };
         let receipt = FileRestoreReceiptV1 {
             schema_version: 1,
@@ -653,7 +606,6 @@ fn framework_history_production_registration_and_session_recovery() {
             record_id: record_a,
             selected_version: version_a,
             prior_revision: revision(200),
-            prior_reference: FileRestorePriorReferenceV1::ObservedRevision,
             restored_revision: revision(201),
             compensates: None,
         };
@@ -671,19 +623,16 @@ fn framework_history_production_registration_and_session_recovery() {
         )
         .unwrap();
         driver.click_named("history-files-result").unwrap();
-        wait(&mut driver, "Restored revision");
+        wait(driver, "Restored revision");
         source.set_target(Some(target(&b, record_b, "B again")));
-        wait(
-            &mut driver,
-            &format!("timeline-entry:{}", version_b.0.simple()),
-        );
+        wait(driver, &format!("timeline-entry:{}", version_b.0.simple()));
         source.set_target(Some(target(&a, record_a, "A third")));
-        wait(&mut driver, "history-files-undo");
-        wait(&mut driver, &select);
+        wait(driver, "history-files-undo");
+        wait(driver, &select);
         driver.click_named("history-files-undo").unwrap();
-        confirm(&mut driver, "production undo after receipt recovery");
-        returned.wait(&mut driver, 3);
-        wait(&mut driver, UNAVAILABLE_ACK);
+        confirm(driver, "production undo after receipt recovery");
+        returned.wait(driver, 3);
+        wait(driver, UNAVAILABLE_ACK);
         let undo: CheckedHistoryRequestV1 = serde_json::from_slice(
             &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
                 .unwrap()

@@ -12,6 +12,8 @@
 //! The heading outline is a projection kept current the same way.
 
 pub mod action;
+pub mod anchor;
+pub mod field;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -24,11 +26,12 @@ use tilo_resource::{Delta, Demand, Doc, ModelError, Resource, SearchEntry, Touch
 use tilo_doc::model::{self, Containers, Region};
 use tilo_doc::schema::{
     BLOCK_ATTRS, BLOCK_ORDER, BLOCK_TEXT, KEY_BLOBS, KEY_BLOCKS, KEY_CHANGES, KEY_COMMENTS,
-    KEY_FOOTER, KEY_HEADER, KEY_NOTES, KEY_STYLES,
+    KEY_FOOTER, KEY_HEADER, KEY_META, KEY_NOTES, KEY_STYLES,
 };
 use tilo_doc::snapshot::{AttrVal, BlockView, ChangeView, CommentView, NoteView};
 
-pub use action::{RICH_TEXT_ACTION_TYPE, RICH_TEXT_ACTION_TYPE_LEGACY, RichTextAction};
+pub use action::{RICH_TEXT_ACTION_TYPE, RichTextAction};
+pub use anchor::TextAnchor;
 
 /// The styles every document has; they cannot be deleted.
 pub const BUILTIN_STYLES: [&str; 6] = ["body", "heading1", "heading2", "heading3", "list", "quote"];
@@ -57,8 +60,19 @@ pub enum ClipAttr {
     Str(String),
 }
 
-/// The rich-text resource. See the module docs.
-pub struct RichText;
+/// The rich-text resource (see the module docs), and rich text as a field of
+/// a record: `pub body: RichText` stores a document's worth of rich text
+/// under the field, read as its [`RichTextState`] and edited through
+/// [`RichTextAction`]s at the field's path ([`field`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RichText {
+    state: Option<RichTextState>,
+    /// Markdown a new value starts with, written when it is stored.
+    initial: Option<String>,
+    /// Edits a verb made to this value, applied in order when the record
+    /// holding it is written back.
+    pending: Vec<RichTextAction>,
+}
 
 /// One entry of the heading outline.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -236,7 +250,7 @@ pub struct RichTextState {
     containers: Containers,
     /// Where the rich text sits in its document: empty at the root, the
     /// path to the field's map when it is a field of another resource.
-    root_path: tilo_resource::Path,
+    root_path: tilo_resource::ObjPath,
     body: Rc<BodyOrder>,
     /// Every heading, image and table cell, read whole: the outline and the
     /// document's objects are listed without reading its prose.
@@ -245,7 +259,7 @@ pub struct RichTextState {
     /// Where the objects of loaded and featured paragraphs sit (the
     /// paragraph's map, its text, its attributes), so a change to one is
     /// placed without asking the document.
-    objects: HashMap<ObjId, tilo_resource::Path>,
+    objects: HashMap<ObjId, tilo_resource::ObjPath>,
     /// The objects indexed for each paragraph, so forgetting one touches
     /// only its own.
     paragraph_objects: HashMap<String, Vec<ObjId>>,
@@ -260,6 +274,9 @@ pub struct RichTextState {
     /// Every content address the document refers to (its images and
     /// preserved package parts); the bytes live in the caller's store.
     content: Rc<BTreeSet<String>>,
+    /// The content address of the file the document was last read from or
+    /// written to ([`action::FILE_DIGEST`]).
+    file_digest: Option<Rc<str>>,
     /// Which body paragraphs changed, for views presenting only those.
     log: ChangeLog,
 }
@@ -277,7 +294,18 @@ impl PartialEq for RichTextState {
             && self.changes == other.changes
             && self.styles == other.styles
             && self.content == other.content
+            && self.file_digest == other.file_digest
     }
+}
+
+/// The id prefix of what a new document starts with: no device's actor, so
+/// every device mints the same ids.
+const GENESIS_IDS: &str = "genesis";
+
+/// The content address of the file the document under `c` was last read
+/// from or written to.
+fn file_digest(doc: &Doc, c: &Containers) -> Option<Rc<str>> {
+    model::meta_str(doc, c, action::FILE_DIGEST).map(Rc::from)
 }
 
 impl RichTextState {
@@ -298,6 +326,12 @@ impl RichTextState {
     /// all.
     pub fn changed_since(&self, cursor: ChangeCursor) -> Option<&[String]> {
         self.log.since(cursor)
+    }
+
+    /// The content address of the file the document was last read from or
+    /// written to, so an open can tell that the file changed elsewhere.
+    pub fn file_digest(&self) -> Option<&str> {
+        self.file_digest.as_deref()
     }
 
     /// The body's paragraph order. Shared: hold it across frames freely.
@@ -340,51 +374,6 @@ impl RichTextState {
             .into_iter()
             .map(|(_, view)| Rc::clone(view))
             .collect()
-    }
-
-    /// Up to `limit` blocks of `kind` nearest position `around`, in
-    /// document order: what a view near there lists (the sections, images
-    /// and tables around a caret) at the cost of the neighbourhood it looks
-    /// through, not of the document.
-    pub fn featured_near(&self, kind: &str, around: usize, limit: usize) -> Vec<Rc<BlockView>> {
-        /// How far either way to look.
-        const REACH: usize = 20_000;
-        // Few enough to list them all.
-        if self
-            .featured
-            .values()
-            .filter(|view| view.kind == kind)
-            .count()
-            <= limit
-        {
-            return self.featured(kind);
-        }
-        let mut found: Vec<(usize, Rc<BlockView>)> = Vec::new();
-        let len = self.body.len();
-        let at = |position: usize| {
-            self.body
-                .id_at(position)
-                .and_then(|id| self.featured.get(id))
-                .filter(|view| view.kind == kind)
-                .map(|view| (position, Rc::clone(view)))
-        };
-        for step in 0..=REACH {
-            let before = around.checked_sub(step);
-            let after = around.saturating_add(step);
-            if before.is_none() && after >= len {
-                break;
-            }
-            found.extend(before.and_then(at));
-            if step > 0 && after < len {
-                found.extend(at(after));
-            }
-            if found.len() >= limit {
-                break;
-            }
-        }
-        found.sort_by_key(|(position, _)| *position);
-        found.truncate(limit);
-        found.into_iter().map(|(_, view)| view).collect()
     }
 
     pub fn header(&self) -> &Rc<Vec<BlockView>> {
@@ -442,8 +431,8 @@ fn containers_of(doc: &Doc, root: &ObjId) -> Result<Containers, ModelError> {
 }
 
 /// The path from the document's root to `obj`, root first.
-fn path_to(doc: &Doc, obj: &ObjId) -> tilo_resource::Path {
-    let mut path: tilo_resource::Path = doc
+fn path_to(doc: &Doc, obj: &ObjId) -> tilo_resource::ObjPath {
+    let mut path: tilo_resource::ObjPath = doc
         .parents(obj)
         .map(|parents| parents.map(|parent| (parent.obj, parent.prop)).collect())
         .unwrap_or_default();
@@ -464,7 +453,7 @@ fn paragraph_objects(
     c: &Containers,
     root_path: &[(ObjId, automerge::Prop)],
     id: &str,
-) -> Vec<(ObjId, tilo_resource::Path)> {
+) -> Vec<(ObjId, tilo_resource::ObjPath)> {
     use automerge::Prop;
     let Some(block) = block_obj(doc, &c.blocks, id) else {
         return Vec::new();
@@ -510,14 +499,67 @@ impl Resource for RichText {
     type State = RichTextState;
     type Action = RichTextAction;
 
+    fn least_need() -> tilo_actions::ActionNeed {
+        tilo_actions::ActionNeed {
+            kind: tilo_resource::ActionKind::Undoable,
+            field: Some(tilo_actions::COMMENTS_FIELD.to_owned()),
+            privileged: false,
+        }
+    }
+
+    /// A comment or a reply writes only the comments.
+    fn field_of(action: &RichTextAction) -> Option<&'static str> {
+        match action {
+            RichTextAction::AddComment { .. } | RichTextAction::ReplyToComment { .. } => {
+                Some(tilo_actions::COMMENTS_FIELD)
+            }
+            _ => None,
+        }
+    }
+
     fn read(doc: &Doc) -> Result<RichTextState, ModelError> {
         Self::read_under(doc, &automerge::ROOT)
     }
 
     /// A change to a paragraph on screen is placed from the index kept of
     /// its objects.
-    fn locate(state: &RichTextState, obj: &ObjId) -> Option<tilo_resource::Path> {
+    fn locate(state: &RichTextState, obj: &ObjId) -> Option<tilo_resource::ObjPath> {
         state.objects.get(obj).cloned()
+    }
+
+    /// Text written leaves its writer's caret after it; a paragraph styled
+    /// or marked leaves them on it.
+    fn lands(state: &RichTextState, action: &RichTextAction) -> Option<tilo_resource::Place> {
+        use tilo_resource::Place;
+        let caret = |item: &str, at: usize, text: &str| Place::Caret {
+            item: item.to_owned(),
+            at: at.saturating_add(text.chars().count()),
+        };
+        match action {
+            RichTextAction::AppendParagraph { text } => {
+                let body = state.body();
+                Some(caret(body.id_at(body.len().checked_sub(1)?)?, 0, text))
+            }
+            RichTextAction::InsertParagraph { after, text } => {
+                let body = state.body();
+                let index = body.all().position(|id| id == after)?;
+                Some(caret(body.id_at(index.saturating_add(1))?, 0, text))
+            }
+            RichTextAction::SpliceText { block, at, ins, .. } => Some(caret(block, *at, ins)),
+            RichTextAction::ReplaceSelection {
+                start_block,
+                start,
+                ins,
+                ..
+            } => Some(caret(start_block, *start, ins)),
+            RichTextAction::SetParagraphStyle { blocks, .. }
+            | RichTextAction::ApplyNamedStyle { blocks, .. }
+            | RichTextAction::SetBlockAttr { blocks, .. }
+            | RichTextAction::ClearBlockAttr { blocks, .. } => {
+                blocks.first().map(|block| Place::Item(block.clone()))
+            }
+            _ => None,
+        }
     }
 
     /// A new document: the shared schema and one empty paragraph to type in.
@@ -578,6 +620,12 @@ impl Resource for RichText {
         Ok(())
     }
 
+    /// Only typing and deleting text continue into the next keystroke; a
+    /// split, a move or a format is a step of its own.
+    fn continuable(action: &RichTextAction) -> bool {
+        matches!(action, RichTextAction::SpliceText { .. })
+    }
+
     /// Typing a word is one undo step: an insertion right after the previous
     /// one in the same paragraph continues it, until a space or a line of
     /// punctuation ends the word. Deleting runs the same way.
@@ -615,17 +663,6 @@ impl Resource for RichText {
             (1.., 1.., true, true) => at.saturating_add(*del) == *before_at || at == before_at,
             _ => false,
         }
-    }
-
-    /// Recording who wrote text is part of the edit that wrote it.
-    fn annotates(action: &RichTextAction) -> bool {
-        matches!(action, RichTextAction::SetMark { name, .. } if name == tilo_doc::schema::MARK_AUTHOR)
-    }
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        registry.register::<RichTextAction>(RICH_TEXT_ACTION_TYPE);
-        // Old history still carries the word-processor type id.
-        registry.register::<RichTextAction>(crate::action::RICH_TEXT_ACTION_TYPE_LEGACY);
     }
 
     /// Every edit, derived from [`RichTextAction`] itself, so agents read the
@@ -716,6 +753,22 @@ impl Resource for RichText {
                 },
             )
             .describe("Insert a paragraph after a block."),
+            ActionDecl::new(
+                "append-paragraph",
+                "Append paragraph",
+                vec![ActionParam::required_owned(
+                    "text",
+                    ParamType::Text,
+                    "The paragraph's text",
+                )],
+                |args, _| {
+                    let text = args.text("text").ok_or("missing text")?.to_owned();
+                    Ok(RichTextAction::AppendParagraph { text })
+                },
+            )
+            // An editor with a caret refines it (`bind_declaration`) to also
+            // leave its writer's caret after the text.
+            .describe("Add a new paragraph containing the text at the end of the document."),
         ]
     }
 
@@ -753,7 +806,7 @@ impl Resource for RichText {
             anchor: Some(heading.id),
             title: heading.text.clone(),
             text: heading.text,
-            action: None,
+            ..Default::default()
         });
         let mut on_screen: Vec<(usize, &Rc<BlockView>)> = state
             .loaded
@@ -767,7 +820,7 @@ impl Resource for RichText {
                 anchor: Some(view.id.clone()),
                 title: view.text.chars().take(60).collect(),
                 text: view.text.clone(),
-                action: None,
+                ..Default::default()
             }))
             .collect()
     }
@@ -804,6 +857,7 @@ impl RichText {
             changes: Rc::new(model::materialize_changes(doc, &c)),
             styles: Rc::new(model::all_styles(doc, &c)),
             content: Rc::new(model::referenced_content(doc, &c)),
+            file_digest: file_digest(doc, &c),
             root_path: path_to(doc, &c.root),
             containers: c,
             log: ChangeLog::fresh(),
@@ -811,14 +865,15 @@ impl RichText {
     }
 
     /// Start rich text under `root`: the shared schema and one empty
-    /// paragraph to type in.
+    /// paragraph to type in. The paragraph's id depends on nothing, so the
+    /// genesis is the same on every device.
     ///
     /// # Errors
     /// Returns the document's write error.
     pub fn initialize_under(doc: &mut Doc, root: &ObjId) -> Result<(), ModelError> {
         let c = model::init(doc, root);
         if model::blocks_in_order(doc, &c).is_empty() {
-            let mut ids = model::IdGen::new(doc.get_actor().to_hex_string());
+            let mut ids = model::IdGen::new(GENESIS_IDS.to_owned());
             let mut dm = model::DocMut {
                 doc,
                 c: &c,
@@ -841,6 +896,40 @@ impl RichText {
             .map(|block| block.text)
             .collect::<Vec<_>>()
             .join("\n"))
+    }
+
+    /// Read again the parts beside the body that `root` touched: the
+    /// running regions, notes, review, styles, content and meta.
+    fn refresh_parts(
+        state: &mut RichTextState,
+        doc: &Doc,
+        c: &Containers,
+        root: &tilo_resource::Touched,
+    ) {
+        if root.key(KEY_HEADER) != Touch::Untouched {
+            state.header = Rc::new(model::materialize_region(doc, c, Region::Header));
+        }
+        if root.key(KEY_FOOTER) != Touch::Untouched {
+            state.footer = Rc::new(model::materialize_region(doc, c, Region::Footer));
+        }
+        if root.key(KEY_NOTES) != Touch::Untouched {
+            state.notes = Rc::new(model::materialize_notes(doc, c));
+        }
+        if root.key(KEY_COMMENTS) != Touch::Untouched {
+            state.comments = Rc::new(model::materialize_comments(doc, c));
+        }
+        if root.key(KEY_CHANGES) != Touch::Untouched {
+            state.changes = Rc::new(model::materialize_changes(doc, c));
+        }
+        if root.key(KEY_STYLES) != Touch::Untouched {
+            state.styles = Rc::new(model::all_styles(doc, c));
+        }
+        if root.key(KEY_BLOBS) != Touch::Untouched {
+            state.content = Rc::new(model::referenced_content(doc, c));
+        }
+        if root.key(KEY_META) != Touch::Untouched {
+            state.file_digest = file_digest(doc, c);
+        }
     }
 
     /// [`Resource::refresh`] for rich text under any root: the state knows
@@ -867,27 +956,7 @@ impl RichText {
             state.containers = containers_of(doc, &state.containers.root)?;
         }
         let c = state.containers.clone();
-        if root.key(KEY_HEADER) != Touch::Untouched {
-            state.header = Rc::new(model::materialize_region(doc, &c, Region::Header));
-        }
-        if root.key(KEY_FOOTER) != Touch::Untouched {
-            state.footer = Rc::new(model::materialize_region(doc, &c, Region::Footer));
-        }
-        if root.key(KEY_NOTES) != Touch::Untouched {
-            state.notes = Rc::new(model::materialize_notes(doc, &c));
-        }
-        if root.key(KEY_COMMENTS) != Touch::Untouched {
-            state.comments = Rc::new(model::materialize_comments(doc, &c));
-        }
-        if root.key(KEY_CHANGES) != Touch::Untouched {
-            state.changes = Rc::new(model::materialize_changes(doc, &c));
-        }
-        if root.key(KEY_STYLES) != Touch::Untouched {
-            state.styles = Rc::new(model::all_styles(doc, &c));
-        }
-        if root.key(KEY_BLOBS) != Touch::Untouched {
-            state.content = Rc::new(model::referenced_content(doc, &c));
-        }
+        Self::refresh_parts(state, doc, &c, &root);
         if root.key(KEY_BLOCKS) == Touch::Untouched {
             return Ok(());
         }

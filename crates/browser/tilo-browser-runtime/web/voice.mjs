@@ -21,6 +21,7 @@
  */
 import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
 import {createVoiceTransport} from './voice-transport.mjs';
+import {MediaAdmissionError} from './moq-carrier.mjs';
 
 /** RMS above which a participant counts as speaking, and how long it stays so. */
 const SPEAKING_LEVEL = 0.015;
@@ -187,6 +188,12 @@ export function createVoiceCall({
       });
       update({phase: 'live', carrier: 'open', reason: null});
       if (capturePaused) {capturePaused = false; synchronizeCapture(state.muted);}
+      // A lost signalling connection must not retain audio after the
+      // authenticated carrier says this grant no longer has authority.
+      void session.authorityLost?.then(() => {
+        if (ticket !== generation || !grant || state.call !== opening.call) return;
+        admissionEnded(opening.call, new MediaAdmissionError().message);
+      });
       void session.closed.then(() => {
         if (carrier !== session) return;
         carrier = undefined;
@@ -197,6 +204,10 @@ export function createVoiceCall({
       if (ticket !== generation) return;
       connecting = undefined;
       report({type: 'voice-carrier-error', error});
+      if (error instanceof MediaAdmissionError) {
+        admissionEnded(opening.call, error.message);
+        return;
+      }
       retry();
     });
   }
@@ -232,6 +243,11 @@ export function createVoiceCall({
     if (call !== state.call) return;
     stopAll();
     update({...idle(), phase: 'ended', call, reason});
+  }
+
+  function admissionEnded(call, reason) {
+    ended(call, reason);
+    try { signalling.leave(); } catch (error) { report({type: 'voice-signalling-error', error}); }
   }
 
   function stopAll() {

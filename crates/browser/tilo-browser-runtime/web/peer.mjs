@@ -20,6 +20,8 @@
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
 import {createActions} from './actions.mjs';
+import {resolveResourceReference, openResourceReference} from './resource-reference.mjs';
+import {createResourceLink} from './resource-link.mjs';
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
 import {createMembership, createWorkspaces} from './membership.mjs';
@@ -590,7 +592,7 @@ async function connect({
   origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity, deviceCertificate,
   profile, device = 'tilo-browser-device', displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
-  voice: voiceOptions = {},
+  voice: voiceOptions = {}, requireExistingCertificate = false,
 }) {
   userPublicKey ??= identity?.userPublicKey;
   if (identity && userPublicKey !== identity.userPublicKey) {
@@ -637,6 +639,7 @@ async function connect({
   let host = JSON.parse(await runtime.hostInfo(post));
   let carriers = carriersFor(host);
   const listeners = new Set();
+  const pendingRecordWaits = new Set();
   let peer;
   let live;
   // Agents this page runs publish under their own namespaces: one layer each.
@@ -774,11 +777,16 @@ async function connect({
   }
 
   async function certificate() {
+    if (requireExistingCertificate && deviceCertificate) throw Error('Resource links require a previously certified device');
     if (deviceCertificate) {
       await store.put(CERTIFICATE, deviceCertificate);
       deviceCertificate = undefined;
     }
     const existing = await store.get(CERTIFICATE);
+    if (requireExistingCertificate) {
+      if (!existing) throw Error('Sign in on this browser and obtain admission before opening a resource link');
+      return existing; // Host checks expiry/revocation; never renew or pair implicitly.
+    }
     if (existing && !(identity && expiresWithinADay(existing))) return existing;
     const issued = identity
       ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
@@ -860,18 +868,27 @@ async function connect({
     throw error;
   }
 
-  async function dispose() {
-    if (disposed) return;
+  let disposal;
+  function dispose() {
+    if (disposal) return disposal;
+    let resolve, reject;
+    disposal = new Promise((done, failed) => { resolve = done; reject = failed; });
     disposed = true;
-    for (const entry of [...surfaces.values()]) dropSurface(entry);
-    unsubscribeStorage?.();
-    agents?.dispose();
-    actions?.dispose();
-    voice?.dispose();
-    stopLive();
-    peer?.dispose();
-    listeners.clear();
-    await storage?.release();
+    // Abort and explicit close can overlap. Every caller joins the same
+    // settlement, installed before teardown can call back into dispose.
+    (async () => {
+      for (const refuse of [...pendingRecordWaits]) refuse(new Error('Shared resource connection closed'));
+      for (const entry of [...surfaces.values()]) dropSurface(entry);
+      unsubscribeStorage?.();
+      agents?.dispose();
+      actions?.dispose();
+      voice?.dispose();
+      stopLive();
+      peer?.dispose();
+      listeners.clear();
+      await storage?.release();
+    })().then(resolve, reject);
+    return disposal;
   }
   signal?.addEventListener('abort', dispose, {once: true});
 
@@ -913,6 +930,53 @@ async function connect({
     },
     /** The room's app actions (`actions.mjs`), or `undefined` without a room. */
     get actions() { return actions; },
+    /** Bind feedback before mounting the desktop. The destination only selects
+     * an existing text channel: Rust obtains identity and current capabilities
+     * from the authenticated owner. This creates no membership or grant. */
+    async configureFeedback(destination) {
+      if (!room || destination?.room !== room || disposed) throw new Error('Feedback needs this existing room');
+      await certifiedPeer.whenRecord('so.tilo.chat', '', {signal});
+      if (typeof peer?.configureFeedback !== 'function') throw new Error('Feedback delivery is unavailable in this runtime');
+      peer.configureFeedback(JSON.stringify(destination));
+      await untilSnapshot(() => {
+        if (disposed) throw new Error('Feedback connection closed');
+        const status = peer.feedbackStatus();
+        if (status === 'ready') return true;
+        if (status !== 'awaiting authenticated admission') throw new Error(status);
+        return false;
+      }, 30_000, 'Feedback owner admission timed out');
+    },
+    feedbackStatus: () => peer?.feedbackStatus?.() ?? 'unconfigured',
+
+    /** Public address of this admitted session; it conveys no authority. */
+    get resourceScope() {
+      if (disposed || snapshot.phase !== 'ready' || !actions || !room) return undefined;
+      return {origin: new URL(origin).origin, room,
+        hostDevice: hexKey(host.hostCert?.device_public_key)};
+    },
+    /** Mint a browser navigation link from a fresh authorized resource view. */
+    resourceLink(page, reference, provider, action) {
+      return createResourceLink({peer: certifiedPeer, page, reference, provider, action});
+    },
+    /** Fresh permission-filtered metadata for a record-local shared resource.
+     * The host-issued source provider is required; this never joins a room,
+     * grants access, follows a peer or navigates as a side effect. */
+    resolveResource(reference, provider) {
+      const connection = actions;
+      return resolveResourceReference({reference, provider, actions: connection,
+        scope: certifiedPeer.resourceScope,
+        current: () => !disposed && snapshot.phase === 'ready' && actions === connection});
+    },
+    /** Open an exact shared resource through a standalone app's current view
+     * door. Calling this is explicit navigation; it never joins or grants. */
+    openResource(target, reference, provider, action, {signal} = {}) {
+      const connection = actions;
+      return openResourceReference({reference, provider, action, actions: connection, signal,
+        scope: certifiedPeer.resourceScope,
+        current: () => !disposed && snapshot.phase === 'ready' && actions === connection,
+        waitRecord: (app, record) => certifiedPeer.whenRecord(app, record, {signal}),
+        mount: ({app, record}) => certifiedPeer.mountDesktop(target, {app, record, signal})});
+    },
     /** The room's calls (`voice-peer.mjs`), or `undefined` without a room. */
     get voice() { return voice; },
     /** `actions` in the frozen `actionsV1` contract. */
@@ -954,13 +1018,24 @@ async function connect({
     },
     /** Resolves once the host admitted the room (`phase === 'ready'`);
      * rejects when it refused this device. */
-    whenReady() {
+    whenReady({signal, timeoutMs = 30_000} = {}) {
       return new Promise((resolve, reject) => {
-        const check = current => {
-          if (current.phase === 'ready') { listeners.delete(check); resolve(current); }
-          else if (current.phase === 'failed') { listeners.delete(check); reject(new Error(current.error ?? 'the host refused this device')); }
+        let timer;
+        const finish = (error, value) => {
+          clearTimeout(timer); listeners.delete(check); pendingRecordWaits.delete(finish);
+          signal?.removeEventListener('abort', abort);
+          if (error) reject(error); else resolve(value);
         };
-        listeners.add(check);
+        const abort = () => finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+        const check = current => {
+          if (disposed) finish(new Error('Shared resource connection closed'));
+          else if (current.phase === 'ready') finish(undefined, current);
+          else if (current.phase === 'failed') finish(new Error(current.error ?? 'the host refused this device'));
+        };
+        if (signal?.aborted) { abort(); return; }
+        timer = setTimeout(() => finish(new Error('Room admission timed out')), timeoutMs);
+        listeners.add(check); pendingRecordWaits.add(finish);
+        signal?.addEventListener('abort', abort, {once: true});
         check(snapshot);
       });
     },
@@ -970,15 +1045,25 @@ async function connect({
     /** Whether this page holds the room's record `record` of `app`. */
     hasRecord,
     /** Resolves once the room's record `record` of `app` reached this page. */
-    whenRecord(app, record, {timeoutMs = 30_000} = {}) {
+    whenRecord(app, record, {timeoutMs = 30_000, signal} = {}) {
       return new Promise((resolve, reject) => {
+        if (signal?.aborted) { reject(signal.reason); return; }
+        if (disposed) { reject(new Error('Shared resource connection closed')); return; }
         if (hasRecord(app, record)) { resolve(); return; }
-        const check = () => {
-          if (!hasRecord(app, record)) return;
-          clearTimeout(timer); listeners.delete(check); resolve();
+        const source = peer;
+        const finish = (error, failed = error !== undefined) => {
+          clearTimeout(timer); listeners.delete(check); pendingRecordWaits.delete(finish);
+          signal?.removeEventListener('abort', abort);
+          if (failed) reject(error); else resolve();
         };
-        const timer = setTimeout(() => { listeners.delete(check); reject(new Error(`the room sent no ${app} record ${record}`)); }, timeoutMs);
-        listeners.add(check);
+        const abort = () => finish(signal.reason, true);
+        const check = () => {
+          if (peer !== source || snapshot.phase === 'failed') { finish(new Error('Shared resource connection changed')); return; }
+          if (hasRecord(app, record)) finish();
+        };
+        const timer = setTimeout(() => finish(new Error(`the room sent no ${app} record ${record}`)), timeoutMs);
+        listeners.add(check); pendingRecordWaits.add(finish);
+        signal?.addEventListener('abort', abort, {once: true});
       });
     },
     /** The live layer of agent `agent` this page runs (created on first use;
@@ -1005,6 +1090,7 @@ async function connect({
         return {operationId: `retry-asset:${request.surfaceId}:${request.assetId}`};
       }
       if (request?.kind === 'reauthenticate') {
+        if (requireExistingCertificate) throw Error('Sign in through the identity flow before reopening this resource');
         voice?.reset();
         stopLive();
         peer.dispose();

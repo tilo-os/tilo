@@ -56,7 +56,7 @@ impl Harness {
 
     fn wheel(&mut self, notches_down: f32) {
         let ev = WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::LineDelta(0.0, -notches_down),
             phase: TouchPhase::Moved,
         };
@@ -113,7 +113,7 @@ fn content_pane_scrolls_with_the_mouse_wheel() {
     // Wheel down: the content pane's Scrollable shifts its child up.
     let content_point = Point::new(800.0, 170.0);
     let cursor = WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(content_point.x, content_point.y),
     };
     h.dispatch(&cursor);
@@ -138,5 +138,47 @@ fn content_pane_scrolls_with_the_mouse_wheel() {
     assert!(
         (still - bottom).abs() < 0.5,
         "scroll clamps at the content edge — a second fling doesn't move it ({still} vs {bottom})",
+    );
+}
+
+/// Settings rebuilds its content scroller whenever a pane's structure
+/// changes: a control applied, or the pane opened again from the sidebar.
+/// Each rebuild must keep the pane where the person scrolled it, not jump it
+/// back to the top.
+#[test]
+fn a_rebuilt_pane_keeps_its_scroll_position() {
+    let mut h = Harness::new(Category::Power, 1100.0, 340.0);
+    let content_point = Point::new(800.0, 170.0);
+    h.dispatch(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(content_point.x, content_point.y),
+    });
+    h.wheel(3.0);
+    h.relayout();
+    let (scrolled, _, _) = content_scroll(&h.app);
+    assert!(
+        scrolled > 0.5,
+        "precondition: the pane scrolled, offset {scrolled}"
+    );
+
+    let rebuild = |h: &mut Harness| {
+        Framed::harness_mut(&mut h.app)
+            .relayout_themed(ui::headless::viewport((1100.0, 340.0)), Theme::dark())
+            .expect("settings frame lays out");
+    };
+    h.app.select(Category::Network);
+    rebuild(&mut h);
+    let (other, _, _) = content_scroll(&h.app);
+    assert!(
+        other.abs() < 0.5,
+        "another pane keeps its own position, got {other}"
+    );
+
+    h.app.select(Category::Power);
+    rebuild(&mut h);
+    let (back, _, _) = content_scroll(&h.app);
+    assert!(
+        (back - scrolled).abs() < 0.5,
+        "the rebuilt pane returns where it was scrolled ({back} vs {scrolled})"
     );
 }

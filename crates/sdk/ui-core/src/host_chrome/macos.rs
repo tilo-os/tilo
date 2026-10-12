@@ -343,7 +343,7 @@ impl MacChrome {
                     if shortcut.has_alt() {
                         flags |= NSEventModifierFlags::Option;
                     }
-                    (shortcut.key().to_lowercase(), flags)
+                    (shortcut.key_name().to_lowercase(), flags)
                 });
                 let item = item(
                     mtm,

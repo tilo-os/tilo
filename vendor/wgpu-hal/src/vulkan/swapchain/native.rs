@@ -158,6 +158,17 @@ impl Surface for NativeSurface {
     ) -> Result<Box<dyn Swapchain>, crate::SurfaceError> {
         profiling::scope!("Device::create_swapchain");
         let functor = khr::swapchain::Device::new(&self.instance.raw, &device.shared.raw);
+        let incremental_present = device
+            .shared
+            .enabled_extensions
+            .contains(&khr::incremental_present::NAME)
+            && unsafe {
+                self.functor.get_physical_device_surface_capabilities(
+                    device.shared.physical_device,
+                    self.raw,
+                )
+            }
+            .is_ok_and(|caps| caps.current_transform == vk::SurfaceTransformFlagsKHR::IDENTITY);
 
         let old_swapchain = match provided_old_swapchain {
             Some(osc) => osc.as_any().downcast_ref::<NativeSwapchain>().unwrap().raw,
@@ -272,6 +283,8 @@ impl Surface for NativeSurface {
             next_acquire_index: 0,
             present_semaphores,
             next_present_time: None,
+            incremental_present,
+            next_present_damage: None,
         }))
     }
 
@@ -281,6 +294,8 @@ impl Surface for NativeSurface {
 }
 
 pub(crate) struct NativeSwapchain {
+    incremental_present: bool,
+    next_present_damage: Option<Vec<vk::RectLayerKHR>>,
     raw: vk::SwapchainKHR,
     functor: khr::swapchain::Device,
     device: Arc<DeviceShared>,
@@ -575,6 +590,20 @@ impl Swapchain for NativeSwapchain {
             vk_info
         };
 
+        // Consume even when queue_present fails: a hint belongs to this frame,
+        // never to a later frame or a reconfigured swapchain.
+        let damage = self.next_present_damage.take();
+        let regions = damage
+            .as_ref()
+            .map(|rectangles| [vk::PresentRegionKHR::default().rectangles(rectangles)]);
+        let mut incremental = vk::PresentRegionsKHR::default();
+        let vk_info = if let Some(regions) = regions.as_ref() {
+            incremental = incremental.regions(regions);
+            vk_info.push_next(&mut incremental)
+        } else {
+            vk_info
+        };
+
         let suboptimal = {
             profiling::scope!("vkQueuePresentKHR");
             unsafe { self.functor.queue_present(queue.raw, &vk_info) }.map_err(|error| {
@@ -608,6 +637,33 @@ impl Swapchain for NativeSwapchain {
 }
 
 impl NativeSwapchain {
+    pub(crate) fn set_next_present_damage(
+        &mut self,
+        rectangles: &[super::super::PresentDamageRect],
+    ) -> bool {
+        self.next_present_damage = None;
+        if !self.incremental_present || !valid_present_damage(rectangles, self.config.extent) {
+            return false;
+        }
+        self.next_present_damage = Some(
+            rectangles
+                .iter()
+                .map(|rect| vk::RectLayerKHR {
+                    offset: vk::Offset2D {
+                        x: rect.x as i32,
+                        y: rect.y as i32,
+                    },
+                    extent: vk::Extent2D {
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                    layer: 0,
+                })
+                .collect(),
+        );
+        true
+    }
+
     pub(crate) fn as_raw(&self) -> vk::SwapchainKHR {
         self.raw
     }
@@ -643,6 +699,29 @@ impl NativeSwapchain {
     fn get_present_semaphores(&self, index: u32) -> Arc<Mutex<SwapchainPresentSemaphores>> {
         self.present_semaphores[index as usize].clone()
     }
+}
+
+fn valid_present_damage(
+    rectangles: &[super::super::PresentDamageRect],
+    extent: wgt::Extent3d,
+) -> bool {
+    !rectangles.is_empty()
+        && rectangles.len() <= 128
+        && extent.depth_or_array_layers == 1
+        && rectangles.iter().all(|rect| {
+            i32::try_from(rect.x).is_ok()
+                && i32::try_from(rect.y).is_ok()
+                && rect.width != 0
+                && rect.height != 0
+                && rect
+                    .x
+                    .checked_add(rect.width)
+                    .is_some_and(|end| end <= extent.width)
+                && rect
+                    .y
+                    .checked_add(rect.height)
+                    .is_some_and(|end| end <= extent.height)
+        })
 }
 
 /// Semaphore used to acquire a swapchain image.

@@ -13,10 +13,11 @@
 )]
 
 use std::collections::BTreeMap;
+use ui::num::f32_of_f64;
 
 use tilo_wet_media::StrokePoint as WetPoint;
 use tilo_wet_media::brush::Sample;
-use ui::vello::kurbo::{BezPath, Point, Rect};
+use ui::vello::kurbo::{BezPath, Point, Rect, Shape as _};
 
 use crate::model::{Mark, Shape, Style};
 
@@ -40,6 +41,10 @@ pub enum Preset {
     Calligraphy,
     /// Takes paint off its layer.
     Eraser,
+    /// Whole square artwork cells, with no pressure or softened edges.
+    Pixel,
+    /// Clears whole square artwork cells.
+    PixelEraser,
 }
 
 /// The dynamics a stroke may set in its `params`, each `0..=1`.
@@ -63,7 +68,7 @@ pub struct Dynamics {
 
 impl Preset {
     /// Every preset, in the picker's order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Round,
         Self::Pen,
         Self::Pencil,
@@ -72,6 +77,8 @@ impl Preset {
         Self::Charcoal,
         Self::Calligraphy,
         Self::Eraser,
+        Self::Pixel,
+        Self::PixelEraser,
     ];
 
     pub fn name(self) -> &'static str {
@@ -84,6 +91,8 @@ impl Preset {
             Self::Charcoal => "charcoal",
             Self::Calligraphy => "calligraphy",
             Self::Eraser => "eraser",
+            Self::Pixel => "pixel",
+            Self::PixelEraser => "pixel-eraser",
         }
     }
 
@@ -119,7 +128,7 @@ impl Preset {
             Self::Airbrush => (0.08, 0.0, 0.06, 0.0, 0.0),
             Self::Charcoal => (0.6, 0.45, 0.1, 0.0, 0.2),
             Self::Calligraphy => (1.0, 1.0, 0.1, 0.2, 0.2),
-            Self::Eraser => (1.0, 1.0, 0.1, 0.0, 0.0),
+            Self::Eraser | Self::Pixel | Self::PixelEraser => (1.0, 1.0, 0.1, 0.0, 0.0),
         };
         Dynamics {
             flow,
@@ -128,6 +137,14 @@ impl Preset {
             smoothing,
             taper,
         }
+    }
+
+    pub fn pixel(self) -> bool {
+        matches!(self, Self::Pixel | Self::PixelEraser)
+    }
+
+    pub fn erases(self) -> bool {
+        matches!(self, Self::Eraser | Self::PixelEraser)
     }
 
     /// Whether the preset stamps dabs into pixels rather than filling an
@@ -192,6 +209,9 @@ pub fn problem(brush: Option<&str>, params: &BTreeMap<String, f64>, plain: bool)
         ));
     }
     if !plain {
+        if brush.and_then(Preset::parse).is_some_and(Preset::pixel) {
+            return Some("pixel brushes need a plain layer".into());
+        }
         return None;
     }
     for (name, value) in params {
@@ -221,8 +241,127 @@ fn point_of(point: &[f64]) -> (f64, f64, f64) {
 /// keeps its shape; then the wobble is blurred out of it, the ends staying
 /// put, while curves much rounder than the wobble keep their size.
 /// `amount` 1 evens out wobble up to about ten units across; a half, about
-/// five.
-pub fn smoothed(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
+/// five. The stroke's [`corners`] stay where they are, sharp: each run
+/// between them is smoothed on its own. `size` is the brush's.
+pub fn smoothed(points: &[Vec<f64>], amount: f64, size: f64) -> Vec<Vec<f64>> {
+    let mut out: Vec<Vec<f64>> = Vec::new();
+    for run in runs(points, amount, size) {
+        // A run starts on the corner the one before ended on.
+        let skip = usize::from(!out.is_empty());
+        out.extend(smoothed_run(&run, amount).into_iter().skip(skip));
+    }
+    out
+}
+
+/// `points` split at the stroke's [`corners`] into runs, each starting on
+/// the corner the one before ends on.
+fn runs(points: &[Vec<f64>], amount: f64, size: f64) -> Vec<Vec<Vec<f64>>> {
+    let mut runs = Vec::new();
+    let mut from = 0;
+    for corner in corners(points, amount, size) {
+        runs.push(points.get(from..=corner).unwrap_or_default().to_vec());
+        from = corner;
+    }
+    runs.push(points.get(from..).unwrap_or_default().to_vec());
+    runs
+}
+
+/// The indices of the points where a stroke turns sharply: a corner the
+/// hand or agent meant, kept sharp, not a bend smoothing rounds off. The
+/// turn is judged across a reach that grows with the brush and with how
+/// much wobble the smoothing takes out, so a shaky hand's zigzags are not
+/// corners; and at least half of that turn must happen close to the point
+/// (within a quarter of the reach, or two of the hand's steps), so a tight
+/// curve, turning evenly all along, is not one either. Where several points
+/// of one turn qualify, the sharpest is the corner.
+pub fn corners(points: &[Vec<f64>], amount: f64, size: f64) -> Vec<usize> {
+    if points.len() < 3 {
+        return Vec::new();
+    }
+    let at: Vec<Point> = points
+        .iter()
+        .map(|point| {
+            let (x, y, _) = point_of(point);
+            Point::new(x, y)
+        })
+        .collect();
+    let mut arc = Vec::with_capacity(at.len());
+    let mut travelled = 0.0;
+    let mut previous = at.first().copied().unwrap_or_default();
+    for point in &at {
+        travelled += (*point - previous).hypot();
+        arc.push(travelled);
+        previous = *point;
+    }
+    // Where the stroke is `distance` along it.
+    let along = |distance: f64| {
+        let distance = distance.clamp(0.0, travelled);
+        let after = arc.partition_point(|reached| *reached < distance);
+        match (
+            after
+                .checked_sub(1)
+                .and_then(|before| at.get(before).zip(arc.get(before))),
+            at.get(after).zip(arc.get(after)),
+        ) {
+            (Some((a, from)), Some((b, to))) if to - from > 1e-12 => {
+                a.lerp(*b, (distance - from) / (to - from))
+            }
+            (_, Some((b, _))) => *b,
+            _ => previous,
+        }
+    };
+    // How far the stroke turns at `index` between `reach` before and after.
+    let turn = |index: usize, reach: f64| {
+        let (Some(point), Some(distance)) = (at.get(index), arc.get(index)) else {
+            return 0.0;
+        };
+        let into = *point - along(distance - reach);
+        let out = along(distance + reach) - *point;
+        if into.hypot() < 1e-9 || out.hypot() < 1e-9 {
+            return 0.0;
+        }
+        into.cross(out).atan2(into.dot(out)).abs()
+    };
+    let reach = (20.0 * amount.clamp(0.0, 1.0)).max(size).max(4.0);
+    let mut steps: Vec<f64> = arc
+        .windows(2)
+        .filter_map(|pair| match pair {
+            [a, b] if b - a > 1e-9 => Some(b - a),
+            _ => None,
+        })
+        .collect();
+    steps.sort_by(f64::total_cmp);
+    let step = steps.get(steps.len() / 2).copied().unwrap_or(0.0);
+    let close = (reach * 0.25).max(step * 2.0).min(reach);
+    let corner = f64::from(tilo_wet_media::brush::CORNER);
+    let mut corners: Vec<(usize, f64)> = Vec::new();
+    let mut last_sharp: Option<usize> = None;
+    for index in 1..at.len() - 1 {
+        let whole = turn(index, reach);
+        let sharp = turn(index, close);
+        if whole <= corner || sharp <= whole * 0.5 {
+            continue;
+        }
+        let same_turn = last_sharp.is_some_and(|last| {
+            arc.get(index)
+                .zip(arc.get(last))
+                .is_some_and(|(here, there)| here - there < reach)
+        });
+        last_sharp = Some(index);
+        match corners.last_mut() {
+            Some(best) if same_turn => {
+                if sharp > best.1 {
+                    *best = (index, sharp);
+                }
+            }
+            _ => corners.push((index, sharp)),
+        }
+    }
+    corners.into_iter().map(|(index, _)| index).collect()
+}
+
+/// One run of a stroke between corners, smoothed: see [`smoothed`].
+fn smoothed_run(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
     // Passes of a [1, 2, 1] kernel blur by about the square root of half
     // their number, in steps: 72 passes is six.
     #[allow(
@@ -256,19 +395,20 @@ pub fn smoothed(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
         .iter()
         .map(|point| {
             let (x, y, pressure) = point_of(point);
-            WetPoint::new(narrow(x), narrow(y), narrow(pressure))
+            WetPoint::new(f32_of_f64(x), f32_of_f64(y), f32_of_f64(pressure))
         })
         .collect();
-    let mut points: Vec<(f64, f64, f64)> = tilo_wet_media::brush::smooth(&curve, narrow(spacing))
-        .iter()
-        .map(|sample| {
-            (
-                f64::from(sample.x),
-                f64::from(sample.y),
-                f64::from(sample.pressure),
-            )
-        })
-        .collect();
+    let mut points: Vec<(f64, f64, f64)> =
+        tilo_wet_media::brush::smooth(&curve, f32_of_f64(spacing))
+            .iter()
+            .map(|sample| {
+                (
+                    f64::from(sample.x),
+                    f64::from(sample.y),
+                    f64::from(sample.pressure),
+                )
+            })
+            .collect();
     if let (Some(last), Some(end)) = (points.last_mut(), curve.last()) {
         // The curve ends where the stroke does, not a step short of it.
         *last = (f64::from(end.x), f64::from(end.y), f64::from(end.pressure));
@@ -365,25 +505,43 @@ pub fn kept(points: &[Vec<f64>], tolerance: f64) -> Vec<usize> {
     keep
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "stroke coordinates are bounded artwork units"
-)]
-fn narrow(value: f64) -> f32 {
-    value as f32
-}
-
 /// The stroke as evenly spaced samples `spacing` units apart, after its
-/// smoothing.
-fn samples(points: &[Vec<f64>], spacing: f64, smoothing: f64) -> Vec<Sample> {
-    let points: Vec<WetPoint> = smoothed(points, smoothing)
-        .iter()
-        .map(|point| {
-            let (x, y, pressure) = point_of(point);
-            WetPoint::new(narrow(x), narrow(y), narrow(pressure))
-        })
-        .collect();
-    tilo_wet_media::brush::smooth(&points, narrow(spacing))
+/// smoothing, its corners sharp: each run between them is laid on its own
+/// and ends exactly on its corner. `size` is the brush's.
+pub fn samples(points: &[Vec<f64>], spacing: f64, smoothing: f64, size: f64) -> Vec<Sample> {
+    let mut out: Vec<Sample> = Vec::new();
+    for run in runs(points, smoothing, size) {
+        let run: Vec<WetPoint> = smoothed_run(&run, smoothing)
+            .iter()
+            .map(|point| {
+                let (x, y, pressure) = point_of(point);
+                WetPoint::new(f32_of_f64(x), f32_of_f64(y), f32_of_f64(pressure))
+            })
+            .collect();
+        let mut laid = tilo_wet_media::brush::smooth(&run, f32_of_f64(spacing));
+        if let (Some(last), Some(end)) = (laid.last().copied(), run.last())
+            && (end.x - last.x).hypot(end.y - last.y) > 1e-3
+        {
+            // The run ends on its corner, not up to a step short of it.
+            laid.push(Sample {
+                x: end.x,
+                y: end.y,
+                pressure: end.pressure,
+                distance: last.distance + (end.x - last.x).hypot(end.y - last.y),
+                ..last
+            });
+        }
+        // A later run starts on the corner the one before ended on.
+        let (skip, from) = match out.last() {
+            Some(last) => (1, last.distance),
+            None => (0, 0.0),
+        };
+        out.extend(laid.into_iter().skip(skip).map(|sample| Sample {
+            distance: sample.distance + from,
+            ..sample
+        }));
+    }
+    out
 }
 
 fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
@@ -425,7 +583,7 @@ fn width_of(preset: Preset, p: f64) -> f64 {
         Preset::Round | Preset::Pen => 0.3 + 0.7 * p,
         Preset::Pencil => 0.75 + 0.25 * p,
         Preset::Marker => 0.88 + 0.12 * p,
-        Preset::Airbrush => 1.0,
+        Preset::Airbrush | Preset::Pixel | Preset::PixelEraser => 1.0,
         Preset::Charcoal => 0.6 + 0.4 * p,
         Preset::Calligraphy => 0.5 + 0.5 * p,
         Preset::Eraser => 0.45 + 0.55 * p,
@@ -483,7 +641,12 @@ fn lay(points: &[Vec<f64>], size: f64, preset: Preset, dynamics: &Dynamics) -> L
     } else {
         (size * 0.08).clamp(0.2, 2.0)
     };
-    let samples = samples(&steady_ends(points, size), spacing, dynamics.smoothing);
+    let samples = samples(
+        &steady_ends(points, size),
+        spacing,
+        dynamics.smoothing,
+        size,
+    );
     let total = samples.last().map_or(0.0, |last| f64::from(last.distance));
     let half = samples
         .iter()
@@ -659,6 +822,9 @@ fn wound_positive(path: BezPath) -> BezPath {
 pub fn silhouette(pieces: &[Piece], style: &Style) -> BezPath {
     let preset = Preset::of(style);
     let dynamics = Dynamics::of(preset, &style.params);
+    if preset.pixel() {
+        return pixel_outline(pieces);
+    }
     let mut path = BezPath::new();
     for (points, size) in pieces {
         let laid = lay(points, *size, preset, &dynamics);
@@ -668,6 +834,52 @@ pub fn silhouette(pieces: &[Piece], style: &Style) -> BezPath {
             wound_positive(outline(&laid.samples, &laid.half))
         };
         path.extend(piece.elements().iter().copied());
+    }
+    path
+}
+
+/// Whole artwork cells along a stroke. Each square is part of one fill,
+/// so revisiting a cell cannot accumulate opacity. The action path bounds
+/// the travel of pixel strokes before this geometry is produced.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "pixel travel is checked before rendering and brush widths are bounded"
+)]
+fn pixel_outline(pieces: &[Piece]) -> BezPath {
+    let mut path = BezPath::new();
+    for (points, size) in pieces {
+        let width = size.round().max(1.0);
+        let offset = (width / 2.0).floor();
+        let mut cells = std::collections::BTreeSet::new();
+        let mut previous = None;
+        for point in points {
+            let (x, y, _) = point_of(point);
+            let cell = (x.floor() as i32, y.floor() as i32);
+            let (from_x, from_y) = previous.unwrap_or(cell);
+            let dx = f64::from(cell.0) - f64::from(from_x);
+            let dy = f64::from(cell.1) - f64::from(from_y);
+            let steps = dx.abs().max(dy.abs()).min(16384.0) as u32;
+            for step in 0..=steps {
+                let t = f64::from(step) / f64::from(steps.max(1));
+                cells.insert((
+                    (f64::from(from_x) + dx * t).round() as i32,
+                    (f64::from(from_y) + dy * t).round() as i32,
+                ));
+            }
+            previous = Some(cell);
+        }
+        for (x, y) in cells {
+            let x = f64::from(x) - offset;
+            let y = f64::from(y) - offset;
+            path.extend(
+                Rect::new(x, y, x + width, y + width)
+                    .to_path(0.1)
+                    .elements()
+                    .iter()
+                    .copied(),
+            );
+        }
     }
     path
 }
@@ -948,10 +1160,10 @@ pub fn pieces(mark: &Mark) -> Vec<Piece> {
             .iter()
             .map(|point| {
                 let (x, y, pressure) = point_of(point);
-                WetPoint::new(narrow(x), narrow(y), narrow(pressure))
+                WetPoint::new(f32_of_f64(x), f32_of_f64(y), f32_of_f64(pressure))
             })
             .collect(),
-        size: narrow(size),
+        size: f32_of_f64(size),
         paint: tilo_wet_media::Paint {
             colour: tilo_wet_media::Rgb::WHITE,
             alpha: 1.0,
@@ -990,7 +1202,7 @@ pub fn pieces(mark: &Mark) -> Vec<Piece> {
 pub fn centreline(points: &[Vec<f64>], size: f64, smoothing: f64) -> BezPath {
     let mut path = BezPath::new();
     let points = steady_ends(points, size);
-    for (index, sample) in samples(&points, 0.5, smoothing).iter().enumerate() {
+    for (index, sample) in samples(&points, 0.5, smoothing, size).iter().enumerate() {
         if index == 0 {
             path.move_to(sample_point(sample));
         } else {
@@ -1114,7 +1326,7 @@ mod tests {
                 vec![f64::from(step) * 5.0, y, 1.0]
             })
             .collect();
-        let smooth = smoothed(&wobbly, 1.0);
+        let smooth = smoothed(&wobbly, 1.0, 4.0);
         assert_eq!(smooth.first(), Some(&vec![0.0, 3.0, 1.0]));
         assert!(
             smooth
@@ -1126,6 +1338,130 @@ mod tests {
         assert!(fewer.len() < 12, "{}", fewer.len());
         assert_eq!(fewer.last(), smooth.last());
     }
+    /// The points a path runs through.
+    fn path_points(path: &BezPath) -> Vec<Point> {
+        path.elements()
+            .iter()
+            .filter_map(|element| match element {
+                ui::vello::kurbo::PathEl::MoveTo(at) | ui::vello::kurbo::PathEl::LineTo(at) => {
+                    Some(*at)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn nearest(path: &[Point], to: (f64, f64)) -> f64 {
+        path.iter()
+            .map(|at| (at.x - to.0).hypot(at.y - to.1))
+            .fold(f64::MAX, f64::min)
+    }
+
+    /// A little deterministic wobble in `-amount..=amount`.
+    fn wobble(step: u32, amount: f64) -> f64 {
+        f64::from(step.wrapping_mul(7919) % 13) / 6.0 * amount - amount
+    }
+
+    #[test]
+    fn a_square_or_triangle_in_one_stroke_keeps_its_corners() {
+        let pen = Dynamics::of(Preset::Pen, &BTreeMap::new());
+        let square = [
+            (0.0, 0.0),
+            (300.0, 0.0),
+            (300.0, 300.0),
+            (0.0, 300.0),
+            (0.0, 0.0),
+        ];
+        let triangle = [(0.0, 280.0), (150.0, 0.0), (300.0, 280.0), (0.0, 280.0)];
+        for shape in [&square[..], &triangle[..]] {
+            let points: Vec<Vec<f64>> = shape.iter().map(|(x, y)| vec![*x, *y, 1.0]).collect();
+            assert_eq!(corners(&points, pen.smoothing, 8.0).len(), shape.len() - 2);
+            let line = path_points(&centreline(&points, 8.0, pen.smoothing));
+            for corner in &shape[1..shape.len() - 1] {
+                let near = nearest(&line, *corner);
+                assert!(near < 0.3, "corner {corner:?} missed by {near}");
+            }
+            // The sides run straight between the corners: none bulges.
+            for at in &line {
+                let off = shape
+                    .windows(2)
+                    .map(|pair| {
+                        use ui::vello::kurbo::ParamCurveNearest as _;
+                        let side = ui::vello::kurbo::Line::new(pair[0], pair[1]);
+                        side.nearest(*at, 1e-9).distance_sq.sqrt()
+                    })
+                    .fold(f64::MAX, f64::min);
+                assert!(off < 0.3, "{at:?} is {off} off the shape");
+            }
+        }
+    }
+
+    #[test]
+    fn a_shaky_hands_square_keeps_its_corners_and_loses_its_shake() {
+        // A square 250 across drawn by hand: a point every 3 units, each
+        // up to a unit off the line.
+        let mut points = Vec::new();
+        let corners_at = [
+            (0.0, 0.0),
+            (250.0, 0.0),
+            (250.0, 250.0),
+            (0.0, 250.0),
+            (0.0, 0.0),
+        ];
+        let mut step = 0;
+        for pair in corners_at.windows(2) {
+            let ((ax, ay), (bx, by)) = (pair[0], pair[1]);
+            for along in 0..84 {
+                let t = f64::from(along) / 84.0;
+                step += 1;
+                points.push(vec![
+                    ax + (bx - ax) * t + wobble(step, 1.0),
+                    ay + (by - ay) * t + wobble(step * 3, 1.0),
+                    1.0,
+                ]);
+            }
+        }
+        points.push(vec![0.0, 0.0, 1.0]);
+        let found = corners(&points, 0.6, 8.0);
+        assert_eq!(found.len(), 3);
+        let line = path_points(&centreline(&points, 8.0, 0.6));
+        for (corner, index) in corners_at[1..4].iter().zip(&found) {
+            // The line turns exactly on the point the hand turned at, which
+            // is within its shake of the true corner.
+            let turned = &points[*index];
+            assert!(nearest(&line, (turned[0], turned[1])) < 1e-3);
+            let near = nearest(&line, *corner);
+            assert!(near < 2.0, "corner {corner:?} missed by {near}");
+        }
+        // Along the middle of the top side the shake is smoothed out.
+        for at in line
+            .iter()
+            .filter(|at| at.y < 50.0 && (60.0..190.0).contains(&at.x))
+        {
+            assert!(at.y.abs() < 0.6, "{at:?} still shakes");
+        }
+    }
+
+    #[test]
+    fn a_gentle_noisy_curve_has_no_corners_and_is_smoothed() {
+        // A third of a circle 150 round, a point every 2 units, each up to a
+        // unit off it.
+        let points: Vec<Vec<f64>> = (0..=157_u32)
+            .map(|step| {
+                let angle = f64::from(step) * 2.0 / 150.0;
+                let radius = 150.0 + wobble(step, 1.0);
+                vec![radius * angle.cos(), radius * angle.sin(), 1.0]
+            })
+            .collect();
+        assert!(corners(&points, 0.6, 8.0).is_empty());
+        let smooth = smoothed(&points, 0.6, 8.0);
+        let middle = &smooth[smooth.len() / 5..smooth.len() * 4 / 5];
+        for point in middle {
+            let radius = point[0].hypot(point[1]);
+            assert!((radius - 150.0).abs() < 0.5, "radius {radius}");
+        }
+    }
+
     #[test]
     fn smoothing_keeps_a_tight_curve_its_size() {
         // Most of a circle 12 units round, a point every 15 degrees.
@@ -1135,7 +1471,7 @@ mod tests {
                 vec![100.0 + 12.0 * angle.cos(), 100.0 + 12.0 * angle.sin(), 1.0]
             })
             .collect();
-        let smooth = smoothed(&arc, 1.0);
+        let smooth = smoothed(&arc, 1.0, 4.0);
         let middle = &smooth[smooth.len() / 4..smooth.len() * 3 / 4];
         for point in middle {
             let radius = (point[0] - 100.0).hypot(point[1] - 100.0);
@@ -1197,6 +1533,7 @@ mod tests {
                 dabs,
                 scatter: Some(30.0),
                 dab_length: None,
+                hatch: None,
             },
             style: style(brush),
             transform: None,

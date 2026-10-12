@@ -123,10 +123,7 @@ use crate::text_break::unicode_word_ranges;
 /// word this returns that word's start; at its start it returns the preceding
 /// word's start. The result is always a UTF-8 boundary.
 pub fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
-    let mut byte = byte_idx.min(text.len());
-    while byte > 0 && !text.is_char_boundary(byte) {
-        byte = byte.saturating_sub(1);
-    }
+    let byte = text.floor_char_boundary(byte_idx);
     unicode_word_ranges(text)
         .rev()
         .find(|range| range.start < byte)
@@ -136,10 +133,7 @@ pub fn prev_word_boundary(text: &str, byte_idx: usize) -> usize {
 /// Mirror of [`prev_word_boundary`] for forward movement: the next UAX #29
 /// word start, or the end of the string.
 pub fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
-    let mut byte = byte_idx.min(text.len());
-    while byte < text.len() && !text.is_char_boundary(byte) {
-        byte = byte.saturating_add(1);
-    }
+    let byte = text.ceil_char_boundary(byte_idx);
     unicode_word_ranges(text)
         .find(|range| range.start > byte)
         .map_or(text.len(), |range| range.start)
@@ -148,13 +142,16 @@ pub fn next_word_boundary(text: &str, byte_idx: usize) -> usize {
 /// Byte range `(start, end)` of the UAX #29 word containing `byte_idx`, or the
 /// word immediately on the left when the index lands in following punctuation
 /// or whitespace. Used by double-click word selection.
+///
+/// Words never cross a line feed (UAX #29 breaks on both sides of one), so
+/// only the index's own line is segmented; earlier lines are segmented, one
+/// at a time, only when this line has no word up to the index.
 pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
-    let mut byte = byte_idx.min(text.len());
-    while byte > 0 && !text.is_char_boundary(byte) {
-        byte = byte.saturating_sub(1);
-    }
+    let byte = text.floor_char_boundary(byte_idx);
+    let (line_start, line_end) = line_boundaries(text, byte);
     let mut previous = None;
-    for range in unicode_word_ranges(text) {
+    for range in unicode_word_ranges(text.get(line_start..line_end).unwrap_or_default()) {
+        let range = range.start.saturating_add(line_start)..range.end.saturating_add(line_start);
         if range.start <= byte && byte <= range.end {
             return (range.start, range.end);
         }
@@ -164,7 +161,24 @@ pub fn word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
             break;
         }
     }
-    previous.map_or((byte, byte), |range| (range.start, range.end))
+    if let Some(range) = previous {
+        return (range.start, range.end);
+    }
+    // The last word of the nearest earlier line that has one.
+    let mut end = line_start;
+    while let Some(line_end) = end.checked_sub(1) {
+        let line = text.get(..line_end).unwrap_or_default();
+        let start = line.rfind('\n').map_or(0, |at| at.saturating_add(1));
+        let words = unicode_word_ranges(line.get(start..).unwrap_or_default());
+        if let Some(range) = words.last() {
+            return (
+                range.start.saturating_add(start),
+                range.end.saturating_add(start),
+            );
+        }
+        end = start;
+    }
+    (byte, byte)
 }
 
 /// Byte range `(start, end)` of the *line* containing `byte_idx`, where
@@ -296,6 +310,10 @@ fn clipboard() -> std::sync::Arc<dyn crate::clipboard::ClipboardBackend> {
     crate::host::current().clipboard
 }
 
+pub(crate) fn request_clipboard_paste() -> std::sync::mpsc::Receiver<Option<String>> {
+    clipboard().request_text(ClipboardTarget::Clipboard)
+}
+
 /// Push `text` onto the system clipboard — the Ctrl+C buffer.
 ///
 /// Routes to the current host's clipboard; see [`crate::clipboard`]. Without
@@ -343,7 +361,15 @@ pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> bool {
 /// Pull the current clipboard contents as a UTF-8 string. Returns
 /// `None` when the clipboard is empty / unavailable / non-text.
 pub fn clipboard_paste() -> Option<String> {
-    clipboard().text(ClipboardTarget::Clipboard)
+    clipboard()
+        .text(ClipboardTarget::Clipboard)
+        .filter(|text| !text.is_empty())
+}
+
+/// The image on the clipboard, when another app copied one (a screenshot,
+/// an image from a viewer or a browser). `None` when it holds no image.
+pub fn clipboard_paste_image() -> Option<crate::clipboard::ClipboardImage> {
+    clipboard().image()
 }
 
 /// Push `text` onto the **primary selection** — the mouse-driven "select then
@@ -364,6 +390,56 @@ pub fn clipboard_paste_primary() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `word_boundaries` over the whole text, as it was before it segmented
+    /// one line.
+    fn whole_text_word_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
+        let byte = text.floor_char_boundary(byte_idx);
+        let mut previous = None;
+        for range in unicode_word_ranges(text) {
+            if range.start <= byte && byte <= range.end {
+                return (range.start, range.end);
+            }
+            if range.end <= byte {
+                previous = Some(range);
+            } else {
+                break;
+            }
+        }
+        previous.map_or((byte, byte), |range| (range.start, range.end))
+    }
+
+    #[test]
+    fn line_local_word_boundaries_match_whole_text_segmentation() {
+        for text in [
+            "",
+            "\n",
+            "hello",
+            "hello\n\n  \nworld.",
+            "first line, done.\n\n\n   ... \n(second) line\n",
+            "שלום עולם\nمرحبا بالعالم!\n\nภาษาไทยไม่มีช่องว่าง\n日本語の文章。\n",
+            "emoji 👩‍💻 then e\u{301}\n  — \n can't stop\r\nnow",
+            "...\n!!\n",
+        ] {
+            for byte in 0..=text.len() + 1 {
+                assert_eq!(
+                    word_boundaries(text, byte),
+                    whole_text_word_boundaries(text, byte),
+                    "{text:?} at {byte}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_clipboard_is_unavailable_but_whitespace_is_content() {
+        let (services, _) = crate::host::HostServices::recording();
+        let _host = crate::host::enter(&services);
+        clipboard_copy("");
+        assert_eq!(clipboard_paste(), None);
+        clipboard_copy(" \n");
+        assert_eq!(clipboard_paste().as_deref(), Some(" \n"));
+    }
 
     #[cfg(windows)]
     #[test]

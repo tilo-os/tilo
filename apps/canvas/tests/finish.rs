@@ -21,6 +21,17 @@ fn draw(app: &mut TestApp<App>, marks: &Value) {
 }
 
 fn view(app: &mut TestApp<App>, action: &str, args: Value) -> Value {
+    let effect = args.as_object().and_then(|args| {
+        <canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(action, args).ok()
+    });
+    if let Some(effect) = effect {
+        return app
+            .effect(&effect)
+            .expect("the view effect finishes")
+            .value
+            .unwrap_or(Value::Null);
+    }
+
     app.call(action, args).unwrap().unwrap()
 }
 
@@ -86,6 +97,10 @@ fn text_uses_the_fonts_tilo_ships_and_names_them_when_refused() {
     let measured = view(&mut app, "inspect", json!({"measure": ["title"]}));
     let letters = measured["measured"][0]["letters"].as_array().unwrap();
     assert_eq!(letters.len(), 7, "one box per letter: {measured}");
+    assert_eq!(
+        measured["listed"], 0,
+        "measuring, the marks are listed only when asked: {measured}"
+    );
     assert_eq!(letters[0]["t"], "M");
     let left = |index: usize| letters[index]["box"][0].as_f64().unwrap();
     let width = |index: usize| letters[index]["box"][2].as_f64().unwrap();
@@ -252,7 +267,7 @@ fn diff_says_what_changed_about_a_mark() {
         .unwrap();
     app.call("edit-marks", json!({"ids": ["b"], "opacity": 0.5}))
         .unwrap();
-    let diff = view(&mut app, "diff", json!({"from": "drawn"}));
+    let diff = view(&mut app, "compare-versions", json!({"from": "drawn"}));
     assert_eq!(
         diff["marks"]["changed"],
         json!({"a": ["stacking"], "b": ["opacity"]}),

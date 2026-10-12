@@ -8,9 +8,13 @@ pub mod client;
 pub mod entry;
 pub mod key;
 pub mod publish;
+pub mod runtime_history;
 
 pub use client::{DEFAULT_REGISTRY, REGISTRY_ENV, RegistryClient};
-pub use entry::{EntryMetadata, Platform, build_entry, check_package};
+pub use entry::{
+    EntryMetadata, Platform, ThinPackage, build_entry, build_entry_with_objects, check_package,
+    check_package_with,
+};
 pub use publish::{Published, publish};
 
 use anyhow::{Result, anyhow, bail};

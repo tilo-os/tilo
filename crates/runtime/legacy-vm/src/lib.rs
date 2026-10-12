@@ -18,16 +18,6 @@
     clippy::missing_errors_doc,
     reason = "errors are typed enums whose variants document themselves"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 pub use legacy_agent_protocol::GuestOs;
 
@@ -40,6 +30,9 @@ pub mod grants;
 pub mod image;
 pub mod lifecycle;
 pub mod memory;
+#[cfg(feature = "relay-stream")]
+pub mod stream;
 pub mod supervisor;
+pub mod transport;
 pub mod virsh;
 pub mod virtiofs;

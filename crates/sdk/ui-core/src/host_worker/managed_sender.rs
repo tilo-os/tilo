@@ -11,7 +11,7 @@ mod runtime;
 pub(crate) use attempt::AttemptFailure;
 #[cfg(feature = "broker-transport")]
 pub(crate) use attempt::RequestView;
-pub use attempt::{LocalFailure, LocalRequest, ManagedAttempt, ManagedAttemptResult};
+pub use attempt::{ManagedAttempt, ManagedAttemptResult};
 pub use codec::{NativeSenderOutboxV1, OutboxFailure};
 pub use runtime::{
     AcceptRefusal, AttemptKind, ChildCommit, ChildIntent, ChildTicket, Continuation,
@@ -22,5 +22,6 @@ pub use runtime::{
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 pub(crate) use lifecycle::transport_fixture::TransportFixture;

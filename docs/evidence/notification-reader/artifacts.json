@@ -1,0 +1,101 @@
+[
+  {
+    "name": "notification-reader-before-large-text.png",
+    "width": 560,
+    "height": 560,
+    "sha256": "f3b1989167a8c131950d259d2345f53b35a417a0c7801b53efff1434d2298682",
+    "source_revision": "18c4f1e472fffb39e7334c1160f6e6d5d27efba4",
+    "file_id": "file_000000006e4881f5ad6a82ba555d31b4",
+    "library_file_id": "libfile_942371f4e3fc8191b0d88033c591dc32"
+  },
+  {
+    "name": "notification-reader-after-read-focus.png",
+    "width": 560,
+    "height": 560,
+    "sha256": "35f513f0ec3228005ea8af5ff1fa47749f087b0f30f4d940b1232ef329cff611",
+    "source_revision": "f7ef336d29241ec38c47d499dfa48d817382c7ec",
+    "file_id": "file_00000000852481f99cce459386f3a599",
+    "library_file_id": "libfile_95ea753387608191be957327d5909844"
+  },
+  {
+    "name": "notification-reader-after-large-text-start.png",
+    "width": 560,
+    "height": 560,
+    "sha256": "698a3969b1b2182417f75d0a5fc4419510e8def9437e5d080fbfe5dbbe1ed4e4",
+    "source_revision": "f7ef336d29241ec38c47d499dfa48d817382c7ec",
+    "file_id": "file_00000000ca8c81f7958949a352c9bb5a",
+    "library_file_id": "libfile_aed88d66e634819197f3c3fba6acc2e9"
+  },
+  {
+    "name": "notification-reader-after-large-text-end.png",
+    "width": 560,
+    "height": 560,
+    "sha256": "000ac8d82a4d9d557a089b90094bf5a274566fd7a6a140bc062443103b773f3d",
+    "source_revision": "f7ef336d29241ec38c47d499dfa48d817382c7ec",
+    "file_id": "file_000000006a1881f685f09905f6e63851",
+    "library_file_id": "libfile_a8d6b1df28508191a0277b83cffea279"
+  },
+  {
+    "name": "notification-reader-after-light-start.png",
+    "width": 400,
+    "height": 560,
+    "sha256": "b6958397a49369ccc3763536fed7a34516d9081bf1e65e9406f3da39bbe44d3c",
+    "source_revision": "f7ef336d29241ec38c47d499dfa48d817382c7ec",
+    "file_id": "file_00000000f5e481f7bb118e8276254bcd",
+    "library_file_id": "libfile_746f5766bee8819192ab0bfad17cc438"
+  },
+  {
+    "name": "notification-reader-after-narrow-start.png",
+    "width": 320,
+    "height": 480,
+    "sha256": "fed378c8bbc45d9702152b042362bad35c72ae79e621e3be12d886adc0641c4a",
+    "source_revision": "f7ef336d29241ec38c47d499dfa48d817382c7ec",
+    "file_id": "file_00000000ccd081fdb59251901dd12a5a",
+    "library_file_id": "libfile_335be2583fb48191a00ecd62ae82652d"
+  },
+  {
+    "name": "notification-reader-after-narrow-end.png",
+    "width": 320,
+    "height": 480,
+    "sha256": "0428e3854c7d7722bccf2eae29c0b2f60c50570a41887d175799b8504fb9f686",
+    "source_revision": "f7ef336d29241ec38c47d499dfa48d817382c7ec",
+    "file_id": "file_0000000044e481f5b4bb1c7d31a0962e",
+    "library_file_id": "libfile_63fb9d8653c08191ac9d1d0594744bb8"
+  },
+  {
+    "name": "notification-reader-after-native-large-text-start.png",
+    "width": 960,
+    "height": 540,
+    "sha256": "fb858dbe1bb39591cff8d3ec7b51370d422e6f08a35b6bc1df0879f2ff370711",
+    "source_revision": "f7ef336d29241ec38c47d499dfa48d817382c7ec",
+    "file_id": "file_0000000049ac81f7933a76f4002e0900",
+    "library_file_id": "libfile_fe5b04061d6481918b26db70a51e6061"
+  },
+  {
+    "name": "notification-reader-after-native-large-text-end.png",
+    "width": 960,
+    "height": 540,
+    "sha256": "62c7c4d906b7c0a99ade322f4f5440f43b8eef590b23d13d6fd8cb7cb49e44ef",
+    "source_revision": "f7ef336d29241ec38c47d499dfa48d817382c7ec",
+    "file_id": "file_00000000bf8881f788298eb452983889",
+    "library_file_id": "libfile_aec698fc1d788191af7e34b6e0791e72"
+  },
+  {
+    "name": "notification-reader-after-native-high-contrast-back.png",
+    "width": 960,
+    "height": 540,
+    "sha256": "0961ed5c1eb84cd892c0d13dbed433fdb306a7ffa7ddbe923d4648c98092ffb7",
+    "source_revision": "f7ef336d29241ec38c47d499dfa48d817382c7ec",
+    "file_id": "file_00000000005c81f6a095fd8ce526a10a",
+    "library_file_id": "libfile_7c9aec92a5e881918a8354087fc08c08"
+  },
+  {
+    "name": "notification-reader-after-native-ui-text-resized.png",
+    "width": 800,
+    "height": 480,
+    "sha256": "e6341246f45848d0f91af67c438df3de2ee965a2b1cdd4b2e582208688b22564",
+    "source_revision": "f7ef336d29241ec38c47d499dfa48d817382c7ec",
+    "file_id": "file_0000000038bc81fd8b1667395606cb17",
+    "library_file_id": "libfile_78ea3476e4dc8191b8915b4eb4c9bc5d"
+  }
+]

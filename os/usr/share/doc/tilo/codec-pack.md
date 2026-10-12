@@ -23,6 +23,22 @@ only from these publishers' hosts.
 | Cisco, through Fedora's `fedora-cisco-openh264` repository (`codecs.fedoraproject.org`) | `openh264` |
 | Fedora | `gstreamer1-plugin-openh264` and dependencies the base lacks |
 
+## Cisco binary attribution and controls
+
+OpenH264 Video Codec provided by Cisco Systems, Inc.
+
+Settings → Updates → Additional codecs provides Install, Remove and Install
+again controls. Removing the pack disables its Cisco library; installing it
+again re-enables it. These are explicit owner actions, also available through
+Settings' public actions. No application accepts terms on the owner's behalf.
+Cisco's binary is downloaded separately to the device from Cisco, never
+bundled into Tilo's image, CI artifacts or application downloads.
+
+The complete, unmodified [Cisco binary license v1.0](https://www.openh264.org/BINARY_LICENSE.txt)
+is included at `/usr/share/licenses/tilo-openh264/BINARY_LICENSE.txt`, including
+the BSD notice, AVC patent notice and all four conditions. This is licensing
+information, not a statement that all uses or other codecs have patent coverage.
+
 ## How a manifest is made
 
 Tilo CI resolves the extension inside every published image, against the
@@ -42,6 +58,16 @@ exactly the Mesa version the base runs. When RPM Fusion has no such build, the
 manifest marks the `tilo-codecs-mesa` part `waiting`; Settings shows "Hardware
 H.264/HEVC is waiting for a matching Mesa build", and the stock drivers stay
 in use.
+
+An OpenH264 plugin without the real `openh264` library is incomplete. The
+image's `noopenh264` compatibility stub has the right SONAME but cannot create
+an encoder or decoder. The resolver waits when Cisco's library is unavailable;
+the device refuses an incomplete signed pack even when its base fingerprint
+matches. If a real library is already in the base, its exact version is pinned
+as a requirement so a subsequent image replacing it with a stub cannot keep
+the old pack enabled. Previously accepted incomplete packs wait rather than
+advertise working H.264. Rollback can reuse a pack only when its runtime
+requirements are satisfied again.
 
 ## What goes where
 

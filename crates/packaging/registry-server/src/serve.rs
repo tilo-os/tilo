@@ -16,13 +16,21 @@
 //!   appeal, or owner decision.
 //! - `GET  /moderation/cases/<id>` → convenience projection (not a proof).
 //! - `GET  /moderation/transparency` → bounded public signed hash-chain page.
-//! - `GET  /blobs/<blake3>`       → a reviewed payload blob.
+//! - `GET  /blobs/<blake3>`       → a reviewed payload blob, or one chunk of
+//!   a reviewed blob kept as chunks.
+//! - `GET  /blobs/<blake3>.chunks` → the chunk list of a reviewed blob kept as
+//!   chunks (see `tilo_app_package::chunks`).
 //! - `GET  /thin/<root>.tapp`     → a reviewed package's thin form, by
 //!   package root.
 //! - `GET  /artifacts/<blake3>.tapp` → an operator-imported full package.
+//! - `GET  /blobs/<blake3>.zst`, `GET /artifacts/<blake3>.tapp.zst` → the
+//!   compressed twin of a payload object or imported package
+//!   (`tilo_app_package::compressed`), as `application/zstd`; 404 when it
+//!   has none, and the client takes the raw object.
 //!
-//! The last three, and `/indexes/`, are content addressed and served as
-//! immutable. `/entries`
+//! The last five, and `/indexes/`, are content addressed and served as
+//! immutable, with exactly one `Cache-Control`, so an edge cache in front
+//! may keep them forever. `/entries`
 //! carries the snapshot hash as its `ETag`, so a client revalidating an
 //! unchanged catalogue receives an empty `304`.
 //!
@@ -206,7 +214,8 @@ pub async fn handle(
         }
         (Method::POST, "/entries") => handle_post_entries(&state, req).await,
         (Method::GET, p) if p.starts_with("/blobs/") => {
-            handle_get_blob(&state, p.trim_start_matches("/blobs/"))
+            let name = p.trim_start_matches("/blobs/").to_owned();
+            read_file(&state, move |state| handle_get_blob(state, &name)).await
         }
         (Method::GET, p) if p.starts_with("/thin/") => {
             let name = p.trim_start_matches("/thin/").to_owned();
@@ -217,10 +226,7 @@ pub async fn handle(
         }
         (Method::GET, p) if p.starts_with("/artifacts/") => {
             let name = p.trim_start_matches("/artifacts/").to_owned();
-            read_file(&state, move |state| {
-                content_addressed(&name, |digest| state.inner.storage.load_artifact(digest))
-            })
-            .await
+            read_file(&state, move |state| handle_get_artifact(state, &name)).await
         }
         (Method::PUT, p) if p.starts_with("/uploads/") => {
             let name = p.trim_start_matches("/uploads/").to_owned();
@@ -1040,10 +1046,34 @@ fn publisher_row(state: &AppState, entry: &RegistryEntry) -> Option<crate::Publi
 /// A payload blob of a reviewed package, by BLAKE3 hash, so a client that
 /// downloaded a thin package fetches only the blobs it lacks. Content
 /// addressing makes the response self-verifying; clients check every blob.
-fn handle_get_blob(
-    state: &AppState,
-    blake3_hex: &str,
-) -> Result<Response<Full<Bytes>>, HandlerError> {
+fn handle_get_blob(state: &AppState, name: &str) -> Result<Response<Full<Bytes>>, HandlerError> {
+    if let Some(blake3_hex) = name.strip_suffix(tilo_app_package::compressed::SUFFIX) {
+        return Ok(
+            match state
+                .inner
+                .storage
+                .load_payload_twin(blake3_hex)
+                .map_err(HandlerError::Storage)?
+            {
+                Some(twin) => immutable_response_as(twin, tilo_app_package::compressed::MEDIA_TYPE),
+                None => text_response(StatusCode::NOT_FOUND, "not found"),
+            },
+        );
+    }
+    if let Some(blake3_hex) = name.strip_suffix(tilo_app_package::chunks::CHUNKS_SUFFIX) {
+        return Ok(
+            match state
+                .inner
+                .storage
+                .load_chunk_list(blake3_hex)
+                .map_err(HandlerError::Storage)?
+            {
+                Some(list) => immutable_response_as(list.encode(), "application/json"),
+                None => text_response(StatusCode::NOT_FOUND, "not found"),
+            },
+        );
+    }
+    let blake3_hex = name;
     match state
         .inner
         .storage
@@ -1063,6 +1093,33 @@ fn handle_get_blob(
         }
         None => Ok(text_response(StatusCode::NOT_FOUND, "not found")),
     }
+}
+
+/// An imported package, or its compressed twin.
+fn handle_get_artifact(
+    state: &AppState,
+    name: &str,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    let storage = &state.inner.storage;
+    match name.strip_suffix(tilo_app_package::compressed::SUFFIX) {
+        Some(raw) => {
+            content_addressed(raw, |digest| storage.load_artifact_twin(digest)).map(compressed_twin)
+        }
+        None => content_addressed(name, |digest| storage.load_artifact(digest)),
+    }
+}
+
+/// Relabel a content-addressed response as the compressed twin it carries.
+/// The body is a zstd frame, not an encoding of the response: no
+/// `Content-Encoding`, so nothing between here and the client decodes it.
+fn compressed_twin(mut response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
+    if response.status() == StatusCode::OK {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static(tilo_app_package::compressed::MEDIA_TYPE),
+        );
+    }
+    response
 }
 
 /// Content-addressed bytes: the URL names the content, so every cache may

@@ -58,7 +58,7 @@ impl Ty {
             ParamType::DateTime => Self::DateTime,
             ParamType::Secret => Self::Secret,
             ParamType::Resource => Self::Resource(None),
-            ParamType::Object => Self::Object(param.schema.clone()),
+            ParamType::Object => Self::Object(param.schema.as_deref().cloned()),
             ParamType::Array => Self::Array(
                 param
                     .schema

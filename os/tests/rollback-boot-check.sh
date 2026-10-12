@@ -223,6 +223,31 @@ else
   esac
 fi
 
+# The confirmation's timer fires ten minutes into the boot. Before that it has
+# not run, which says nothing; after it, anything but success means the floor
+# never moves on this machine.
+if ! systemctl cat tilo-rollback-confirm.service >/dev/null 2>&1; then
+  no "tilo-rollback-confirm.service does not exist in this image"
+else
+  state="$(systemctl show -p Result --value tilo-rollback-confirm.service 2>/dev/null)"
+  started="$(systemctl show -p ExecMainStartTimestampMonotonic --value tilo-rollback-confirm.service 2>/dev/null)"
+  if [ -z "$started" ] || [ "$started" = 0 ]; then
+    if [ "$state" = success ]; then
+      na "tilo-rollback-confirm has not run on this boot yet (its timer fires ten minutes in)"
+    else
+      no "tilo-rollback-confirm could not start: $state"
+      journalctl -b --no-pager -u tilo-rollback-confirm.service | tail -10 | sed 's/^/         /'
+    fi
+  elif [ "$state" = success ]; then
+    ok "tilo-rollback-confirm ran successfully"
+    journalctl -b --no-pager -o cat -u tilo-rollback-confirm.service | grep -F 'tilo-rollback:' \
+      | tail -3 | sed 's/^/         /'
+  else
+    no "tilo-rollback-confirm result: $state"
+    journalctl -b --no-pager -u tilo-rollback-confirm.service | tail -10 | sed 's/^/         /'
+  fi
+fi
+
 if command -v tilo-rollback >/dev/null 2>&1; then
   ok "tilo-rollback is installed"
   tilo-rollback tpm-status 2>&1 | sed 's/^/         /'

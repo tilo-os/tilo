@@ -1,4 +1,4 @@
-//! A self-contained English spelling engine.
+//! The spelling engine behind every Tilo text field.
 //!
 //! The engine has three stages, mirroring the public API:
 //!
@@ -11,8 +11,10 @@
 //!    (numbers, ALL-CAPS acronyms, URLs, emails), and flags the rest that are not
 //!    in the dictionary, attaching a ranked list of [`suggest`]ions.
 //!
-//! Everything is Unicode-aware at the `char` level and uses no external crates,
-//! so adding this crate does not perturb the workspace lockfile.
+//! English uses the embedded word list. Other languages use the system's
+//! Hunspell dictionaries, parsed and checked in-process
+//! ([`spans_for_language`], [`suggestions_for_language`]), so checking
+//! behaves the same inside an app sandbox as outside it.
 //!
 //! ```
 //! use spellcheck::{Dictionary, check};
@@ -27,18 +29,15 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
 use std::borrow::Cow;
-use std::sync::OnceLock;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 
 mod dictionary;
 mod distance;
@@ -116,15 +115,11 @@ pub fn spans(dict: &Dictionary, text: &str) -> Vec<(usize, usize)> {
 
 /// Spell-check text in a BCP-47-ish language such as en-US or de-DE.
 ///
-/// When the system has Hunspell plus that language's dictionary, its full
-/// affix-aware engine is used through a persistent per-language process.
-/// English falls back to the embedded dictionary, so checking still works in
-/// hermetic builds and app sandboxes. The command is invoked directly, never
-/// through a shell.
+/// English uses the embedded dictionary (its expanded forms plus a
+/// conversational overlay), so it works in hermetic builds too. Other
+/// languages use the system's Hunspell dictionary for that language, checked
+/// in-process with its affix rules; without one, nothing is flagged.
 pub fn spans_for_language(language: &str, text: &str) -> Vec<(usize, usize)> {
-    // English typing stays entirely in-process. Spawning/querying Hunspell for
-    // each prefix was measurably slower; the embedded set includes its expanded
-    // forms plus a conversational overlay, and is warmed before first focus.
     if is_english(language) {
         return spans(shared_english(), text);
     }
@@ -144,23 +139,18 @@ pub fn spans_for_language(language: &str, text: &str) -> Vec<(usize, usize)> {
         .map(|token| normalize_lookup_word(token.text))
         .collect();
     let words: Vec<&str> = lookup_words.iter().map(AsRef::as_ref).collect();
-    if let Some(correct) = hunspell_results(language, &words) {
-        return tokens
-            .into_iter()
-            .zip(correct)
-            .filter_map(|(token, is_correct)| (!is_correct).then_some((token.start, token.end)))
-            .collect();
-    }
-
-    if is_english(language) {
-        spans(shared_english(), text)
-    } else {
-        Vec::new()
-    }
+    let Some(correct) = hunspell_results(language, &words) else {
+        return Vec::new();
+    };
+    tokens
+        .into_iter()
+        .zip(correct)
+        .filter_map(|(token, is_correct)| (!is_correct).then_some((token.start, token.end)))
+        .collect()
 }
 
-/// Corrections for one word, ranked by the system Hunspell dictionary.
-/// English falls back to the embedded edit-distance suggester.
+/// Corrections for one word, best first: the embedded edit-distance
+/// suggester for English, the system Hunspell dictionary otherwise.
 pub fn suggestions_for_language(language: &str, word: &str, max: usize) -> Vec<String> {
     if word.is_empty() || max == 0 {
         return Vec::new();
@@ -336,26 +326,40 @@ fn shared_english() -> &'static Dictionary {
     DICTIONARY.get_or_init(Dictionary::builtin)
 }
 
-/// Begin building the in-process language data before the first field is
-/// focused. The one background warm-up is intentionally best-effort: callers
-/// can still use the checker immediately and will wait on the same `OnceLock`
-/// only if they beat this short head start.
+/// Begin loading `language`'s dictionary before the first field is focused.
+/// The background warm-up is best-effort: callers can still use the checker
+/// immediately and wait on the same `OnceLock` only if they beat this head
+/// start. Each language warms once.
 pub fn warm_up_language(language: &str) {
-    static STARTED: OnceLock<()> = OnceLock::new();
-    if !is_english(language) {
+    static STARTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    // A browser page has no threads; its first check builds the data.
+    if cfg!(target_family = "wasm") {
         return;
     }
-    STARTED.get_or_init(|| {
-        // A browser page has no threads; its first check builds the data.
-        if cfg!(target_family = "wasm") {
-            return;
+    let key = if is_english(language) {
+        "en".to_owned()
+    } else {
+        match normalize_language(language) {
+            Some(name) => name,
+            None => return,
         }
-        let _ = std::thread::Builder::new()
-            .name("spellcheck-warmup".to_string())
-            .spawn(|| {
+    };
+    let Ok(mut started) = STARTED.get_or_init(Mutex::default).lock() else {
+        return;
+    };
+    if !started.insert(key) {
+        return;
+    }
+    let language = language.to_owned();
+    let _ = std::thread::Builder::new()
+        .name("spellcheck-warmup".to_string())
+        .spawn(move || {
+            if is_english(&language) {
                 let _ = shared_english();
-            });
-    });
+            } else {
+                hunspell::warm_up(&language);
+            }
+        });
 }
 
 /// The session language in Hunspell's conventional `ll_CC` form.
@@ -383,13 +387,6 @@ fn is_english(language: &str) -> bool {
     language
         .get(..2)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("en"))
-}
-
-/// Whether ordinary span checks for this language stay inside the process.
-/// Callers can use this to keep external Hunspell IPC out of the immediate
-/// key-event frame without special-casing language tags themselves.
-pub fn checks_in_process(language: &str) -> bool {
-    is_english(language)
 }
 
 fn normalize_language(language: &str) -> Option<String> {

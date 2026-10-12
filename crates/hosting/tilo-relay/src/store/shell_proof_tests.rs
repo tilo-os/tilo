@@ -1,11 +1,30 @@
-//! Regressions over the generated shell-proof fixture (see
-//! `shell_proof_fixture` and `tests/fixtures/shell-proof/README.md`).
+//! Regressions over the shell-proof scenario, generated at test time (see
+//! `shell_proof_fixture`).
 use super::*;
 use crate::{coedit::CoeditPayload, transport::Envelope};
 use tilo_peer_state::{NeighbourMsg, StatePeer, retained_proof::*};
 
+/// Build the shell-proof and shell-selection scenarios once, at test time,
+/// with fresh test identities, in the layout the production store reader and
+/// the tests read. Keeping the directory alive also preserves consumers that
+/// copy retained trees.
 pub(super) fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shell-proof")
+    static FIXTURES: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    FIXTURES
+        .get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            super::shell_proof_fixture::write(
+                &super::shell_proof_fixture::generate(),
+                &dir.path().join("shell-proof"),
+            );
+            super::shell_selection_fixture::write(
+                &super::shell_selection_fixture::generate(),
+                &dir.path().join("shell-selection"),
+            );
+            dir
+        })
+        .path()
+        .join("shell-proof")
 }
 pub(super) fn metadata() -> serde_json::Value {
     serde_json::from_slice(&fs::read(fixture().join("failure.json")).unwrap()).unwrap()

@@ -48,6 +48,7 @@ fi
 EOF
 cat >"$work/bin/mount" <<'EOF'
 #!/bin/sh
+[ "${1:-}" != -o ] || shift 2
 case "${1:-}" in
   /dev/loop-testp2)
     mkdir -p "$2/state/deploy/test/etc"
@@ -63,6 +64,7 @@ cat >"$work/bin/podman" <<'EOF'
 #!/bin/sh
 exit 0
 EOF
+printf '#!/bin/sh\nexit 0\n' >"$work/bin/btrfs"
 chmod +x "$work/bin/"*
 
 PATH="$work/bin:$PATH" TILO_DISTROBOX= \

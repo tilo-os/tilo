@@ -16,12 +16,13 @@
 //! takes the place of this one.
 
 use std::collections::HashSet;
+use ui_core::automerge::transaction::Transactable;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tilo_actions::{
-    ActionArgs, ActionError, ActionOutput, ActionParam, ActionSpec, ChangeKind, EncodedAction,
-    ExecutionLocus, OperationKind, ParamType, PermissionRequirement, ResultSpec,
+    ActionArgs, ActionError, ActionKind, ActionOutput, ActionParam, ActionSpec, ChangeKind,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, ResultSpec,
 };
 use tilo_resource::history::Version;
 use ui_core::automerge::{AutoCommit, ChangeHash, Patch, PatchAction, Prop};
@@ -44,6 +45,12 @@ pub(crate) enum HistoryEdit {
     Undo {
         steps: Option<u32>,
         run: Option<String>,
+        /// An exact author id from history for steps outside a run.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<String>,
+        /// Every step after this version instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
     },
     Redo {
         steps: Option<u32>,
@@ -61,33 +68,99 @@ fn limit(steps: Option<u32>, default: usize) -> usize {
     steps.map_or(default, |steps| usize::try_from(steps).unwrap_or(1))
 }
 
-impl tilo_actions::Action for HistoryEdit {
-    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
-        match self {
-            Self::Undo { steps, run } => {
-                let (scope, default) = match run {
-                    Some(run) => (Scope::Run(run.clone()), usize::MAX),
-                    None => (Scope::invoking(doc), 1),
-                };
-                steps::undo(doc, &scope, limit(*steps, default)).map(drop)
-            }
-            Self::Redo { steps } => {
-                let scope = Scope::invoking(doc);
-                steps::redo(doc, &scope, limit(*steps, 1)).map(drop)
-            }
-            Self::Restore { version, ids } => steps::resolve(doc, version).and_then(|heads| {
-                steps::restore(doc, &heads, ids.as_deref().unwrap_or_default()).map(drop)
-            }),
-            Self::Checkpoint { name } => steps::checkpoint(doc, name),
-        }
-        .map_err(ActionError::Refused)
-    }
-
+impl HistoryEdit {
+    /// A checkpoint is housekeeping; any other move through history is a
+    /// step of its own.
     fn change_kind(&self) -> ChangeKind {
         match self {
             Self::Checkpoint { .. } => ChangeKind::Housekeeping,
             _ => ChangeKind::Content,
         }
+    }
+
+    /// What history records this step through history did: for an undo of
+    /// one step, the step it takes back.
+    fn described(&self, doc: &tilo_actions::Doc) -> tilo_actions::Described {
+        use tilo_actions::HistoryOp;
+        let (op, steps) = match self {
+            Self::Undo {
+                steps,
+                run: None,
+                to: None,
+                ..
+            } => (HistoryOp::Undo, steps.unwrap_or(1)),
+            Self::Undo { steps, .. } => (HistoryOp::Undo, steps.unwrap_or(0)),
+            Self::Redo { steps } => (HistoryOp::Redo, steps.unwrap_or(1)),
+            Self::Restore { .. } => (HistoryOp::Restore, 0),
+            Self::Checkpoint { name } => (HistoryOp::Checkpoint { name: name.clone() }, 0),
+        };
+        let of = match self {
+            Self::Undo {
+                run: None,
+                to: None,
+                by,
+                ..
+            } if steps == 1 => {
+                let scope = by.as_ref().map_or_else(
+                    || Scope::invoking(doc),
+                    |author| Scope::Invoker(author.clone()),
+                );
+                let taken = steps::undo_preview(doc, &scope, 1);
+                // A gesture's changes share one description; the newest
+                // names the step.
+                taken
+                    .first()
+                    .and_then(|version| version.context.as_ref())
+                    .and_then(tilo_actions::ActionContext::described)
+            }
+            _ => None,
+        };
+        tilo_actions::Described::new(tilo_actions::Did::history(op, steps, of))
+    }
+}
+
+/// The resource's own registry is the only decoder for its recorded
+/// compensation. Wire context never installs a decoder or a caller.
+pub(crate) struct ResourceHistoryEdit<R> {
+    edit: HistoryEdit,
+    resource: std::marker::PhantomData<fn() -> R>,
+}
+
+impl<R> std::fmt::Debug for ResourceHistoryEdit<R> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.edit.fmt(formatter)
+    }
+}
+
+impl<'de, R> Deserialize<'de> for ResourceHistoryEdit<R> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Ok(Self {
+            edit: history_edit(value).map_err(serde::de::Error::custom)?,
+            resource: std::marker::PhantomData,
+        })
+    }
+}
+
+/// A history edit from its JSON form, decoded by one function for every
+/// resource.
+#[inline(never)]
+fn history_edit(value: Value) -> Result<HistoryEdit, serde_json::Error> {
+    HistoryEdit::deserialize(value)
+}
+
+impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R> {
+    fn change_kind(&self) -> ChangeKind {
+        self.edit.change_kind()
+    }
+
+    fn describe(&self, doc: &tilo_actions::Doc) -> Option<tilo_actions::Described> {
+        Some(self.edit.described(doc))
+    }
+
+    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), ActionError> {
+        self.edit
+            .apply_registered(doc, tilo_resource::group::register::<R>)
     }
 }
 
@@ -139,13 +212,17 @@ fn edit(
         label,
         ExecutionLocus::ClientLocal,
         params,
-        move |args| match build(args) {
-            Ok(edit) => EncodedAction::encode(EDIT_TYPE, &edit)
-                .unwrap_or_else(|error| invalid(&error.to_string())),
+        // Decoded by the resource's own history edit, which applies it.
+        move |args| match build(args)
+            .and_then(|edit| serde_json::to_vec(&edit).map_err(|error| error.to_string()))
+        {
+            Ok(payload) => EncodedAction {
+                type_id: EDIT_TYPE.to_owned(),
+                payload,
+            },
             Err(reason) => invalid(&reason),
         },
     )
-    .requiring(PermissionRequirement::Write)
     .reversible()
     .with_description(description);
     spec.contract.result = ResultSpec::Json {
@@ -177,7 +254,7 @@ fn view(
             })
         },
     )
-    .requiring(PermissionRequirement::Read)
+    .of_kind(ActionKind::Read)
     .with_description(description);
     spec.contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
@@ -203,16 +280,41 @@ fn edit_specs() -> Vec<ActionSpec> {
         edit(
             "undo",
             "Undo",
-            "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps.",
+            "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with by, that author's steps outside a run; with to, all after a version.",
             vec![
                 steps("How many steps, newest first"),
                 ActionParam::optional("run", ParamType::Text, "An agent run id from history")
                     .nullable(),
+                ActionParam::optional(
+                    "by",
+                    ParamType::Text,
+                    "Exact author id from history, for steps outside a run",
+                )
+                .nullable(),
+                ActionParam::optional("to", ParamType::Text, VERSION).nullable(),
             ],
             |args| {
+                let to = args.text("to").map(str::to_owned);
+                if to.is_some() && args.integer("steps").is_some() {
+                    return Err("give steps or to, not both".into());
+                }
+                let by = args.text("by").map(str::trim).map(str::to_owned);
+                if by.as_ref().is_some_and(|author| {
+                    author.is_empty() || author.len() > 512 || author.chars().any(char::is_control)
+                }) {
+                    return Err(
+                        "author id must be nonempty, at most 512 bytes, and contain no controls"
+                            .into(),
+                    );
+                }
+                if by.is_some() && args.text("run").is_some() {
+                    return Err("choose an author or a run, not both".into());
+                }
                 Ok(HistoryEdit::Undo {
+                    by,
                     steps: steps_arg(args)?,
                     run: args.text("run").map(str::to_owned),
+                    to,
                 })
             },
         ),
@@ -272,7 +374,7 @@ fn view_specs() -> Vec<ActionSpec> {
         view(
             "history",
             "History",
-            "List the versions, oldest first: change id, action and its arguments, run, author, time, undone, checkpoints.",
+            "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, run, author, time, undone, checkpoints.",
             vec![
                 ActionParam::optional(
                     "last",
@@ -325,6 +427,49 @@ fn by(version: &Version) -> String {
         .unwrap_or_else(|| version.actor.chars().take(8).collect())
 }
 
+/// What a change's entry records, as data: what was done (`what`, with
+/// field paths, values and verb arguments), to which `item`, by which
+/// `actor` (`id`, `kind`, and the person it acted `for`), in which `run`,
+/// and what kind of action and change it was.
+fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<String, Value>) {
+    if let Some(what) = &context.what {
+        out.insert("what".into(), json!(what));
+    }
+    if let Some(item) = &context.item {
+        out.insert("item".into(), json!(item));
+    }
+    if let Some(invoker) = &context.invoker {
+        let mut actor = serde_json::Map::new();
+        actor.insert("id".into(), invoker.actor.clone().into());
+        actor.insert("kind".into(), json!(invoker.kind));
+        if let Some(person) = &invoker.on_behalf_of {
+            actor.insert("for".into(), person.clone().into());
+        }
+        out.insert("actor".into(), Value::Object(actor));
+    }
+    if let Some(group) = &context.group {
+        out.insert("run".into(), group.label.clone().into());
+        out.insert("run_id".into(), group.id.clone().into());
+        out.insert("run_kind".into(), group.kind.clone().into());
+    }
+    if let Some(kind) = context.kind {
+        out.insert("kind".into(), json!(kind));
+    }
+    if !context.change.is_content() {
+        out.insert("change_kind".into(), json!(context.change));
+    }
+}
+
+/// The sentence for a version in this thread's locale.
+fn sentence(version: &Version) -> String {
+    version
+        .context
+        .as_ref()
+        .and_then(ui_core::history_source::sentence::step_summary)
+        .or_else(|| version.message.clone())
+        .unwrap_or_default()
+}
+
 /// One version as `history` lists it.
 pub(crate) fn entry(
     version: &Version,
@@ -334,20 +479,11 @@ pub(crate) fn entry(
     let mut entry = serde_json::Map::new();
     entry.insert("change".into(), steps::short(&version.hash).into());
     let context = version.context.as_ref();
-    if let Some(action) = context
-        .map(|context| context.action_label.clone())
-        .filter(|label| !label.is_empty())
-        .or_else(|| version.summary())
-    {
-        entry.insert("action".into(), action.into());
+    if let Some(context) = context {
+        recorded(context, &mut entry);
     }
-    if let Some(args) = context.and_then(tilo_actions::ActionContext::args) {
-        entry.insert("args".into(), args.into());
-    }
-    if let Some(group) = context.and_then(|context| context.group.as_ref()) {
-        entry.insert("run".into(), group.label.clone().into());
-        entry.insert("run_id".into(), group.id.clone().into());
-    } else {
+    entry.insert("sentence".into(), sentence(version).into());
+    if context.and_then(|context| context.group.as_ref()).is_none() {
         entry.insert("by".into(), by(version).into());
     }
     entry.insert("time_ms".into(), version.time_ms.into());
@@ -371,8 +507,10 @@ pub(crate) fn entry(
 pub struct HistoryVersion {
     /// The change id: what `restore`, `diff` and a view's `version` take.
     pub change: String,
-    /// What was done: the action's label.
+    /// What was done, as a sentence in the reader's language.
     pub action: String,
+    /// The entry the change recorded: who did it, for whom, and what.
+    pub entry: Option<tilo_actions::ActionContext>,
     /// Who did it: the person's handle, or the agent run's label.
     pub author: String,
     /// The agent run that made it, when an agent did: what `undo` takes as
@@ -393,8 +531,8 @@ pub struct HistoryVersion {
 const AGENT_RUN: &str = "agent-run";
 
 /// The last `last` versions, oldest first, as [`HistoryVersion`]s.
-pub(crate) fn recent(doc: &mut AutoCommit, last: usize) -> Vec<HistoryVersion> {
-    let versions = tilo_resource::history::versions(doc);
+pub(crate) fn recent(doc: &AutoCommit, last: usize) -> Vec<HistoryVersion> {
+    let versions = tilo_resource::history::committed_versions(doc);
     let undone = steps::undone(doc);
     let checkpoints = steps::checkpoints(doc);
     let total = versions.len();
@@ -409,11 +547,8 @@ pub(crate) fn recent(doc: &mut AutoCommit, last: usize) -> Vec<HistoryVersion> {
                 .filter(|group| group.kind == AGENT_RUN);
             HistoryVersion {
                 change: steps::short(&version.hash),
-                action: context
-                    .map(|context| context.action_label.clone())
-                    .filter(|label| !label.is_empty())
-                    .or_else(|| version.summary())
-                    .unwrap_or_default(),
+                action: sentence(version),
+                entry: version.context.clone(),
                 author: run.map_or_else(|| by(version), |run| run.label.clone()),
                 run: run.map(|run| run.id.clone()),
                 time_ms: version.time_ms,
@@ -461,13 +596,14 @@ impl HistoryFeeds {
     }
 
     /// Show the versions up to `doc`'s heads, when they moved.
-    pub(crate) fn refresh(&self, doc: &mut AutoCommit) {
+    #[inline(never)]
+    pub(crate) fn refresh(&self, doc: &AutoCommit) {
         let mut list = self.0.borrow_mut();
         list.feeds.retain(|(alive, _, _)| alive.strong_count() > 0);
         if list.feeds.is_empty() {
             return;
         }
-        let heads = doc.get_heads();
+        let heads = doc.committed_heads();
         if list.heads == heads {
             return;
         }
@@ -530,8 +666,8 @@ fn carry_over(listed: &mut [Value]) {
 }
 
 /// The versions as `history` lists them: the last `last`, oldest first.
-pub(crate) fn history(doc: &mut AutoCommit, last: usize) -> Value {
-    let versions = tilo_resource::history::versions(doc);
+pub(crate) fn history(doc: &AutoCommit, last: usize) -> Value {
+    let versions = tilo_resource::history::committed_versions(doc);
     let undone = steps::undone(doc);
     let checkpoints = steps::checkpoints(doc);
     let total = versions.len();
@@ -546,7 +682,7 @@ pub(crate) fn history(doc: &mut AutoCommit, last: usize) -> Value {
         "versions": listed,
         "carried": "run, run_id, by and time_ms, where absent, are the version before's",
         "total": total,
-        "now": version_name(&doc.get_heads()),
+        "now": version_name(&doc.base_heads()),
         "checkpoints": checkpoints.iter().map(|checkpoint| json!({
             "name": checkpoint.name,
             "version": version_name(&checkpoint.heads),
@@ -558,18 +694,18 @@ pub(crate) fn history(doc: &mut AutoCommit, last: usize) -> Value {
 ///
 /// # Errors
 /// Returns a malformed request or an unknown version.
-pub(crate) fn answer(doc: &mut AutoCommit, payload: &[u8]) -> Result<ActionOutput, String> {
-    let view: HistoryView =
-        serde_json::from_slice(payload).map_err(|error| format!("not a history view: {error}"))?;
+pub(crate) fn answer(doc: &AutoCommit, payload: &[u8]) -> Result<ActionOutput, String> {
+    let view: HistoryView = tilo_actions::decode_json(payload)
+        .map_err(|error| format!("not a history view: {error}"))?;
     let value = match view {
         HistoryView::History { last } => history(doc, limit(last, 50)),
         HistoryView::Diff { from, to } => {
             let from = steps::resolve(doc, &from)?;
             let to = match to {
                 Some(to) => steps::resolve(doc, &to)?,
-                None => doc.get_heads(),
+                None => doc.base_heads(),
             };
-            let items: Vec<Value> = steps::changed_items(doc, &from, &to)
+            let items: Vec<Value> = steps::changed_items(&mut doc.clone(), &from, &to)
                 .into_iter()
                 .map(|item| json!({"item": item.path, "change": item.change}))
                 .collect();
@@ -592,9 +728,19 @@ fn ledger(patches: &[Patch], prefix: &str, put: bool) -> Vec<String> {
         .iter()
         .filter(|patch| patch.path.is_empty())
         .filter_map(|patch| match (&patch.action, put) {
-            (PatchAction::PutMap { key, .. }, true) | (PatchAction::DeleteMap { key }, false) => {
+            (PatchAction::PutMap { key, value, .. }, true)
+                if prefix != steps::UNDONE_KEY
+                    || value.0.as_i64().is_none_or(|attempt| attempt <= 0) =>
+            {
                 key.strip_prefix(prefix).map(str::to_owned)
             }
+            (PatchAction::PutMap { key, value, .. }, false)
+                if prefix == steps::UNDONE_KEY
+                    && value.0.as_i64().is_some_and(|attempt| attempt > 0) =>
+            {
+                key.strip_prefix(prefix).map(str::to_owned)
+            }
+            (PatchAction::DeleteMap { key }, false) => key.strip_prefix(prefix).map(str::to_owned),
             _ => None,
         })
         .collect()
@@ -633,20 +779,21 @@ fn items(patches: &[Patch]) -> Vec<String> {
 /// or brought back, the items a restore wrote, the checkpoint it named.
 pub(crate) fn result(action: &str, doc: &AutoCommit, patches: &[Patch]) -> Option<Value> {
     let mut doc = doc.clone();
-    let now = version_name(&doc.get_heads());
+    let now = version_name(&doc.base_heads());
     let described = |hashes: Vec<String>, doc: &mut AutoCommit| -> Vec<Value> {
-        let versions = tilo_resource::history::versions(doc);
+        let versions = tilo_resource::history::committed_versions(doc);
         versions
             .iter()
             .rev()
             .filter(|version| hashes.contains(&version.hash.to_string()))
             .map(|version| {
-                let context = version.context.as_ref();
-                json!({
-                    "change": steps::short(&version.hash),
-                    "action": context.map(|context| context.action_label.clone()),
-                    "args": context.and_then(tilo_actions::ActionContext::args),
-                })
+                let mut entry = serde_json::Map::new();
+                entry.insert("change".into(), steps::short(&version.hash).into());
+                if let Some(context) = &version.context {
+                    recorded(context, &mut entry);
+                }
+                entry.insert("sentence".into(), sentence(version).into());
+                Value::Object(entry)
             })
             .collect()
     };
@@ -669,4 +816,140 @@ pub(crate) fn result(action: &str, doc: &AutoCommit, patches: &[Patch]) -> Optio
         _ => return None,
     };
     Some(value)
+}
+
+impl HistoryEdit {
+    /// Apply the edit, decoding recorded actions with the registry
+    /// `register` fills: one compiled copy for every resource.
+    #[inline(never)]
+    fn apply_registered(
+        &self,
+        doc: &mut tilo_actions::Doc,
+        register: fn(&mut tilo_actions::ActionRegistry),
+    ) -> Result<(), ActionError> {
+        let registry = tilo_actions::ActionRegistry::with(register);
+        let mut original = doc.fork();
+        match self {
+            Self::Undo { steps, run, by, to } => {
+                let (scope, default) = match run {
+                    Some(run) => (Scope::Run(run.clone()), usize::MAX),
+                    None => (
+                        by.as_ref().map_or_else(
+                            || Scope::invoking(doc),
+                            |author| Scope::Invoker(author.clone()),
+                        ),
+                        1,
+                    ),
+                };
+                let compensate = |version: &Version| inverse(&mut original, &registry, version);
+                match to {
+                    Some(to) => steps::resolve(doc, to)
+                        .and_then(|heads| steps::undo_since(doc, &scope, &heads, compensate)),
+                    None => steps::undo(doc, &scope, limit(*steps, default), compensate),
+                }
+                .map(drop)
+            }
+            Self::Redo { steps } => {
+                let scope = Scope::invoking(doc);
+                steps::redo(doc, &scope, limit(*steps, 1), |version| {
+                    restoration(&mut original, &registry, version)
+                })
+                .map(drop)
+            }
+            Self::Restore { version, ids } => steps::resolve(doc, version).and_then(|heads| {
+                steps::restore(doc, &heads, ids.as_deref().unwrap_or_default()).map(drop)
+            }),
+            Self::Checkpoint { name } => steps::checkpoint(doc, name),
+        }
+        .map_err(ActionError::Refused)
+    }
+}
+
+/// A step's verified inverse, when it recorded one: replaying its action at
+/// its own state reproduces it, so the inverse is the canonical one.
+fn inverse(
+    original: &mut tilo_actions::Doc,
+    registry: &tilo_actions::ActionRegistry,
+    version: &Version,
+) -> Result<Option<steps::Inverse>, String> {
+    let Some(action) =
+        tilo_actions::executor::verified_compensation(original, version.hash, registry)
+            .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    local(action).map(Some)
+}
+
+/// How a redo brings back an outside step: its verified action, run again.
+fn restoration(
+    original: &mut tilo_actions::Doc,
+    registry: &tilo_actions::ActionRegistry,
+    version: &Version,
+) -> Result<Option<steps::Inverse>, String> {
+    if inverse(original, registry, version)?.is_none() {
+        return Ok(None);
+    }
+    let recorded = version
+        .context
+        .as_ref()
+        .and_then(|context| context.action.as_ref())
+        .ok_or("verified redo action absent")?;
+    local(
+        registry
+            .decode(recorded)
+            .map_err(|error| error.to_string())?,
+    )
+    .map(Some)
+}
+
+/// History applies only actions it may run here.
+fn local(action: steps::Inverse) -> Result<steps::Inverse, String> {
+    if action.locus() == ExecutionLocus::ClientLocal {
+        Ok(action)
+    } else {
+        Err("history compensation requires another execution locus".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui_core::automerge::{ROOT, ReadDoc};
+
+    #[test]
+    fn history_and_diff_leave_the_callers_open_edit_uncommitted() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "saved", 1_i64).unwrap();
+        let first = doc.commit().unwrap();
+        doc.put(ROOT, "saved", 2_i64).unwrap();
+        let second = doc.commit().unwrap();
+        doc.put(ROOT, "draft", true).unwrap();
+        let before = (doc.base_heads(), doc.pending_ops());
+        assert!(before.1 > 0);
+
+        let listed = history(&doc, 50);
+        assert_eq!(listed["total"], json!(2));
+        assert_eq!(listed["now"], json!(version_name(&[second])));
+        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+
+        let payload = serde_json::to_vec(&HistoryView::Diff {
+            from: first.to_string(),
+            to: Some(second.to_string()),
+        })
+        .unwrap();
+        let diff = answer(&doc, &payload).unwrap().value.unwrap();
+        assert!(
+            diff["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["item"] == "saved")
+        );
+        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+        assert_eq!(
+            doc.get(ROOT, "draft").unwrap().unwrap().0.as_bool(),
+            Some(true)
+        );
+    }
 }

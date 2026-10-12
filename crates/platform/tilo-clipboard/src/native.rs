@@ -61,8 +61,16 @@ impl NoWayland {
     fn text(&self, _target: ClipboardTarget) -> Option<String> {
         None
     }
+    fn request_text(&self, _target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
+        let (reply, result) = std::sync::mpsc::channel();
+        let _ = reply.send(None);
+        result
+    }
     fn set_image(&self, _width: usize, _height: usize, _rgba: &[u8]) -> bool {
         false
+    }
+    fn image(&self) -> Option<crate::ClipboardImage> {
+        None
     }
 }
 
@@ -131,6 +139,15 @@ fn arboard_text(handle: &mut arboard::Clipboard, _target: ClipboardTarget) -> Op
 }
 
 impl ClipboardBackend for NativeClipboard {
+    fn request_text(&self, target: ClipboardTarget) -> std::sync::mpsc::Receiver<Option<String>> {
+        if let Some(wayland) = wayland() {
+            return wayland.request_text(target);
+        }
+        let (reply, result) = std::sync::mpsc::channel();
+        let _ = reply.send(self.text(target));
+        result
+    }
+
     fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
         if Self::set_shared(target, text) {
             return true;
@@ -195,9 +212,41 @@ impl ClipboardBackend for NativeClipboard {
         handle.set_image(img).is_ok()
     }
 
+    fn rich_text(&self) -> Option<crate::RichTextOffer> {
+        #[cfg(target_os = "linux")]
+        if let Some(wayland) = WAYLAND.get() {
+            return wayland.rich_text();
+        }
+        None
+    }
+
+    fn image(&self) -> Option<crate::ClipboardImage> {
+        if let Some(wayland) = wayland() {
+            return wayland.image();
+        }
+        arboard_image()
+    }
+
     fn name(&self) -> &'static str {
         "native"
     }
+}
+
+/// The X11 clipboard's image, as a PNG.
+#[cfg(target_os = "linux")]
+fn arboard_image() -> Option<crate::ClipboardImage> {
+    let image = arboard_clipboard()?.lock().ok()?.get_image().ok()?;
+    let bytes = crate::wayland::encode_png(image.width, image.height, &image.bytes)?;
+    Some(crate::ClipboardImage {
+        mime: "image/png",
+        bytes,
+    })
+}
+
+/// Reading an image needs an encoder this target does not carry.
+#[cfg(not(target_os = "linux"))]
+fn arboard_image() -> Option<crate::ClipboardImage> {
+    None
 }
 
 /// Lazy global `arboard` handle, used **only off Wayland**.

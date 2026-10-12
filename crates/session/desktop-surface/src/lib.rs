@@ -11,10 +11,6 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard; layout tests pin exact computed positions"
     )
@@ -26,6 +22,7 @@ pub mod history_log;
 pub mod i18n;
 pub mod navigation;
 pub mod notifications;
+mod shared_tree;
 pub mod surface;
 
 pub use surface::{

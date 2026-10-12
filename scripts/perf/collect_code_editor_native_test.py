@@ -18,7 +18,7 @@ class CodeEditorCollectorTests(unittest.TestCase):
             fixture.write_text('#!/usr/bin/env python3\nimport sys,json\nfrom pathlib import Path\np=Path(sys.argv[1]);p.write_text("fixture source")\nprint(json.dumps(dict(lines=2000,body_bytes=66000)))\n')
             fixture.chmod(0o755)
             app = root / 'app'
-            app.write_text('#!/usr/bin/env python3\nimport sys,os,json\nfrom pathlib import Path\nassert sys.argv[1]=="--path"\nassert Path(sys.argv[2]).read_text()=="fixture source"\nassert os.environ["QUICK_APP_ID"]=="dev.tilo.code-editor"\nassert Path(os.environ["XDG_CONFIG_HOME"])==Path(sys.argv[2]).parent/"config"\nassert Path(os.environ["XDG_CACHE_HOME"])==Path(sys.argv[2]).parent/"cache"\nprint("production fixture opened",flush=True)\nraise SystemExit(7)\n')
+            app.write_text('#!/usr/bin/env python3\nimport sys,os,json\nfrom pathlib import Path\nassert Path(sys.argv[1]).read_text()=="fixture source"\nassert os.environ["QUICK_APP_ID"]=="dev.tilo.code-editor"\nassert Path(os.environ["XDG_CONFIG_HOME"])==Path(sys.argv[1]).parent/"config"\nassert Path(os.environ["XDG_CACHE_HOME"])==Path(sys.argv[1]).parent/"cache"\nprint("production fixture opened",flush=True)\nraise SystemExit(7)\n')
             app.chmod(0o755)
             scenario = root / 'scenario.json'
             scenario.write_text(json.dumps(dict(name='fixture route',interval_us=16667,

@@ -1,4 +1,4 @@
-// Included in the actual native/Driver ordinary-confirmation fixtures.
+// Included in the actual native/FrameHarness ordinary-confirmation fixtures.
 fn deferred_fixture() -> (
     Fixture,
     std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -40,7 +40,7 @@ fn deferred_fixture() -> (
     let binding = ActionBinding::unit(&resource, &resource.actions[0]).unwrap();
     let widget = Fixture {
         child: Box::new(
-            crate::widget::Button::new("ordinary-emitter", "Emit request", None).on_action(binding),
+            crate::widget::Button::new("ordinary-emitter", "Emit request").on_action(binding),
         ),
         resources: Rc::new(RefCell::new(vec![resource])),
         ledger: Rc::new(RefCell::new(vec![])),
@@ -219,10 +219,11 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
     }
     let ledger = widget.ledger.clone();
     let (root, guard) = owned(widget, true);
-    let OwnerGuard::Component(binding, _) = &guard else {
+    let OwnerGuard::Component { binding, .. } = &guard else {
         unreachable!()
     };
     let target = crate::bound_dispatch::BoundActionTarget {
+        input: crate::bound_dispatch::Input::Discrete,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,

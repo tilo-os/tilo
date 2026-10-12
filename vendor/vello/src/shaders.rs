@@ -133,44 +133,76 @@ pub(crate) fn full_shaders(
         };
     }
 
+    // Registrations a full frame on the default path never dispatches defer
+    // their pipeline under `PipelineDeferral::Unused` (Tilo patch): the
+    // three-level path-tag scan (large scenes only), the GPU draw reduce and
+    // leaf while the CPU draw prefix serves, the indirect path stages while
+    // the direct ones serve, the clip reduce (many clips only) and the sparse
+    // fine stage (damage-limited repaints).
+    macro_rules! unused {
+        ($when:expr, $registration:expr) => {{
+            engine.defer_unused($when);
+            let id = $registration;
+            engine.defer_unused(false);
+            id
+        }};
+    }
+    let direct_paths = engine.direct_path_dispatch_enabled() && !options.use_cpu;
+    let draw_prefix = engine.cpu_draw_prefix_enabled() && !options.use_cpu;
+
     let pathtag_reduce = add_shader!(pathtag_reduce, [Uniform, BufReadOnly, Buffer]);
-    let pathtag_reduce2 = add_shader!(
-        pathtag_reduce2,
-        [BufReadOnly, Buffer],
-        CpuShaderType::Skipped
+    let pathtag_reduce2 = unused!(
+        true,
+        add_shader!(
+            pathtag_reduce2,
+            [BufReadOnly, Buffer],
+            CpuShaderType::Skipped
+        )
     );
-    let pathtag_scan1 = add_shader!(
-        pathtag_scan1,
-        [BufReadOnly, BufReadOnly, Buffer],
-        CpuShaderType::Skipped
+    let pathtag_scan1 = unused!(
+        true,
+        add_shader!(
+            pathtag_scan1,
+            [BufReadOnly, BufReadOnly, Buffer],
+            CpuShaderType::Skipped
+        )
     );
     let pathtag_scan = add_shader!(
         pathtag_scan_small,
         [Uniform, BufReadOnly, BufReadOnly, Buffer],
         CpuShaderType::Present(vello_shaders::cpu::pathtag_scan)
     );
-    let pathtag_scan_large = add_shader!(
-        pathtag_scan_large,
-        [Uniform, BufReadOnly, BufReadOnly, Buffer],
-        CpuShaderType::Skipped
+    let pathtag_scan_large = unused!(
+        true,
+        add_shader!(
+            pathtag_scan_large,
+            [Uniform, BufReadOnly, BufReadOnly, Buffer],
+            CpuShaderType::Skipped
+        )
     );
     let bbox_clear = add_shader!(bbox_clear, [Uniform, Buffer]);
     let flatten = add_shader!(
         flatten,
         [Uniform, BufReadOnly, BufReadOnly, Buffer, Buffer, Buffer]
     );
-    let draw_reduce = add_shader!(draw_reduce, [Uniform, BufReadOnly, Buffer]);
-    let draw_leaf = add_shader!(
-        draw_leaf,
-        [
-            Uniform,
-            BufReadOnly,
-            BufReadOnly,
-            BufReadOnly,
-            Buffer,
-            Buffer,
-            Buffer,
-        ]
+    let draw_reduce = unused!(
+        draw_prefix,
+        add_shader!(draw_reduce, [Uniform, BufReadOnly, Buffer])
+    );
+    let draw_leaf = unused!(
+        draw_prefix,
+        add_shader!(
+            draw_leaf,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Buffer,
+                Buffer,
+            ]
+        )
     );
     let draw_prefix = engine.add_cpu_shader("vello.draw_prefix", vello_shaders::cpu::draw_prefix);
     let draw_leaf_prefix = add_shader!(
@@ -178,7 +210,10 @@ pub(crate) fn full_shaders(
         [Uniform, BufReadOnly, BufReadOnly, Buffer, Buffer, Buffer,],
         CpuShaderType::Missing
     );
-    let clip_reduce = add_shader!(clip_reduce, [BufReadOnly, BufReadOnly, Buffer, Buffer]);
+    let clip_reduce = unused!(
+        true,
+        add_shader!(clip_reduce, [BufReadOnly, BufReadOnly, Buffer, Buffer])
+    );
     let clip_leaf = add_shader!(
         clip_leaf,
         [
@@ -244,10 +279,16 @@ pub(crate) fn full_shaders(
     } else {
         None
     };
-    let path_count_setup = add_shader!(path_count_setup, [Buffer, Buffer]);
-    let path_count = add_shader!(
-        path_count,
-        [Uniform, Buffer, BufReadOnly, BufReadOnly, Buffer, Buffer]
+    let path_count_setup = unused!(
+        direct_paths,
+        add_shader!(path_count_setup, [Buffer, Buffer])
+    );
+    let path_count = unused!(
+        direct_paths,
+        add_shader!(
+            path_count,
+            [Uniform, Buffer, BufReadOnly, BufReadOnly, Buffer, Buffer]
+        )
     );
     let path_count_direct = add_shader!(
         path_count_direct,
@@ -439,17 +480,23 @@ pub(crate) fn full_shaders(
                 CpuShaderType::Missing
             )
         });
-    let path_tiling_setup = add_shader!(path_tiling_setup, [Buffer, Buffer, Buffer]);
-    let path_tiling = add_shader!(
-        path_tiling,
-        [
-            Buffer,
-            BufReadOnly,
-            BufReadOnly,
-            BufReadOnly,
-            BufReadOnly,
-            Buffer,
-        ]
+    let path_tiling_setup = unused!(
+        direct_paths,
+        add_shader!(path_tiling_setup, [Buffer, Buffer, Buffer])
+    );
+    let path_tiling = unused!(
+        direct_paths,
+        add_shader!(
+            path_tiling,
+            [
+                Buffer,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+            ]
+        )
     );
     let path_tiling_direct = add_shader!(
         path_tiling_direct,
@@ -549,7 +596,7 @@ pub(crate) fn full_shaders(
         None
     };
     let fine_sparse_area = if engine.sparse_fine_enabled() && !options.use_cpu && aa_support.area {
-        Some(add_shader!(
+        Some(unused!(true, add_shader!(
             fine_sparse_area,
             [
                 Uniform,
@@ -563,7 +610,7 @@ pub(crate) fn full_shaders(
                 BufReadOnly,
             ],
             CpuShaderType::Missing
-        ))
+        )))
     } else {
         None
     };

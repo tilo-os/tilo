@@ -7,11 +7,15 @@
 #                              gnome-keyring; exits 100 when the VM must reboot
 #                              into a kernel whose DRM modules are installed
 #   guest.sh user              the login user, with its user manager running
+#   guest.sh gnome-input       the user's GNOME input sources (German, no dead
+#                              keys; Compose on Right Alt), as a GNOME user
+#                              who then tries Tilo already has them
 #   guest.sh keyring           an unlocked login keyring on that user's bus, so
 #                              org.freedesktop.secrets answers as on a desktop
 #   guest.sh identity          provision the Tilo identity on that bus and
 #                              require its secret to be in the Secret Service
 #   guest.sh login             SDDM autologin into the packaged tilo.desktop
+#   guest.sh settings          the login user's Tilo settings.json (empty if none)
 #   guest.sh status            compositor pid, crash records, panics (key=value)
 #   guest.sh collect DIR       logs and records for the report
 #
@@ -84,6 +88,38 @@ step_user() {
     [[ -S /run/user/$id/bus ]] || die "the user manager of $user has no session bus"
 }
 
+# The GNOME settings the host-desktop session imports on its first login
+# (crates/session/shell/src/firstboot.rs, import_host_input_settings). run.py
+# then requires the session's settings to carry them.
+gnome_sources="[('xkb', 'de+nodeadkeys')]"
+gnome_xkb_options="['compose:ralt']"
+
+step_gnome_input() {
+    # A GNOME desktop has the schemas and the dconf backend; the Cloud image
+    # may not. Without dconf, gsettings falls back to an in-memory backend and
+    # nothing reaches the session, so both are required, not optional.
+    if ! command -v dconf >/dev/null 2>&1 \
+        || ! gsettings list-schemas 2>/dev/null | grep -x org.gnome.desktop.input-sources >/dev/null; then
+        dnf -y --setopt=retries=5 install gsettings-desktop-schemas dconf
+    fi
+    command -v gsettings >/dev/null 2>&1 || die 'gsettings is not installed'
+    command -v dconf >/dev/null 2>&1 || die 'dconf is not installed'
+    gsettings list-schemas | grep -x org.gnome.desktop.input-sources >/dev/null \
+        || die 'the org.gnome.desktop.input-sources schema is not installed'
+    as_user gsettings set org.gnome.desktop.input-sources sources "$gnome_sources"
+    as_user gsettings set org.gnome.desktop.input-sources xkb-options "$gnome_xkb_options"
+    # Read back from new processes, and from the user database itself: what
+    # the session's gsettings will read at its first login.
+    local sources options stored
+    sources=$(as_user gsettings get org.gnome.desktop.input-sources sources)
+    options=$(as_user gsettings get org.gnome.desktop.input-sources xkb-options)
+    stored=$(as_user dconf read /org/gnome/desktop/input-sources/sources)
+    [[ $sources == "$gnome_sources" ]] || die "GNOME input sources read back as $sources"
+    [[ $options == "$gnome_xkb_options" ]] || die "GNOME xkb-options read back as $options"
+    [[ $stored == "$gnome_sources" ]] || die "the dconf user database holds sources=${stored:-nothing}"
+    echo "guest: GNOME input sources $sources, xkb-options $options"
+}
+
 step_keyring() {
     # What pam_gnome_keyring does at a password login: unlock the "login"
     # keyring with the login password (creating it on first use) as the
@@ -128,6 +164,11 @@ EOF
     systemctl start sddm.service
 }
 
+step_settings() {
+    local file=/home/$user/.config/tilo/settings.json
+    [[ ! -f $file ]] || cat "$file"
+}
+
 compositor_pid() {
     pgrep -u "$user" -x tilo-shell | head -n 1 || true
 }
@@ -167,6 +208,7 @@ step_collect() {
     coredumpctl --no-pager info /usr/bin/tilo-shell >"$out/coredump-tilo-shell.txt" 2>&1 || true
     cp -r "$home/.local/state/tilo/session-logs" "$out/" 2>/dev/null || true
     cp -r "$home/.cache/tilo/crashes" "$out/" 2>/dev/null || true
+    cp "$home/.config/tilo/settings.json" "$out/settings.json" 2>/dev/null || true
     ps -eo pid,ppid,user,etimes,args --forest >"$out/processes.txt" 2>&1 || true
     rpm -q tilo-session tilo-session-apps sddm gnome-keyring kernel-core mesa-vulkan-drivers \
         >"$out/packages.txt" 2>&1 || true
@@ -176,10 +218,12 @@ step_collect() {
 case ${1:-} in
     install) shift; (($# == 1)) || die 'install RPM_DIR'; step_install "$1" ;;
     user) step_user ;;
+    gnome-input) step_gnome_input ;;
     keyring) step_keyring ;;
     identity) step_identity ;;
     login) step_login ;;
+    settings) step_settings ;;
     status) shift; step_status "$@" ;;
     collect) shift; (($# == 1)) || die 'collect DIR'; step_collect "$1" ;;
-    *) sed -n '2,19p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,23p' "$0" >&2; exit 2 ;;
 esac

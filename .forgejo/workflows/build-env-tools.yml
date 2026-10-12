@@ -40,7 +40,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       tag: ${{ steps.plan.outputs.tag }}
       runtime: ${{ steps.plan.outputs.runtime }}
@@ -139,7 +139,6 @@ jobs:
       # sandbox creates a user namespace and mounts an overlay in it.
       options: --privileged
     env:
-      CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
       TILO_SCCACHE_KEY_PREFIX: tilo/env-tools/v1/${{ matrix.arch }}
     steps:

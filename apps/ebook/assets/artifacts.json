@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "file": "sample.epub",
+      "sha256": "b6845648929b88a8ecb331df674d85d2cf4d6cdc9b38f358961888527d6addfe",
+      "bytes": 11466,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/b6845648929b88a8ecb331df674d85d2cf4d6cdc9b38f358961888527d6addfe/sample.epub"
+    }
+  ]
+}

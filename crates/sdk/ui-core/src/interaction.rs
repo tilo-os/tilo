@@ -228,11 +228,6 @@ impl InteractionEnvironment {
         )
     }
 
-    pub fn horizontal_target_rect(self, visual: Rect) -> Rect {
-        let height = visual.height().max(f64::from(self.minimum_target()));
-        Rect::from_center_size(visual.center(), (visual.width(), height))
-    }
-
     /// Hover affordances have no meaning for a coarse direct pointer.
     pub const fn supports_hover(self) -> bool {
         matches!(self.pointer_precision, PointerPrecision::Fine)
@@ -317,16 +312,6 @@ impl InteractionEnvironment {
             ..self
         }
     }
-
-    /// Override the legends without changing the current modality. Hardware
-    /// discovery uses this for Apple USB/Bluetooth keyboards on non-Mac hosts.
-    #[must_use]
-    pub const fn with_keyboard_family(self, family: KeyboardFamily) -> Self {
-        Self {
-            keyboard_family: family,
-            ..self
-        }
-    }
 }
 
 /// The navigation a mouse side button asks for: Back and Forward go back and
@@ -363,7 +348,7 @@ pub(crate) fn back_key_as_escape(
         winit::event::WindowEvent::KeyboardInput { event: key, .. }
             if key.logical_key == Key::Named(NamedKey::BrowserBack) =>
         {
-            Some(crate::synthetic_input::key_event(
+            Some(crate::synthetic_input::key_input(
                 &Key::Named(NamedKey::Escape),
                 key.state,
             ))
@@ -375,7 +360,7 @@ pub(crate) fn back_key_as_escape(
 /// Pointer events synthesised from direct touch, so ordinary widgets work on a
 /// touchscreen without interpreting contact streams themselves.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum TouchPointerEvent {
+pub enum TouchPointerEvent {
     Move(winit::dpi::PhysicalPosition<f64>),
     Press(winit::event::MouseButton),
     Release(winit::event::MouseButton),
@@ -393,10 +378,7 @@ pub(crate) enum TouchPointerEvent {
 
 impl TouchPointerEvent {
     /// The window event every widget already understands.
-    pub(crate) fn window_event(
-        self,
-        device_id: winit::event::DeviceId,
-    ) -> winit::event::WindowEvent {
+    pub fn window_event(self, device_id: winit::event::DeviceId) -> winit::event::WindowEvent {
         use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
         match self {
             Self::Move(position) => WindowEvent::CursorMoved {
@@ -462,7 +444,7 @@ struct MultiTouch {
 ///   another finger; that widget handles its `WindowEvent::Touch` stream
 ///   itself.
 #[derive(Default)]
-pub(crate) struct TouchPointerEmulator {
+pub struct TouchPointerEmulator {
     active: Option<ActiveTouch>,
     multi: Option<MultiTouch>,
     arena: crate::gesture::TouchGestureArena,
@@ -472,13 +454,13 @@ pub(crate) struct TouchPointerEmulator {
 
 impl TouchPointerEmulator {
     const TAP_SLOP: f64 = 16.0;
-    pub(crate) const LONG_PRESS: crate::time::Duration = crate::time::Duration::from_millis(500);
+    pub const LONG_PRESS: crate::time::Duration = crate::time::Duration::from_millis(500);
     const CANCEL_POINT: winit::dpi::PhysicalPosition<f64> =
         winit::dpi::PhysicalPosition::new(-1.0, -1.0);
 
     /// Translate one contact update. `claims_raw` is asked only when a
     /// contact begins, with its physical position.
-    pub(crate) fn events(
+    pub fn events(
         &mut self,
         touch: &winit::event::Touch,
         claims_raw: impl FnOnce(winit::dpi::PhysicalPosition<f64>) -> bool,
@@ -691,7 +673,7 @@ impl TouchPointerEmulator {
     }
 
     /// When a still single-finger hold becomes a long press, if one is armed.
-    pub(crate) fn long_press_deadline(&self) -> Option<crate::time::Instant> {
+    pub fn long_press_deadline(&self) -> Option<crate::time::Instant> {
         self.active
             .filter(|active| !active.scrolling && !active.long_pressed)
             .map(|active| active.started_at + Self::LONG_PRESS)
@@ -699,7 +681,7 @@ impl TouchPointerEmulator {
 
     /// Fire a long press whose deadline has passed: a secondary click where
     /// the finger rests. The finger's eventual lift then does nothing.
-    pub(crate) fn poll(
+    pub fn poll(
         &mut self,
         now: crate::time::Instant,
     ) -> Option<(winit::event::DeviceId, Vec<TouchPointerEvent>)> {
@@ -1066,7 +1048,7 @@ mod tests {
         use winit::event::{ElementState, WindowEvent};
         use winit::keyboard::{Key, NamedKey};
         for state in [ElementState::Pressed, ElementState::Released] {
-            let back = crate::synthetic_input::key_event(&Key::Named(NamedKey::BrowserBack), state);
+            let back = crate::synthetic_input::key_input(&Key::Named(NamedKey::BrowserBack), state);
             let Some(WindowEvent::KeyboardInput { event, .. }) = back_key_as_escape(&back) else {
                 panic!("Back must become a key event");
             };
@@ -1074,7 +1056,7 @@ mod tests {
             assert_eq!(event.state, state);
         }
         let escape =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
         assert!(back_key_as_escape(&escape).is_none());
     }
 }

@@ -67,25 +67,9 @@ struct StewardLedger {
     packages: BTreeMap<Ed25519PublicKey, BTreeSet<[u8; 32]>>,
 }
 
-/// The ledger as written before it recorded key packages.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LedgerWithoutPackages {
-    admitted: BTreeMap<Ed25519PublicKey, u64>,
-    acknowledged: BTreeMap<Ed25519PublicKey, [u8; 32]>,
-}
-
 impl StewardLedger {
     fn decode(bytes: &[u8]) -> Result<Self> {
-        postcard::from_bytes::<Self>(bytes).or_else(|_| {
-            let earlier: LedgerWithoutPackages = postcard::from_bytes(bytes)
-                .map_err(|error| Error::Serialization(error.to_string()))?;
-            Ok(Self {
-                admitted: earlier.admitted,
-                acknowledged: earlier.acknowledged,
-                packages: BTreeMap::new(),
-            })
-        })
+        postcard::from_bytes(bytes).map_err(|error| Error::Serialization(error.to_string()))
     }
 
     fn admitted_with(&self, device: &Ed25519PublicKey, request: &MlsAccessRequestV1) -> bool {
@@ -136,6 +120,26 @@ pub struct ChannelSteward<S: StewardStore = FileStewardStore> {
 }
 
 impl ChannelSteward {
+    /// Recover an already-persisted channel without creating a group.
+    /// Uses the same crash recovery and device/channel validation as opening.
+    ///
+    /// # Errors
+    /// Refuses missing, corrupt or undecryptable state and another channel/device.
+    pub fn open_existing(
+        dir: &Path,
+        channel: ChannelId,
+        device_key: SigningKey,
+        vault: &VaultKey,
+    ) -> Result<Self> {
+        complete_now(Self::open_with_creation(
+            FileStewardStore::new(dir, channel),
+            channel,
+            Box::new(device_key),
+            vault,
+            false,
+        ))
+    }
+
     /// Open the steward state for `channel` under `dir`, as [`Self::open`]
     /// does, signing with `device_key`.
     ///
@@ -167,10 +171,20 @@ impl<S: StewardStore> ChannelSteward<S> {
     /// Returns an error for corrupt or undecryptable state, when a fresh
     /// group cannot be written, or when the signer fails.
     pub async fn open(
+        store: S,
+        channel: ChannelId,
+        signer: Box<dyn StewardSigner>,
+        vault: &VaultKey,
+    ) -> Result<Self> {
+        Self::open_with_creation(store, channel, signer, vault, true).await
+    }
+
+    async fn open_with_creation(
         mut store: S,
         channel: ChannelId,
         signer: Box<dyn StewardSigner>,
         vault: &VaultKey,
+        create: bool,
     ) -> Result<Self> {
         let device = signer.device();
         let journal = match store.read(StewardRecord::Journal)? {
@@ -180,6 +194,11 @@ impl<S: StewardStore> ChannelSteward<S> {
         let group = if let Some(sealed) = store.read(StewardRecord::Group)? {
             ChannelGroup::open_sealed(&sealed, vault)?
         } else {
+            if !create {
+                return Err(Error::InvalidState(
+                    "existing steward group is missing".into(),
+                ));
+            }
             if !journal.frames().is_empty() {
                 return Err(Error::InvalidState(
                     "governance journal exists without its steward group".into(),
@@ -639,29 +658,5 @@ impl<S: StewardStore> std::fmt::Debug for ChannelSteward<S> {
             .field("members", &self.members().len())
             .field("frames", &self.journal.frames().len())
             .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_ledger_written_before_key_packages_were_recorded_still_opens() {
-        let device = Ed25519PublicKey::from_bytes([9; 32]);
-        let earlier = (
-            BTreeMap::from([(device, 41_u64)]),
-            BTreeMap::from([(device, [5_u8; 32])]),
-        );
-        let bytes = postcard::to_allocvec(&earlier).unwrap();
-        let ledger = StewardLedger::decode(&bytes).unwrap();
-        assert_eq!(ledger.admitted.get(&device), Some(&41));
-        assert_eq!(ledger.acknowledged.get(&device), Some(&[5; 32]));
-        assert!(ledger.packages.is_empty());
-
-        let mut current = ledger;
-        current.packages.entry(device).or_default().insert([7; 32]);
-        let reread = StewardLedger::decode(&postcard::to_allocvec(&current).unwrap()).unwrap();
-        assert_eq!(reread.packages, current.packages);
     }
 }

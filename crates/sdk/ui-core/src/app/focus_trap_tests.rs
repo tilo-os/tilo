@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::TaffyTreeExt;
 use crate::widget::modal_dialog::ModalDialog;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
@@ -13,8 +14,8 @@ impl TwoKids {
     fn new() -> Self {
         Self {
             kids: vec![
-                Box::new(Button::new("ok", "OK", None)),
-                Box::new(Button::new("cancel", "Cancel", None)),
+                Box::new(Button::new("ok", "OK")),
+                Box::new(Button::new("cancel", "Cancel")),
             ],
         }
     }
@@ -31,21 +32,7 @@ impl Widget for TwoKids {
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &kids)
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
+        taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.kids.iter().map(Box::as_ref).collect()
@@ -58,9 +45,6 @@ impl Widget for TwoKids {
     }
     fn name(&self) -> &'static str {
         "two-kids"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -75,8 +59,8 @@ impl ModalHost {
     fn new(want_open: Rc<Cell<bool>>) -> Self {
         Self {
             outer: vec![
-                Box::new(Button::new("a", "Open", None)),
-                Box::new(Button::new("b", "Other", None)),
+                Box::new(Button::new("a", "Open")),
+                Box::new(Button::new("b", "Other")),
             ],
             modal: ModalDialog::new("Confirm", TwoKids::new()),
             want_open,
@@ -84,7 +68,7 @@ impl ModalHost {
     }
 }
 impl Widget for ModalHost {
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         self.modal.set_open(self.want_open.get());
         for c in &mut self.outer {
             c.sync(s, p);
@@ -104,21 +88,7 @@ impl Widget for ModalHost {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
         kids.push(self.modal.build_layout(taffy, theme, node_map));
-        let node = taffy
-            .new_with_children(taffy::Style::default(), &kids)
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
+        taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
     }
     fn children(&self) -> Vec<&dyn Widget> {
         let mut v: Vec<&dyn Widget> = self.outer.iter().map(Box::as_ref).collect();
@@ -137,9 +107,6 @@ impl Widget for ModalHost {
     fn name(&self) -> &'static str {
         "modal-host"
     }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
 }
 
 /// Built closed; flipping the cell + calling `refresh_focus_order`
@@ -151,12 +118,78 @@ fn host_app() -> (App, Rc<Cell<bool>>) {
 }
 
 #[test]
+fn framework_history_preserves_the_native_apps_own_modal_focus_trap() {
+    use crate::history_mode::{
+        HistoryDefinition, HistoryPresentation, HistoryRegistration, HistoryScopeDefinition,
+        HistorySourceRegistration, ManagedRoot,
+    };
+    static HISTORY: HistoryDefinition = HistoryDefinition {
+        app_id: "so.tilo.modal-history-fixture",
+        scopes: &[HistoryScopeDefinition {
+            key: "document",
+            title: "Document",
+            presentation: HistoryPresentation::External { reason: "fixture" },
+            content_schema: None,
+        }],
+    };
+    let registration = HistoryRegistration::new(
+        &HISTORY,
+        vec![HistorySourceRegistration::Unversioned {
+            scope: "document",
+            reason: "fixture",
+        }],
+    )
+    .unwrap();
+    let open = Rc::new(Cell::new(false));
+    let mut app = App::from_managed_root_with_controlled_inputs(
+        State::new(),
+        ManagedRoot::new(Box::new(ModalHost::new(open.clone())), registration),
+    )
+    .unwrap();
+    app.init_layout();
+    let opener = app
+        .focusable_order
+        .iter()
+        .copied()
+        .find(|&node| {
+            app.inspect_node(node, |widget| widget.test_id() == Some("a"))
+                .unwrap_or(false)
+        })
+        .expect("actual opener");
+    app.set_focused_node(Some(opener));
+    open.set(true);
+    app.refresh_focus_order();
+    assert!(app.accessibility.focus_trap_active);
+    assert_eq!(app.focusable_order.len(), 2);
+    for _ in 0..6 {
+        assert!(app.focus_tab(false));
+        let id = app
+            .inspect_node(app.focused_node.unwrap(), |widget| {
+                widget.test_id().map(str::to_owned)
+            })
+            .unwrap();
+        assert!(matches!(id.as_deref(), Some("ok" | "cancel")));
+    }
+    open.set(false);
+    app.refresh_focus_order();
+    assert!(!app.accessibility.focus_trap_active);
+    assert_eq!(
+        app.inspect_node(app.focused_node.expect("restored opener"), |widget| {
+            widget.test_id().map(str::to_owned)
+        })
+        .unwrap()
+        .as_deref(),
+        Some("a")
+    );
+}
+
+#[test]
 fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
     // Case `container_overlay_traps_tab_in_its_controls`.
     {
         use crate::widget::{Column, Container};
         let root = Column::new()
-            .push(Box::new(Button::new("background", "Background", None)))
+            .push(Box::new(Button::new("background", "Background")))
             .push(Box::new(
                 Container::new()
                     .with_focus_trap()

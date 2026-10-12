@@ -63,6 +63,9 @@ use support::{next_document, ready, start_peer, wait_for};
 const INSTALL_TOKEN: &str = "provisioned-install-token-0123";
 /// Text only the document's readers ever see.
 const SECRET: &str = "Acme Q3 plan: ship the node";
+/// How soon someone let in, or redeeming a pre-admission, reads the
+/// room's documents.
+const ADMITTED_TO_READING: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// The root the page holds, answering requests over the driver's stdio.
 struct PageRoot {
@@ -434,6 +437,7 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
         panic!("{waiting:?}");
     };
     assert_eq!(bo_request.name, "Bo");
+    let let_in = std::time::Instant::now();
     let admitted = rooms(
         &ada,
         RoomsRequest::Admit {
@@ -470,6 +474,11 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
     assert_eq!(
         next_document(&bo, &mut events).await,
         DocumentMutation::Incremental(change)
+    );
+    assert!(
+        let_in.elapsed() < ADMITTED_TO_READING,
+        "Bo read the room {:?} after he was let in",
+        let_in.elapsed()
     );
 
     // Cy is pre-admitted: Ada's root signs a grant for the digest of a
@@ -523,6 +532,7 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
     .await
     .unwrap();
     assert!(matches!(wrong, JoinReply::Refused(_)), "{wrong:?}");
+    let redeemed = std::time::Instant::now();
     let admitted = ask_to_join_pre_admitted(
         &*https,
         &signed_invitation,
@@ -565,6 +575,11 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
     assert_eq!(
         next_document(&cy, &mut events).await,
         DocumentMutation::Snapshot(snapshot.clone())
+    );
+    assert!(
+        redeemed.elapsed() < ADMITTED_TO_READING,
+        "Cy read the room {:?} after she redeemed the invitation",
+        redeemed.elapsed()
     );
     let removed = rooms(
         &ada,

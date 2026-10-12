@@ -54,7 +54,7 @@ pub struct CertificationRequest {
     /// Exclusive expiry, Unix-epoch nanoseconds.
     pub expires_at_ns: u64,
     /// Device-key Ed25519 signature over [`Self::signing_digest`].
-    #[serde(with = "crate::cert::serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -227,6 +227,7 @@ impl CertificationPolicy {
                 can_act_as_host: false,
                 can_read_all_workspaces: false,
                 foreign: false,
+                can_administer_devices: false,
             },
             lifetime_ns: 7 * 24 * 60 * 60 * 1_000_000_000,
         }
@@ -242,6 +243,8 @@ impl CertificationPolicy {
                 && self.ceiling.can_read_all_workspaces,
             // Foreign is a restriction: a request or ceiling that says so keeps it.
             foreign: requested.foreign || self.ceiling.foreign,
+            can_administer_devices: requested.can_administer_devices
+                && self.ceiling.can_administer_devices,
         }
     }
 
@@ -257,6 +260,10 @@ impl CertificationPolicy {
             && within(
                 granted.can_read_all_workspaces,
                 ceiling.can_read_all_workspaces,
+            )
+            && within(
+                granted.can_administer_devices,
+                ceiling.can_administer_devices,
             )
             && (granted.foreign || !ceiling.foreign)
     }

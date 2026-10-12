@@ -132,7 +132,9 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         Envelope::SyncResponse { delta_since, .. } => delta_since.len(),
         Envelope::Presence { payload, .. } => payload.len(),
         Envelope::Compacted { statement, .. } => statement.len(),
-        Envelope::Live { frame, .. } | Envelope::RemoteAction { frame, .. } => frame.len(),
+        Envelope::Live { frame, .. }
+        | Envelope::RemoteAction { frame, .. }
+        | Envelope::RecordContent { frame, .. } => frame.len(),
         Envelope::NotAuthorised { reason, .. }
         | Envelope::RemoteActionUndeliverable { reason, .. }
         | Envelope::CommitRefused { reason, .. }

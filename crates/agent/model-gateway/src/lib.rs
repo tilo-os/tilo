@@ -38,6 +38,44 @@ pub const MAX_TRANSFORM_TIMEOUT: Duration = Duration::from_secs(30);
 /// The largest model answer a [`Request::Transform`] returns.
 pub const MAX_TRANSFORM_OUTPUT_BYTES: usize = 256 * 1024;
 
+/// Whether `profile` is a model runner the gateway supervises on this device:
+/// OpenAI-compatible and reachable only on loopback. The device-local image
+/// operations admit nothing else, and apps discovering such a model apply this
+/// same rule so they never offer one the gateway would refuse.
+#[must_use]
+pub fn is_supervised_loopback(profile: &agent_provider_config::ProviderProfile) -> bool {
+    use agent_provider_config::{EndpointLocation, ProviderProtocol};
+    profile.location == EndpointLocation::ThisDevice
+        && profile.protocol == ProviderProtocol::OpenAiCompatible
+        && loopback_http_endpoint(&profile.endpoint)
+}
+
+fn loopback_http_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") || url.username() != "" || url.password().is_some()
+    {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    }
+}
+
+/// Whether `revision` names an immutable model revision: a full lowercase
+/// SHA-1 or SHA-256 commit id, never a branch or tag.
+#[must_use]
+pub fn is_pinned_revision(revision: &str) -> bool {
+    matches!(revision.len(), 40 | 64)
+        && revision
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// The only encoded-preview media types accepted by the local vision RPC.
 /// Keeping this vocabulary closed means a caller cannot ask the trusted
 /// gateway to fetch a URL or interpret an arbitrary document as an image.
@@ -139,6 +177,15 @@ pub enum Request {
         model_id: String,
         images: Vec<FaceImage>,
     },
+    /// Find the subject of one bounded picture with the on-device
+    /// segmentation model the person installed (Settings › Models). The
+    /// gateway runs the model itself, on the CPU; no model file, path or
+    /// network reaches the caller, and nothing leaves the device. Answers a
+    /// [`SubjectMatte`] as JSON. Older servers reject this verb; callers
+    /// treat that as no model.
+    SegmentSubject {
+        image: VisionImage,
+    },
     SecretStatus {
         profile_id: String,
     },
@@ -150,6 +197,28 @@ pub enum Request {
         profile_id: String,
     },
 }
+
+/// How much of each pixel of a [`Request::SegmentSubject`] picture is its
+/// subject, and what found it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct SubjectMatte {
+    /// The matte's size: the picture's.
+    pub width: u32,
+    pub height: u32,
+    /// Standard base64 of a greyscale PNG, white where the subject is.
+    pub matte_png_base64: String,
+    /// The catalogue model and its pinned revision, for provenance.
+    pub model_id: String,
+    pub revision: String,
+    /// Milliseconds spent loading the model (0 when it was loaded already)
+    /// and running it.
+    pub load_ms: u64,
+    pub infer_ms: u64,
+}
+
+/// The message the gateway refuses [`Request::SegmentSubject`] with when no
+/// segmentation model is installed, so a caller can offer to set one up.
+pub const NO_SEGMENTATION_MODEL: &str = "no on-device subject model is installed";
 
 /// Correlates the Plan requests (model turns) of one agent decision.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -551,6 +620,23 @@ pub fn cluster_faces(
         .ok_or_else(|| ClientError::Protocol("gateway returned no face clusters".into()))
 }
 
+/// Find the subject of one bounded picture with the installed on-device
+/// segmentation model.
+///
+/// # Errors
+///
+/// Returns [`ClientError`] if the launcher gateway is absent, no model is
+/// installed ([`ClientError::Rejected`] with [`NO_SEGMENTATION_MODEL`]), the
+/// picture is refused, or the answer is malformed.
+pub fn segment_subject(image: VisionImage) -> Result<SubjectMatte, ClientError> {
+    let response = request(Request::SegmentSubject { image })?;
+    let output = response
+        .output
+        .ok_or_else(|| ClientError::Protocol("gateway returned no subject".into()))?;
+    serde_json::from_str(&output)
+        .map_err(|error| ClientError::Protocol(format!("malformed subject: {error}")))
+}
+
 /// Query whether the profile has a secret stored by the isolated gateway.
 ///
 /// # Errors
@@ -630,7 +716,8 @@ pub fn read_frame<T: for<'a> Deserialize<'a>>(stream: &mut UnixStream) -> Result
         .map_err(|_| ClientError::Protocol("invalid gateway response".into()))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod wire_tests {
     use super::*;
 
@@ -662,7 +749,8 @@ mod wire_tests {
     }
 }
 
-#[cfg(all(test, not(unix)))]
+#[cfg(test)]
+#[cfg(not(unix))]
 mod unsupported_platform_tests {
     use super::*;
 
@@ -706,5 +794,30 @@ mod unsupported_platform_tests {
             remove_api_key("hosted"),
             Err(ClientError::Unavailable)
         ));
+    }
+}
+
+#[cfg(test)]
+mod local_model_tests {
+    use super::*;
+
+    #[test]
+    fn local_vision_never_routes_to_a_lan_or_hosted_endpoint() {
+        assert!(loopback_http_endpoint("http://127.0.0.1:8123/v1"));
+        assert!(loopback_http_endpoint("http://[::1]:8123/v1"));
+        assert!(!loopback_http_endpoint("http://192.168.1.20:8123/v1"));
+        assert!(!loopback_http_endpoint("https://models.example.test/v1"));
+        assert!(!loopback_http_endpoint(
+            "http://localhost.evil.test:8123/v1"
+        ));
+    }
+
+    #[test]
+    fn local_vision_requires_an_immutable_model_revision() {
+        assert!(is_pinned_revision(&"a".repeat(40)));
+        assert!(is_pinned_revision(&"b".repeat(64)));
+        assert!(!is_pinned_revision("main"));
+        assert!(!is_pinned_revision(&"A".repeat(40)));
+        assert!(!is_pinned_revision(&"g".repeat(40)));
     }
 }

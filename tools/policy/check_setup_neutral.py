@@ -35,6 +35,12 @@ PLACEHOLDER_OTHER_HOMES = frozenset(
     {"you", "u", "user", "alice", "bob", "owner", "reader", "ordinary", "public", "default", "shared"}
 )
 SCRATCH = re.compile(r"\.super" r"powers/")
+# Every violation contains one of these literal hints. This deliberately
+# broader match only avoids splitting unrelated files into individual lines;
+# the existing matchers below still determine every diagnostic.
+REFERENCE_HINT = re.compile(
+    r"r" r"cargo|/var/home/|Users|\.super" r"powers/", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,8 @@ def file_violations(path: Path, shown: str) -> list[Violation]:
     if b"\0" in data:
         return []
     text = data.decode("utf-8", errors="replace")
+    if not REFERENCE_HINT.search(text):
+        return []
     return [
         Violation(shown, number, reason)
         for number, line in enumerate(text.splitlines(), 1)

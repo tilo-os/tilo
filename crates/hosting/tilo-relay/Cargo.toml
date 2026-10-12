@@ -24,7 +24,7 @@ test-support = []
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
-agents = ["web", "dep:tilo-agent-participant"]
+agents = ["web", "dep:tilo-agent-participant", "dep:tilo-browser-peer"]
 web = ["dep:tilo-moq", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 
 [[bin]]
@@ -49,6 +49,12 @@ path = "src/home_peer_control.rs"
 name = "tilo-relay-environment"
 path = "src/environment_cli.rs"
 
+# Asks this device's relays what their workers run for environments, for
+# Terminal's relay picker; the `ush` supervisor runs it without waiting.
+[[bin]]
+name = "tilo-relay-offers"
+path = "src/relay_offers_cli.rs"
+
 # The host / relay daemon.
 #
 # `tilo-relay` is the WAN transport + host tier of the sync/host model:
@@ -71,7 +77,8 @@ path = "src/environment_cli.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 web-time = { version = "1", features = ["serde"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
@@ -85,6 +92,10 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # Both ends of every relay stream use its frame codec.
 tilo-relay-client = { path = "../tilo-relay-client" }
+# The session clients (relay, co-edit, anti-entropy, room administration and
+# workspace join): the daemon dials other relays with them and re-exports them
+# under its historic paths. Clients depend on that crate, not on this one.
+tilo-relay-session = { path = "../tilo-relay-session" }
 # Delivery, private-action, agent-read, v2 live and join records the relay carries.
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 # Iroh 1.0.x — pinned to the same versions the `fs/` crate uses so
@@ -127,7 +138,7 @@ uuid.workspace = true
 
 # Runtime + config.
 tokio = { workspace = true, features = ["sync", "macros", "io-util"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
+wire-frame = { path = "../../system/wire-frame", features = ["tokio", "postcard"] }
 n0-future = "0.3.2"
 thiserror.workspace = true
 
@@ -152,6 +163,8 @@ tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
+# Read existing signed document envelopes through the shared, read-only cipher.
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bounded-command = { path = "../../system/bounded-command" }
@@ -163,8 +176,8 @@ tilo-environment = { path = "../../runtime/environment" }
 # Members' tool builds: built as the member, signed here.
 env-tools = { path = "../../runtime/env-tools" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
-# Exclusive, owner-only publication of the relay's node secret.
-private-fs = { path = "../../system/private-fs" }
+# App surfaces, fetched by hash from the registry's reviewed payload blobs.
+app-registry = { path = "../../packaging/app-registry" }
 clap.workspace = true
 toml.workspace = true
 anyhow.workspace = true
@@ -174,7 +187,8 @@ tokio = { workspace = true, features = ["full"] }
 # The daemon's bounded runtime.
 tilo-rt.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-files = { path = "../../platform/tilo-files" }
+# `watch`: the daemon follows membership files `tilo-relay-admin` edits.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # Home-peer configuration is one signed filesystem bundle; the relay imports
 # its workspace tickets rather than asking the operator to duplicate ids.
 tilo-fs = { path = "../../system/fs" }
@@ -230,6 +244,13 @@ path = "tests/held_memory.rs"
 # and the CI test jobs run those tests.
 [[example]]
 name = "inspect-peer-archive"
+test = true
+
+# What an active collaborator costs a relay in CPU, memory and egress (TIL-592):
+# the scheduled lane's `hosting` group (.forgejo/workflows/perf-scheduled.yml).
+# An example, not a binary, so relay images that build `--bins` leave it out.
+[[example]]
+name = "relay_load"
 test = true
 
 [lints]

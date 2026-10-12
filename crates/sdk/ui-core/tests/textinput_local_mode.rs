@@ -60,7 +60,7 @@ fn local_textinput_reports_typing_but_not_programmatic_text() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: tilo_ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

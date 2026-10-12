@@ -8,6 +8,8 @@
 //! what is the word processor's own: its application operations (open, save,
 //! zoom, panels) and the resource tree it publishes.
 
+/// Edits bound to a view's caret and selection, as the document's typed
+/// declarations.
 pub(crate) mod continuation;
 /// Pure editor input primitives shared by keyboard, palette and agents.
 pub mod editing;
@@ -18,132 +20,20 @@ pub mod participant;
 pub mod view_ops;
 
 use automerge::AutoCommit;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use crate::num;
+use tilo_actions::{ActionRegistry, ContextRequirement};
+use ui::tilo_resource::Effect as _;
 
-use tilo_actions::{
-    Action, ActionArgs, ActionContract, ActionParam, ActionRegistry, ActionSpec,
-    ContextRequirement, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResultSpec,
-};
+use crate::effects::WordProcessorEffect;
 
 /// Registry `type_id` for every word-processor action.
 pub use tilo_document::RICH_TEXT_ACTION_TYPE as WORD_PROCESSOR_ACTION_TYPE;
 pub use tilo_document::action::*;
-pub const WORD_PROCESSOR_OPERATION_TYPE: &str = "word-processor.operation";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WordProcessorOperation {
-    ResolveFileChoice {
-        generation: u64,
-        use_selected: bool,
-    },
-    Open {
-        path: Option<String>,
-    },
-    Save {
-        path: Option<String>,
-    },
-    SaveAs {
-        path: Option<String>,
-    },
-    Find,
-    ZoomIn,
-    ZoomOut,
-    /// Return the page canvas to its explicit 100% scale. This matches the
-    /// percentage chip in the visible zoom stepper and Ctrl+0.
-    ZoomReset,
-    ToggleSpellcheck,
-    ToggleMarkup,
-    ToggleStyles,
-    ToggleRuler,
-    ToggleOutline,
-    ToggleHistory,
-    /// Focus one exact body range. Used by bounded search-hit/comment resources
-    /// instead of an index into the renderer's transient cache.
-    NavigateTo {
-        block: String,
-        start: usize,
-        end: usize,
-    },
-    /// Open history focused on a stable change-graph position.
-    ShowRevision {
-        index: usize,
-    },
-}
-
-/// Decode an application-owned word-processor operation payload.
-///
-/// # Errors
-///
-/// Returns a message when a payload bearing
-/// [`WORD_PROCESSOR_OPERATION_TYPE`] is not valid JSON for
-/// [`WordProcessorOperation`].
-pub fn decode_operation(
-    type_id: &str,
-    payload: &[u8],
-) -> Result<Option<WordProcessorOperation>, String> {
-    if type_id != WORD_PROCESSOR_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-fn operation(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    value: &WordProcessorOperation,
-) -> Option<ActionSpec> {
-    let Ok(spec) = ActionSpec::operation(id, label, kind, WORD_PROCESSOR_OPERATION_TYPE, value)
-    else {
-        // A malformed operation must not become an invokable catalogue
-        // entry. These variants contain only JSON-native values, but keep the
-        // fallible serializer boundary fail-closed rather than panicking.
-        return None;
-    };
-    match value {
-        WordProcessorOperation::ResolveFileChoice { use_selected, .. } => Some(
-            spec.with_contract(if *use_selected {
-                ActionContract::default()
-            } else {
-                ActionContract::view()
-            })
-            .execution(ExecutionMode::Background { cancellable: false })
-            .returns(ResultSpec::Job),
-        ),
-        WordProcessorOperation::Open { .. }
-        | WordProcessorOperation::Save { .. }
-        | WordProcessorOperation::SaveAs { .. } => Some(
-            spec.destructive()
-                .execution(ExecutionMode::Background { cancellable: false })
-                .returns(ResultSpec::Job),
-        ),
-        _ => Some(spec.with_contract(ActionContract::view())),
-    }
-}
-
 /// Register the word processor's action decoder for palette execution + remote
 /// replay.
 pub fn register(registry: &mut ActionRegistry) {
-    registry.register::<RichTextAction>(WORD_PROCESSOR_ACTION_TYPE);
-}
-
-/// Encode any [`RichTextAction`] into the wire form the palette and the
-/// on-screen affordances both dispatch. The single point that turns an action
-/// into a replayable envelope.
-pub fn encode(action: &RichTextAction) -> EncodedAction {
-    // The action is a plain serde enum over owned data, so the JSON encode
-    // cannot fail. Were it ever to, an empty payload fails decoding at the far
-    // end as an explicit action error instead of aborting the process.
-    EncodedAction::encode(WORD_PROCESSOR_ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
-        type_id: WORD_PROCESSOR_ACTION_TYPE.to_string(),
-        payload: Vec::new(),
-    })
+    <crate::model::Document as ui::tilo_resource::Resource>::register(registry);
 }
 
 // ===========================================================================
@@ -197,22 +87,6 @@ pub const MAX_RESOURCE_REVISIONS: usize = 64;
 /// table cells, so the nearest tables are whole).
 pub const MAX_RESOURCE_OBJECTS: usize = 64;
 
-fn immediate_spec(id: &str, label: &str, action: &RichTextAction) -> ActionSpec {
-    // Built from `encode`, which is total, rather than the fallible
-    // `ActionSpec::immediate` — the two produce the same spec.
-    //
-    // Through the constructor rather than a struct literal: `ActionSpec`
-    // carries private `params`/`build` fields, so a literal cannot name
-    // them and the shared defaults would be bypassed if it could.
-    let spec =
-        ActionSpec::immediate_encoded(id, label, action.locus(), encode(action)).reversible();
-    if id.contains("delete") || id.contains("remove") {
-        spec.destructive()
-    } else {
-        spec
-    }
-}
-
 /// A short label for a structural block in the palette.
 fn short(text: &str, fallback: &str) -> String {
     let t: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -246,484 +120,53 @@ fn range_label(
     Some(format!("Result: {}", short(&text, "Empty match")))
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "empty rich-text document always initializes and reads"
-)]
-fn document_resource(doc: &AutoCommit) -> Resource {
-    let state = <crate::framework::Document as ui::tilo_resource::Resource>::read(doc)
-        .unwrap_or_else(|_| {
-            let mut empty = AutoCommit::new();
-            <crate::framework::Document as ui::tilo_resource::Resource>::initialize(&mut empty)
-                .expect("empty rich text initializes");
-            <crate::framework::Document as ui::tilo_resource::Resource>::read(&empty)
-                .expect("empty rich text reads")
-        });
-    ui::tilo_resource::publish::<crate::framework::Document>(
-        "word-processor.document",
-        "Document",
+/// What the word processor's framework app publishes for a view at `ctx` on
+/// `doc`: the document, its verbs, field edits, effects and children, and
+/// the view's Find results. For a peer in a test that serves a Writer
+/// document without a window.
+#[cfg(any(test, feature = "test-support"))]
+pub fn published_for(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    use ui::tilo_resource::Resource as _;
+    let Ok(state) = crate::framework::Document::read(doc) else {
+        return Vec::new();
+    };
+    let label = <crate::framework::WordProcessorApp as ui::framework::ResourceApp>::label(&state);
+    let mut root = ui::tilo_resource::publish::<crate::framework::Document>(
+        crate::framework::Document::KIND,
+        &label,
         &state,
-    )
-}
-
-pub(crate) fn file_operation_specs(file: Option<&continuation::FileContext>) -> Vec<ActionSpec> {
-    let mut specs = Vec::new();
-    for (id, label, variant) in [
-        ("open", "Open document", 0_u8),
-        ("save", "Save document", 1_u8),
-        ("save-as", "Save document as", 2_u8),
-    ] {
-        specs.push(continuation::file(
-            ActionSpec::typed_operation(
-                id,
-                label,
-                "path (omit to use the system file picker)",
-                OperationKind::Effect,
-                WORD_PROCESSOR_OPERATION_TYPE,
-                vec![ActionParam::optional_owned(
-                    "path",
-                    ParamType::Text,
-                    "Direct filesystem path; omit to open the system file picker",
-                )],
-                move |args: &ActionArgs| {
-                    let path = args
-                        .text("path")
-                        .filter(|path| !path.trim().is_empty())
-                        .map(str::to_string);
-                    let operation = match variant {
-                        0 => WordProcessorOperation::Open { path },
-                        1 => WordProcessorOperation::Save { path },
-                        _ => WordProcessorOperation::SaveAs { path },
-                    };
-                    EncodedAction::encode_operation(WORD_PROCESSOR_OPERATION_TYPE, &operation)
-                        .unwrap_or_else(|_| EncodedAction {
-                            type_id: WORD_PROCESSOR_OPERATION_TYPE.into(),
-                            payload: Vec::new(),
-                        })
-                },
-            )
-            .destructive()
-            .execution(ExecutionMode::Background { cancellable: false })
-            .returns(ResultSpec::Job),
-            variant,
-            file,
-        ));
-    }
-    specs
-}
-
-fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileContext>) {
-    // Replace a spec with the same id so open/save are not listed twice.
-    for spec in file_operation_specs(file) {
-        if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
-            *existing = spec;
-        } else {
-            root.actions.push(spec);
-        }
-    }
-}
-
-pub(crate) fn view_operations(include_history: bool) -> Vec<ActionSpec> {
-    let mut specs = Vec::new();
-    for (id, label, value) in [
-        ("find", "Find in document", WordProcessorOperation::Find),
-        ("zoom-in", "Zoom in", WordProcessorOperation::ZoomIn),
-        ("zoom-out", "Zoom out", WordProcessorOperation::ZoomOut),
-        (
-            "zoom-reset",
-            "Reset zoom to 100%",
-            WordProcessorOperation::ZoomReset,
-        ),
-        (
-            "spellcheck",
-            "Toggle spellcheck",
-            WordProcessorOperation::ToggleSpellcheck,
-        ),
-        (
-            "markup",
-            "Toggle review markup",
-            WordProcessorOperation::ToggleMarkup,
-        ),
-        (
-            "styles",
-            "Toggle styles panel",
-            WordProcessorOperation::ToggleStyles,
-        ),
-        ("ruler", "Toggle ruler", WordProcessorOperation::ToggleRuler),
-        (
-            "outline",
-            "Toggle outline",
-            WordProcessorOperation::ToggleOutline,
-        ),
-        (
-            "history",
-            "Toggle history",
-            WordProcessorOperation::ToggleHistory,
-        ),
-    ] {
-        if !include_history && id == "history" {
-            continue;
-        }
-        if let Some(spec) = operation(id, label, OperationKind::View, &value) {
-            specs.push(spec);
-        }
-    }
-    specs
-}
-
-fn add_view_operations(root: &mut Resource) {
-    for spec in view_operations(true) {
-        if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
-            *existing = spec;
-        } else {
-            root.actions.push(spec);
-        }
-    }
-}
-
-fn add_caret_actions(root: &mut Resource, ctx: &WpResourceCtx) {
-    root.actions.push(
-        immediate_spec(
-            "insert-table",
-            "Insert table",
-            &insert_table_action(&ctx.caret_block, 2, 2),
-        )
-        .requires(ContextRequirement::Caret),
     );
-    if ctx.format_spans.is_empty() {
-        return;
+    for spec in crate::effects::specs() {
+        if !root.actions.iter().any(|existing| existing.id == spec.id) {
+            root = root.with_action(spec);
+        }
     }
-    let spans = ctx.format_spans.clone();
-    let region = ctx.region;
-    root.actions.push(continuation::pure(
-        ActionSpec::typed(
-            "set-hyperlink",
-            "Add or change hyperlink",
-            "Web URL (https://… or mailto:…) or #bookmark",
-            ExecutionLocus::ClientLocal,
-            vec![ActionParam::required_owned(
-                "target",
-                ParamType::Text,
-                "A safe external URL, mail address, or document-local #bookmark target",
-            )],
-            move |args: &ActionArgs| {
-                let target = args.text("target").unwrap_or_default().trim();
-                if !valid_hyperlink_target(target) {
-                    return EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"hyperlink target must use https:, mailto:, or #bookmark"
-                            .to_vec(),
-                    };
-                }
-                encode(&set_hyperlink_action(region, spans.clone(), target))
-            },
-        )
-        .requires(ContextRequirement::Selection),
-        "set-hyperlink.v1",
-        continuation::spans(region, &ctx.format_spans),
-    ));
-}
-
-/// `large`: the selection is over [`editing::LARGE_REMOVAL_CHARS`], and the
-/// replacement refuses like the editing primitives do.
-fn add_selection_resources(root: &mut Resource, ctx: &WpResourceCtx, large: bool) {
-    let Some(selection) = &ctx.selection else {
-        return;
-    };
-    let selection = selection.clone();
-    let root_selection = selection.clone();
-    let region = ctx.region;
-    let domain = continuation::selection(region, &selection);
-    root.actions.push(
-        continuation::pure(
-            ActionSpec::typed(
-                "replace-selection",
-                "Replace selection",
-                "Replacement text for the selected document range",
-                ExecutionLocus::ClientLocal,
-                vec![ActionParam::required_owned(
-                    "text",
-                    ParamType::Text,
-                    "Text that replaces the current selection (empty deletes it)",
-                )],
-                move |args: &ActionArgs| {
-                    if large {
-                        return EncodedAction {
-                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                            payload: editing::LARGE_REFUSAL.as_bytes().to_vec(),
-                        };
-                    }
-                    let Some(text) = args.text("text") else {
-                        return EncodedAction {
-                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                            payload: b"replacement text is required".to_vec(),
-                        };
-                    };
-                    encode(&replace_selection_action(
-                        region,
-                        &root_selection.start_block,
-                        root_selection.start,
-                        &root_selection.end_block,
-                        root_selection.end,
-                        text,
-                    ))
-                },
-            ),
-            "replace-selection.v1",
-            domain.clone(),
-        )
-        .requires(ContextRequirement::Selection),
+    let mut published = vec![root];
+    published.extend(
+        search_rows(ctx, doc)
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource),
     );
-    root.children.push(
-        Resource::new(
-            format!(
-                "word-processor.selection:{}:{}:{}:{}",
-                selection.start_block, selection.start, selection.end_block, selection.end
-            ),
-            "word_processor.selection",
-            "Current selection",
-        )
-        .with_action(
-            continuation::pure(
-                ActionSpec::typed(
-                    "replace",
-                    "Replace selection",
-                    "Replacement text for this exact selection",
-                    ExecutionLocus::ClientLocal,
-                    vec![ActionParam::required_owned(
-                        "text",
-                        ParamType::Text,
-                        "Replacement text",
-                    )],
-                    move |args: &ActionArgs| {
-                        if large {
-                            return EncodedAction {
-                                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                                payload: editing::LARGE_REFUSAL.as_bytes().to_vec(),
-                            };
-                        }
-                        let Some(text) = args.text("text") else {
-                            return EncodedAction {
-                                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                                payload: b"replacement text is required".to_vec(),
-                            };
-                        };
-                        encode(&replace_selection_action(
-                            region,
-                            &selection.start_block,
-                            selection.start,
-                            &selection.end_block,
-                            selection.end,
-                            text,
-                        ))
-                    },
-                ),
-                "replace-selection.v1",
-                domain,
-            )
-            .requires(ContextRequirement::Selection),
-        ),
-    );
+    published
 }
 
-/// Contract tag prefix declaring that a Text parameter may be delivered in
-/// order across several invocations: `tilo.incremental-text:<param>:<next>`
-/// says the first part goes through this action and every later part through
-/// action `<next>` on the same resource, with `<param>` set to that part, and
-/// that the parts applied in order equal one invocation with the whole text.
-/// Any caller (a person's tool, a script, an agent) may rely on it; the
-/// declaration is the app's, not the caller's.
-pub const INCREMENTAL_TEXT_TAG: &str = "tilo.incremental-text:";
-
-/// Contract tag marking an operation kept only for compatibility:
-/// `tilo.deprecated:<replacement>` names the operation to use instead.
-/// Callers choosing an operation (an agent planner) should skip it.
-pub const DEPRECATED_TAG: &str = "tilo.deprecated:";
-
-/// Root-level text writes that need no caret or selection, for anyone
-/// writing into the document (a person from the palette, a script, an
-/// agent). Their payload names no position; the end of the body is read at
-/// apply time. `append-paragraph` is an ordinary document operation that,
-/// like typing, leaves the invoker's caret at the end of the text it wrote,
-/// so it declares [`INCREMENTAL_TEXT_TAG`] continued by `type-text`: the rest
-/// of a long paragraph is typed at that caret. `continue-paragraph` is
-/// deprecated in favour of `type-text` at a caret (`move-caret {to:
-/// document-end}` first).
-fn add_body_append_actions(
-    root: &mut Resource,
-    ctx: &WpResourceCtx,
-    doc: &AutoCommit,
-    body: Option<&tilo_document::BodyOrder>,
-) {
-    let appended =
-        editing::AppendTarget::new(&participant::ParticipantView::from_ctx(ctx), doc, body);
-    for (id, label, description, handler, append) in [
-        (
-            "append-paragraph",
-            "Append paragraph",
-            "Add a new paragraph containing the text at the end of the document",
-            "append-paragraph.v1",
-            true,
-        ),
-        (
-            "continue-paragraph",
-            "Continue last paragraph",
-            "Deprecated: move-caret to document-end, then type-text. Appends the text to the end of the document's last paragraph",
-            "continue-paragraph.v1",
-            false,
-        ),
-    ] {
-        let appended = appended.clone();
-        let spec = ActionSpec::typed(
-            id,
-            label,
-            "Text to write",
-            ExecutionLocus::ClientLocal,
-            vec![ActionParam::required_owned(
-                "text",
-                ParamType::Text,
-                "The text to write (not empty)",
-            )],
-            move |args: &ActionArgs| {
-                let text = args.text("text").unwrap_or_default();
-                if text.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                    return EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"text must be non-empty and within Writer's limits".to_vec(),
-                    };
-                }
-                if append {
-                    crate::widget::note_participant_outcome(&appended.caret_after(text));
-                    encode(&append_paragraph_action(text))
-                } else {
-                    encode(&continue_paragraph_action(text))
-                }
-            },
-        )
-        .with_description(description)
-        .reversible();
-        let mut spec = spec;
-        spec.contract.tags.push(if append {
-            format!("{INCREMENTAL_TEXT_TAG}text:{}", editing::op::TYPE_TEXT)
-        } else {
-            format!("{DEPRECATED_TAG}{}", editing::op::TYPE_TEXT)
-        });
-        root.actions.push(continuation::pure(
-            spec,
-            handler,
-            vec![b"body-end".to_vec()],
-        ));
-    }
-}
-
-fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
-    let Some(selection) = &ctx.selection else {
-        return;
-    };
-    if ctx.region != RegionKind::Body
-        || selection.start_block != selection.end_block
-        || selection.start >= selection.end
-    {
-        return;
-    }
-    let target = selection.clone();
-    let domain = continuation::selection(RegionKind::Body, &target);
-    root.actions.push(continuation::pure(
-        ActionSpec::typed(
-            "add-comment",
-            "Add comment",
-            "Comment text and author for the selected text",
-            ExecutionLocus::ClientLocal,
-            vec![
-                ActionParam::required_owned("author", ParamType::Text, "Comment author"),
-                ActionParam::required_owned("text", ParamType::Text, "Comment text"),
-                ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 comment date"),
-            ],
-            move |args: &ActionArgs| {
-                let author = args.text("author").unwrap_or_default().trim();
-                let text = args.text("text").unwrap_or_default();
-                if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                    return EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"comment author is required and comment text is too long"
-                            .to_vec(),
-                    };
-                }
-                encode(&add_comment_action(
-                    &target.start_block,
-                    target.start,
-                    target.end,
-                    author,
-                    args.text("date").unwrap_or_default(),
-                    text,
-                ))
-            },
-        )
-        .requires(ContextRequirement::Selection),
-        "add-comment.v1",
-        domain,
-    ));
-}
-
-/// Selection, comment, find-hit, and caret-edit rows that depend on this
-/// peer's caret. Not a second `word-processor.document` root. Typing, marks,
-/// placing an image, inserting a table, moving the caret, and page breaks stay
-/// addressable when the framework already publishes the document.
-pub(crate) fn live_presentation_resources(
-    ctx: &WpResourceCtx,
-    doc: &AutoCommit,
-    body: Option<&tilo_document::BodyOrder>,
-) -> Vec<Resource> {
-    let mut scratch = Resource::new("word-processor.live", "word_processor.live", "Live");
-    // Pass the kept body order so building erase/new-paragraph targets does not
-    // list and sort every paragraph on each keystroke.
-    add_selection_resources(&mut scratch, ctx, editing::large_selection(ctx, doc, body));
-    add_comment_resource_action(&mut scratch, ctx);
-    if !ctx.search_hits.is_empty()
-        && let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT)
-    {
-        let snapshot = tilo_doc::model::materialize(doc, &containers);
-        add_search_resources(&mut scratch, ctx, &snapshot);
-    }
-    let mut extras = scratch.children;
-    if let Some(selection) = extras
-        .iter_mut()
-        .find(|resource| resource.kind == "word_processor.selection")
-    {
-        selection.actions.extend(scratch.actions);
-    } else if !scratch.actions.is_empty() {
-        let mut selection = Resource::new(
-            "word-processor.selection",
-            "word_processor.selection",
-            "Current selection",
-        );
-        selection.actions.extend(scratch.actions);
-        extras.insert(0, selection);
-    }
-    let mut caret = Resource::new("word-processor.caret", "word_processor.caret", "Caret");
-    editing::add_operations(&mut caret, ctx, doc, body);
-    add_document_edit_actions(&mut caret, ctx);
-    add_caret_actions(&mut caret, ctx);
-    add_body_append_actions(&mut caret, ctx, doc, body);
-    view_ops::add_operations(&mut caret, ctx);
-    // Hosted edits answer with the blocks they changed, same as the
-    // standalone document root (see returning_changes).
-    caret = returning_changes(caret);
-    if !caret.actions.is_empty() {
-        extras.push(caret);
-    }
-    extras
-}
-
-fn add_search_resources(
-    root: &mut Resource,
-    ctx: &WpResourceCtx,
-    snapshot: &tilo_doc::snapshot::DocSnapshot,
-) {
+/// The Find results of the view `ctx` describes, as live rows beneath the
+/// document: each goes to its range in the invoker's own view.
+pub(crate) fn search_rows(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<ui::framework::LiveRow> {
     if ctx.search_hits.is_empty() {
-        return;
+        return Vec::new();
     }
-    let mut search = Resource::new(
+    let Ok(containers) = crate::model::open(doc) else {
+        return Vec::new();
+    };
+    let hits: Vec<String> = ctx
+        .search_hits
+        .iter()
+        .take(MAX_RESOURCE_SEARCH_HITS)
+        .map(|hit| hit.block.clone())
+        .collect();
+    let blocks = tilo_doc::model::materialize_blocks(doc, &containers, &hits);
+    let mut search = ui::framework::LiveRow::new(
         "word-processor.search-results",
         "word_processor.search-results",
         "Search results",
@@ -736,1091 +179,68 @@ fn add_search_resources(
         .take(MAX_RESOURCE_SEARCH_HITS)
         .enumerate()
     {
-        let label = range_label(&snapshot.blocks, &hit.block, hit.start, hit.end)
+        let label = range_label(&blocks, &hit.block, hit.start, hit.end)
             .unwrap_or_else(|| format!("Result {}", result_index + 1));
-        let view_operation = WordProcessorOperation::NavigateTo {
-            block: hit.block.clone(),
-            start: hit.start,
-            end: hit.end,
-        };
-        if let Some(spec) = operation(
-            "go-to",
-            "Go to result",
-            OperationKind::View,
-            &view_operation,
-        )
-        .map(|spec| {
-            spec.requires(ContextRequirement::FindHits)
-                .participant_view()
-        }) {
-            search.children.push(
-                Resource::new(
-                    format!(
-                        "word-processor.search-hit:{}:{}:{}",
-                        hit.block, hit.start, hit.end
-                    ),
-                    "word_processor.search-hit",
-                    label,
-                )
-                .with_action(spec),
-            );
-        }
-    }
-    root.children.push(search);
-}
-
-fn add_document_edit_actions(root: &mut Resource, ctx: &WpResourceCtx) {
-    let image_anchor = ctx.caret_block.clone();
-    let image_offset = ctx.caret_offset;
-    let content = ctx.content.clone();
-    root.actions.push(
-        ActionSpec::prompted_content(
-            "place-image",
-            "Place image",
-            "Image content produced by the preceding action",
-            "content hash",
-            ExecutionLocus::ClientLocal,
-            move |hash| {
-                let Some(bytes) = content.read(hash) else {
-                    return EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: format!("content `{hash}` is not available on this machine")
-                            .into_bytes(),
-                    };
-                };
-                encode(&insert_image_action(
-                    &image_anchor,
-                    image_offset,
-                    ImageInput::of(hash.to_string(), &bytes),
-                ))
-            },
-        )
-        .with_description(
-            "Place the single content result of the immediately preceding action at the caret",
-        )
-        .reversible()
-        .requires(ContextRequirement::Caret),
-    );
-    root.actions.push(
-        immediate_spec(
-            "insert-page-break",
-            "Insert page break",
-            &insert_page_break_action(&ctx.caret_block, ctx.caret_offset),
-        )
-        .requires(ContextRequirement::Caret),
-    );
-    for (id, label, align) in [
-        ("align-left", "Align left", "left"),
-        ("align-center", "Align centre", "center"),
-        ("align-right", "Align right", "right"),
-        ("align-justify", "Justify", "justify"),
-    ] {
-        root.actions.push(
-            immediate_spec(
-                id,
-                label,
-                &set_align_action(ctx.target_blocks.clone(), align),
-            )
-            .requires(ContextRequirement::Caret),
-        );
-    }
-}
-
-fn comment_resource(comment: &tilo_doc::snapshot::CommentView) -> Resource {
-    let text = comment
-        .blocks
-        .iter()
-        .map(|block| block.text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let mut resource = Resource::new(
-        format!("word-processor.comment:{}", comment.id),
-        "word_processor.comment",
-        format!(
-            "Comment by {}: {}",
-            short(&comment.author, "Unknown author"),
-            short(&text, "Empty comment")
-        ),
-    )
-    .with_action(immediate_spec(
-        "resolve",
-        "Resolve comment",
-        &RichTextAction::ResolveComment {
-            id: comment.id.clone(),
-        },
-    ));
-    if let Some((block, start, end)) = &comment.range
-        && let Some(spec) = operation(
-            "go-to-anchor",
-            "Go to commented text",
-            OperationKind::View,
-            &WordProcessorOperation::NavigateTo {
-                block: block.clone(),
-                start: *start,
-                end: *end,
-            },
-        )
-        .map(ActionSpec::participant_view)
-    {
-        resource.actions.push(spec);
-    }
-    for reply in comment.replies.iter().take(MAX_RESOURCE_SEARCH_HITS) {
-        let reply_text = reply
-            .blocks
-            .iter()
-            .map(|block| block.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        resource.children.push(Resource::new(
-            format!("word-processor.comment-reply:{}:{}", comment.id, reply.id),
-            "word_processor.comment-reply",
-            format!(
-                "Reply by {}: {}",
-                short(&reply.author, "Unknown author"),
-                short(&reply_text, "Empty reply")
-            ),
-        ));
-    }
-    let parent = comment.id.clone();
-    let domain = vec![parent.as_bytes().to_vec()];
-    resource.actions.push(continuation::pure(
-        ActionSpec::typed(
-            "reply",
-            "Reply to comment",
-            "Reply text and author, stored in the shared comment thread",
-            ExecutionLocus::ClientLocal,
-            vec![
-                ActionParam::required_owned("author", ParamType::Text, "Reply author"),
-                ActionParam::required_owned("text", ParamType::Text, "Reply text"),
-                ActionParam::optional_owned("date", ParamType::Text, "ISO-8601 reply date"),
-            ],
-            move |args: &ActionArgs| {
-                let author = args.text("author").unwrap_or_default().trim();
-                let text = args.text("text").unwrap_or_default();
-                if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-                    return EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"reply author is required and reply text is too long".to_vec(),
-                    };
-                }
-                encode(&reply_to_comment_action(
-                    &parent,
-                    author,
-                    args.text("date").unwrap_or_default(),
-                    text,
-                ))
-            },
-        ),
-        "reply-to-comment.v1",
-        domain,
-    ));
-    resource
-}
-
-fn place_child(root: &mut Resource, child: Resource) {
-    if let Some(existing) = root
-        .children
-        .iter_mut()
-        .find(|existing| existing.id == child.id)
-    {
-        *existing = child;
-    } else {
-        root.children.push(child);
-    }
-}
-
-fn add_review_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
-    if snapshot.comments.is_empty() && snapshot.changes.is_empty() {
-        return;
-    }
-    let mut review = Resource::new("word-processor.review", "word_processor.review", "Review");
-    if !snapshot.changes.is_empty() {
-        // Bulk review rewrites everyone's tracked changes at once: confirmed
-        // for people, refused for unattended callers.
-        review.actions.push(
-            immediate_spec(
-                "accept-all",
-                "Accept all changes",
-                &RichTextAction::AcceptChanges { id: None },
-            )
-            .privileged(),
-        );
-        review.actions.push(
-            immediate_spec(
-                "reject-all",
-                "Reject all changes",
-                &RichTextAction::RejectChanges { id: None },
-            )
-            .privileged(),
-        );
-    }
-    review
-        .children
-        .extend(snapshot.comments.iter().map(comment_resource));
-    for change in &snapshot.changes {
-        let kind = match change.kind {
-            tilo_doc::snapshot::ChangeKind::Ins => "Insertion",
-            tilo_doc::snapshot::ChangeKind::Del => "Deletion",
-        };
-        review.children.push(
-            Resource::new(
-                format!("word-processor.change:{}", change.id),
-                "word_processor.change",
-                format!("{kind} by {}", short(&change.author, "Unknown author")),
-            )
-            .with_action(immediate_spec(
-                "accept",
-                "Accept change",
-                &RichTextAction::AcceptChanges {
-                    id: Some(change.id.clone()),
-                },
-            ))
-            .with_action(immediate_spec(
-                "reject",
-                "Reject change",
-                &RichTextAction::RejectChanges {
-                    id: Some(change.id.clone()),
-                },
-            )),
-        );
-    }
-    place_child(root, review);
-}
-
-fn add_revision_resources(root: &mut Resource, doc: &AutoCommit) {
-    let mut history_doc = doc.clone();
-    // Revision resources need labels and hashes, not reconstructed operation
-    // payloads for every change in the document's history.
-    let changes = history_doc.get_changes_meta(&[]);
-    if changes.is_empty() {
-        return;
-    }
-    let mut history = Resource::new(
-        "word-processor.revisions",
-        "word_processor.revisions",
-        "Revision history",
-    );
-    let start = changes.len().saturating_sub(MAX_RESOURCE_REVISIONS);
-    for (index, change) in changes.iter().enumerate().skip(start) {
-        let label = change.message.as_deref().map_or_else(
-            || format!("Revision {}", index + 1),
-            |message| short(message, "Revision"),
-        );
-        if let Some(spec) = operation(
-            "show",
-            "Show revision",
-            OperationKind::View,
-            &WordProcessorOperation::ShowRevision { index },
-        ) {
-            history.children.push(
-                Resource::new(
-                    format!("word-processor.revision:{}", change.hash),
-                    "word_processor.revision",
-                    label,
-                )
-                .with_action(spec),
-            );
-        }
-    }
-    root.children.push(history);
-}
-
-fn add_metadata_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
-    if !snapshot.notes.is_empty() {
-        let mut notes = Resource::new("word-processor.notes", "word_processor.notes", "Notes");
-        for note in &snapshot.notes {
-            let text = note
-                .blocks
-                .iter()
-                .map(|block| block.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            notes.children.push(Resource::new(
-                format!("word-processor.note:{}", note.id),
-                "word_processor.note",
-                format!("{}: {}", note.kind, short(&text, "Empty note")),
-            ));
-        }
-        place_child(root, notes);
-    }
-    if !snapshot.bookmarks.is_empty() {
-        let mut bookmarks = Resource::new(
-            "word-processor.bookmarks",
-            "word_processor.bookmarks",
-            "Bookmarks",
-        );
-        for bookmark in &snapshot.bookmarks {
-            bookmarks.children.push(Resource::new(
-                format!("word-processor.bookmark:{}", bookmark.name),
-                "word_processor.bookmark",
-                bookmark.name.clone(),
-            ));
-        }
-        place_child(root, bookmarks);
-    }
-}
-
-fn add_region_resources(
-    root: &mut Resource,
-    id: &str,
-    label: &str,
-    region: RegionKind,
-    blocks: &[tilo_doc::snapshot::BlockView],
-) {
-    if blocks.is_empty() {
-        return;
-    }
-    let mut region_resource = Resource::new(
-        format!("word-processor.{id}"),
-        format!("word_processor.{id}"),
-        label,
-    );
-    for block in blocks.iter().take(MAX_RESOURCE_OBJECTS) {
-        let mut child = Resource::new(
-            format!("word-processor.{id}:{}", block.id),
-            format!("word_processor.{id}-block"),
-            short(&block.text, label),
-        );
-        for (action_id, action_label, align) in [
-            ("align-left", "Align left", "left"),
-            ("align-center", "Align centre", "center"),
-            ("align-right", "Align right", "right"),
-        ] {
-            child.actions.push(immediate_spec(
-                action_id,
-                action_label,
-                &set_block_attr_action(
-                    region,
-                    vec![block.id.clone()],
-                    "align",
-                    AttrVal::Str(align.to_string()),
+        search = search.row(
+            ui::framework::LiveRow::new(
+                format!(
+                    "word-processor.search-hit:{}:{}:{}",
+                    hit.block, hit.start, hit.end
                 ),
-            ));
-        }
-        region_resource.children.push(child);
-    }
-    place_child(root, region_resource);
-}
-
-fn add_style_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
-    if snapshot.styles.is_empty() {
-        return;
-    }
-    let mut styles = Resource::new(
-        "word-processor.styles",
-        "word_processor.styles",
-        "Paragraph styles",
-    );
-    for (style, properties) in &snapshot.styles {
-        let bold = matches!(
-            properties.get(tilo_doc::schema::STYLE_BOLD),
-            Some(tilo_doc::AttrVal::Bool(true))
-        );
-        let mut child = Resource::new(
-            format!("word-processor.style:{style}"),
-            "word_processor.style",
-            style.clone(),
-        )
-        .with_action(immediate_spec(
-            "toggle-bold",
-            if bold { "Remove bold" } else { "Make bold" },
-            &set_style_property_action(style, tilo_doc::schema::STYLE_BOLD, AttrVal::Bool(!bold)),
-        ));
-        if !crate::styles::StyleSheet::is_builtin(style) {
-            let instances = snapshot
-                .blocks
-                .iter()
-                .filter(|block| {
-                    matches!(block.attrs.get("style"), Some(tilo_doc::AttrVal::Str(id)) if id == style)
-                })
-                .map(|block| block.id.clone())
-                .collect();
-            child.actions.push(immediate_spec(
-                "delete",
-                "Delete style",
-                &delete_style_action(style, instances),
-            ));
-        }
-        styles.children.push(child);
-    }
-    place_child(root, styles);
-}
-
-fn image_resource(block: &tilo_doc::snapshot::BlockView) -> Resource {
-    let edge = |key: &str| match block.attrs.get(key) {
-        Some(tilo_doc::AttrVal::Int(value)) => (*value).clamp(0, 9_500),
-        _ => 0,
-    };
-    let left = edge("crop_left");
-    let top = edge("crop_top");
-    let right = edge("crop_right");
-    let bottom = edge("crop_bottom");
-    let can_crop_further =
-        left.saturating_add(right) <= 8_500 && top.saturating_add(bottom) <= 8_500;
-    let mut resource = Resource::new(
-        format!("word-processor.image:{}", block.id),
-        "word_processor.image",
-        "Image",
-    )
-    .with_action(immediate_spec(
-        "delete",
-        "Delete image",
-        &remove_blocks_action(vec![block.id.clone()]),
-    ));
-    if can_crop_further {
-        resource.actions.push(immediate_spec(
-            "crop-inset",
-            "Crop image by 5%",
-            &set_image_crop_action(&block.id, left + 250, top + 250, right + 250, bottom + 250),
-        ));
-    }
-    if left != 0 || top != 0 || right != 0 || bottom != 0 {
-        resource.actions.push(immediate_spec(
-            "reset-crop",
-            "Reset crop",
-            &set_image_crop_action(&block.id, 0, 0, 0, 0),
-        ));
-    }
-    for (id, label, anchor, wrap) in [
-        ("free-position", "Place freely on page", "page", "none"),
-        ("flow-left", "Wrap text on right", "paragraph", "left"),
-        ("flow-right", "Wrap text on left", "paragraph", "right"),
-    ] {
-        resource.actions.push(immediate_spec(
-            id,
-            label,
-            &set_image_placement_action(&block.id, anchor, wrap, 0, 0, 0),
-        ));
-    }
-    let block_id = block.id.clone();
-    resource.actions.push(ActionSpec::typed(
-        "set-size",
-        "Set image size",
-        "width and height in pixels",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required_owned("width", ParamType::Integer, "Width in px"),
-            ActionParam::required_owned("height", ParamType::Integer, "Height in px"),
-        ],
-        move |args: &ActionArgs| {
-            let width = args.integer("width").unwrap_or(0);
-            let height = args.integer("height").unwrap_or(0);
-            encode(&set_image_size_action(&block_id, width, height))
-        },
-    ));
-    let flipped = |key: &str| matches!(block.attrs.get(key), Some(tilo_doc::AttrVal::Bool(true)));
-    for (id, label, key) in [
-        ("flip-horizontal", "Flip horizontally", "flip_h"),
-        ("flip-vertical", "Flip vertically", "flip_v"),
-    ] {
-        resource.actions.push(immediate_spec(
-            id,
-            label,
-            &set_block_attr_action(
-                RegionKind::Body,
-                vec![block.id.clone()],
-                key,
-                AttrVal::Bool(!flipped(key)),
-            ),
-        ));
-    }
-    resource
-}
-
-fn table_resource(table_id: &str, table_blocks: &[&tilo_doc::snapshot::BlockView]) -> Resource {
-    let coordinate = |block: &tilo_doc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
-        Some(tilo_doc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
-        _ => 0,
-    };
-    let rows = table_blocks
-        .iter()
-        .map(|block| coordinate(block, "row"))
-        .max()
-        .map_or(0, |value| value.saturating_add(1));
-    let columns = table_blocks
-        .iter()
-        .map(|block| coordinate(block, "col"))
-        .max()
-        .map_or(0, |value| value.saturating_add(1));
-    let mut resource = Resource::new(
-        format!("word-processor.table:{table_id}"),
-        "word_processor.table",
-        "Table",
-    )
-    .with_action(immediate_spec(
-        "append-row",
-        "Add row",
-        &edit_table_action(table_id, TableEdit::InsertRow { at: rows }),
-    ))
-    .with_action(immediate_spec(
-        "append-column",
-        "Add column",
-        &edit_table_action(table_id, TableEdit::InsertColumn { at: columns }),
-    ))
-    .with_action(immediate_spec(
-        "delete",
-        "Delete table",
-        &edit_table_action(table_id, TableEdit::Delete),
-    ));
-    for cell in table_blocks {
-        let row = coordinate(cell, "row");
-        let column = coordinate(cell, "col");
-        let mut cell_resource = Resource::new(
-            format!("word-processor.cell:{}", cell.id),
-            "word_processor.table-cell",
-            format!(
-                "Cell {}, {}",
-                row.saturating_add(1),
-                column.saturating_add(1)
-            ),
-        )
-        .with_action(immediate_spec(
-            "delete-row",
-            "Delete row",
-            &edit_table_action(table_id, TableEdit::DeleteRow { row }),
-        ))
-        .with_action(immediate_spec(
-            "delete-column",
-            "Delete column",
-            &edit_table_action(table_id, TableEdit::DeleteColumn { column }),
-        ));
-        if let Some(spec) = operation(
-            "go-to",
-            "Go to cell",
-            OperationKind::View,
-            &WordProcessorOperation::NavigateTo {
-                block: cell.id.clone(),
-                start: 0,
-                end: cell.text.chars().count(),
-            },
-        )
-        .map(ActionSpec::participant_view)
-        {
-            cell_resource.actions.push(spec);
-        }
-        resource.children.push(cell_resource);
-    }
-    resource
-}
-
-/// Images, tables and headings already on the published document stay that
-/// node. A listing may replace one when it carries at least as much (a full
-/// table the eager page split). Anything the eager page omitted is added.
-fn place_structural(root: &mut Resource, child: Resource) {
-    if let Some(existing) = root
-        .children
-        .iter_mut()
-        .find(|existing| existing.id == child.id)
-    {
-        if child.children.len() >= existing.children.len() {
-            *existing = child;
-        }
-    } else {
-        root.children.push(child);
-    }
-}
-
-fn add_structural_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
-    for block in snapshot.blocks.iter().filter(|block| block.kind == "image") {
-        place_structural(root, image_resource(block));
-    }
-    let mut table_ids = Vec::new();
-    for block in snapshot.blocks.iter().filter(|block| block.kind == "cell") {
-        if let Some(tilo_doc::AttrVal::Str(table_id)) = block.attrs.get("table")
-            && !table_ids.contains(table_id)
-        {
-            table_ids.push(table_id.clone());
-        }
-    }
-    for table_id in &table_ids {
-        let blocks = snapshot
-            .blocks
-            .iter()
-            .filter(|block| {
-                block.kind == "cell"
-                    && matches!(block.attrs.get("table"), Some(tilo_doc::AttrVal::Str(id)) if id == table_id)
-            })
-            .collect::<Vec<_>>();
-        place_structural(root, table_resource(table_id, &blocks));
-    }
-    for block in snapshot
-        .blocks
-        .iter()
-        .filter(|block| block.kind == "heading")
-    {
-        let mut section = Resource::new(
-            format!("word-processor.section:{}", block.id),
-            "word_processor.section",
-            short(&block.text, "Heading"),
-        );
-        for (id, label, align) in [
-            ("align-left", "Align left", "left"),
-            ("align-center", "Align centre", "center"),
-            ("align-right", "Align right", "right"),
-        ] {
-            section.actions.push(immediate_spec(
-                id,
+                "word_processor.search-hit",
                 label,
-                &set_align_action(vec![block.id.clone()], align),
-            ));
-        }
-        place_structural(root, section);
-    }
-}
-
-/// A table of contents built from the document's headings. Page numbers stay
-/// with the laid-out view; this door inserts the headings the document holds.
-pub(crate) fn toc_action(state: &tilo_document::RichTextState) -> Option<ActionSpec> {
-    let entries: Vec<TocTarget> = state
-        .headings()
-        .into_iter()
-        .map(|heading| TocTarget {
-            heading: heading.id,
-            level: heading.level,
-            text: heading.text,
-            page: None,
-        })
-        .collect();
-    if entries.is_empty() {
-        return None;
-    }
-    Some(immediate_spec(
-        "generate-toc",
-        "Generate table of contents",
-        &generate_toc_action(entries),
-    ))
-}
-
-/// Images, tables, headings, notes, review, paragraph styles, and the page
-/// header and footer the document resource publishes as its own children.
-/// Structural objects are bounded in document order; a caret listing adds
-/// only what this page omitted.
-pub(crate) fn structural_children(state: &tilo_document::RichTextState) -> Vec<Resource> {
-    let mut blocks = Vec::new();
-    for (kind, limit) in [
-        ("heading", MAX_RESOURCE_OBJECTS),
-        ("image", MAX_RESOURCE_OBJECTS),
-        ("cell", MAX_RESOURCE_OBJECTS.saturating_mul(16)),
-    ] {
-        let mut of_kind = state.featured(kind);
-        of_kind.truncate(limit);
-        blocks.extend(of_kind.into_iter().map(|view| (*view).clone()));
-    }
-    let snapshot = tilo_doc::snapshot::DocSnapshot {
-        blocks,
-        notes: state.notes().as_ref().clone(),
-        comments: state.comments().as_ref().clone(),
-        changes: state.changes().as_ref().clone(),
-        styles: state.styles().as_ref().clone(),
-        ..tilo_doc::snapshot::DocSnapshot::default()
-    };
-    let mut root = Resource::new("word-processor.document", "tilo.rich-text", "Document");
-    add_structural_resources(&mut root, &snapshot);
-    add_review_resources(&mut root, &snapshot);
-    add_metadata_resources(&mut root, &snapshot);
-    add_style_resources(&mut root, &snapshot);
-    add_region_resources(
-        &mut root,
-        "header",
-        "Header",
-        RegionKind::Header,
-        state.header().as_slice(),
-    );
-    add_region_resources(
-        &mut root,
-        "footer",
-        "Footer",
-        RegionKind::Footer,
-        state.footer().as_slice(),
-    );
-    // Same result contracts the standalone tree declares: append-row /
-    // append-column answer with the cells they added.
-    for table in root
-        .children
-        .iter_mut()
-        .filter(|child| child.kind == "word_processor.table")
-    {
-        declare_changes(table, TABLE_RETURNING_CHANGES);
-    }
-    root.children
-}
-
-/// Stable id standing for every view-derived `word-processor.selection:…`
-/// resource in the catalogue schema.
-pub const SCHEMA_SELECTION_RESOURCE: &str = "word-processor.selection";
-/// Stable id standing for every `word-processor.search-hit:…` resource in
-/// the catalogue schema.
-pub const SCHEMA_SEARCH_HIT_RESOURCE: &str = "word-processor.search-hit";
-
-/// Writer's participant-independent catalogue schema
-/// ([`ResourceProvider::catalogue_schema`]): the tree every participant can
-/// reach, with no participant's caret, selection or Find hits in it.
-///
-/// - Root operations are all present, whatever any view holds; context
-///   preconditions are declared as [`ContextRequirement`] flags, and each
-///   operation's contract, params and input shape equal those in every
-///   participant's tree.
-/// - Selection- and Find-derived resources appear once under stable ids
-///   ([`SCHEMA_SELECTION_RESOURCE`], [`SCHEMA_SEARCH_HIT_RESOURCE`]), never
-///   as `selection:<range>` / `search-hit:<range>`.
-/// - Document-derived resources (images, tables, sections, review,
-///   revisions, styles) are included: they do not depend on any view.
-pub fn catalogue_schema(doc: &AutoCommit) -> Vec<Resource> {
-    let block = tilo_doc::model::open(doc, &automerge::ROOT)
-        .ok()
-        .and_then(|containers| {
-            tilo_doc::model::blocks_in_order(doc, &containers)
-                .first()
-                .cloned()
-        })
-        .unwrap_or_else(|| "word-processor.schema".to_owned());
-    // A synthetic view that switches on every view-dependent builder; its
-    // positions never reach the schema (ids are replaced below, and the
-    // schema is declaration, never invoked).
-    let ctx = WpResourceCtx {
-        caret_block: block.clone(),
-        caret_offset: 0,
-        target_blocks: vec![block.clone()],
-        format_spans: vec![Span {
-            block: block.clone(),
-            start: 0,
-            end: 1,
-        }],
-        selection: Some(SelectionTarget {
-            start_block: block.clone(),
-            start: 0,
-            end_block: block.clone(),
-            end: 1,
-        }),
-        region: RegionKind::Body,
-        search_hits: vec![SearchTarget {
-            block,
-            start: 0,
-            end: 1,
-        }],
-        content: tilo_content::ContentStore::memory(),
-    };
-    let mut resources = provide_resources_with_file(&ctx, doc, None);
-    resources.iter_mut().for_each(declarations_only);
-    for root in &mut resources {
-        for child in &mut root.children {
-            if child.kind == "word_processor.selection" {
-                child.id = tilo_actions::ResourceId(SCHEMA_SELECTION_RESOURCE.to_owned());
-                child.label = "Selection".into();
-            }
-            if child.kind == "word_processor.search-results" {
-                child.children.truncate(1);
-                for hit in &mut child.children {
-                    hit.id = tilo_actions::ResourceId(SCHEMA_SEARCH_HIT_RESOURCE.to_owned());
-                    hit.label = "Search result".into();
-                }
-            }
-        }
-    }
-    resources
-}
-
-const DECLARATION_ONLY: &[u8] =
-    b"catalogue schema is a declaration only: resolve this operation in the invoker's own tree";
-
-/// Replace every builder in a schema tree by a refusal, keeping each
-/// operation's id, label, description, kind, locus, operation type,
-/// contract, params and input shape. The schema is built on a synthetic view;
-/// resolving an invocation against it must never encode a positional
-/// envelope from that view. Fixed-encoding and no-argument operations become
-/// deferred ones declaring their registered type (a fixed sentinel would fail
-/// surface validation); argument-taking ones keep their prompt.
-fn declarations_only(resource: &mut Resource) {
-    for spec in &mut resource.actions {
-        *spec = declaration_only(spec);
-    }
-    resource.children.iter_mut().for_each(declarations_only);
-}
-
-fn declaration_only(spec: &ActionSpec) -> ActionSpec {
-    let refuse = || EncodedAction {
-        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-        payload: DECLARATION_ONLY.to_vec(),
-    };
-    let document = spec.kind == OperationKind::Document;
-    let declared_type = |fallback: &str| {
-        spec.operation_type
-            .clone()
-            .unwrap_or_else(|| fallback.to_owned())
-    };
-    let mut out = match &spec.input {
-        tilo_actions::ActionInput::Immediate(encoded) => {
-            let type_id = declared_type(&encoded.type_id);
-            if document {
-                ActionSpec::deferred(&spec.id, &spec.label, spec.locus, type_id, refuse)
-            } else {
-                ActionSpec::deferred_operation(&spec.id, &spec.label, spec.kind, type_id, refuse)
-            }
-        }
-        tilo_actions::ActionInput::Deferred { type_id, .. } => {
-            let type_id = declared_type(type_id);
-            if document {
-                ActionSpec::deferred(&spec.id, &spec.label, spec.locus, type_id, refuse)
-            } else {
-                ActionSpec::deferred_operation(&spec.id, &spec.label, spec.kind, type_id, refuse)
-            }
-        }
-        tilo_actions::ActionInput::Prompted {
-            prompt,
-            placeholder,
-            collects: tilo_actions::Collects::Content,
-            ..
-        } => ActionSpec::prompted_content(
-            &spec.id,
-            &spec.label,
-            prompt,
-            placeholder,
-            spec.locus,
-            move |_| refuse(),
-        ),
-        tilo_actions::ActionInput::Prompted { placeholder, .. } if document => ActionSpec::typed(
-            &spec.id,
-            &spec.label,
-            placeholder,
-            spec.locus,
-            spec.params().to_vec(),
-            move |_| refuse(),
-        ),
-        tilo_actions::ActionInput::Prompted { placeholder, .. } => ActionSpec::typed_operation(
-            &spec.id,
-            &spec.label,
-            placeholder,
-            spec.kind,
-            declared_type(WORD_PROCESSOR_OPERATION_TYPE),
-            spec.params().to_vec(),
-            move |_| refuse(),
-        ),
-    };
-    out.description.clone_from(&spec.description);
-    out.with_contract(spec.contract.clone())
-}
-
-/// Build the resource tree the word processor currently has open.
-pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    provide_resources_with_file(ctx, doc, None)
-}
-
-pub(crate) fn provide_resources_with_file(
-    ctx: &WpResourceCtx,
-    doc: &AutoCommit,
-    file: Option<&continuation::FileContext>,
-) -> Vec<Resource> {
-    let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT) else {
-        return vec![resource_root(ctx, doc, file, None)];
-    };
-    let snapshot = tilo_doc::model::materialize(doc, &containers);
-    provide_resources_from(ctx, doc, file, None, &snapshot, true)
-}
-
-/// The operations every tree has, before any listing is read from the
-/// document. `body` is the kept order of `doc`'s body, when there is one.
-fn resource_root(
-    ctx: &WpResourceCtx,
-    doc: &AutoCommit,
-    file: Option<&continuation::FileContext>,
-    body: Option<&tilo_document::BodyOrder>,
-) -> Resource {
-    let mut root = document_resource(doc);
-    add_file_operations(&mut root, file);
-    add_view_operations(&mut root);
-    add_caret_actions(&mut root, ctx);
-    add_selection_resources(&mut root, ctx, editing::large_selection(ctx, doc, body));
-    add_body_append_actions(&mut root, ctx, doc, body);
-    add_comment_resource_action(&mut root, ctx);
-    root
-}
-
-/// The resource tree over `listed`: a snapshot holding at least the blocks,
-/// review, notes, styles and properties the tree lists. `body`, the kept
-/// order of `doc`'s body, lets the operations read only the blocks around
-/// the caret.
-fn provide_resources_from(
-    ctx: &WpResourceCtx,
-    doc: &AutoCommit,
-    file: Option<&continuation::FileContext>,
-    body: Option<&tilo_document::BodyOrder>,
-    listed: &tilo_doc::snapshot::DocSnapshot,
-    revisions: bool,
-) -> Vec<Resource> {
-    let mut root = resource_root(ctx, doc, file, body);
-    if !revisions {
-        // A hosted document's History is the framework's surface; the
-        // editor's own version strip is not offered beside it.
-        root.actions.retain(|action| action.id != "history");
-    }
-    editing::add_operations(&mut root, ctx, doc, body);
-    view_ops::add_operations(&mut root, ctx);
-    add_search_resources(&mut root, ctx, listed);
-    add_document_edit_actions(&mut root, ctx);
-    add_review_resources(&mut root, listed);
-    if revisions {
-        add_revision_resources(&mut root, doc);
-    }
-    add_metadata_resources(&mut root, listed);
-    add_style_resources(&mut root, listed);
-    add_structural_resources(&mut root, listed);
-    vec![returning_changes(root)]
-}
-
-/// The edits a caller composes a document with answer with the blocks they
-/// changed ([`crate::semantic_read::changes`]), so it sees the result without
-/// reading the document again. Only these: every declared result grows the
-/// catalogue each open document publishes to the broker, whose reply is
-/// capped.
-const RETURNING_CHANGES: &[&str] = &[
-    "paste",
-    "set-paragraph-style",
-    "apply-named-style",
-    "insert-table",
-];
-
-/// A table's edits that answer with its new cells, whose ids the caller
-/// fills them through.
-const TABLE_RETURNING_CHANGES: &[&str] = &["append-row", "append-column"];
-
-fn returning_changes(mut root: Resource) -> Resource {
-    declare_changes(&mut root, RETURNING_CHANGES);
-    for table in root
-        .children
-        .iter_mut()
-        .filter(|child| child.kind == "word_processor.table")
-    {
-        declare_changes(table, TABLE_RETURNING_CHANGES);
-    }
-    root
-}
-
-fn declare_changes(resource: &mut Resource, ids: &[&str]) {
-    for action in &mut resource.actions {
-        if ids.contains(&action.id.as_str())
-            && action.kind == OperationKind::Document
-            && action.contract.result == ResultSpec::None
-        {
-            action.contract.result = ResultSpec::Json {
-                schema: serde_json::json!({"type": ["string", "null"]}),
-            };
-        }
-    }
-}
-
-/// The resource tree from the incrementally kept document state: its
-/// objects (headings, images, tables), review, notes, styles and properties,
-/// and the paragraphs Find is pointing at — never the document's prose, so
-/// listing it costs as much as what it lists however long the document is.
-/// A hosted document's revisions are the framework's History, not listed
-/// here.
-pub(crate) fn provide_resources_listed(
-    ctx: &WpResourceCtx,
-    doc: &AutoCommit,
-    file: Option<&continuation::FileContext>,
-    state: &tilo_document::RichTextState,
-    revisions: bool,
-) -> Vec<Resource> {
-    let c = state.containers();
-    let body = state.body();
-    // Nearest the caret: a book-length document lists the sections, images
-    // and tables around where its user is, not all of them.
-    let caret = body.position(&ctx.caret_block).unwrap_or(0);
-    let mut blocks: Vec<(usize, tilo_doc::snapshot::BlockView)> = Vec::new();
-    for (kind, limit) in [
-        ("heading", MAX_RESOURCE_OBJECTS),
-        ("image", MAX_RESOURCE_OBJECTS),
-        ("cell", MAX_RESOURCE_OBJECTS.saturating_mul(16)),
-    ] {
-        blocks.extend(
-            state
-                .featured_near(kind, caret, limit)
-                .into_iter()
-                .filter_map(|view| Some((body.position(&view.id)?, (*view).clone()))),
-        );
-    }
-    let hits: Vec<String> = ctx
-        .search_hits
-        .iter()
-        .take(MAX_RESOURCE_SEARCH_HITS)
-        .map(|hit| hit.block.clone())
-        .filter(|id| !blocks.iter().any(|(_, view)| view.id == *id))
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    blocks.extend(
-        tilo_doc::model::materialize_blocks(doc, c, &hits)
-            .into_iter()
-            .filter_map(|view| Some((body.position(&view.id)?, view))),
-    );
-    blocks.sort_by_key(|(position, _)| *position);
-    let listed = tilo_doc::snapshot::DocSnapshot {
-        blocks: blocks.into_iter().map(|(_, view)| view).collect(),
-        styles: tilo_doc::model::all_styles(doc, c),
-        properties: tilo_doc::model::doc_props(doc, c),
-        notes: state.notes().as_ref().clone(),
-        comments: state.comments().as_ref().clone(),
-        changes: state.changes().as_ref().clone(),
-        ..tilo_doc::snapshot::DocSnapshot::default()
-    };
-    provide_resources_from(ctx, doc, file, Some(&**body), &listed, revisions)
-}
-
-pub(crate) fn file_choice_resource(generation: u64) -> Result<Resource, String> {
-    let mut resource = Resource::new(
-        format!("word-processor.file-choice:{generation}"),
-        "word_processor.file_choice",
-        crate::i18n::t("file-choice-title"),
-    );
-    for (id, label, use_selected) in [
-        ("keep-workspace", "file-choice-keep", false),
-        ("use-selected", "file-choice-use", true),
-    ] {
-        resource.actions.push(
-            operation(
-                id,
-                &crate::i18n::t(label),
-                OperationKind::Effect,
-                &WordProcessorOperation::ResolveFileChoice {
-                    generation,
-                    use_selected,
-                },
             )
-            .ok_or("file choice operation could not be encoded")?,
+            .operation(
+                WordProcessorEffect::GoTo {
+                    block: hit.block.clone(),
+                    start: hit.start,
+                    end: hit.end,
+                }
+                .bound()
+                .requires(ContextRequirement::FindHits),
+            ),
         );
     }
-    Ok(resource)
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::widget::WordProcessorWidget {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        if let Some(resource) = self.file_choice_resource() {
-            return vec![resource];
-        }
-        let Some(ctx) = self.wp_resource_ctx(doc) else {
-            return Vec::new();
-        };
-        let file = self.file_continuation_context();
-        // The host lists resources every frame; read them from the kept
-        // state, not the document.
-        self.listed_resources(&ctx, doc, &file)
-            .unwrap_or_else(|| provide_resources_with_file(&ctx, doc, Some(&file)))
-    }
-
-    pub fn publish_catalogue_schema(&self, doc: &AutoCommit) -> Vec<Resource> {
-        catalogue_schema(doc)
-    }
+    vec![search]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
-    use tilo_actions::ActionError;
     use tilo_actions::LocalTransport;
+    use tilo_actions::{ActionError, EncodedAction};
     use tilo_automerge::ApplyIncoming;
-    use tilo_doc::DocMut;
+
+    /// A body edit as the document's action on the wire.
+    fn encode(op: &RichTextAction) -> EncodedAction {
+        crate::model::encoded(op)
+    }
+
+    /// The body edit an encoded document action carries.
+    fn decode(encoded: &EncodedAction) -> RichTextAction {
+        crate::model::decoded(encoded).expect("a body edit")
+    }
+
+    /// Apply a body edit locally through the executor, returning its envelope.
+    fn apply_local(
+        doc: &mut AutoCommit,
+        op: &RichTextAction,
+        encoded: EncodedAction,
+    ) -> Result<tilo_actions::ActionEnvelope, ActionError> {
+        tilo_actions::apply_local(doc, &crate::model::action(op), encoded)
+    }
+
+    /// Body edits applied straight to a document, as the door applies them.
+    trait ApplyBody {
+        fn apply(&self, doc: &mut AutoCommit) -> Result<(), ActionError>;
+    }
+
+    impl ApplyBody for RichTextAction {
+        fn apply(&self, doc: &mut AutoCommit) -> Result<(), ActionError> {
+            crate::model::apply(doc, self)
+        }
+    }
 
     /// A four-byte stand-in image, described as an [`ImageInput`].
     fn test_image(width: Option<i64>, height: Option<i64>) -> ImageInput {
@@ -1835,9 +255,7 @@ mod tests {
     use ui::testing::action_contract::spec_encoding;
 
     fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
+        ActionRegistry::with(register)
     }
 
     /// The view catalogue exposes zoom reset as a typed operation; the resource catalogue exposes the
@@ -1851,19 +269,16 @@ mod tests {
     fn the_resource_catalogue_exposes_typed_bounded_document_operations() {
         // Phase: view_catalogue_exposes_zoom_reset_as_a_typed_operation.
         {
-            let mut root = document_resource(&AutoCommit::new());
-            add_view_operations(&mut root);
-            let spec = root
-                .actions
+            let specs = crate::effects::specs();
+            let spec = specs
                 .iter()
                 .find(|spec| spec.id == "zoom-reset")
                 .expect("the visible zoom reset has a resource action");
             let encoded = spec_encoding(spec, None);
-            assert_eq!(encoded.type_id, WORD_PROCESSOR_OPERATION_TYPE);
             assert_eq!(
-                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-                Some(WordProcessorOperation::ZoomReset),
-                "the resource action decodes to the one canonical reset operation"
+                crate::effects::decode(&encoded),
+                Some(WordProcessorEffect::ZoomReset),
+                "the resource action decodes to the one canonical reset effect"
             );
         }
 
@@ -1879,53 +294,41 @@ mod tests {
             );
             let after_img = tilo_doc::model::blocks_in_order(
                 &state.doc,
-                &tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap(),
+                &crate::model::open(&state.doc).unwrap(),
             );
             let last = after_img.last().cloned().unwrap();
             dispatch(&mut state.doc, &insert_table_action(&last, 2, 2));
 
-            let ctx = WpResourceCtx {
-                caret_block: para.clone(),
-                caret_offset: 0,
-                target_blocks: vec![para],
-                format_spans: Vec::new(),
-                selection: None,
-                region: RegionKind::Body,
-                search_hits: Vec::new(),
-                content: tilo_content::ContentStore::memory(),
-            };
-            let resources = provide_resources(&ctx, &state.doc);
-            assert_eq!(resources.len(), 1, "one document root");
+            let resources = published_for(&caret_at(&para), &state.doc);
+            assert_eq!(
+                resources
+                    .iter()
+                    .filter(|resource| resource.id.as_str() == DOCUMENT)
+                    .count(),
+                1,
+                "one document root"
+            );
             let root = &resources[0];
-            let ids_of = |kind: &str| root.children.iter().filter(|r| r.kind == kind).count();
-            assert_eq!(ids_of("word_processor.image"), 1, "an image resource");
-            assert_eq!(ids_of("word_processor.table"), 1, "a table resource");
-            let table = root
-                .children
-                .iter()
-                .find(|resource| resource.kind == "word_processor.table")
-                .unwrap();
+            let image = derived(root, "image").expect("an image resource");
+            let table = derived(root, "table").expect("a table resource");
+            assert!(
+                image
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "delete-image")
+            );
+            for id in ["add-row", "add-column", "delete-table"] {
+                assert!(table.actions.iter().any(|action| action.id == id), "{id}");
+            }
             assert_eq!(table.children.len(), 4, "every stable cell is navigable");
             assert!(table.children.iter().all(|cell| {
-                cell.kind == "word_processor.table-cell"
-                    && cell.actions.iter().any(|action| action.id == "go-to")
+                cell.actions.iter().any(|action| action.id == "go-to")
                     && cell.actions.iter().any(|action| action.id == "delete-row")
                     && cell
                         .actions
                         .iter()
                         .any(|action| action.id == "delete-column")
             }));
-            assert!(
-                ids_of("word_processor.section") >= 1,
-                "a heading section resource"
-            );
-            let image = root
-                .children
-                .iter()
-                .find(|resource| resource.kind == "word_processor.image")
-                .unwrap();
-            assert!(image.actions.iter().any(|action| action.id == "delete"));
-            assert!(image.actions.iter().any(|action| action.id == "crop-inset"));
             let published = <crate::framework::Document as ui::tilo_resource::Resource>::children(
                 &<crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
                     .expect("the seeded document reads"),
@@ -1934,8 +337,19 @@ mod tests {
                 published.iter().any(|child| child.id == image.id),
                 "the image is a child of the document resource"
             );
-            assert!(table.actions.iter().any(|action| action.id == "delete"));
-            assert!(table.actions.iter().any(|action| action.id == "append-row"));
+            // Adding a row is bound to its table: invoked on the table, it adds one.
+            invoke(
+                &mut state.doc,
+                &resources,
+                &table.id.0,
+                "add-row",
+                &serde_json::Map::new(),
+            );
+            let cells = body_blocks(&state.doc)
+                .into_iter()
+                .filter(|block| block.kind == "cell")
+                .count();
+            assert_eq!(cells, 6, "a third row of two cells");
         }
 
         // Phase: file_operations_are_typed_background_jobs.
@@ -1951,23 +365,23 @@ mod tests {
                 search_hits: Vec::new(),
                 content: tilo_content::ContentStore::memory(),
             };
-            let resources = provide_resources(&ctx, &state.doc);
-            for id in ["open", "save", "save-as"] {
+            let resources = published_for(&ctx, &state.doc);
+            for id in ["open-document", "save", "save-as"] {
                 let action = resources[0]
                     .actions
                     .iter()
                     .find(|action| action.id == id)
                     .expect("file action");
-                assert_eq!(action.contract.result, ResultSpec::Job);
+                assert_eq!(action.contract.result, tilo_actions::ResultSpec::Job);
                 assert!(matches!(
                     action.contract.execution,
-                    ExecutionMode::Background { .. }
+                    tilo_actions::ExecutionMode::Background { .. }
                 ));
                 assert!(action.contract.validate_declaration().is_empty());
             }
         }
 
-        // Phase: resource_results_and_revisions_are_bounded_and_precisely_addressable.
+        // Phase: resource_results_are_bounded_and_precisely_addressable.
         {
             let (mut state, ids) =
                 seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
@@ -1995,17 +409,16 @@ mod tests {
                 .put(automerge::ROOT, "unfinished-fixture", true)
                 .unwrap();
             let pending = (state.doc.base_heads(), state.doc.pending_ops());
-            let expected = state.doc.clone().get_changes(&[]);
             let block = ids[0].clone();
-            let resources = provide_resources(&overflowing_resource_ctx(&block), &state.doc);
-            let root = &resources[0];
+            let resources = published_for(&overflowing_resource_ctx(&block), &state.doc);
             assert!(
-                root.children
+                resources[0]
+                    .actions
                     .iter()
-                    .any(|resource| resource.kind == "word_processor.selection")
+                    .any(|action| action.id == "replace-selection"),
+                "the selection's edit is published on the document"
             );
-            let results = root
-                .children
+            let results = resources
                 .iter()
                 .find(|resource| resource.id.as_str() == "word-processor.search-results")
                 .expect("bounded search result group");
@@ -2014,115 +427,158 @@ mod tests {
                 hit.actions.iter().any(|action| action.id == "go-to")
                     && hit.id.as_str().contains(&block)
             }));
-            let revisions = root
-                .children
-                .iter()
-                .find(|resource| resource.id.as_str() == "word-processor.revisions")
-                .expect("history resource group");
-            assert_eq!(revisions.children.len(), MAX_RESOURCE_REVISIONS);
-            let start = expected.len() - MAX_RESOURCE_REVISIONS;
-            for (index, (revision, change)) in revisions
-                .children
-                .iter()
-                .zip(&expected[start..])
-                .enumerate()
-            {
-                let index = start + index;
-                assert_eq!(
-                    revision.id.as_str(),
-                    format!("word-processor.revision:{}", change.hash())
-                );
-                let label = change.message().map_or_else(
-                    || format!("Revision {}", index + 1),
-                    |message| short(message, "Revision"),
-                );
-                assert_eq!(revision.label, label);
-                let show = revision
-                    .actions
-                    .iter()
-                    .find(|action| action.id == "show")
-                    .unwrap();
-                assert_eq!(
-                    show.build_args(std::iter::empty::<(String, tilo_actions::ArgValue)>())
-                        .unwrap(),
-                    EncodedAction::encode_operation(
-                        WORD_PROCESSOR_OPERATION_TYPE,
-                        &WordProcessorOperation::ShowRevision { index }
-                    )
-                    .unwrap()
-                );
-            }
             assert_eq!(
                 (state.doc.base_heads(), state.doc.pending_ops()),
                 pending,
                 "resource discovery must not commit the owner"
             );
-            assert!(
-                revisions
-                    .children
-                    .iter()
-                    .all(|revision| revision.actions.iter().any(|action| action.id == "show"))
-            );
         }
     }
 
-    /// A comment thread is a child of the document resource, and the open tree
-    /// lists that review once.
-    #[test]
-    fn review_is_a_child_of_the_document_resource() {
-        let (mut state, ids) = seeded("Hello\n");
-        dispatch(
-            &mut state.doc,
-            &RichTextAction::AddComment {
-                block: ids[0].clone(),
-                start: 0,
-                end: 5,
-                author: "Ada".into(),
-                date: "2026-01-01".into(),
-                text: "Note this".into(),
-            },
-        );
-        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
-            .expect("the commented document reads");
-        let published =
-            <crate::framework::Document as ui::tilo_resource::Resource>::children(&read);
-        let review = published
-            .iter()
-            .find(|child| child.kind == "word_processor.review")
-            .expect("review is published with the document");
-        assert!(
-            review
-                .children
-                .iter()
-                .any(|child| child.kind == "word_processor.comment"),
-            "the comment is on the published review"
-        );
-        let ctx = WpResourceCtx {
-            caret_block: ids[0].clone(),
+    /// The document's own resource id and kind.
+    const DOCUMENT: &str = "word-processor.document";
+
+    /// The document verb `operation` as its action value.
+    fn verb(
+        operation: crate::model::DocumentAction,
+    ) -> <crate::model::Document as ui::tilo_resource::Resource>::Action {
+        ui::tilo_resource::Stamped {
+            operation,
+            now_ms: 0,
+        }
+    }
+
+    /// Apply `action` as `author` through the executor, returning its
+    /// envelope.
+    fn apply_verb_by(
+        doc: &mut AutoCommit,
+        action: &<crate::model::Document as ui::tilo_resource::Resource>::Action,
+        author: &str,
+    ) -> tilo_actions::ActionEnvelope {
+        let encoded = ui::tilo_resource::encode::<crate::model::Document>(action).unwrap();
+        let context = tilo_actions::ActionContext::for_app("org.tilo.Writer", "Writer")
+            .with_invoker(tilo_actions::ActionInvoker::actor(author));
+        tilo_actions::apply_local_with_context(doc, action, encoded, None, context).unwrap()
+    }
+
+    /// The document's comment threads, each with where its text is now.
+    fn threads(doc: &AutoCommit) -> Vec<tilo_doc::snapshot::CommentView> {
+        <crate::model::Document as ui::tilo_resource::Resource>::read(doc)
+            .unwrap()
+            .comment_views(doc)
+    }
+
+    /// The document's accept-change verb, as its action value.
+    fn accept_change(
+        change: &str,
+    ) -> <crate::model::Document as ui::tilo_resource::Resource>::Action {
+        ui::tilo_resource::Stamped {
+            operation: crate::model::DocumentAction::AcceptChange(
+                crate::model::document::AcceptChange {
+                    change: change.to_owned(),
+                },
+            ),
+            now_ms: 0,
+        }
+    }
+
+    /// A collapsed caret at the start of `block`.
+    fn caret_at(block: &str) -> WpResourceCtx {
+        WpResourceCtx {
+            caret_block: block.to_owned(),
             caret_offset: 0,
-            target_blocks: vec![ids[0].clone()],
+            target_blocks: vec![block.to_owned()],
             format_spans: Vec::new(),
             selection: None,
             region: RegionKind::Body,
             search_hits: Vec::new(),
             content: tilo_content::ContentStore::memory(),
-        };
-        let tree = provide_resources(&ctx, &state.doc);
-        assert_eq!(
-            tree[0]
-                .children
-                .iter()
-                .filter(|child| child.kind == "word_processor.review")
-                .count(),
-            1,
-            "the open tree does not publish a second review"
-        );
+        }
     }
 
-    /// A named style is a child of the document resource, and the open tree
-    /// lists that style sheet once.
+    /// The object of `kind` (`table`, `image`, `change`, `comment`) the
+    /// document publishes beneath it.
+    fn derived<'a>(
+        root: &'a tilo_actions::Resource,
+        kind: &str,
+    ) -> Option<&'a tilo_actions::Resource> {
+        let prefix = format!("{DOCUMENT}/derived/{kind}:");
+        root.children
+            .iter()
+            .find(|child| child.id.as_str().starts_with(&prefix))
+    }
+
+    /// Invoke `action` on the published resource `resource` through the door.
+    fn invoke(
+        doc: &mut AutoCommit,
+        resources: &[tilo_actions::Resource],
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) {
+        // As a person who confirmed it: deleting asks first.
+        tilo_actions::door::invoke_json_confirmed(
+            doc,
+            resources,
+            &tilo_actions::door::ActionAddress::new(resource, action),
+            arguments,
+            tilo_actions::door::InvocationProvenance::caller(b"agent"),
+            &registry(),
+            &mut LocalTransport::new(),
+        )
+        .unwrap_or_else(|error| panic!("{resource}#{action}: {error:?}"));
+    }
+
+    /// A tracked change is published with the document, and accepting it
+    /// there keeps it as text.
     #[test]
-    fn a_named_style_is_a_child_of_the_document_resource() {
+    fn review_is_a_child_of_the_document_resource() {
+        let (mut state, ids) = seeded("Hello\n");
+        dispatch(
+            &mut state.doc,
+            &RichTextAction::TrackInsert {
+                block: ids[0].clone(),
+                at: 5,
+                text: " there".into(),
+                author: "Ada".into(),
+                date: "2026-01-01".into(),
+            },
+        );
+        let resources = published_for(&caret_at(&ids[0]), &state.doc);
+        let change = derived(&resources[0], "change").expect("the change is published");
+        assert!(
+            change
+                .actions
+                .iter()
+                .any(|action| action.id == "reject-change")
+        );
+        assert_eq!(
+            resources[0]
+                .children
+                .iter()
+                .filter(|child| child.id == change.id)
+                .count(),
+            1,
+            "the open tree publishes the change once"
+        );
+        let change = change.id.0.clone();
+        invoke(
+            &mut state.doc,
+            &resources,
+            &change,
+            "accept-change",
+            &serde_json::Map::new(),
+        );
+        let snap =
+            tilo_doc::model::materialize(&state.doc, &crate::model::open(&state.doc).unwrap());
+        assert!(snap.changes.is_empty(), "the accepted change left review");
+        assert_eq!(snap.blocks[0].text, "Hello there");
+    }
+
+    /// A named style is changed by an edit of the body: one property at a
+    /// time, so collaborators' edits of different properties merge.
+    #[test]
+    fn a_named_style_is_edited_through_the_body() {
         let (mut state, ids) = seeded("Styled paragraph\n");
         dispatch(
             &mut state.doc,
@@ -2141,52 +597,36 @@ mod tests {
                 AttrVal::Str("custom1".into()),
             ),
         );
-        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
-            .expect("the styled document reads");
-        let published =
-            <crate::framework::Document as ui::tilo_resource::Resource>::children(&read);
-        let sheet = published
-            .iter()
-            .find(|child| child.kind == "word_processor.styles")
-            .expect("styles are published with the document");
-        let style = sheet
-            .children
-            .iter()
-            .find(|child| child.id.as_str() == "word-processor.style:custom1")
-            .expect("the named style is a published child");
-        assert!(
-            style
-                .actions
-                .iter()
-                .any(|action| action.id == "toggle-bold"),
-            "the published style can change its bold field"
+        let resources = published_for(&caret_at(&ids[0]), &state.doc);
+        let edit = crate::model::edit(&set_style_property_action(
+            "custom1",
+            tilo_doc::schema::STYLE_BOLD,
+            AttrVal::Bool(true),
+        ));
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(
+            ui::tilo_resource::EDIT_PARAM.to_owned(),
+            serde_json::to_value(&edit).unwrap(),
         );
-        let ctx = WpResourceCtx {
-            caret_block: ids[0].clone(),
-            caret_offset: 0,
-            target_blocks: vec![ids[0].clone()],
-            format_spans: Vec::new(),
-            selection: None,
-            region: RegionKind::Body,
-            search_hits: Vec::new(),
-            content: tilo_content::ContentStore::memory(),
-        };
-        let tree = provide_resources(&ctx, &state.doc);
+        invoke(
+            &mut state.doc,
+            &resources,
+            DOCUMENT,
+            ui::tilo_resource::FIELD_EDIT,
+            &arguments,
+        );
+        let c = crate::model::open(&state.doc).unwrap();
         assert_eq!(
-            tree[0]
-                .children
-                .iter()
-                .filter(|child| child.kind == "word_processor.styles")
-                .count(),
-            1,
-            "the open tree does not publish a second style sheet"
+            tilo_doc::model::style_props(&state.doc, &c, "custom1")
+                .get(tilo_doc::schema::STYLE_BOLD),
+            Some(&tilo_doc::AttrVal::Bool(true))
         );
     }
 
-    /// A page header is a child of the document resource, and the open tree
-    /// lists that header once.
+    /// The page header is part of the body field: the document reads it,
+    /// and a header paragraph is aligned by an edit of the body.
     #[test]
-    fn a_header_is_a_child_of_the_document_resource() {
+    fn a_header_is_part_of_the_document() {
         let (mut state, _) = seeded("Body\n");
         dispatch(
             &mut state.doc,
@@ -2197,6 +637,8 @@ mod tests {
         let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
             .expect("the document with a header reads");
         let block = read
+            .text()
+            .unwrap()
             .header()
             .first()
             .expect("the header has a paragraph")
@@ -2204,57 +646,24 @@ mod tests {
             .clone();
         dispatch(
             &mut state.doc,
-            &RichTextAction::SpliceText {
-                region: RegionKind::Header,
-                block: block.clone(),
-                at: 0,
-                del: 0,
-                ins: "Running head".into(),
-            },
+            &set_block_attr_action(
+                RegionKind::Header,
+                vec![block],
+                "align",
+                AttrVal::Str("center".into()),
+            ),
         );
         let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
             .expect("the headed document reads");
-        let published =
-            <crate::framework::Document as ui::tilo_resource::Resource>::children(&read);
-        let header = published
-            .iter()
-            .find(|child| child.kind == "word_processor.header")
-            .expect("the header is published with the document");
-        let paragraph = header
-            .children
-            .iter()
-            .find(|child| child.id.as_str() == format!("word-processor.header:{block}"))
-            .expect("the header paragraph is a published child");
-        assert!(
-            paragraph
-                .actions
-                .iter()
-                .any(|action| action.id == "align-center"),
-            "the published header paragraph can be aligned"
-        );
-        let ctx = WpResourceCtx {
-            caret_block: block,
-            caret_offset: 0,
-            target_blocks: Vec::new(),
-            format_spans: Vec::new(),
-            selection: None,
-            region: RegionKind::Header,
-            search_hits: Vec::new(),
-            content: tilo_content::ContentStore::memory(),
-        };
-        let tree = provide_resources(&ctx, &state.doc);
+        let header = read.text().unwrap().header();
         assert_eq!(
-            tree[0]
-                .children
-                .iter()
-                .filter(|child| child.kind == "word_processor.header")
-                .count(),
-            1,
-            "the open tree does not publish a second header"
+            header[0].attrs.get("align"),
+            Some(&tilo_doc::AttrVal::Str("center".into()))
         );
     }
 
-    /// Resizing an image is a published action on that image, not only a panel click.
+    /// Resizing an image is an edit of the body any caller submits through
+    /// the document's field edit, not only a panel click.
     #[test]
     fn image_size_is_a_published_document_action() {
         let (mut state, ids) = seeded("Body\n");
@@ -2262,25 +671,25 @@ mod tests {
             &mut state.doc,
             &insert_image_action(&ids[0], 0, test_image(Some(20), Some(10))),
         );
-        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
-            .expect("the document with an image reads");
-        let image = <crate::framework::Document as ui::tilo_resource::Resource>::children(&read)
+        let image = body_blocks(&state.doc)
             .into_iter()
-            .find(|child| child.kind == "word_processor.image")
-            .expect("the image is published with the document");
-        let spec = image
-            .actions
-            .iter()
-            .find(|action| action.id == "set-size")
-            .expect("set size is published on the image");
-        let encoded = spec
-            .build_args([
-                ("width".into(), tilo_actions::ArgValue::Integer(300)),
-                ("height".into(), tilo_actions::ArgValue::Integer(180)),
-            ])
-            .expect("width and height bind");
-        let action: RichTextAction = serde_json::from_slice(&encoded.payload).expect("decodes");
-        tilo_actions::Action::apply(&action, &mut state.doc).expect("size applies");
+            .find(|block| block.kind == "image")
+            .expect("the image is in the body")
+            .id;
+        let resources = published_for(&caret_at(&ids[0]), &state.doc);
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(
+            ui::tilo_resource::EDIT_PARAM.to_owned(),
+            serde_json::to_value(crate::model::edit(&set_image_size_action(&image, 300, 180)))
+                .unwrap(),
+        );
+        invoke(
+            &mut state.doc,
+            &resources,
+            DOCUMENT,
+            ui::tilo_resource::FIELD_EDIT,
+            &arguments,
+        );
         let blocks = body_blocks(&state.doc);
         let image = blocks
             .iter()
@@ -2293,7 +702,8 @@ mod tests {
         );
     }
 
-    /// Flipping an image is a published action on that image, not only a panel click.
+    /// Flipping an image is an edit of the body, and deleting it is a verb
+    /// on the image itself.
     #[test]
     fn image_flip_is_a_published_document_action() {
         let (mut state, ids) = seeded("Body\n");
@@ -2301,21 +711,15 @@ mod tests {
             &mut state.doc,
             &insert_image_action(&ids[0], 0, test_image(Some(20), Some(10))),
         );
-        let read = <crate::framework::Document as ui::tilo_resource::Resource>::read(&state.doc)
-            .expect("the document with an image reads");
-        let image = <crate::framework::Document as ui::tilo_resource::Resource>::children(&read)
+        let id = body_blocks(&state.doc)
             .into_iter()
-            .find(|child| child.kind == "word_processor.image")
-            .expect("the image is published with the document");
-        let spec = image
-            .actions
-            .iter()
-            .find(|action| action.id == "flip-horizontal")
-            .expect("flip is published on the image");
-        let encoded = spec_encoding(spec, None);
-        let action: RichTextAction =
-            serde_json::from_slice(&encoded.payload).expect("the flip action decodes");
-        tilo_actions::Action::apply(&action, &mut state.doc).expect("flip applies");
+            .find(|block| block.kind == "image")
+            .unwrap()
+            .id;
+        dispatch(
+            &mut state.doc,
+            &set_block_attr_action(RegionKind::Body, vec![id], "flip_h", AttrVal::Bool(true)),
+        );
         let blocks = body_blocks(&state.doc);
         let image = blocks
             .iter()
@@ -2325,23 +729,46 @@ mod tests {
             image.attrs.get("flip_h"),
             Some(&tilo_doc::AttrVal::Bool(true))
         );
+        let resources = published_for(&caret_at(&ids[0]), &state.doc);
+        let image = derived(&resources[0], "image")
+            .expect("the image is published")
+            .id
+            .0
+            .clone();
+        invoke(
+            &mut state.doc,
+            &resources,
+            &image,
+            "delete-image",
+            &serde_json::Map::new(),
+        );
+        assert!(
+            body_blocks(&state.doc)
+                .iter()
+                .all(|block| block.kind != "image")
+        );
     }
 
-    /// The table of contents is a document action built from the headings the
-    /// document already holds.
+    /// The table of contents is a verb of the document built from the
+    /// headings it already holds.
     #[test]
     fn a_table_of_contents_is_a_published_document_action() {
-        let (mut state, _) = seeded("# Section\n\nBody\n");
-        let root = document_resource(&state.doc);
-        let spec = root
-            .actions
-            .iter()
-            .find(|action| action.id == "generate-toc")
-            .expect("generate table of contents is published");
-        let encoded = spec_encoding(spec, None);
-        let action: RichTextAction =
-            serde_json::from_slice(&encoded.payload).expect("the toc action decodes");
-        tilo_actions::Action::apply(&action, &mut state.doc).expect("toc applies");
+        let (mut state, ids) = seeded("# Section\n\nBody\n");
+        let resources = published_for(&caret_at(&ids[1]), &state.doc);
+        assert!(
+            resources[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "generate-toc"),
+            "generate table of contents is published"
+        );
+        invoke(
+            &mut state.doc,
+            &resources,
+            DOCUMENT,
+            "generate-toc",
+            &serde_json::Map::new(),
+        );
         let blocks = body_blocks(&state.doc);
         assert!(
             blocks.iter().any(|block| {
@@ -2355,30 +782,20 @@ mod tests {
     /// A `ui::State` holding a canonical document seeded from `markdown`, plus the
     /// ordered body block ids.
     fn seeded(markdown: &str) -> (ui::State, Vec<String>) {
-        let mut state = ui::State::new();
-        let mut ed = crate::EditorDoc::bind(&mut state.doc, &state.root);
-        {
-            use tilo_doc_codecs::FormatProvider;
-            let mut dm = ed.edit(&mut state.doc);
-            tilo_doc_codecs::MarkdownCodec
-                .import(
-                    markdown.as_bytes(),
-                    &mut dm,
-                    &mut tilo_content::ContentInputs::new(),
-                )
-                .unwrap();
-        }
-        let ids = tilo_doc::model::blocks_in_order(&state.doc, &ed.containers);
+        let mut state = crate::initialized_state();
+        replace_body_action(markdown).apply(&mut state.doc).unwrap();
+        let c = crate::model::open(&state.doc).unwrap();
+        let ids = tilo_doc::model::blocks_in_order(&state.doc, &c);
         (state, ids)
     }
 
     fn body_blocks(doc: &AutoCommit) -> Vec<tilo_doc::snapshot::BlockView> {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = crate::model::open(doc).unwrap();
         tilo_doc::model::materialize(doc, &c).blocks
     }
 
     fn text_of(doc: &AutoCommit, block: &str) -> String {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = crate::model::open(doc).unwrap();
         tilo_doc::model::block_text(doc, &c, block).unwrap_or_default()
     }
 
@@ -2387,7 +804,7 @@ mod tests {
     fn dispatch(doc: &mut AutoCommit, action: &RichTextAction) {
         let encoded = encode(action);
         let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(doc, action, encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, &crate::model::action(action), encoded, &mut tx).unwrap();
     }
 
     /// Splice validation matches the snapshot without scanning regions; a stale multi-target action is an
@@ -2404,7 +821,7 @@ mod tests {
             use automerge::{ObjType, ScalarValue};
             use tilo_doc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
             let (mut state, ids) = seeded("Aé🦀e\u{301}\n");
-            let c = tilo_doc::model::open(&state.doc, &state.root).unwrap();
+            let c = crate::model::open(&state.doc).unwrap();
             for region in [RegionKind::Header, RegionKind::Footer] {
                 let action = RichTextAction::SpliceText {
                     region,
@@ -2593,7 +1010,7 @@ mod tests {
     /// through the markdown import and the document model's review writes.
     fn wp_seed() -> AutoCommit {
         let (mut state, ids) = seeded("# Title\n\nHello world\n\nonetwo\n");
-        let c = tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap();
+        let c = crate::model::open(&state.doc).unwrap();
         let mut id_gen = tilo_doc::IdGen::new(state.doc.get_actor().to_hex_string());
         {
             let mut dm = tilo_doc::DocMut {
@@ -2601,43 +1018,55 @@ mod tests {
                 c: &c,
                 ids: &mut id_gen,
             };
-            dm.add_comment(&ids[1], 0, 5, "Maya", "Please clarify this.");
             dm.track_insert(&ids[2], 6, " three", "Jonas", "2026-09-05");
         }
+        crate::model::comment_by(
+            &mut state.doc,
+            "Maya",
+            &ids[1],
+            (0, 5),
+            "Please clarify this.",
+        );
         state.doc.commit();
         state.doc
     }
 
     /// The `n`th body block's stable id.
     fn nth_block(doc: &AutoCommit, n: usize) -> String {
-        let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+        let c = crate::model::open(doc).unwrap();
         tilo_doc::model::blocks_in_order(doc, &c)
             .into_iter()
             .nth(n)
             .expect("seeded block")
     }
 
+    /// Edits at the caret and the selection are effects published on the
+    /// document itself, never a second document resource.
     #[test]
-    fn live_presentation_keeps_selection_without_a_document_root() {
+    fn edits_at_the_selection_are_published_on_the_document() {
         let doc = wp_seed();
-        let ctx = wp_ctx(&doc);
-        let extras = live_presentation_resources(&ctx, &doc, None);
+        let resources = published_for(&wp_ctx(&doc), &doc);
         assert!(
-            extras
+            resources
                 .iter()
-                .all(|resource| resource.id.as_str() != "word-processor.document"),
-            "hosted extras must not republish the document root"
+                .filter(|resource| resource.id.as_str() == DOCUMENT)
+                .count()
+                == 1,
+            "the document is published once"
         );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "word_processor.selection"),
-            "selection stays addressable: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.kind.as_str())
-                .collect::<Vec<_>>()
-        );
+        for id in [
+            "type-text",
+            "replace-selection",
+            "set-hyperlink",
+            "comment-selection",
+            "toggle-mark",
+            "insert-table-here",
+        ] {
+            assert!(
+                resources[0].actions.iter().any(|action| action.id == id),
+                "{id} is on the document"
+            );
+        }
     }
 
     /// "Hello" selected in the second block, as the widget reports it.
@@ -2675,11 +1104,11 @@ mod tests {
     ui::action_contract_tests! {
         seed: wp_seed(),
         registry: registry(),
-        resources: |doc| provide_resources(&wp_ctx(doc), doc),
+        resources: |doc| published_for(&wp_ctx(doc), doc),
         palette: [
-            "Insert table",
+            "Insert table here",
             "Insert page break",
-            "Align centre",
+            "Align paragraph",
             "Replace selection",
             "Add or change hyperlink",
             "Accept change",
@@ -2728,40 +1157,6 @@ mod tests {
                 "there",
             )),
         ],
-        encodes: [
-            insert_table => ("tilo.rich-text", "insert-table", |doc, _| {
-                encode(&insert_table_action(&nth_block(doc, 1), 2, 2))
-            }),
-            align_center => ("tilo.rich-text", "align-center", |doc, _| {
-                encode(&set_align_action(vec![nth_block(doc, 1)], "center"))
-            }),
-            replace_selection => (
-                "tilo.rich-text",
-                "replace-selection",
-                arg: "guide",
-                |doc, _| {
-                    let block = nth_block(doc, 1);
-                    encode(&replace_selection_action(
-                        RegionKind::Body,
-                        &block,
-                        0,
-                        &block,
-                        5,
-                        "guide",
-                    ))
-                }
-            ),
-            set_hyperlink => (
-                "tilo.rich-text",
-                "set-hyperlink",
-                arg: "https://example.com/guide",
-                |doc, _| encode(&set_hyperlink_action(
-                    RegionKind::Body,
-                    hello_span(doc),
-                    "https://example.com/guide",
-                ))
-            ),
-        ],
     }
 
     /// Selected text exposes a typed hyperlink action that replays; targets are limited to safe authored
@@ -2776,39 +1171,14 @@ mod tests {
         {
             let (mut state, ids) = seeded("Read this\n");
             let block = ids[0].clone();
-            let ctx = WpResourceCtx {
-                format_spans: vec![Span {
-                    block: block.clone(),
-                    start: 0,
-                    end: 4,
-                }],
-                selection: Some(SelectionTarget {
-                    start_block: block.clone(),
-                    start: 0,
-                    end_block: block.clone(),
-                    end: 4,
-                }),
-                region: RegionKind::Body,
-                caret_block: block.clone(),
-                caret_offset: 4,
-                target_blocks: vec![block.clone()],
-                search_hits: Vec::new(),
-                content: tilo_content::ContentStore::memory(),
+            let view = participant::ParticipantView {
+                caret: participant::ViewPoint::new(&block, 4),
+                anchor: Some(participant::ViewPoint::new(&block, 0)),
+                ..participant::ParticipantView::default()
             };
-            let root = provide_resources(&ctx, &state.doc).pop().unwrap();
-            let replace = root
-                .actions
-                .iter()
-                .find(|action| action.id == "replace-selection")
-                .expect("selected text exposes canonical replacement");
-            let replacement = replace
-                .build_args([(
-                    "text".to_string(),
-                    tilo_actions::ArgValue::Text("guide".into()),
-                )])
-                .unwrap();
+            let (replace, _) = editing::replace_selection(&view, &state.doc, "guide").unwrap();
             assert_eq!(
-                replacement,
+                encode(&replace[0]),
                 encode(&replace_selection_action(
                     RegionKind::Body,
                     &block,
@@ -2817,23 +1187,11 @@ mod tests {
                     4,
                     "guide",
                 )),
-                "palette binding is byte-identical to the canonical selection action"
+                "replacing the selection is the canonical selection action"
             );
-            let link = root
-                .actions
-                .iter()
-                .find(|action| action.id == "set-hyperlink")
-                .expect("selected text exposes link authoring");
-            assert_eq!(link.params().len(), 1);
-            assert_eq!(link.params()[0].name, "target");
-            let encoded = link
-                .build_args([(
-                    "target".to_string(),
-                    tilo_actions::ArgValue::Text("https://example.com/guide".into()),
-                )])
-                .unwrap();
-            let action: RichTextAction = serde_json::from_slice(&encoded.payload).unwrap();
-            action.apply(&mut state.doc).unwrap();
+            let (link, _) =
+                editing::set_hyperlink(&view, &state.doc, " https://example.com/guide ").unwrap();
+            link[0].apply(&mut state.doc).unwrap();
             assert!(body_blocks(&state.doc)[0].marks.iter().any(|mark| {
                 mark.name == "link"
                     && mark.start == 0
@@ -2879,32 +1237,17 @@ mod tests {
                 start: 0,
                 end: 4,
             };
-            let ctx = WpResourceCtx {
-                format_spans: vec![span.clone()],
-                selection: None,
-                region: RegionKind::Body,
-                caret_block: block,
-                caret_offset: 4,
-                target_blocks: vec![ids[0].clone()],
-                search_hits: Vec::new(),
-                content: tilo_content::ContentStore::memory(),
+            let view = participant::ParticipantView {
+                caret: participant::ViewPoint::new(&block, 4),
+                anchor: Some(participant::ViewPoint::new(&block, 0)),
+                ..participant::ParticipantView::default()
             };
-            let root = provide_resources(&ctx, &state.doc).pop().unwrap();
-            let link = root
-                .actions
-                .iter()
-                .find(|action| action.id == "set-hyperlink")
-                .expect("selected text exposes link authoring");
-            let encoded = link
-                .build_args([(
-                    "target".to_string(),
-                    tilo_actions::ArgValue::Text("javascript:alert(1)".into()),
-                )])
-                .unwrap();
-            assert_eq!(
-                encoded.type_id,
-                tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
-                "the prompt reports invalid input before dispatch"
+            assert!(
+                matches!(
+                    editing::set_hyperlink(&view, &state.doc, "javascript:alert(1)"),
+                    Err(editing::EditingError::Invalid(_))
+                ),
+                "the effect reports invalid input before dispatch"
             );
 
             let action = set_hyperlink_action(RegionKind::Body, vec![span], "javascript:alert(1)");
@@ -2932,46 +1275,32 @@ mod tests {
     )]
     fn image_and_review_actions_replay_atomically() {
         // Phase: place_image_consumes_a_published_content_hash.
-        // The hand-off operation consumes bytes an earlier action actually put
-        // in the content store. The model supplies neither the hash nor image
-        // metadata; the app resolves both while building its own document action.
+        // Placing consumes bytes an earlier action actually put in the
+        // content store. The caller supplies neither image metadata nor the
+        // bytes; the app resolves both while building its own document edit.
         {
             let (mut state, ids) = seeded("Intro\n");
-            let block = ids[0].clone();
-            let ctx = WpResourceCtx {
-                caret_block: block,
-                caret_offset: 0,
-                target_blocks: Vec::new(),
-                format_spans: Vec::new(),
-                selection: None,
-                region: RegionKind::Body,
-                search_hits: Vec::new(),
-                content: tilo_content::ContentStore::memory(),
-            };
+            let content = tilo_content::ContentStore::memory();
             let bytes = b"content supplied by a preceding action";
-            let hash = ctx.content.put(bytes).expect("test fixture fits the store");
-            let resources = provide_resources(&ctx, &state.doc);
-            let descriptor = tilo_actions::door::survey(&resources)
-                .into_iter()
-                .find(|descriptor| descriptor.address.action == "place-image")
-                .expect("the document publishes its content hand-off action");
-            assert!(descriptor.input.wants_content());
-
-            let arguments = serde_json::Map::from_iter([(
-                tilo_actions::PROMPTED_PARAM.to_string(),
-                serde_json::Value::String(hash.clone()),
-            )]);
-            tilo_actions::door::invoke_json(
-                &mut state.doc,
-                &resources,
-                &descriptor.address,
-                &arguments,
-                tilo_actions::door::InvocationProvenance::caller(b"agent"),
-                &registry(),
-                &mut LocalTransport::new(),
-            )
-            .expect("the app resolves and places available content");
-
+            let hash = content.put(bytes).expect("test fixture fits the store");
+            let view = participant::ParticipantView::at(
+                participant::ViewPoint::new(&ids[0], 0),
+                RegionKind::Body,
+            );
+            let resources = published_for(&caret_at(&ids[0]), &state.doc);
+            assert!(
+                resources[0]
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "place-image"),
+                "the document publishes placing an image"
+            );
+            assert!(
+                editing::place_image(&view, &state.doc, &content, "not-in-the-store").is_err(),
+                "content not on this machine is refused"
+            );
+            let (place, _) = editing::place_image(&view, &state.doc, &content, &hash).unwrap();
+            dispatch(&mut state.doc, &place[0]);
             assert!(body_blocks(&state.doc).iter().any(|block| {
                 block.kind == "image"
                     && block.attrs.get("blob") == Some(&tilo_doc::AttrVal::Str(hash.clone()))
@@ -2999,8 +1328,8 @@ mod tests {
                 set_image_placement_action(&image, "page", "none", 24, 36, 0),
             ];
             for action in &actions {
-                let envelope = tilo_actions::apply_local(&mut a.doc, action, encode(action))
-                    .expect("apply object action");
+                let envelope =
+                    apply_local(&mut a.doc, action, encode(action)).expect("apply object action");
                 tilo_actions::replay(&mut b.doc, &envelope, &registry())
                     .expect("replay object action");
             }
@@ -3035,149 +1364,135 @@ mod tests {
         {
             let (mut a, ids) = seeded("Review this sentence\n");
             let block = ids[0].clone();
-            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let c = crate::model::open(&a.doc).unwrap();
             let mut id_gen = tilo_doc::IdGen::new(a.doc.get_actor().to_hex_string());
-            let (comment, change) = {
+            let change = {
                 let mut dm = tilo_doc::DocMut {
                     doc: &mut a.doc,
                     c: &c,
                     ids: &mut id_gen,
                 };
-                (
-                    dm.add_comment(&block, 0, 6, "Maya", "Please clarify this."),
-                    dm.track_insert(&block, 20, " now", "Jonas", "2026-09-05"),
-                )
+                dm.track_insert(&block, 20, " now", "Jonas", "2026-09-05")
             };
+            let comment = crate::model::comment_by(
+                &mut a.doc,
+                "Maya",
+                &block,
+                (0, 6),
+                "Please clarify this.",
+            );
             a.doc.commit();
             let bytes = a.save();
             let mut b = ui::State::load(&bytes).unwrap();
 
-            let ctx = WpResourceCtx {
-                caret_block: block,
-                caret_offset: 0,
-                target_blocks: Vec::new(),
-                format_spans: Vec::new(),
-                selection: None,
-                region: RegionKind::Body,
-                search_hits: Vec::new(),
-                content: tilo_content::ContentStore::memory(),
-            };
-            let resources = provide_resources(&ctx, &a.doc);
-            let review = resources[0]
+            let resources = published_for(&caret_at(&block), &a.doc);
+            let thread = format!("{DOCUMENT}/comments/{comment}");
+            let comment_resource = resources[0]
                 .children
                 .iter()
-                .find(|resource| resource.id.as_str() == "word-processor.review")
-                .expect("review group is navigable");
-            let comment_resource_id = format!("word-processor.comment:{comment}");
-            let comment_resource = review
-                .children
-                .iter()
-                .find(|resource| resource.id.as_str() == comment_resource_id.as_str())
-                .expect("comment is a resource");
-            assert!(
-                comment_resource
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "resolve")
-            );
-            let change_resource_id = format!("word-processor.change:{change}");
-            let change_resource = review
-                .children
-                .iter()
-                .find(|resource| resource.id.as_str() == change_resource_id.as_str())
-                .expect("tracked change is a resource");
-            let accept = spec_encoding(
-                change_resource
-                    .actions
-                    .iter()
-                    .find(|action| action.id == "accept")
-                    .unwrap(),
-                None,
-            );
-            let action: RichTextAction = serde_json::from_slice(&accept.payload).unwrap();
-            let envelope = tilo_actions::apply_local(&mut a.doc, &action, accept).unwrap();
+                .find(|child| child.id.as_str() == thread)
+                .expect("the comment thread is a resource");
+            for id in ["reply-to-comment", "resolve-comment"] {
+                assert!(
+                    comment_resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == id),
+                    "{id} is offered on the thread"
+                );
+            }
+            let change_resource =
+                derived(&resources[0], "change").expect("tracked change is a resource");
+            assert!(change_resource.id.as_str().ends_with(&change));
+            let accept = accept_change(&change);
+            let encoded = ui::tilo_resource::encode::<crate::model::Document>(&accept).unwrap();
+            let envelope = tilo_actions::apply_local(&mut a.doc, &accept, encoded).unwrap();
             tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
             assert_eq!(a.doc.get_heads(), b.doc.get_heads());
-            let snap = tilo_doc::model::materialize(
-                &a.doc,
-                &tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap(),
-            );
+            let snap = tilo_doc::model::materialize(&a.doc, &crate::model::open(&a.doc).unwrap());
             assert!(snap.changes.is_empty(), "accepted change left review state");
-            assert_eq!(snap.comments.len(), 1, "unrelated comment remains");
+            assert_eq!(threads(&a.doc).len(), 1, "unrelated comment remains");
         }
 
         // Phase: durable_comment_reply_action_replays_and_resolve_cleans_the_thread.
         {
             let (mut a, ids) = seeded("Review this paragraph\n");
             let block = ids[0].clone();
-            let containers = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let comment = {
-                let mut ids = tilo_doc::model::seeded_id_gen(&a.doc, &containers);
-                let mut dm = DocMut {
-                    doc: &mut a.doc,
-                    c: &containers,
-                    ids: &mut ids,
-                };
-                dm.add_comment(&block, 0, 6, "Maya", "Please clarify")
-            };
+            let comment =
+                crate::model::comment_by(&mut a.doc, "Maya", &block, (0, 6), "Please clarify");
             a.doc.commit();
             let bytes = a.save();
             let mut b = ui::State::load(&bytes).unwrap();
 
-            let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-07", "Will do.");
-            let envelope = tilo_actions::apply_local(&mut a.doc, &reply, encode(&reply)).unwrap();
+            let reply = verb(crate::model::DocumentAction::ReplyToComment(
+                crate::model::document::ReplyToComment {
+                    comment: ui::tilo_resource::Id::from_raw(comment.clone()),
+                    text: "Will do.".into(),
+                    body: None,
+                },
+            ));
+            let envelope = apply_verb_by(&mut a.doc, &reply, "Jonas");
             tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
             assert_eq!(
                 a.doc.get_heads(),
                 b.doc.get_heads(),
                 "reply replays exactly"
             );
-            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let comments = tilo_doc::model::materialize_comments(&a.doc, &c);
+            let comments = threads(&a.doc);
             assert_eq!(comments[0].replies.len(), 1);
             assert_eq!(comments[0].replies[0].author, "Jonas");
             assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
 
-            let resolve = RichTextAction::ResolveComment { id: comment };
-            let envelope =
-                tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
+            let resolve = verb(crate::model::DocumentAction::ResolveComment(
+                crate::model::document::ResolveComment {
+                    comment: ui::tilo_resource::Id::from_raw(comment),
+                },
+            ));
+            let envelope = apply_verb_by(&mut a.doc, &resolve, "Maya");
             tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
             assert_eq!(
                 a.doc.get_heads(),
                 b.doc.get_heads(),
                 "resolution replays exactly"
             );
-            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            assert!(tilo_doc::model::materialize_comments(&a.doc, &c).is_empty());
+            assert!(threads(&a.doc).is_empty());
         }
 
         // Phase: resolved_comment_tombstone_wins_over_divergent_reply.
         {
             let (mut a, ids) = seeded("Review this paragraph\n");
             let block = ids[0].clone();
-            let add = add_comment_action(&block, 0, 6, "Maya", "2026-09-07", "Please clarify");
-            dispatch(&mut a.doc, &add);
-            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            let comment = tilo_doc::model::comment_ids(&a.doc, &c)
-                .into_iter()
-                .next()
-                .unwrap();
+            let add = verb(crate::model::DocumentAction::AddComment(
+                crate::model::document::AddComment {
+                    block,
+                    start: 0,
+                    end: 6,
+                    text: "Please clarify".into(),
+                },
+            ));
+            apply_verb_by(&mut a.doc, &add, "Maya");
+            let comment = threads(&a.doc)[0].id.clone();
             let bytes = a.save();
             let mut b = ui::State::load(&bytes).unwrap();
             b.doc.set_actor(automerge::ActorId::random());
 
-            let resolve = RichTextAction::ResolveComment {
-                id: comment.clone(),
-            };
-            let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-08", "Will do");
-            tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
-            tilo_actions::apply_local(&mut b.doc, &reply, encode(&reply)).unwrap();
+            let resolve = verb(crate::model::DocumentAction::ResolveComment(
+                crate::model::document::ResolveComment {
+                    comment: ui::tilo_resource::Id::from_raw(comment.clone()),
+                },
+            ));
+            let reply = verb(crate::model::DocumentAction::ReplyToComment(
+                crate::model::document::ReplyToComment {
+                    comment: ui::tilo_resource::Id::from_raw(comment),
+                    text: "Will do".into(),
+                    body: None,
+                },
+            ));
+            apply_verb_by(&mut a.doc, &resolve, "Maya");
+            apply_verb_by(&mut b.doc, &reply, "Jonas");
             a.doc.merge_incoming(&mut b.doc).unwrap();
-
-            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
-            assert!(tilo_doc::model::comment_is_tombstoned(&a.doc, &c, &comment));
             assert!(
-                tilo_doc::model::materialize_comments(&a.doc, &c).is_empty(),
+                threads(&a.doc).is_empty(),
                 "a reply from a divergent replica cannot resurrect a resolved thread"
             );
         }
@@ -3199,10 +1514,10 @@ mod tests {
             let mut b = ui::State::load(&bytes).unwrap();
             let action = replace_selection_action(RegionKind::Body, &ids[0], 2, &ids[2], 3, "X");
             let encoded = encode(&action);
-            let envelope = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+            let envelope = apply_local(&mut a.doc, &action, encoded).unwrap();
             tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
             assert_eq!(a.doc.get_heads(), b.doc.get_heads());
-            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let c = crate::model::open(&a.doc).unwrap();
             let blocks = tilo_doc::model::materialize(&a.doc, &c).blocks;
             assert_eq!(blocks.len(), 1);
             assert_eq!(blocks[0].text, "alXma");
@@ -3218,15 +1533,13 @@ mod tests {
 
             let split = split_block_action(RegionKind::Body, &block, 5, "paragraph", None);
             let encoded_split = encode(&split);
-            let decoded_split: RichTextAction =
-                serde_json::from_slice(&encoded_split.payload).unwrap();
-            tilo_actions::apply_local(&mut a.doc, &decoded_split, encoded_split).unwrap();
+            let decoded_split = decode(&encoded_split);
+            apply_local(&mut a.doc, &decoded_split, encoded_split).unwrap();
 
             let splice = splice_text_action(RegionKind::Body, &block, 0, 0, "Shared ");
             let encoded_splice = encode(&splice);
-            let decoded_splice: RichTextAction =
-                serde_json::from_slice(&encoded_splice.payload).unwrap();
-            tilo_actions::apply_local(&mut b.doc, &decoded_splice, encoded_splice).unwrap();
+            let decoded_splice = decode(&encoded_splice);
+            apply_local(&mut b.doc, &decoded_splice, encoded_splice).unwrap();
 
             let mut merged_a = a.doc.clone();
             let mut b_for_a = b.doc.clone();
@@ -3274,10 +1587,10 @@ mod tests {
                 tilo_doc::schema::STYLE_SIZE,
                 AttrVal::Float(28.0),
             );
-            tilo_actions::apply_local(&mut a.doc, &bold, encode(&bold)).unwrap();
-            tilo_actions::apply_local(&mut b.doc, &size, encode(&size)).unwrap();
+            apply_local(&mut a.doc, &bold, encode(&bold)).unwrap();
+            apply_local(&mut b.doc, &size, encode(&size)).unwrap();
             a.doc.merge_incoming(&mut b.doc).unwrap();
-            let c = tilo_doc::model::open(&a.doc, &automerge::ROOT).unwrap();
+            let c = crate::model::open(&a.doc).unwrap();
             let properties = tilo_doc::model::style_props(&a.doc, &c, "custom1");
             assert_eq!(
                 properties.get(tilo_doc::schema::STYLE_BOLD),
@@ -3298,10 +1611,10 @@ mod tests {
                 tilo_doc::schema::STYLE_NAME,
                 AttrVal::Str("Late rename".into()),
             );
-            tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
-            tilo_actions::apply_local(&mut divergent.doc, &rename, encode(&rename)).unwrap();
+            apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
+            apply_local(&mut divergent.doc, &rename, encode(&rename)).unwrap();
             deleted.doc.merge_incoming(&mut divergent.doc).unwrap();
-            let c = tilo_doc::model::open(&deleted.doc, &automerge::ROOT).unwrap();
+            let c = crate::model::open(&deleted.doc).unwrap();
             assert!(tilo_doc::model::style_is_tombstoned(
                 &deleted.doc,
                 &c,
@@ -3354,9 +1667,8 @@ mod tests {
             ];
             for action in actions {
                 let encoded = encode(&action);
-                let decoded: RichTextAction = serde_json::from_slice(&encoded.payload).unwrap();
-                let envelope =
-                    tilo_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
+                let decoded = decode(&encoded);
+                let envelope = apply_local(&mut origin.doc, &decoded, encoded).unwrap();
                 tilo_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
             }
             let table = body_blocks(&origin.doc)
@@ -3374,9 +1686,8 @@ mod tests {
             ] {
                 let action = edit_table_action(&table, edit);
                 let encoded = encode(&action);
-                let decoded: RichTextAction = serde_json::from_slice(&encoded.payload).unwrap();
-                let envelope =
-                    tilo_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
+                let decoded = decode(&encoded);
+                let envelope = apply_local(&mut origin.doc, &decoded, encoded).unwrap();
                 tilo_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
             }
             assert_eq!(origin.doc.get_heads(), replay.doc.get_heads());
@@ -3400,8 +1711,8 @@ mod tests {
 
             let remove = edit_table_action(&table, TableEdit::Delete);
             let late_edit = splice_text_action(RegionKind::Body, &cell.id, 0, 0, "late");
-            tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
-            tilo_actions::apply_local(&mut divergent.doc, &late_edit, encode(&late_edit)).unwrap();
+            apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
+            apply_local(&mut divergent.doc, &late_edit, encode(&late_edit)).unwrap();
 
             let mut merged_a = deleted.doc.clone();
             let mut divergent_for_a = divergent.doc.clone();
@@ -3473,83 +1784,61 @@ mod tests {
         }
     }
 
-    fn root_for(state: &ui::State, block: &str) -> Resource {
-        let ctx = WpResourceCtx {
-            format_spans: Vec::new(),
-            selection: None,
-            region: RegionKind::Body,
-            caret_block: block.to_string(),
-            caret_offset: 0,
-            target_blocks: vec![block.to_string()],
-            search_hits: Vec::new(),
-            content: tilo_content::ContentStore::memory(),
-        };
-        provide_resources(&ctx, &state.doc).pop().unwrap()
-    }
-
-    fn text_arg(text: &str) -> [(String, tilo_actions::ArgValue); 1] {
-        [(
-            "text".to_string(),
-            tilo_actions::ArgValue::Text(text.into()),
-        )]
+    fn root_for(state: &ui::State, block: &str) -> tilo_actions::Resource {
+        published_for(&caret_at(block), &state.doc).remove(0)
     }
 
     #[test]
-    fn body_append_operations_are_root_level_pure_document_writes() {
-        let (state, ids) = seeded("Intro\n");
+    fn appending_a_paragraph_is_a_root_level_document_verb() {
+        let (mut state, ids) = seeded("Intro\n");
         let root = root_for(&state, &ids[0]);
-        assert_eq!(root.id.0, "word-processor.document");
-        for id in ["append-paragraph", "continue-paragraph"] {
-            let spec = root
-                .actions
-                .iter()
-                .find(|action| action.id == id)
-                .unwrap_or_else(|| panic!("{id} is on the root resource"));
-            assert_eq!(spec.params().len(), 1);
-            assert_eq!(spec.params()[0].name, "text");
-            assert!(spec.params()[0].required);
-            assert_eq!(spec.kind, OperationKind::Document);
-            assert_eq!(spec.locus, ExecutionLocus::ClientLocal);
-            assert!(matches!(
-                spec.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::None
-            ));
-            assert!(spec.contract.reversible);
-            // append-paragraph streams: its first part appends, the rest is
-            // typed at the caret it leaves. continue-paragraph is deprecated.
-            let expected: &[&str] = if id == "continue-paragraph" {
-                &["tilo.deprecated:type-text"]
-            } else {
-                &["tilo.incremental-text:text:type-text"]
-            };
-            assert_eq!(spec.contract.tags, expected, "{id}");
-            assert!(
-                spec.contract.validate_declaration().is_empty(),
-                "{:?}",
-                spec.contract.validate_declaration()
-            );
-            assert!(spec.has_continuation_identity());
-            // Empty text is refused before anything is encoded.
-            let refused = spec.build_args(text_arg(""));
-            assert!(
-                refused.is_err()
-                    || refused
-                        .as_ref()
-                        .is_ok_and(|encoded| encoded.type_id
-                            == tilo_actions::resource::INVALID_ARGUMENTS_TYPE),
-                "{id}: {refused:?}"
-            );
-        }
+        assert_eq!(root.id.0, DOCUMENT);
+        let spec = root
+            .actions
+            .iter()
+            .find(|action| action.id == "append-paragraph")
+            .expect("append-paragraph is on the root resource");
+        assert_eq!(spec.params().len(), 1);
+        assert_eq!(spec.params()[0].name, "text");
+        assert!(spec.params()[0].required);
+        assert_eq!(spec.kind, tilo_actions::OperationKind::Document);
+        assert_eq!(spec.locus, tilo_actions::ExecutionLocus::ClientLocal);
+        assert!(matches!(
+            spec.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::None
+        ));
+        assert!(
+            spec.contract.validate_declaration().is_empty(),
+            "{:?}",
+            spec.contract.validate_declaration()
+        );
+        // Empty text is refused, and nothing is written.
+        let before = state.doc.save();
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("text".into(), "".into());
+        assert!(
+            tilo_actions::door::invoke_json(
+                &mut state.doc,
+                std::slice::from_ref(&root),
+                &tilo_actions::door::ActionAddress::new(DOCUMENT, "append-paragraph"),
+                &arguments,
+                tilo_actions::door::InvocationProvenance::caller(b"agent"),
+                &registry(),
+                &mut LocalTransport::new(),
+            )
+            .is_err()
+        );
+        assert_eq!(state.doc.save(), before);
     }
 
     /// The host offers every Document operation of its workers as one grant
-    /// set, and withdraws the offer above 64. A fresh document's catalogue,
-    /// with both paragraph operations, stays well inside that bound.
+    /// set, and withdraws the offer above 64. A fresh document's catalogue
+    /// stays well inside that bound.
     #[test]
     fn a_fresh_document_publishes_few_grantable_document_operations() {
-        fn document_ops(resource: &Resource, out: &mut Vec<String>) {
+        fn document_ops(resource: &tilo_actions::Resource, out: &mut Vec<String>) {
             for action in &resource.actions {
-                if action.kind == OperationKind::Document {
+                if action.kind == tilo_actions::OperationKind::Document {
                     out.push(format!("{}#{}", resource.id.0, action.id));
                 }
             }
@@ -3561,8 +1850,8 @@ mod tests {
         let block = ids.first().cloned().unwrap_or_default();
         let mut ops = Vec::new();
         document_ops(&root_for(&state, &block), &mut ops);
-        assert!(ops.contains(&"word-processor.document#append-paragraph".to_owned()));
-        assert!(ops.contains(&"word-processor.document#continue-paragraph".to_owned()));
+        assert!(ops.contains(&format!("{DOCUMENT}#append-paragraph")));
+        assert!(ops.contains(&format!("{DOCUMENT}#field-edit")));
         assert!(
             ops.len() <= 32,
             "{} document operations: {ops:?}",
@@ -3575,24 +1864,18 @@ mod tests {
         let (mut state, ids) = seeded("Intro\n");
         // The catalogue is captured once, before any write; every invocation
         // resolves the end of the body when it is applied.
-        let root = root_for(&state, &ids[0]);
-        let op = |id: &str| {
-            root.actions
-                .iter()
-                .find(|action| action.id == id)
-                .unwrap()
-                .clone()
-        };
-        let (append, cont) = (op("append-paragraph"), op("continue-paragraph"));
-        for (spec, text) in [
-            (&append, "The ocean "),
-            (&cont, "covers most "),
-            (&cont, "of the "),
-            (&cont, "planet."),
-        ] {
-            let encoded = spec.build_args(text_arg(text)).unwrap();
-            let action: RichTextAction = serde_json::from_slice(&encoded.payload).unwrap();
-            dispatch(&mut state.doc, &action);
+        let resources = vec![root_for(&state, &ids[0])];
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("text".into(), "The ocean ".into());
+        invoke(
+            &mut state.doc,
+            &resources,
+            DOCUMENT,
+            "append-paragraph",
+            &arguments,
+        );
+        for text in ["covers most ", "of the ", "planet."] {
+            dispatch(&mut state.doc, &continue_paragraph_action(text));
         }
         let blocks = body_blocks(&state.doc);
         assert_eq!(blocks.len(), 2, "one new paragraph after the intro");

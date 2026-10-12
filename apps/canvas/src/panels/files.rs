@@ -8,8 +8,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
+use ui::tilo_resource::Invoke;
 
-use ui::framework::{Dispatcher, Live};
+use ui::framework::{Dispatcher, Live, Setting};
 use ui::portal::{FileFilter, PickRequest, PortalOutcome};
 use ui::prelude::*;
 use ui::vello::Scene;
@@ -18,11 +19,10 @@ use ui::widget::{AppModel, EventCtx, ModelPath, Widget};
 use ui::winit::event::WindowEvent;
 use ui::{PresenceCtx, TextRenderer, Theme};
 
-use crate::actions::{CanvasAction, NewArtwork, OpenArtwork};
-use crate::document::{self, ArtworkFile, EXTENSION, Recent, recents};
+use crate::actions::{NewArtwork, OpenArtwork};
+use crate::document::{self, ArtworkFile, EXTENSION, Recent, RecentArtworks};
 use crate::model::Artwork;
 use crate::panels::export::{self, Settings};
-use crate::resource::ArtworkResource;
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
 
 /// What a chooser was opened for.
@@ -41,8 +41,9 @@ enum Pending {
 pub struct FileDesk {
     content: Element,
     tools: Tools,
-    live: Live<ArtworkResource>,
-    dispatch: Dispatcher<ArtworkResource>,
+    recents: Setting<RecentArtworks>,
+    live: Live<Artwork>,
+    dispatch: Dispatcher<Artwork>,
     chooser: Option<(Pending, Receiver<PortalOutcome>)>,
     text: Option<TextRenderer>,
 }
@@ -51,13 +52,14 @@ impl FileDesk {
     pub fn new(
         content: Element,
         tools: Tools,
-        live: Live<ArtworkResource>,
-        dispatch: Dispatcher<ArtworkResource>,
+        recents: Setting<RecentArtworks>,
+        live: Live<Artwork>,
+        dispatch: Dispatcher<Artwork>,
     ) -> Self {
-        tools.recents.set(recents::read());
         Self {
             content,
             tools,
+            recents,
             live,
             dispatch,
             chooser: None,
@@ -118,7 +120,7 @@ impl FileDesk {
         match request {
             FileRequest::Open => {
                 let request =
-                    PickRequest::open(&lookup("canvas-open-title"), &lookup("canvas-open"))
+                    PickRequest::open(&lookup("canvas-open-title"), &lookup("canvas-command-open"))
                         .filter(
                             FileFilter::new(&lookup("canvas-filter-artwork"))
                                 .glob(&format!("*.{EXTENSION}"))
@@ -187,13 +189,13 @@ impl FileDesk {
         let bytes =
             export::part(art, settings.area, view, &selection).and_then(|(part, region)| {
                 let text = self.text.get_or_insert_with(TextRenderer::new);
-                export::encode(
-                    &mut self.tools.renderer.borrow_mut(),
-                    text,
-                    &part,
-                    region,
-                    settings,
-                )
+                let mut renderer = self.tools.renderer.borrow_mut();
+                // An export shows every picture: it waits for those still
+                // decoding.
+                renderer.pictures.patient = true;
+                let encoded = export::encode(&mut renderer, text, &part, region, settings);
+                renderer.pictures.patient = false;
+                encoded
             });
         let bytes = match bytes {
             Ok(bytes) => bytes,
@@ -206,7 +208,7 @@ impl FileDesk {
         let request = PickRequest::save(
             &lookup("canvas-export-title"),
             &lookup("canvas-export"),
-            &document::file_name(&art.title, extension),
+            &document::file_name(&export_stem(art), extension),
         )
         .filter(
             FileFilter::new(settings.format.label())
@@ -268,8 +270,8 @@ impl FileDesk {
             open_svg(path).map(|actions| (actions, None))
         } else {
             document::read(path).map(|artwork| {
-                let action = CanvasAction::OpenArtwork(OpenArtwork {
-                    file: String::from_utf8_lossy(&artwork.to_bytes()).into_owned(),
+                let action = Artwork::OPEN_ARTWORK.with(OpenArtwork {
+                    file: String::from_utf8_lossy(&artwork.to_json()).into_owned(),
                 });
                 (vec![action], Some(artwork))
             })
@@ -278,9 +280,8 @@ impl FileDesk {
             Ok(opened) => opened,
             Err(why) => {
                 if !path.exists() {
-                    self.tools
-                        .recents
-                        .set(recents::forget(&path.display().to_string()));
+                    let gone = path.display().to_string();
+                    self.keep_recents(|recents| recents.forget(&gone));
                 }
                 self.say("canvas-open-failed", &[("why", why.into())]);
                 return;
@@ -288,7 +289,7 @@ impl FileDesk {
         };
         self.dispatch.group(|| {
             for action in &actions {
-                self.dispatch.apply(action);
+                self.dispatch.submit(action.clone());
             }
         });
         self.tools.selection.set(Vec::new());
@@ -311,7 +312,9 @@ impl FileDesk {
     /// Save the artwork to `path`; keep working there when `follow`.
     fn save_to(&self, path: &Path, follow: bool) {
         let file = ArtworkFile::of(&self.live.get());
-        match document::write(path, &file.to_bytes()) {
+        let packed = document::pack(&file, &crate::content::store())
+            .and_then(|(bytes, _missing)| document::write(path, &bytes));
+        match packed {
             Ok(()) => {
                 if follow {
                     self.tools.file.set(Some(path.display().to_string()));
@@ -329,24 +332,64 @@ impl FileDesk {
     }
 
     fn remember(&self, path: &Path, file: &ArtworkFile) {
-        let at_ms = ui::time::wall()
-            .duration_since(ui::time::SystemTime::UNIX_EPOCH)
-            .map_or(0, |since| {
-                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-            });
-        self.tools.recents.set(recents::remember(Recent {
+        let at_ms = ui::time::unix_now_ms();
+        let recent = Recent {
             path: path.display().to_string(),
             title: file.title.clone(),
             width: file.width,
             height: file.height,
             at_ms,
             thumbnail: None,
-        }));
+        };
+        self.keep_recents(|recents| recents.remember(recent));
+    }
+
+    /// Change the recent artworks. Best effort: a device that keeps no
+    /// settings for the app simply shows no recent artworks.
+    fn keep_recents(&self, change: impl FnOnce(&mut RecentArtworks)) {
+        if let Err(error) = self.recents.update(change) {
+            tracing::warn!(%error, "could not remember the recent artworks");
+        }
     }
 }
 
-/// Carry out a key of the whole window: a tool's letter, `?`, and opening,
-/// saving and exporting. Whether it was one.
+/// What an export is named: the artwork's title, or for an artwork made
+/// from a picture (titled by the picture's file) the title marked as
+/// edited, so the photo it came from is not the name offered to write over.
+fn export_stem(art: &Artwork) -> String {
+    let from_picture = !art.title.is_empty()
+        && art.marks.iter().any(|mark| {
+            matches!(mark.shape, crate::model::Shape::Image { .. }) && mark.name == art.title
+        });
+    if from_picture {
+        ui::i18n::I18nManager::format(
+            "canvas-export-edited",
+            &[("title", art.title.clone().into())],
+        )
+    } else {
+        art.title.clone()
+    }
+}
+
+/// The named keys that act on the canvas's selection wherever the focus
+/// is, unless what has the focus takes them itself.
+fn canvas_key(named: ui::winit::keyboard::NamedKey) -> bool {
+    use ui::winit::keyboard::NamedKey;
+    matches!(
+        named,
+        NamedKey::Escape
+            | NamedKey::Delete
+            | NamedKey::Backspace
+            | NamedKey::Enter
+            | NamedKey::ArrowLeft
+            | NamedKey::ArrowRight
+            | NamedKey::ArrowUp
+            | NamedKey::ArrowDown
+    )
+}
+
+/// Carry out a key of the whole window: a tool's letter, the brush's size,
+/// `?`, and opening, saving and exporting. Whether it was one.
 pub fn window_key(
     tools: &Tools,
     key: &str,
@@ -355,6 +398,22 @@ pub fn window_key(
     use crate::tools::Tool;
     let command = modifiers.control_key() || modifiers.super_key();
     let shift = modifiers.shift_key();
+    if matches!(key, "+" | "=" | "-" | "_") && !modifiers.alt_key() {
+        tools.view.set(Some(if matches!(key, "+" | "=") {
+            crate::tools::ViewRequest::ZoomIn
+        } else {
+            crate::tools::ViewRequest::ZoomOut
+        }));
+        return true;
+    }
+    if command && matches!(key, "0" | "1") {
+        tools.view.set(Some(if key == "0" {
+            crate::tools::ViewRequest::Fit
+        } else {
+            crate::tools::ViewRequest::Actual
+        }));
+        return true;
+    }
     let request = match (key, command, shift) {
         // A keyboard may report the slash with Shift held rather than `?`.
         ("?", false, _) | ("/", false, true) => {
@@ -368,6 +427,7 @@ pub fn window_key(
             tools.sheet.set(Some(Sheet::Export));
             return true;
         }
+        (size @ ("[" | "]"), false, _) => return tools.size_key(size),
         (letter, false, false) if !modifiers.alt_key() => {
             let Some(tool) = Tool::for_key(letter) else {
                 return false;
@@ -398,7 +458,7 @@ fn with_extension(path: PathBuf, extension: &str) -> PathBuf {
 }
 
 /// The SVG at `path` as a new artwork its size, with the SVG drawn on it.
-fn open_svg(path: &Path) -> Result<Vec<CanvasAction>, String> {
+fn open_svg(path: &Path) -> Result<Vec<Invoke<Artwork>>, String> {
     let markup = crate::svg::source(&path.display().to_string())?;
     let tree = usvg::Tree::from_str(&markup, &usvg::Options::default())
         .map_err(|error| format!("not an SVG this can read: {error}"))?;
@@ -407,7 +467,7 @@ fn open_svg(path: &Path) -> Result<Vec<CanvasAction>, String> {
     let title = path
         .file_stem()
         .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
-    let new = CanvasAction::NewArtwork(NewArtwork {
+    let new = Artwork::NEW_ARTWORK.with(NewArtwork {
         title: Some(title),
         width: Some(side(extent.width())),
         height: Some(side(extent.height())),
@@ -418,7 +478,7 @@ fn open_svg(path: &Path) -> Result<Vec<CanvasAction>, String> {
         svg: markup,
         ..crate::svg::ImportSvg::default()
     })?;
-    Ok(vec![new, CanvasAction::Draw(draw)])
+    Ok(vec![new, Artwork::DRAW.with(draw)])
 }
 
 impl ui::widget::Decorator for FileDesk {
@@ -436,7 +496,7 @@ impl ui::widget::Decorator for FileDesk {
         "FileDesk"
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.take();
         self.poll();
         self.content.sync(state, path);
@@ -470,11 +530,24 @@ impl ui::widget::Decorator for FileDesk {
         if key.state != ui::winit::event::ElementState::Pressed {
             return;
         }
-        let ui::winit::keyboard::Key::Character(typed) = &key.logical_key else {
-            return;
-        };
         let modifiers = ctx.modifiers.state();
-        if window_key(&self.tools, &typed.to_lowercase(), modifiers) {
+        let typed = match &key.logical_key {
+            ui::winit::keyboard::Key::Character(typed) => typed.to_lowercase(),
+            ui::winit::keyboard::Key::Named(named) if canvas_key(*named) => {
+                // A button or a swatch just clicked keeps the focus; the
+                // keys it leaves alone are still the canvas's.
+                self.tools.keys.update(|keys| {
+                    keys.push(crate::tools::CanvasKey {
+                        key: key.logical_key.clone(),
+                        text: None,
+                        modifiers,
+                    });
+                });
+                return;
+            }
+            _ => return,
+        };
+        if window_key(&self.tools, &typed, modifiers) {
             *ctx.handled = true;
         }
     }
@@ -487,5 +560,49 @@ impl ui::widget::Decorator for FileDesk {
 
     fn needs_animation_frame(&self) -> bool {
         self.content.needs_animation_frame() || self.chooser.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test fixtures")]
+
+    use super::*;
+
+    /// A photo opened as an artwork is titled by its file: exporting it
+    /// does not offer that file's name to write over.
+    #[test]
+    fn an_artwork_made_from_a_picture_is_exported_under_a_name_of_its_own() {
+        use base64::Engine as _;
+        crate::locales::CATALOG.ensure();
+        // The window's content store, which the opened picture is kept in.
+        let window = ui::rt::wake::WakeScope::new();
+        ui::tilo_resource::content::register(
+            &window.handle(),
+            tilo_content::ContentStore::memory(),
+        );
+        let _entered = window.enter();
+        let mut doc = ui::tilo_resource::Doc::new();
+        let mut png = Vec::new();
+        image::RgbaImage::new(10, 10)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let open = Artwork::OPEN_PICTURE.with(crate::actions::Open {
+            path: format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(&png)
+            ),
+            title: Some("labrador".into()),
+        });
+        Artwork::apply_to(&mut doc, open);
+        let art = Artwork::from_doc(&doc).unwrap();
+        assert_eq!(art.title, "labrador");
+        let stem = export_stem(&art);
+        assert_eq!(stem, "labrador edited");
+        let retitled = Artwork {
+            title: "Bruno".into(),
+            ..art
+        };
+        assert_eq!(export_stem(&retitled), "Bruno");
     }
 }

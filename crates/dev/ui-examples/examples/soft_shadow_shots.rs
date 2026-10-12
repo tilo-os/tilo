@@ -106,14 +106,6 @@ fn out_dir() -> PathBuf {
         .map_or_else(|_| PathBuf::from("/tmp/soft_shadow_shots"), PathBuf::from)
 }
 
-/// The palette the sheet paints under: `TILO_SHOTS_THEME`, dark by default.
-fn shot_theme() -> Theme {
-    std::env::var("TILO_SHOTS_THEME")
-        .ok()
-        .and_then(|name| Theme::named(&name))
-        .unwrap_or_else(Theme::dark)
-}
-
 /// Rounds a canvas dimension up to the nearest whole pixel. Every caller
 /// passes a positive, finite sum of case geometry, so `v` is always in
 /// `[0.0, u32::MAX]` — the `.clamp` here makes the truncating/sign-losing
@@ -162,7 +154,7 @@ impl ShadowCase {
         // the paper itself and the shadow disappeared with it. The card is the
         // shared `surface::card`, so it carries its derived rest edge exactly as
         // the live surfaces do.
-        let tint = theme.tokens.elevation.e3.color;
+        let tint = theme.tokens.elevation.floating.color;
         // …at the authored intensity scaled the way the elevation ladder scales
         // a light theme's shadows, which is what the live call sites now do.
         let intensity = intensity * theme.tokens.elevation.shadow_scale;
@@ -183,7 +175,7 @@ pub fn run(_args: &[String]) {
         eprintln!("failed to create output dir {}: {e}", dir.display());
         return;
     }
-    let theme = shot_theme();
+    let theme = crate::registry::shot_theme();
     let bg = theme.tokens.colors.surfaces.base;
     println!("soft_shadow_shots ({}) -> {}", theme.name, dir.display());
 

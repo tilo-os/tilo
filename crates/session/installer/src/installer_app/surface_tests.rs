@@ -84,13 +84,13 @@ fn app(backend: &Arc<FakeBackend>) -> (InstallerApp, AutoCommit) {
     let mut app = InstallerApp::with_disks(Vec::new()).with_backend(backend.clone());
     // Pin the hardware so the secret policy is deterministic on any host.
     app.tpm2 = false;
-    let mut doc = AutoCommit::new();
-    app.sync(&mut doc, &automerge::ROOT);
+    let doc = AutoCommit::new();
+    app.sync(&doc, &automerge::ROOT);
     (app, doc)
 }
 
-fn console(app: &mut InstallerApp, doc: &mut AutoCommit, request: &Value) -> Value {
-    serde_json::from_str(&app.answer_console(&request.to_string(), doc, &automerge::ROOT)).unwrap()
+fn console(app: &mut InstallerApp, _doc: &mut AutoCommit, request: &Value) -> Value {
+    serde_json::from_str(&app.answer_console(&request.to_string())).unwrap()
 }
 
 fn invoke(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str, args: &Value) -> Value {
@@ -122,6 +122,7 @@ fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
             Step::Disk,
             Step::Account,
             Step::Options,
+            Step::Media,
             Step::Review,
             Step::Install,
         ] {
@@ -217,10 +218,9 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         let (mut by_action, mut action_doc) = app(&backend);
         for app in [&mut by_row, &mut by_action] {
             app.step = Step::Disk;
-            app.erase_confirmation = "stale".into();
+            app.erase_confirmation.set("stale".into());
         }
-        let _ = row_doc.put(&automerge::ROOT, disk_path(1).as_str(), true);
-        by_row.sync(&mut row_doc, &automerge::ROOT);
+        tests::activate(&mut by_row, &mut row_doc, "/dev/nvme0n1");
         let _ = invoke(
             &mut by_action,
             &mut action_doc,
@@ -229,15 +229,20 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         );
         assert_eq!(by_row.selected_disk, Some(1));
         assert_eq!(by_row.selected_disk, by_action.selected_disk);
-        assert_eq!(by_row.erase_confirmation, by_action.erase_confirmation);
+        assert_eq!(local_text(&by_row.erase_confirmation), "");
+        assert_eq!(
+            local_text(&by_row.erase_confirmation),
+            local_text(&by_action.erase_confirmation)
+        );
 
         // A control whose action is unavailable shows the published reason: the
         // same sentence an external caller receives.
         by_row.step = Step::Install;
         by_row.install_state = InstallState::Done;
         by_row.recovery_key = Some(KEY.into());
-        let _ = row_doc.put(&automerge::ROOT, REBOOT_PATH, true);
-        by_row.sync(&mut row_doc, &automerge::ROOT);
+        // A queued press is checked against the current published availability.
+        by_row.control(op::POWER, "reboot", Value::Null).fire();
+        by_row.sync(&row_doc, &automerge::ROOT);
         let reason = by_row
             .publish()
             .iter()
@@ -265,19 +270,19 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         let encoded = next.build_json(&serde_json::Map::new()).unwrap();
         let started = app
             .start_operation(
-                &ui::widget::ResourceOperation::local(
+                &ui::host_operation::ResourceOperation::local(
                     tilo_actions::InvocationId::new(),
                     tilo_actions::OperationKind::Effect,
                     &encoded.type_id,
                     &encoded.payload,
                 ),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             )
             .unwrap();
         assert!(matches!(
             started,
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            Some(ui::host_operation::ResourceOperationStart::Completed(_))
         ));
         assert_eq!(app.step, Step::Network);
 
@@ -292,13 +297,13 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         })
         .unwrap();
         let refused = app.start_operation(
-            &ui::widget::ResourceOperation::local(
+            &ui::host_operation::ResourceOperation::local(
                 tilo_actions::InvocationId::new(),
                 tilo_actions::OperationKind::Effect,
                 op::OPERATION_TYPE,
                 &stale,
             ),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         );
         assert!(refused.is_err());
@@ -501,6 +506,22 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
         .get("answer")
         .is_some()
     );
+    assert_eq!(
+        invoke(&mut app, doc, "next@installer", &json!({}))["answer"]["step"],
+        "media"
+    );
+    // Media: the formats are off until asked for, and only on this step.
+    assert!(
+        invoke(
+            &mut app,
+            doc,
+            "set-media-codecs@installer.media",
+            &json!({"enabled": true})
+        )
+        .get("answer")
+        .is_some()
+    );
+    assert!(app.codecs);
     assert_eq!(
         invoke(&mut app, doc, "next@installer", &json!({}))["answer"]["step"],
         "review"

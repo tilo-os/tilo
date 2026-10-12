@@ -1,25 +1,14 @@
 //! Horizontal document ruler with owned layout, painting, and drag state.
 
-use ui::paint::with_alpha;
 use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::tokens::TextRole;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
 use vello::peniko::{Color, Fill};
 
 const PX_PER_INCH: f64 = 820.0 / 8.5;
 const GRAB_RADIUS: f64 = 8.0;
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RulerColors {
-    pub bar: Color,
-    pub field: Color,
-    pub paper: Color,
-    pub border: Color,
-    pub text: Color,
-    pub text_dim: Color,
-    pub accent: Color,
-    pub accent_faint: Color,
-}
 
 #[derive(Clone, Debug)]
 pub(crate) struct RulerModel {
@@ -212,59 +201,63 @@ impl Ruler {
         })
     }
 
+    /// The band's height: one `Caption` line with the related step above and
+    /// below, so the numerals sit between the indent markers at the top and
+    /// bottom edges without touching them.
+    pub fn band_height(theme: &Theme, text: &mut TextRenderer) -> f64 {
+        let line = f64::from(
+            text.measure_style("0", None, &theme.text(TextRole::Caption))
+                .1,
+        );
+        line + 2.0 * f64::from(theme.tokens.spacing.s2)
+    }
+
+    /// Paint the ruler: the page's extent as a lift of the ground, its text
+    /// column raised like the sheet, quarter-inch ticks and a `Caption`
+    /// numeral per inch inside the text column, and the margin, indent and
+    /// tab markers. The band itself stands on the content ground with one
+    /// hairline under it.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
-        colors: RulerColors,
+        theme: &Theme,
         model: &RulerModel,
     ) {
         self.rect = model.band;
         let band = self.rect;
-        scene.fill(Fill::NonZero, transform, colors.bar, None, &band);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.border,
-            None,
-            &Rect::new(band.x0, band.y1 - 1.0, band.x1, band.y1),
-        );
+        let colors = &theme.tokens.colors;
+        ui::widget::toolbar::paint_band(scene, transform, theme, band);
+        let inset = f64::from(theme.tokens.spacing.s1);
         let clip = |x: f64| x.clamp(band.x0, band.x1);
+        let ground = colors.surfaces.content;
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.field,
+            colors.lift_on(ground, 0.5),
             None,
             &Rect::new(
                 clip(model.to_screen(model.page_x)),
-                band.y0 + 4.0,
+                band.y0 + inset,
                 clip(model.to_screen(model.page_x + model.page_w)),
-                band.y1 - 4.0,
+                band.y1 - inset,
             ),
         );
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.paper,
+            colors.surfaces.raised,
             None,
             &Rect::new(
                 clip(model.to_screen(model.left_text_x())),
-                band.y0 + 4.0,
+                band.y0 + inset,
                 clip(model.to_screen(model.right_text_x())),
-                band.y1 - 4.0,
+                band.y1 - inset,
             ),
         );
-        self.draw_ticks(scene, transform, text, colors, model);
-        text.draw_text(
-            scene,
-            "in",
-            9.0,
-            colors.text_dim,
-            transform * Affine::translate((band.x0 + 4.0, f64::midpoint(band.y0, band.y1) - 6.0)),
-            None,
-        );
-        self.draw_markers(scene, transform, colors, model);
+        self.draw_ticks(scene, transform, text, theme, model);
+        self.draw_markers(scene, transform, theme, model);
     }
 
     fn draw_ticks(
@@ -272,35 +265,40 @@ impl Ruler {
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
-        colors: RulerColors,
+        theme: &Theme,
         model: &RulerModel,
     ) {
         let band = self.rect;
-        let mid = f64::midpoint(band.y0, band.y1);
+        let mid = band.center().y;
         let left = model.left_text_x();
         let right = model.right_text_x();
-        let inches = ((right - left) / PX_PER_INCH).ceil() as i32;
+        let ink = theme.tokens.colors.text_dim;
+        let rule = f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0);
+        let style = theme.text(TextRole::Caption).numeric();
+        let tick = f64::from(theme.tokens.spacing.s1);
+        // Whole inches inside the text column only: the last numeral never
+        // stands past the trailing margin.
+        let inches = ((right - left) / PX_PER_INCH + 1.0e-6).floor() as i32;
         for inch in 0..=inches {
             let x = left + f64::from(inch) * PX_PER_INCH;
             let sx = model.to_screen(x);
             if sx < band.x0 - 2.0 || sx > band.x1 + 2.0 {
                 continue;
             }
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.text_dim,
-                None,
-                &Rect::new(sx - 0.5, mid - 5.0, sx + 0.5, mid + 5.0),
-            );
-            if inch > 0 {
-                text.draw_text(
+            let label = inch.to_string();
+            let (w, h) = text.measure_style(&label, None, &style);
+            // A numeral stands clear of the margin markers at both ends.
+            let clear = f64::from(w) / 2.0 + tick;
+            let fits = sx - clear > model.to_screen(left) && sx + clear < model.to_screen(right);
+            if inch > 0 && fits {
+                text.draw_style(
                     scene,
-                    &inch.to_string(),
-                    9.0,
-                    colors.text_dim,
-                    transform * Affine::translate((sx + 2.0, band.y0 + 1.0)),
+                    &label,
+                    ink,
+                    transform
+                        * Affine::translate((sx - f64::from(w) / 2.0, mid - f64::from(h) / 2.0)),
                     None,
+                    &style,
                 );
             }
             for quarter in 1..4 {
@@ -309,13 +307,13 @@ impl Ruler {
                     break;
                 }
                 let qsx = model.to_screen(qx);
-                let h = if quarter == 2 { 3.5 } else { 2.0 };
+                let h = if quarter == 2 { tick } else { tick / 2.0 };
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    with_alpha(colors.text_dim, 0xaa),
+                    ink,
                     None,
-                    &Rect::new(qsx - 0.5, mid - h, qsx + 0.5, mid + h),
+                    &Rect::new(qsx - rule / 2.0, mid - h, qsx + rule / 2.0, mid + h),
                 );
             }
         }
@@ -325,69 +323,74 @@ impl Ruler {
         &self,
         scene: &mut Scene,
         transform: Affine,
-        colors: RulerColors,
+        theme: &Theme,
         model: &RulerModel,
     ) {
         let band = self.rect;
-        let mid = f64::midpoint(band.y0, band.y1);
+        let mid = band.center().y;
         let active = self.drag.map(|d| d.marker);
+        let colors = &theme.tokens.colors;
+        let half = f64::from(theme.tokens.spacing.s1);
+        let edge = f64::from(theme.tokens.spacing.s1) / 2.0;
+        let rule = f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0);
         for (marker, sx) in Self::markers(model) {
             if sx < band.x0 - 6.0 || sx > band.x1 + 6.0 {
                 continue;
             }
-            let selected = active == Some(marker);
-            let color = if selected { colors.accent } else { colors.text };
+            // The marker being dragged is yours: it takes your colour.
+            let color = if active == Some(marker) {
+                colors.intent.you
+            } else {
+                colors.text_primary
+            };
             match marker {
                 RulerMarker::MarginLeft | RulerMarker::MarginRight => {
+                    let line = if active == Some(marker) {
+                        colors.intent.you
+                    } else {
+                        colors.text_dim
+                    };
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        if selected {
-                            colors.accent
-                        } else {
-                            colors.accent_faint
-                        },
+                        line,
                         None,
-                        &Rect::new(sx - 1.0, band.y0 + 2.0, sx + 1.0, band.y1 - 2.0),
-                    );
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        color,
-                        None,
-                        &vello::kurbo::Circle::new((sx, mid), 3.0),
+                        &Rect::new(sx - rule, band.y0 + edge, sx + rule, band.y1 - edge),
                     );
                 }
                 RulerMarker::IndentFirst => fill_triangle(
                     scene,
                     transform,
                     color,
-                    (sx - 4.0, band.y0 + 2.0),
-                    (sx + 4.0, band.y0 + 2.0),
-                    (sx, band.y0 + 9.0),
+                    (sx - half, band.y0 + edge),
+                    (sx + half, band.y0 + edge),
+                    (sx, band.y0 + edge + half * 1.5),
                 ),
                 RulerMarker::IndentLeft => fill_triangle(
                     scene,
                     transform,
                     color,
-                    (sx - 4.0, band.y1 - 2.0),
-                    (sx + 4.0, band.y1 - 2.0),
-                    (sx, band.y1 - 9.0),
+                    (sx - half, band.y1 - edge),
+                    (sx + half, band.y1 - edge),
+                    (sx, band.y1 - edge - half * 1.5),
                 ),
                 RulerMarker::Tab(_) => {
+                    // An L under the numerals: a stem down from the centre
+                    // line and a foot toward the text it aligns.
+                    let foot = band.y1 - edge;
                     scene.fill(
                         Fill::NonZero,
                         transform,
                         color,
                         None,
-                        &Rect::new(sx - 0.5, mid, sx + 0.5, band.y1 - 3.0),
+                        &Rect::new(sx - rule / 2.0, mid + half, sx + rule / 2.0, foot),
                     );
                     scene.fill(
                         Fill::NonZero,
                         transform,
                         color,
                         None,
-                        &Rect::new(sx - 0.5, band.y1 - 3.5, sx + 4.0, band.y1 - 3.0),
+                        &Rect::new(sx - rule / 2.0, foot - rule, sx + half, foot),
                     );
                 }
             }

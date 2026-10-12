@@ -4,16 +4,20 @@
 The host-desktop counterpart of the Tilo OS acceptance suite: the
 tilo-session RPMs CI built, installed on the Fedora Cloud image with dnf, a
 gnome-keyring Secret Service unlocked on the user's bus, the identity
-provisioned there, SDDM autologin into /usr/share/wayland-sessions/tilo.desktop,
+provisioned there, GNOME input sources seeded the way a GNOME user has them
+(German without dead keys, Compose on Right Alt), SDDM autologin into /usr/share/wayland-sessions/tilo.desktop,
 then each app opened the way a person opens it (Super+Space, its name, Enter,
-typed on the VM's keyboard through QMP). After each app starts, the compositor
+typed on the VM's keyboard through QMP). The session must have imported the
+GNOME input sources on its first login, and the lock screen password and app
+names are typed on the German layout it imported. After each app starts, the compositor
 must still be the same process for the whole dwell, with no crash record,
 core dump, unexpected session exit or panic.
 
-    run.py fetch-rpms --out DIR [--run N]   the fedora-44-amd64 RPMs of a
-                                            Release / desktop run (default:
-                                            the newest successful one on main)
     run.py test --rpms DIR --out DIR        the VM test; exit 0 only on pass
+
+DIR holds the fedora-44 RPMs (`dist/ci/run-package-job.sh fedora-44 ...`
+writes them to dist/ci-output/fedora-44-amd64) and, optionally, a
+source.json describing where they came from.
 
 The production session has no control socket, so the run drives it only
 through the VM's keyboard, SSH as root and screenshots (QMP screendump).
@@ -32,14 +36,9 @@ import socket
 import subprocess
 import sys
 import time
-import urllib.request
-import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-FORGE = "https://code.tilo.so/api/v1/repos/tilo/tilo"
-RELEASE_WORKFLOW = "release-desktop.yml"
-RPM_ARTIFACT = "fedora-44-amd64"
 # Fedora 44 Cloud Base (Generic), the release image: the stock Fedora the
 # fedora-44 RPM lane builds for. Pinned by the CHECKSUM Fedora publishes.
 IMAGE_URL = ("https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/"
@@ -50,6 +49,21 @@ APPS = [("Settings", "so.tilo.settings"), ("Notes", "so.tilo.notes"),
         ("Files", "so.tilo.file-explorer"), ("Terminal", "so.tilo.terminal")]
 SSH_PORT = 2222
 GUEST_USER = "fedora"
+# The throwaway guest account's fixture password, also set by guest.sh.
+GUEST_PASSWORD = "tilo-e2e-password"
+# What the session's first-login import must make of the GNOME settings
+# guest.sh seeds (sources [('xkb', 'de+nodeadkeys')], xkb-options
+# ['compose:ralt']): crates/session/shell/src/firstboot.rs.
+IMPORTED_INPUT = {"keyboard_layout": "de:nodeadkeys", "keyboard_layouts": ["de:nodeadkeys"],
+                  "compose_key": "ralt"}
+# Written once the import has completed; its absence means it never ran.
+IMPORT_MARKER = "host_input_migration_version"
+# QMP sends key positions. Where a layout puts a character on another key
+# than US does, the key that types it there.
+LAYOUT_KEYS = {
+    "us": {"-": "minus"},
+    "de": {"-": "slash", "y": "z", "z": "y"},
+}
 
 
 def log(msg: str) -> None:
@@ -58,65 +72,6 @@ def log(msg: str) -> None:
 
 class Fail(Exception):
     pass
-
-
-# -- RPMs from a Release / desktop run -----------------------------------------
-
-def _get(url: str):
-    with urllib.request.urlopen(url, timeout=60) as response:
-        return json.load(response)
-
-
-def _release_runs():
-    """Successful Release / desktop runs on main, newest first."""
-    seen = []
-    for event in ("workflow_dispatch", "schedule", "push"):
-        for page in range(1, 11):
-            runs = _get(f"{FORGE}/actions/runs?event={event}&status=success&limit=50&page={page}")
-            items = runs.get("workflow_runs") or []
-            seen += [r for r in items if r.get("workflow_id") == RELEASE_WORKFLOW]
-            if len(items) < 50:
-                break
-    return sorted(seen, key=lambda r: r["id"], reverse=True)
-
-
-def fetch_rpms(out: Path, run: str | None) -> dict:
-    if run:
-        wanted = int(run)
-        runs = [r for r in _release_runs() if wanted in (r["id"], r.get("index_in_repo"))]
-        if not runs:
-            # Any run, by the number in its URL or its id.
-            try:
-                runs = [_get(f"{FORGE}/actions/runs/{wanted}")]
-            except OSError as error:
-                raise Fail(f"no Release / desktop run {wanted}: {error}") from None
-    else:
-        runs = [r for r in _release_runs() if r.get("prettyref") == "main"]
-    for candidate in runs:
-        artifacts = _get(f"{FORGE}/actions/runs/{candidate['id']}/artifacts")
-        for artifact in artifacts if isinstance(artifacts, list) else artifacts.get("artifacts", []):
-            if artifact["name"] != RPM_ARTIFACT or artifact.get("expired"):
-                continue
-            out.mkdir(parents=True, exist_ok=True)
-            archive = out / f"{RPM_ARTIFACT}.zip"
-            log(f"downloading {RPM_ARTIFACT} of run #{candidate.get('index_in_repo')} "
-                f"({candidate['commit_sha'][:12]})")
-            with urllib.request.urlopen(artifact["archive_download_url"], timeout=600) as response, \
-                    archive.open("wb") as sink:
-                shutil.copyfileobj(response, sink)
-            with zipfile.ZipFile(archive) as zf:
-                for member in zf.namelist():
-                    if member.endswith(".rpm"):
-                        (out / Path(member).name).write_bytes(zf.read(member))
-            archive.unlink()
-            source = {"run": candidate.get("index_in_repo"), "run_id": candidate["id"],
-                      "commit": candidate["commit_sha"], "ref": candidate.get("prettyref"),
-                      "artifact": RPM_ARTIFACT,
-                      "rpms": sorted(p.name for p in out.glob("*.rpm"))}
-            (out / "source.json").write_text(json.dumps(source, indent=1) + "\n")
-            return source
-    raise Fail(f"no unexpired {RPM_ARTIFACT} artifact in "
-               + (f"run {run}" if run else "any successful Release / desktop run on main"))
 
 
 # -- the VM ----------------------------------------------------------------------
@@ -153,17 +108,55 @@ class Qmp:
         self.call("send-key", keys=[{"type": "qcode", "data": q} for q in qcodes], **{"hold-time": 80})
         time.sleep(0.15)
 
-    def type_text(self, text: str) -> None:
-        for ch in text:
-            if ch == " ":
-                self.keys("spc")
-            elif ch.isupper():
-                self.keys("shift", ch.lower())
-            else:
-                self.keys(ch)
+    def type_text(self, text: str, layout: str = "us") -> None:
+        for keys in key_presses(text, layout):
+            self.keys(*keys)
 
     def screendump(self, path: Path) -> None:
         self.call("screendump", filename=str(path), format="png")
+
+
+def key_presses(text: str, layout: str = "us") -> list[tuple[str, ...]]:
+    """The QMP key presses that type `text` on the session's `layout`."""
+    keys = LAYOUT_KEYS[layout]
+    presses = []
+    for ch in text:
+        if ch == " ":
+            presses.append(("spc",))
+        elif ch.isupper():
+            presses.append(("shift", keys.get(ch.lower(), ch.lower())))
+        else:
+            presses.append((keys.get(ch, ch),))
+    return presses
+
+
+def typing_layout(settings: dict) -> str:
+    """The layout to type on: the one the session's settings select."""
+    layout = ((settings.get("input") or {}).get("keyboard_layout") or "us")
+    return "de" if str(layout).split(":", 1)[0] == "de" else "us"
+
+
+def input_import_problems(settings_text: str) -> tuple[dict, list[str]]:
+    """(settings, problems): whether the first login imported the GNOME input settings."""
+    if not settings_text.strip():
+        return {}, ["the session wrote no settings.json: the GNOME input settings were not imported"]
+    try:
+        settings = json.loads(settings_text)
+    except json.JSONDecodeError as error:
+        return {}, [f"the session's settings.json is not JSON ({error}): {settings_text[:200]!r}"]
+    if not isinstance(settings, dict):
+        return {}, [f"the session's settings.json is not an object: {settings_text[:200]!r}"]
+    section = settings.get("input")
+    if not isinstance(section, dict):
+        return settings, ["the session's settings.json has no input section: the GNOME input "
+                          "settings were not imported"]
+    problems = [f"input.{key} is {section.get(key)!r}, want {want!r}"
+                for key, want in IMPORTED_INPUT.items() if section.get(key) != want]
+    marker = section.get(IMPORT_MARKER)
+    if not isinstance(marker, int) or marker < 1:
+        problems.append(f"input.{IMPORT_MARKER} is {marker!r}: the first-login import of the host's "
+                        "GNOME input settings did not complete")
+    return settings, problems
 
 
 class Vm:
@@ -264,6 +257,9 @@ class Vm:
         out = self.guest("status", *apps, timeout=60, capture=True).stdout
         return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
 
+    def settings(self) -> str:
+        return self.guest("settings", timeout=60, capture=True).stdout
+
     def reboot(self) -> None:
         self.ssh("sudo -n systemctl reboot", timeout=30, check=False, capture=True)
         time.sleep(10)
@@ -327,7 +323,7 @@ class Report:
         lines = [f"# Tilo host-desktop session on Fedora 44 — **{overall.upper()}**", "",
                  "| | |", "|---|---|",
                  f"| RPMs | {', '.join(src.get('rpms', []))} |",
-                 f"| Built by | Release / desktop run #{src.get('run')} at `{src.get('commit')}` |",
+                 f"| Built by | {src.get('workflow', 'run')} #{src.get('run')} at `{src.get('commit')}` |",
                  f"| Guest | {Path(IMAGE_URL).name}, {self.meta['memory_mb']} MiB, {self.meta['cpus']} vCPU, "
                  "virtio-gpu without virgl |",
                  "| Session | SDDM autologin into tilo.desktop, gnome-keyring Secret Service unlocked |",
@@ -396,6 +392,13 @@ def run_test(args) -> int:
         elif result.returncode != 0:
             raise Fail("installing the packages failed")
         vm.guest("user")
+        seeded = vm.guest("gnome-input", check=False, capture=True)
+        (out / "gnome-input.log").write_text(seeded.stdout or "")
+        if seeded.returncode != 0:
+            report.add("H05", "The first login imports the host's GNOME input settings", False,
+                       "seeding the GNOME input settings failed: "
+                       + ((seeded.stdout or "").strip().splitlines() or ["no output"])[-1])
+            return 1
         keyring = vm.guest("keyring", check=False, capture=True)
         if not report.add("H01", "gnome-keyring answers org.freedesktop.secrets, unlocked",
                           keyring.returncode == 0, keyring.stdout.strip().splitlines()[-1] if keyring.stdout else ""):
@@ -431,13 +434,31 @@ def run_test(args) -> int:
                           "; ".join(problems)):
             return 1
 
+        # The import runs before the compositor starts; the keymap is built
+        # from its result, so everything typed below goes through it.
+        settings, problems = input_import_problems(vm.settings())
+        report.add("H05", "The first login imports the host's GNOME input settings", not problems,
+                   "; ".join(problems), **{key: (settings.get("input") or {}).get(key)
+                                            for key in (*IMPORTED_INPUT, IMPORT_MARKER)})
+        # Type on the layout the session actually selected, so a broken import
+        # fails H05 rather than every later check.
+        layout = typing_layout(settings)
+
+        # Autologin starts the real compositor locked. Authenticate through
+        # its normal PAM-backed lock screen before sending app search input.
+        # Keep lock policy and failed-authentication behavior intact.
+        log("authenticating the throwaway guest account at the lock screen")
+        vm.qmp.type_text(GUEST_PASSWORD, layout)
+        vm.qmp.keys("ret")
+        time.sleep(2)
+
         for n, (name, app_id) in enumerate(apps, start=1):
             cid = f"A{n:02d}"
             log(f"opening {name} through search")
             vm.qmp.keys("esc")
             vm.qmp.keys("meta_l", "spc")
             time.sleep(1.5)
-            vm.qmp.type_text(name)
+            vm.qmp.type_text(name, layout)
             time.sleep(1.5)
             vm.qmp.screendump(shots / f"{n:02d}-{app_id}-search.png")
             vm.qmp.keys("ret")
@@ -481,7 +502,7 @@ def run_test(args) -> int:
                        survived_s=round(survived, 1))
             if st.get("compositor_pid") != pid:
                 return 1
-        return 0
+        return 0 if all(check["status"] == "pass" for check in report.checks) else 1
     except (Fail, subprocess.SubprocessError, OSError) as error:
         report.add("H00", "The test ran to completion", False, str(error))
         return 1
@@ -504,9 +525,6 @@ def run_test(args) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    fetch = sub.add_parser("fetch-rpms")
-    fetch.add_argument("--out", required=True)
-    fetch.add_argument("--run", default="", help="Release / desktop run number or id")
     test = sub.add_parser("test")
     test.add_argument("--rpms", required=True)
     test.add_argument("--out", required=True)
@@ -519,9 +537,6 @@ def main() -> int:
     test.add_argument("--dwell", type=int, default=45)
     args = parser.parse_args()
     try:
-        if args.command == "fetch-rpms":
-            print(json.dumps(fetch_rpms(Path(args.out), args.run or None), indent=1))
-            return 0
         return run_test(args)
     except Fail as error:
         print(f"host-session e2e: {error}", file=sys.stderr)

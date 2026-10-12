@@ -1,186 +1,387 @@
-//! API Tester as a [`tilo_resource::Resource`]: one action vocabulary, one
-//! publish path. Workspace create actions and the static request/menu/history
-//! children ride [`Resource::bound_actions`] / [`Resource::children`].
+//! The workspace's verbs and the app.
+//!
+//! Renaming a collection, a saved request, an environment or a variable,
+//! choosing the method, typing the URL or the body, editing a row and
+//! choosing the active environment are the built-in field edits of their
+//! paths (`Workspace::paths().request.url.splice(..)`). The methods below are
+//! the operations that are more than setting a field: creating and deleting,
+//! saving and opening requests, and recording what was sent. Sending itself
+//! reaches the network from this device: an effect
+//! ([`crate::actions::ApiTesterEffect`]) whose completion records the history
+//! entry through [`Workspace::RECORD_SENT`].
 
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ROOT};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
+use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::i18n::EmbeddedCatalog;
+use ui::tilo_resource::items::item_resource_id;
+use ui::tilo_resource::{self, ActionCx, Atom, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::widget::Element;
 
-use crate::actions::{
-    API_TESTER_ACTION_TYPE, ApiTesterAction, document_children, register, workspace_bound_actions,
-};
+use crate::actions::ApiTesterEffect;
 use crate::app::ApiTesterApp;
-use crate::doc::ApiDoc;
+use crate::model::HttpMethod;
+use crate::record::{Environment, HISTORY_LIMIT, RequestRecord, SavedCollection, Sent, Variable};
 
-/// Lightweight workspace projection for search and the published tree.
-#[derive(Clone, Debug, Default)]
-pub struct WorkspaceState {
-    pub collections: Vec<(String, String)>,
-    pub environments: Vec<(String, String)>,
+pub use crate::record::Workspace;
+
+/// API Tester's Fluent catalogs, source locale first.
+pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+
+#[resource(
+    kind = "api-tester.workspace",
+    label = "API workspace",
+    initialize = Workspace::blank,
+    search = Workspace::search
+)]
+impl Workspace {
+    /// Start a new request in the builder.
+    #[action]
+    pub fn new_request(&mut self, cx: &mut ActionCx) {
+        self.request = RequestRecord::named("New request");
+        self.opened = Atom(cx.uuid().to_string());
+    }
+
+    /// Create a collection.
+    #[action]
+    pub fn new_collection(&mut self, cx: &mut ActionCx, #[param("Collection name")] name: String) {
+        self.collections.push(
+            Id::from_raw(cx.uuid().to_string()),
+            SavedCollection {
+                name: name.trim().to_owned(),
+                ..SavedCollection::default()
+            },
+        );
+    }
+
+    /// Delete a collection and the requests it holds.
+    #[action(destructive, item = collections)]
+    pub fn delete_collection(&mut self, collection: &Id) -> Result<(), Refusal> {
+        self.collections
+            .remove(collection)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("no such collection"))
+    }
+
+    /// Add a new request to a collection.
+    #[action(item = collections)]
+    pub fn add_request(
+        &mut self,
+        cx: &mut ActionCx,
+        collection: &Id,
+        #[param("Request name")] name: String,
+    ) -> Result<(), Refusal> {
+        let collection = self
+            .collections
+            .get_mut(collection)
+            .ok_or("no such collection")?;
+        collection.requests.push(
+            Id::from_raw(cx.uuid().to_string()),
+            RequestRecord::named(name.trim()),
+        );
+        Ok(())
+    }
+
+    /// Save the request in the builder to a collection.
+    ///
+    /// A request the builder opened from that collection is saved over;
+    /// otherwise it is added, and the builder holds the saved request.
+    #[action(item = collections)]
+    pub fn save_request(
+        &mut self,
+        cx: &mut ActionCx,
+        collection: &Id,
+        #[param("Request name; the builder's when none")] name: Option<String>,
+    ) -> Result<(), Refusal> {
+        if let Some(name) = name.map(|name| name.trim().to_owned())
+            && !name.is_empty()
+        {
+            self.request.name = name;
+        }
+        let opened = self.opened();
+        let elsewhere = self
+            .saved(&opened)
+            .is_some_and(|(holder, _)| holder != collection);
+        let target = self
+            .collections
+            .get_mut(collection)
+            .ok_or("no such collection")?;
+        if let Some(saved) = target.requests.get_mut(&opened) {
+            saved.clone_from(&self.request);
+            return Ok(());
+        }
+        let id = if elsewhere || opened.as_str().is_empty() {
+            Id::from_raw(cx.uuid().to_string())
+        } else {
+            opened
+        };
+        target.requests.push(id.clone(), self.request.clone());
+        self.opened = Atom(id.as_str().to_owned());
+        Ok(())
+    }
+
+    /// Open a saved request in the builder.
+    #[action(item = collections)]
+    pub fn open_request(
+        &mut self,
+        collection: &Id,
+        #[param("Id of the saved request")] request: Id,
+    ) -> Result<(), Refusal> {
+        let saved = self
+            .collections
+            .get(collection)
+            .and_then(|collection| collection.requests.get(&request))
+            .ok_or("no such request")?;
+        self.request = saved.clone();
+        self.opened = Atom(request.as_str().to_owned());
+        Ok(())
+    }
+
+    /// Delete a saved request.
+    #[action(destructive, item = collections)]
+    pub fn delete_request(
+        &mut self,
+        collection: &Id,
+        #[param("Id of the saved request")] request: Id,
+    ) -> Result<(), Refusal> {
+        self.collections
+            .get_mut(collection)
+            .and_then(|collection| collection.requests.remove(&request))
+            .map(drop)
+            .ok_or_else(|| Refusal::new("no such request"))
+    }
+
+    /// Create an environment.
+    #[action]
+    pub fn new_environment(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Environment name")] name: String,
+    ) {
+        self.environments.push(
+            Id::from_raw(cx.uuid().to_string()),
+            Environment {
+                name: name.trim().to_owned(),
+                ..Environment::default()
+            },
+        );
+    }
+
+    /// Delete an environment and its variables.
+    #[action(destructive, item = environments)]
+    pub fn delete_environment(&mut self, environment: &Id) -> Result<(), Refusal> {
+        self.environments
+            .remove(environment)
+            .ok_or_else(|| Refusal::new("no such environment"))?;
+        if self.active_environment.as_ref() == Some(environment) {
+            self.active_environment = None;
+        }
+        Ok(())
+    }
+
+    /// Use an environment's variables in what is sent.
+    #[action(item = environments)]
+    pub fn use_environment(&mut self, environment: &Id) -> Result<(), Refusal> {
+        if !self.environments.contains(environment) {
+            return Err(Refusal::new("no such environment"));
+        }
+        self.active_environment = Some(environment.clone());
+        Ok(())
+    }
+
+    /// Add a variable to an environment.
+    ///
+    /// A secret variable's value is set on each device, never here.
+    #[action(item = environments)]
+    pub fn add_variable(
+        &mut self,
+        cx: &mut ActionCx,
+        environment: &Id,
+        #[param("Variable key")] key: String,
+        #[param("Its value; none for a secret")] value: Option<String>,
+        #[param("Whether the value is a credential kept on each device")] secret: Option<bool>,
+    ) -> Result<(), Refusal> {
+        let secret = secret.unwrap_or(false);
+        let environment = self
+            .environments
+            .get_mut(environment)
+            .ok_or("no such environment")?;
+        environment.variables.push(
+            Id::from_raw(cx.uuid().to_string()),
+            Variable {
+                key: key.trim().to_owned(),
+                value: if secret {
+                    String::new()
+                } else {
+                    value.unwrap_or_default()
+                },
+                enabled: true,
+                secret,
+            },
+        );
+        Ok(())
+    }
+
+    /// Open a sent request again in the builder, as a new request.
+    #[action(item = history)]
+    pub fn open_sent(&mut self, cx: &mut ActionCx, sent: &Id) -> Result<(), Refusal> {
+        let sent = self.history.get(sent).ok_or("no such request")?;
+        self.request = RequestRecord {
+            method: sent.method,
+            url: sent.url.0.clone(),
+            ..RequestRecord::named("New request")
+        };
+        self.opened = Atom(cx.uuid().to_string());
+        Ok(())
+    }
+
+    /// Record a request that was sent.
+    #[action]
+    pub fn record_sent(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The HTTP method")] method: String,
+        #[param("The URL as sent")] url: String,
+        #[param("The response status")] status: u16,
+        #[param("The round-trip time in milliseconds")] duration_ms: u64,
+    ) {
+        let sent = Sent::new(
+            HttpMethod::from_str(&method),
+            &url,
+            status,
+            duration_ms,
+            cx.now_ms(),
+        );
+        self.history
+            .insert(0, Id::from_raw(cx.uuid().to_string()), sent);
+        while self.history.len() > HISTORY_LIMIT {
+            let Some(oldest) = self.history.ids().next_back().cloned() else {
+                break;
+            };
+            self.history.remove(&oldest);
+        }
+    }
 }
 
-/// The API workspace resource.
-pub struct ApiTester;
-
-impl Resource for ApiTester {
-    const KIND: &'static str = "api_tester.workspace";
-    const LABEL: &'static str = "API workspace";
-    const ACTION_TYPE: &'static str = API_TESTER_ACTION_TYPE;
-
-    type State = WorkspaceState;
-    type Action = ApiTesterAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
+impl Workspace {
+    /// A new workspace opens on one blank request, the same on every device.
+    fn blank() -> Self {
+        Self {
+            request: RequestRecord::named("New request"),
+            opened: Atom(uuid::Uuid::nil().to_string()),
+            ..Self::default()
+        }
     }
 
-    fn read(doc: &Doc) -> Result<WorkspaceState, ModelError> {
-        let collections = ApiDoc::collections(doc, &ROOT)
-            .into_iter()
-            .map(|collection| (collection.id.to_string(), collection.name))
-            .collect();
-        let environments = ApiDoc::environments(doc, &ROOT)
-            .into_iter()
-            .map(|environment| (environment.id.to_string(), environment.name))
-            .collect();
-        Ok(WorkspaceState {
-            collections,
-            environments,
-        })
-    }
-
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        // Prompted new-collection / new-environment mint ids when the name is
-        // committed — see [`bound_actions`]. Typed declarations would lose that
-        // continuation identity.
-        Vec::new()
-    }
-
-    fn bound_actions(_state: &WorkspaceState) -> Vec<ActionSpec> {
-        workspace_bound_actions()
-    }
-
-    fn children(_state: &WorkspaceState) -> Vec<tilo_actions::Resource> {
-        // Active request Send (Effect), contextual menus (View), and the
-        // history directory. Deep collection/request/environment records stay
-        // on the search catalog and resolve by stable id.
-        document_children()
-    }
-
-    fn search(state: &WorkspaceState) -> Vec<SearchEntry> {
-        let collections = state.collections.iter().map(|(id, name)| SearchEntry {
-            anchor: Some(format!("api_tester.collection:{id}")),
-            title: name.clone(),
-            text: String::new(),
-            action: None,
-        });
-        let environments = state.environments.iter().map(|(id, name)| SearchEntry {
-            anchor: Some(format!("api_tester.environment:{id}")),
-            title: name.clone(),
-            text: String::new(),
-            action: None,
-        });
-        collections.chain(environments).collect()
+    /// What system search finds: records by their names and routes, never a
+    /// body, a credential or a variable's value. Each hit is anchored at the
+    /// collection, environment or sent request it belongs to.
+    fn search(&self) -> Vec<SearchEntry> {
+        let anchored = |field: &str, id: &Id, title: String| {
+            SearchEntry::new(title, String::new()).anchored(item_resource_id::<Self>(field, id))
+        };
+        let mut entries = Vec::new();
+        for (id, collection) in self.collections.iter() {
+            entries.push(anchored("collections", id, collection.name.clone()));
+            for request in collection.requests.values() {
+                entries.push(anchored(
+                    "collections",
+                    id,
+                    format!("{} {}", request.method.as_str(), request.name),
+                ));
+            }
+        }
+        for (id, environment) in self.environments.iter() {
+            entries.push(anchored("environments", id, environment.name.clone()));
+            for variable in environment.variables.values() {
+                entries.push(anchored(
+                    "environments",
+                    id,
+                    format!("Variable {}", variable.key),
+                ));
+            }
+        }
+        for (id, sent) in self.history.iter() {
+            entries.push(anchored("history", id, sent.route.0.clone()));
+        }
+        entries
     }
 }
 
 /// Framework app.
 pub struct ApiTesterShell;
 
+impl ApiTesterShell {
+    /// The view state a screenshot scenario stages: a contextual form, the
+    /// rail, the URL's focus, a failed send.
+    pub const SCENARIOS: &'static [&'static str] = &[
+        "empty",
+        "rail-open",
+        "error",
+        "focus-url",
+        "form-new-collection",
+        "form-save-request",
+        "form-rename-collection",
+        "form-rename-request",
+        "form-new-environment",
+        "form-rename-environment",
+        "form-new-variable",
+        "form-delete-variable",
+    ];
+}
+
 impl ResourceApp for ApiTesterShell {
-    type Resource = ApiTester;
+    type Resource = Workspace;
     const ID: &'static str = "so.tilo.api-tester";
     const TITLE: &'static str = "API Tester";
     const ICON: Option<&'static str> = Some("api-tester");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+
+    fn view(cx: &mut ViewCx<Workspace>) -> Element {
+        cx.surface(ApiTesterApp::new_with_actions(&cx.actions()))
     }
 
-    fn view(cx: &mut ViewCx<ApiTester>) -> Element {
-        cx.surface(ApiTesterApp::new())
-    }
-}
-
-impl ResourceSurface<ApiTester> for ApiTesterApp {
-    fn present(&mut self, state: &Rc<WorkspaceState>) {
-        self.adopt_resource_state(state);
+    fn catalog() -> Option<&'static EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
     }
 
-    fn attach(&mut self, cx: SurfaceCx<ApiTester>) {
-        self.attach_framework(cx.dispatcher());
+    fn scenarios() -> &'static [&'static str] {
+        Self::SCENARIOS
     }
-}
 
-/// Framework dispatcher for collections, environments, and saved requests.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<ApiTester>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
+    /// Every scenario but the empty one shows the sample workspace.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Workspace>> {
+        if name == Some("empty") {
+            return Vec::new();
         }
+        crate::seed::workspace()
     }
 }
 
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<ApiTester>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
+impl ResourceSurface<Workspace, ApiTesterEffect> for ApiTesterApp {
+    fn present(&mut self, state: &Rc<Workspace>) {
+        self.present_workspace(state);
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
+    fn attach(&mut self, cx: SurfaceCx<Workspace>) {
+        self.attach_surface(&cx);
     }
 
-    pub(crate) fn dispatch_with_context(
+    fn read_only_changed(&mut self, read_only: bool) {
+        self.set_read_only(read_only);
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
+
+    fn effect(
         &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &ApiTesterAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.is_hosted() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-
-    /// Hosted commits are recorded by the dispatcher. Standalone tests still
-    /// read the local host's rising edge.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+        effect: ApiTesterEffect,
+        cx: &mut EffectCx<Workspace, Self>,
+    ) -> EffectAnswer {
+        self.answer_effect(effect, cx)
     }
 }
+
+#[cfg(test)]
+mod tests;

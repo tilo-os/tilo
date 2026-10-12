@@ -8,8 +8,9 @@
 //!     compositor reads; the fine half of the colour grade.
 //!   * [`media`]   — the FUSE-media seam: clips reference workspace paths
 //!     (`/var/workspace/…`); bytes hydrate on demand.
-//!   * [`doc`]     — Automerge projection of the project (the collaborative,
-//!     undoable source of truth) + the demo project seed.
+//!   * [`resource`] — the project's verbs and the app: the
+//!     collaborative, undoable source of truth is [`model::Project`] itself,
+//!     stored by `#[derive(Model)]`; [`seed`] holds the demo project.
 //!   * [`project_file`] — the versioned `.qvp` file behind Save / Save As /
 //!     Open: the same Automerge document, framed and stamped,
 //!     so a project can be copied and handed to someone.
@@ -21,8 +22,8 @@
 //!     export render through, so they cannot disagree.
 //!   * [`audio`]   — which clips are audible at an instant, and the mix.
 //!   * [`export`]  — export presets + the (GStreamer-gated) render pipeline.
-//!   * [`shot`]    — composing a `--shots` frame, and the fingerprint that
-//!     proves two runs of a scenario describe one picture.
+//!   * [`shot`]    — the fingerprint that proves two runs of a `--shots`
+//!     scenario describe one picture.
 //!   * [`presence`] — who else is in the edit: the presence keys for the
 //!     timeline domain, what this editor publishes about
 //!     where its user is, and how it draws everyone else.
@@ -30,11 +31,10 @@
 //!     preview + transport, multi-track timeline, inspector,
 //!     export dialog — all drawn into one Vello scene.
 //!
-//! The app runs on the app framework ([`VideoEditor`]; the binary adds the
-//! capture flags): the live window and every capture mode host the same editor, and a
-//! `--shots` scenario stages the demo project through the host and the
-//! editor's view state through `ResourceSurface::stage`. [`app_root`] builds
-//! the standalone widget for tests and benchmarks that drive it directly.
+//! The app runs on the app framework ([`VideoEditor`]): the live window and
+//! every capture mode host the same editor, and a `--shots` scenario stages
+//! its project through the host and the editor's view state through
+//! `ResourceSurface::stage`.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -55,7 +55,6 @@ pub mod actions;
 pub mod app;
 pub mod audio;
 pub mod curve;
-pub mod doc;
 pub mod export;
 mod files;
 pub mod gpu;
@@ -69,24 +68,18 @@ pub mod preview;
 pub mod probe;
 pub mod project_file;
 pub mod resource;
-pub mod search_provider;
+pub mod search;
+pub mod seed;
 pub mod shot;
 pub mod thumbnail;
 pub mod timecode;
 pub mod waveform;
 
 pub use app::VideoEditorApp;
-pub use resource::{VideoEditor, VideoProject};
-
-use ui::widget::Widget;
+pub use model::Project;
+pub use resource::VideoEditor;
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<VideoEditor>()
-}
-
-/// Build the standalone editor widget: it opens on a blank project and never
-/// fabricates media or clips.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(VideoEditorApp::new())
+    ui::built_in_definition!(VideoEditor)
 }

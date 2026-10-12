@@ -37,6 +37,12 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     "/usr/share/fonts",
     "/usr/share/fontconfig",
     "/etc/fonts",
+    // Spelling dictionaries: every toolkit text field checks spelling
+    // in-process against the system Hunspell dictionaries (the
+    // `spellcheck` crate's `DICTIONARY_DIRS`). Without them a sandboxed app
+    // silently checks nothing outside English.
+    "/usr/share/hunspell",
+    "/usr/share/myspell",
     // Keyboard layout data: `xkb_context_new` returns NULL without its
     // default include path, and winit unwraps that into a panic — every
     // sandboxed Wayland app dies before painting. `X11/locale` carries
@@ -64,6 +70,12 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     // `[sandbox.net]` and the egress gate. The CA bundle only decides
     // whether a *permitted* connection verifies — withholding it produces
     // certificate errors, not security, and it's the same bytes for every user.
+    // Fedora's NSS trust module is a public library in /usr/lib64 whose
+    // symlink passes through an architecture-specific system alternative.
+    // Bind only the public library files, so dlopen resolves the CA provider.
+    "/etc/alternatives/libnssckbi.so",
+    "/etc/alternatives/libnssckbi.so.x86_64",
+    "/etc/alternatives/libnssckbi.so.aarch64",
     "/etc/pki",
     "/etc/ssl",
     "/etc/crypto-policies",
@@ -245,6 +257,21 @@ mod tests {
                     && w[2] == "/usr/share/X11/xkb"),
                 "the xkb keymap data must be read-only in the sandbox: {argv:?}"
             );
+            // Every text field checks spelling in-process; without the
+            // dictionaries (bound and Landlock-readable) non-English
+            // checking silently finds nothing.
+            for dictionaries in ["/usr/share/hunspell", "/usr/share/myspell"] {
+                assert!(
+                    argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+                        && w[1] == dictionaries
+                        && w[2] == dictionaries),
+                    "{dictionaries} must be read-only in the sandbox: {argv:?}"
+                );
+                assert!(
+                    landlock_ro_paths(false).contains(&PathBuf::from(dictionaries)),
+                    "{dictionaries} must be readable under Landlock"
+                );
+            }
             assert!(
                 argv.windows(3)
                     .any(|w| w[0] == "--dev-bind-try" && w[1] == "/dev/dri"),

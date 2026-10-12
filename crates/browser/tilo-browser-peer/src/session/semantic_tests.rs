@@ -155,7 +155,7 @@ fn semantic_storage_failures_refuse_opening_and_retry_the_same_state() {
 }
 
 #[test]
-fn semantic_channel_storage_migrates_v2_and_round_trips_v3() {
+fn semantic_channel_storage_migrates_v2_and_round_trips_v4() {
     let (mut task, route, _, _, store) = task_fixture();
     task.persist_channels(false);
     let encoded = store.load_channels().unwrap();
@@ -165,14 +165,14 @@ fn semantic_channel_storage_migrates_v2_and_round_trips_v3() {
         panic!("current format")
     };
     let expected_members = current.members.clone();
-    let old = SavedPeerChannelsV2 {
+    let old = V2SavedPeerChannels {
         channels: crate::channels::SavedChannelsV2 {
             governors: current.governors,
             members: current.members,
         },
         held: vec![(route, vec![vec![1, 2, 3]])],
     };
-    let mut bytes = SAVED_CHANNELS_V2_TAG.to_vec();
+    let mut bytes = V2_SAVED_CHANNELS_TAG.to_vec();
     postcard::to_io(&old, &mut bytes).unwrap();
     let migrated = SavedPeerChannels::decode(&bytes).unwrap();
     let StoredChannels::Current(migrated_channels) = migrated.channels else {
@@ -181,6 +181,102 @@ fn semantic_channel_storage_migrates_v2_and_round_trips_v3() {
     assert_eq!(migrated_channels.members, expected_members);
     assert!(migrated_channels.revocations.is_empty());
     assert_eq!(migrated.held, old.held);
+}
+
+#[test]
+fn semantic_storage_migrates_main_v3_members_requests_and_held_edits() {
+    let (mut fixture, route, _, _, store) = task_fixture();
+    fixture.persist_channels(false);
+    let loaded = SavedPeerChannels::decode(&store.load_channels().unwrap()).unwrap();
+    let StoredChannels::Current(current) = loaded.channels else {
+        panic!("current format")
+    };
+    assert!(!current.members.is_empty());
+    let request = collab_types::MlsAccessRequestV1::unsigned(
+        current.members[0].channel,
+        collab_types::Ed25519PublicKey::from_bytes(fixture.config.cert.device_public_key),
+        vec![1, 2, 3],
+        7,
+    );
+    let old = V3SavedPeerChannels {
+        channels: crate::channels::SavedChannelsV2 {
+            governors: current.governors.clone(),
+            members: current.members.clone(),
+        },
+        requests: vec![request.clone()],
+        held: vec![(route.clone(), vec![b"before the reload".to_vec()])],
+    };
+    let mut bytes = V3_SAVED_CHANNELS_TAG.to_vec();
+    postcard::to_io(&old, &mut bytes).unwrap();
+    store.save_channels(&bytes).unwrap();
+    let mut reopened = Task::new(
+        fixture.config.clone(),
+        fixture.signer.clone(),
+        store.clone(),
+        fixture.shared.clone(),
+    );
+    assert!(reopened.semantic_storage_trusted);
+    assert_eq!(
+        postcard::to_stdvec(&reopened.channels.pending_requests()).unwrap(),
+        postcard::to_stdvec(&vec![request]).unwrap()
+    );
+    assert_eq!(reopened.held_outbound.get(&route), Some(&old.held[0].1));
+    reopened.persist_channels(true);
+    let encoded = store.load_channels().unwrap();
+    assert!(encoded.starts_with(b"tilo.browser-channels.v4"));
+    let migrated = SavedPeerChannels::decode(&encoded).unwrap();
+    let StoredChannels::Current(migrated_channels) = migrated.channels else {
+        panic!("migrated format")
+    };
+    assert_eq!(migrated_channels.members, current.members);
+    assert_eq!(migrated_channels.governors, current.governors);
+    assert!(migrated_channels.revocations.is_empty());
+    assert!(!migrated_channels.revocation_overflow);
+    assert_eq!(
+        postcard::to_stdvec(&migrated.requests).unwrap(),
+        postcard::to_stdvec(&old.requests).unwrap()
+    );
+    assert_eq!(migrated.held, old.held);
+}
+
+#[test]
+fn semantic_storage_refuses_trailing_authority_in_every_version() {
+    let current = SavedPeerChannels::default().encode().unwrap();
+    let mut v3 = V3_SAVED_CHANNELS_TAG.to_vec();
+    postcard::to_io(
+        &V3SavedPeerChannels {
+            channels: crate::channels::SavedChannelsV2 {
+                governors: Vec::new(),
+                members: Vec::new(),
+            },
+            requests: Vec::new(),
+            held: Vec::new(),
+        },
+        &mut v3,
+    )
+    .unwrap();
+    let mut v2 = V2_SAVED_CHANNELS_TAG.to_vec();
+    postcard::to_io(
+        &V2SavedPeerChannels {
+            channels: crate::channels::SavedChannelsV2 {
+                governors: Vec::new(),
+                members: Vec::new(),
+            },
+            held: Vec::new(),
+        },
+        &mut v2,
+    )
+    .unwrap();
+    let legacy = postcard::to_stdvec(&(
+        crate::channels::LegacySavedChannels::default(),
+        Vec::<(DocumentRoute, Vec<Vec<u8>>)>::new(),
+    ))
+    .unwrap();
+    for mut bytes in [current, v3, v2, legacy] {
+        assert!(SavedPeerChannels::decode(&bytes).is_some());
+        bytes.push(0);
+        assert!(SavedPeerChannels::decode(&bytes).is_none());
+    }
 }
 
 #[test]

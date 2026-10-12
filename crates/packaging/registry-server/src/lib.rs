@@ -20,11 +20,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -45,19 +41,21 @@ pub mod moderation;
 pub mod moderation_api;
 pub mod serve;
 pub mod storage;
+pub mod submission_review;
 
 pub use allowlist::{AllowlistError, PublisherAllowlist, PublisherRow};
 pub use bundle_review::{
     BundleReviewError, InspectedVersion, InspectionPolicy, fetch_entry_bytes, fetch_version_bytes,
-    inspect_bytes, inspect_entry, review_entry_bytes, review_version_bytes,
+    inspect_bytes, inspect_entry, inspect_stored_bytes, review_entry_bytes, review_version_bytes,
 };
 pub use moderation::{ModerationError, ModerationService};
 pub use moderation_api::{ModerationApiError, ModerationApiService};
 pub use serve::{AppState, handle};
 pub use storage::{
-    HistoryCompaction, HistoryCompactionReport, PendingSubmission, PromotionJournal, PruneReport,
-    ReviewDecision, ReviewRecord, ReviewSubject, ServerIdentity, StagedArtifact, StagedPromotion,
-    Storage, StorageError,
+    DroppedVersion, HistoryCompaction, HistoryCompactionReport, PendingSubmission,
+    PromotionJournal, PrunePreview, PruneReport, RetentionPreview, ReviewDecision, ReviewRecord,
+    ReviewSubject, ServerIdentity, StagedArtifact, StagedPromotion, Storage, StorageError,
+    TwinReport,
 };
 
 /// Bind the server to `addr` and run until the listener errors or
@@ -116,7 +114,7 @@ pub async fn run_server(addr: SocketAddr, state: AppState) -> std::io::Result<()
 /// Convenience: default XDG state dir for the registry data.
 /// Falls back to `~/.local/state/tilo-registry`.
 pub fn default_data_dir() -> std::path::PathBuf {
-    xdg_paths::xdg::state_home().map_or_else(
+    tilo_paths::xdg::state_home().map_or_else(
         || std::path::PathBuf::from("/var/lib/tilo-registry"),
         |state| state.join("tilo-registry"),
     )

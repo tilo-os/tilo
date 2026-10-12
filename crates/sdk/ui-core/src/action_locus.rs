@@ -1,5 +1,50 @@
 //! Exact, read-only action geometry shared by native and retained browser hosts.
 
+/// Paint semantic activity against this frame's exact action bindings. Both
+/// native and retained hosts use this projection; an unresolved action remains
+/// in the activity rail rather than guessing a control from its label.
+pub(crate) fn draw_action_presence(
+    paint: &mut crate::paint::PaintCtx<'_>,
+    presence: &mut crate::presence::PresenceCtx,
+    tree: &crate::a11y_tree::SemanticTree,
+    bindings: &[crate::widget::ControlBindingMetadata],
+    viewport: vello::kurbo::Rect,
+    surface: &str,
+    now: crate::time::Instant,
+) {
+    let mut resolved = Vec::new();
+    for interaction in presence.visible_interactions(now) {
+        let Some(bounds) = interaction_bounds(tree, bindings, &interaction) else {
+            continue;
+        };
+        let bounds = bounds.intersect(viewport);
+        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+            continue;
+        }
+        let user = crate::permissions::UserId(interaction.actor.id.clone());
+        let label = presence.interaction_status_label(&interaction);
+        presence.draw_action_outline_labeled_within(
+            paint,
+            &user,
+            &label,
+            bounds,
+            f64::from(paint.theme.tokens.radii.detail),
+            viewport,
+        );
+        presence.draw_agent_action_marker(paint, &interaction, bounds, viewport, surface, now);
+        resolved.push(interaction.invocation);
+    }
+    presence.draw_interactions_excluding(
+        paint.scene,
+        paint.transform,
+        viewport,
+        paint.text,
+        paint.theme,
+        now,
+        &resolved,
+    );
+}
+
 /// One visible expression of a domain action in the retained UI. The action
 /// address remains the execution identity; this route is presentation
 /// metadata for focus, presence, animation, and “show me where” behavior.
@@ -20,6 +65,42 @@ pub(crate) fn action_ui_routes(
     address: &tilo_actions::ActionAddress,
 ) -> Vec<ActionUiRoute> {
     let mut routes = Vec::new();
+    visit_action_ui_routes(tree, bindings, address, &mut |binding, path, node| {
+        routes.push(ActionUiRoute {
+            address: address.clone(),
+            control_id: binding.control_id.clone(),
+            path: path.to_vec(),
+            bounds: node.bounds,
+            focused: node.state.focused,
+            disabled: node.state.disabled,
+        });
+    });
+    routes.sort_by(|left, right| {
+        left.disabled
+            .cmp(&right.disabled)
+            .then_with(|| left.bounds.is_none().cmp(&right.bounds.is_none()))
+            .then_with(|| left.path.len().cmp(&right.path.len()))
+            .then_with(|| right.focused.cmp(&left.focused))
+            .then_with(|| left.control_id.cmp(&right.control_id))
+    });
+    routes.dedup_by(|left, right| left.path.last() == right.path.last());
+    routes
+}
+
+type ActionRouteVisitor<'tree, 'visitor> = dyn FnMut(
+        &crate::widget::ControlBindingMetadata,
+        &[crate::a11y_tree::SemanticId],
+        &'tree crate::a11y_tree::SemanticNode,
+    ) + 'visitor;
+
+// Ranking is a public presentation policy. Exact resource geometry needs the
+// same admitted candidates, but neither route allocation nor ranked sorting.
+fn visit_action_ui_routes<'tree>(
+    tree: &'tree crate::a11y_tree::SemanticTree,
+    bindings: &[crate::widget::ControlBindingMetadata],
+    address: &tilo_actions::ActionAddress,
+    visit: &mut ActionRouteVisitor<'tree, '_>,
+) {
     for binding in bindings {
         if bindings
             .iter()
@@ -29,7 +110,7 @@ pub(crate) fn action_ui_routes(
         {
             continue;
         }
-        let paths = tree.control_paths(&binding.control_id);
+        let paths = tree.control_paths_unranked(&binding.control_id);
         let leaves = paths
             .iter()
             .filter(|path| {
@@ -66,26 +147,9 @@ pub(crate) fn action_ui_routes(
             let Some(node) = tree.node(semantic_id) else {
                 continue;
             };
-            routes.push(ActionUiRoute {
-                address: address.clone(),
-                control_id: binding.control_id.clone(),
-                path: path.clone(),
-                bounds: node.bounds,
-                focused: node.state.focused,
-                disabled: node.state.disabled,
-            });
+            visit(binding, path, node);
         }
     }
-    routes.sort_by(|left, right| {
-        left.disabled
-            .cmp(&right.disabled)
-            .then_with(|| left.bounds.is_none().cmp(&right.bounds.is_none()))
-            .then_with(|| left.path.len().cmp(&right.path.len()))
-            .then_with(|| right.focused.cmp(&left.focused))
-            .then_with(|| left.control_id.cmp(&right.control_id))
-    });
-    routes.dedup_by(|left, right| left.path.last() == right.path.last());
-    routes
 }
 
 /// Resolve only an unambiguous, currently bound control. Labels and positional
@@ -139,4 +203,43 @@ pub(crate) fn interaction_bounds(
         });
     let only = candidates.next()?;
     candidates.next().is_none().then_some(only)
+}
+
+/// Exact resource geometry after the host has translated a checked publication.
+pub(crate) fn resource_bounds(
+    tree: &crate::a11y_tree::SemanticTree,
+    bindings: &[crate::widget::ControlBindingMetadata],
+    address: &tilo_actions::ActionAddress,
+) -> Option<(vello::kurbo::Rect, u64)> {
+    let resource = tree.node(&crate::a11y_tree::SemanticId(format!(
+        "r:{}",
+        address.resource
+    )))?;
+    if !resource.durable_identity || resource.action(&address.action).is_none() {
+        return None;
+    }
+    let mut only = None;
+    let mut ambiguous = false;
+    visit_action_ui_routes(tree, bindings, address, &mut |_, _, node| {
+        if let Some(previous) = only {
+            ambiguous |= previous != &node.id;
+        } else {
+            only = Some(&node.id);
+        }
+    });
+    if ambiguous {
+        return None;
+    }
+    // Adjacent deduplication after ranking has cardinality one exactly when
+    // every candidate ends at this same node. Mixed endpoints remain ambiguous
+    // regardless of interleaving; this does not globally deduplicate ranked UI.
+    let node = tree.node(only?)?;
+    let bounds = node.bounds?;
+    let widget = node.widget_taffy_id?;
+    ([bounds.x0, bounds.y0, bounds.x1, bounds.y1]
+        .into_iter()
+        .all(f64::is_finite)
+        && bounds.width() > 0.0
+        && bounds.height() > 0.0)
+        .then_some((bounds, widget))
 }

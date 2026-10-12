@@ -57,12 +57,12 @@ struct Authority {
     b: Arc<AtomicBool>,
 }
 impl LiveAuthority for Authority {
-    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission> {
+    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied> {
         let (publisher, publish, active) = match token {
             b"grant-a" => (A, true, Arc::new(AtomicBool::new(true))),
             b"grant-b" => (B, true, self.b.clone()),
             b"grant-viewer" => (C, false, Arc::new(AtomicBool::new(true))),
-            _ => return Err(Admission::Denied),
+            _ => return Err(Denied),
         };
         Ok(Arc::new(Session {
             publisher,
@@ -155,7 +155,6 @@ async fn open(f: &Fixture, token: &[u8], id: u8) -> ([u8; 16], Stream) {
         .live
         .relay
         .fallback_open(token, [id; 16])
-        .await
         .expect("fallback admitted");
     let mut stream = Stream {
         inner: stream,
@@ -187,7 +186,7 @@ fn frames_round_trip_and_session_ids_are_exact_lowercase_hex() {
 async fn unknown_tokens_and_sessions_are_refused() {
     let f = fixture();
     assert_eq!(
-        f.live.relay.fallback_open(b"forged", [1; 16]).await.err(),
+        f.live.relay.fallback_open(b"forged", [1; 16]).err(),
         Some(FallbackError::Denied)
     );
     assert_eq!(
@@ -472,6 +471,40 @@ async fn resume_keeps_the_session_and_revocation_ends_it() {
     );
     assert!(f.live.relay.counters().revoked >= 1);
     drop(a);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_collection_preserves_an_in_flight_namespace() {
+    let f = fixture();
+    let namespace = path(A);
+    let reservation = f.live.relay.0.slot(&namespace, true).unwrap();
+    f.live.relay.maintain();
+    assert!(
+        f.live.relay.0.slot(&namespace, false).is_some(),
+        "maintenance must not withdraw a namespace while its owner is being attached"
+    );
+    drop(reservation);
+    f.live.relay.maintain();
+    assert!(
+        f.live.relay.0.slot(&namespace, false).is_none(),
+        "an abandoned namespace remains collectable"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn idle_collection_rechecks_current_client_ownership() {
+    let f = fixture();
+    let (_id, _stream) = open(&f, b"grant-a", 44).await;
+    let namespace = path(A);
+    // Commit a maintenance candidate collected before this client attached.
+    f.live.relay.0.remove_slot(&namespace, None);
+    assert!(
+        f.live.relay.0.slot(&namespace, false).is_some(),
+        "a stale idle candidate must not withdraw a currently authorized client"
+    );
+    let (_subscriber, mut stream) = open(&f, b"grant-b", 45).await;
+    let member = stream.until(FRAME_MEMBER).await;
+    assert_eq!((&member[..32], member[32]), (&bytes32(A)[..], 1));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

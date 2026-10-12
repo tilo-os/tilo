@@ -7,17 +7,21 @@
 //! other method from a client whose version differs, so an old CLI never
 //! half-drives a new daemon.
 //!
-//! Layer bytes travel as base64 chunks ([`LayerUploadChunk`]) so the stream
-//! stays line-oriented JSON and a truncated upload is detectable.
+//! Layer bytes prefer an optional bounded binary substream ([`LayerUploadBinary`])
+//! with count and SHA-256 verification. Older protocol-8 peers retain base64
+//! chunks ([`LayerUploadChunk`]); all other operations remain ordered JSON-RPC.
 //!
 //! Long jobs that stream output (in-VM builds, CI layer extraction) do not
 //! use the RPC loop: `tilo-vm` runs `ssh <vm> tilo-vmd build` (or
 //! `ci-layer`) with a [`BuildJob`] or [`CiJob`] on stdin. The job's own
 //! output streams on stderr and its outcome is one [`JobLine`] on stdout.
 
+pub mod binary;
 pub mod client;
+pub mod disk_unlock;
 pub mod display;
 pub mod input;
+pub mod layer_hash;
 pub mod manifest;
 
 use std::collections::BTreeMap;
@@ -26,12 +30,13 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub use client::{Client, ClientError};
+pub use disk_unlock::{DeviceActions, DeviceUnlockEnrol, DeviceUnlockEnrolResult};
 pub use display::OutputSpec;
 pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Where in-VM builds keep one synced source tree per host worktree; its
 /// `target/` is the worktree's own, evictable build dir.
@@ -48,6 +53,11 @@ pub const VM_SLOT: &str = "vm";
 /// session an image runs for its account without a greeter (a board's
 /// always-on session). Only images that run one have it.
 pub const DEVICE_SLOT: &str = "device";
+
+/// How long the keep-awake lease lasts after the last request: every
+/// connection's [`Hello`] renews it, so a machine someone drives does not
+/// suspend under them, and one they stopped driving can again.
+pub const AWAKE_IDLE_SECONDS: u64 = 30 * 60;
 
 /// One request line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,12 +130,16 @@ pub enum Request {
     SlotShow(SlotShow),
     #[serde(rename = "layer.upload.begin")]
     LayerUploadBegin(LayerUploadBegin),
+    #[serde(rename = "layer.upload.binary")]
+    LayerUploadBinary(LayerUploadBinary),
     #[serde(rename = "layer.upload.chunk")]
     LayerUploadChunk(LayerUploadChunk),
     #[serde(rename = "layer.import")]
     LayerImport(LayerImport),
     #[serde(rename = "layer.list")]
     LayerList(LayerList),
+    #[serde(rename = "layer.verify")]
+    LayerVerify(LayerVerify),
     #[serde(rename = "swap")]
     Swap(Swap),
     #[serde(rename = "rollback")]
@@ -148,11 +162,19 @@ pub enum Request {
     AppInstall(AppInstall),
     #[serde(rename = "boot.confirm")]
     BootConfirm(BootConfirm),
+    #[serde(rename = "awake")]
+    Awake(Awake),
+    #[serde(rename = "device.unlock.enrol")]
+    DeviceUnlockEnrol(disk_unlock::DeviceUnlockEnrol),
+    #[serde(rename = "device.actions")]
+    DeviceActions(disk_unlock::DeviceActions),
 }
 
 impl Request {
     pub fn method(&self) -> &'static str {
         match self {
+            Self::DeviceUnlockEnrol(_) => "device.unlock.enrol",
+            Self::DeviceActions(_) => "device.actions",
             Self::Hello(_) => "hello",
             Self::Status(_) => "status",
             Self::SlotCreate(_) => "slot.create",
@@ -161,9 +183,11 @@ impl Request {
             Self::SlotRm(_) => "slot.rm",
             Self::SlotShow(_) => "slot.show",
             Self::LayerUploadBegin(_) => "layer.upload.begin",
+            Self::LayerUploadBinary(_) => "layer.upload.binary",
             Self::LayerUploadChunk(_) => "layer.upload.chunk",
             Self::LayerImport(_) => "layer.import",
             Self::LayerList(_) => "layer.list",
+            Self::LayerVerify(_) => "layer.verify",
             Self::Swap(_) => "swap",
             Self::Rollback(_) => "rollback",
             Self::Logs(_) => "logs",
@@ -175,6 +199,7 @@ impl Request {
             Self::Input(_) => "input",
             Self::AppInstall(_) => "app.install",
             Self::BootConfirm(_) => "boot.confirm",
+            Self::Awake(_) => "awake",
         }
     }
 }
@@ -206,9 +231,11 @@ call! {
     SlotRm => SlotRmResult,
     SlotShow => SlotShowResult,
     LayerUploadBegin => LayerUploadBeginResult,
+    LayerUploadBinary => LayerUploadBeginResult,
     LayerUploadChunk => LayerUploadChunkResult,
     LayerImport => LayerImportResult,
     LayerList => Vec<LayerInfo>,
+    LayerVerify => LayerInfo,
     Swap => ApplyResult,
     Rollback => ApplyResult,
     Logs => LogsResult,
@@ -220,6 +247,9 @@ call! {
     Input => InputResult,
     AppInstall => AppInstallResult,
     BootConfirm => BootConfirmResult,
+    Awake => AwakeLease,
+    DeviceUnlockEnrol => DeviceUnlockEnrolResult,
+    DeviceActions => serde_json::Value,
 }
 
 // ---- requests ---------------------------------------------------------------
@@ -277,6 +307,13 @@ pub struct SlotShow {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerUploadBegin {}
 
+/// Optional protocol-8 upgrade: ready response, bounded binary frames, then
+/// a same-id byte-count response. Use `Client::upload` after explicit transport
+/// opt-in; a bare RPC call cannot perform the substream. Older peers reject it
+/// before consuming bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerUploadBinary {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerUploadChunk {
     pub upload: String,
@@ -302,6 +339,13 @@ pub struct LayerImport {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayerList {}
+
+/// Verify stored content before reusing a layer. Optional on protocol 8 peers;
+/// clients must stream normally when this method is unavailable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerVerify {
+    pub hash: String,
+}
 
 /// Replace (or add) one component's layer in a slot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -403,6 +447,20 @@ pub struct BootConfirm {
     /// one release apart. When absent, the release alone is compared.
     #[serde(default)]
     pub expect_version: Option<String>,
+}
+
+/// Change the keep-awake lease beyond what every request does by itself
+/// (hold the machine awake until [`AWAKE_IDLE_SECONDS`] after it), or with
+/// neither field set just report it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Awake {
+    /// Hold it awake this many seconds from now instead.
+    #[serde(default)]
+    pub seconds: Option<u64>,
+    /// Release the lease now, so the machine may suspend; the next request
+    /// takes it again.
+    #[serde(default)]
+    pub off: bool,
 }
 
 // ---- shared vocabulary ------------------------------------------------------
@@ -623,6 +681,16 @@ pub enum Action {
     /// The slot user's desktop layout removed, so the next session starts
     /// with none.
     ResetDesktopState,
+    /// The desktop of a login restarted in place (`tilo-session` on
+    /// SIGUSR1): the login, its user manager and its services stayed.
+    RestartDesktop {
+        user: String,
+    },
+    /// A user unit of the session's account restarted.
+    RestartUserUnit {
+        user: String,
+        unit: String,
+    },
     /// Recorded but not activated; takes effect at the next session restart.
     Deferred {
         reason: String,
@@ -662,6 +730,26 @@ pub struct HelloResult {
     /// Which build and extraction tools the VM's image has.
     #[serde(default)]
     pub tools: VmTools,
+    /// The keep-awake lease, as this hello renewed it.
+    #[serde(default)]
+    pub awake: Option<AwakeLease>,
+}
+
+/// The logind `sleep` block lock that keeps the machine from suspending
+/// while someone works on it (`tilo-vm-awake.service`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AwakeLease {
+    /// Unix seconds when the lease ends; `None` once released.
+    #[serde(default)]
+    pub until: Option<u64>,
+    /// Unix seconds an explicit hold (`tilo-vm vm awake --for`) lasts until.
+    #[serde(default)]
+    pub hold_until: Option<u64>,
+    /// Whether the lock is in place right now.
+    pub held: bool,
+    /// Why it is not, when it should be.
+    #[serde(default)]
+    pub problem: Option<String>,
 }
 
 /// Tools found on the VM's `PATH`, which decide where builds and CI layer
@@ -852,6 +940,16 @@ pub struct LayerInfo {
     pub provenance: Provenance,
 }
 
+/// Canonical installer selection, separate from the protocol-v8 action vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CohortSelection {
+    pub id: String,
+    pub root: String,
+    pub runtime: String,
+    pub preserved: bool,
+    pub pinned: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApplyResult {
     pub slot: String,
@@ -860,6 +958,9 @@ pub struct ApplyResult {
     pub changed: bool,
     pub policy: Policy,
     pub actions: Vec<Action>,
+    /// Signed package selections; older protocol-v8 clients ignore this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cohort_selection: Vec<CohortSelection>,
     /// Non-fatal findings, e.g. a layer built against a different base image.
     #[serde(default)]
     pub warnings: Vec<String>,
@@ -1079,6 +1180,53 @@ pub const INSTALL_TIMEOUT_SECONDS: u64 = 1800;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The v8 `ApplyResult` wire shape before optional cohort selection receipts.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct LegacyApplyResult {
+        slot: String,
+        generation: u64,
+        changed: bool,
+        policy: Policy,
+        actions: Vec<Action>,
+        #[serde(default)]
+        warnings: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        boot: Option<BootChange>,
+    }
+
+    #[test]
+    fn cohort_selection_receipts_preserve_protocol_v8_apply_decoding() {
+        let legacy = LegacyApplyResult {
+            slot: "device".into(),
+            generation: 40,
+            changed: true,
+            policy: Policy::SessionRestart,
+            actions: vec![Action::RestartDesktop {
+                user: "owner".into(),
+            }],
+            warnings: vec![],
+            boot: None,
+        };
+        let old_wire = serde_json::to_value(&legacy).unwrap();
+        let mut current: ApplyResult = serde_json::from_value(old_wire.clone()).unwrap();
+        assert!(current.cohort_selection.is_empty());
+        assert_eq!(serde_json::to_value(&current).unwrap(), old_wire);
+        current.cohort_selection.push(CohortSelection {
+            id: "so.tilo.settings".into(),
+            root: "signed-root".into(),
+            runtime: "matched-sdk".into(),
+            preserved: false,
+            pinned: true,
+        });
+        let new_wire = serde_json::to_vec(&current).unwrap();
+        let decoded: LegacyApplyResult = serde_json::from_slice(&new_wire).unwrap();
+        assert_eq!(decoded, legacy);
+        assert_eq!(
+            serde_json::from_slice::<ApplyResult>(&new_wire).unwrap(),
+            current
+        );
+    }
 
     #[test]
     fn package_names_cannot_smuggle_options_or_shell() {

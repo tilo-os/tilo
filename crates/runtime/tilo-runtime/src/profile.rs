@@ -52,7 +52,7 @@ impl MediaHost {
                 .block_on(tilo_fs::ContentStore::open(content))
                 .map_err(io::Error::other)?,
         );
-        let media = tilo_fs::document_media::DocumentMedia::new(Arc::clone(&store), None);
+        let media = tilo_fs::document_media::DocumentMedia::new(Arc::clone(&store));
         let server = {
             let _entered = runtime.enter();
             tilo_fs::document_media::serve_socket(socket, media).map_err(io::Error::other)?

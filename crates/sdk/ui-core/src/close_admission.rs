@@ -115,7 +115,7 @@ impl Admission {
                 continue;
             }
             content = content.push(Box::new(
-                Button::new(choice.label(), choice.label(), None).on_action(
+                Button::new(choice.label(), choice.label()).on_action(
                     tilo_actions::ActionBinding::unit_for(&resource, choice.id())
                         .expect("host close unit action"),
                 ),

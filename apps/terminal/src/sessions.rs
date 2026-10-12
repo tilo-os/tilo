@@ -19,13 +19,24 @@ pub enum OpenState {
     Fixed,
     /// Waiting for the first sync to learn the target.
     Unopened,
+    /// A supervisor is opening the session off the UI thread.
+    Opening,
     /// A session is attached.
     Open,
     /// The device's own shell needs the person's allow; the shell is asking.
     AwaitingAllow,
     /// The target could not be opened; the reason is shown on the tab.
     Failed(String),
+    /// No environment can be built on this device (no `env-runtime` image is
+    /// installed). The tab says so and offers the device's own shell.
+    NoRuntime(String),
 }
+
+pub(crate) type OpenAnswer = (
+    Requester,
+    Option<String>,
+    Result<TerminalBackend, OpenError>,
+);
 
 enum Source {
     /// Never opens a session.
@@ -45,7 +56,8 @@ enum Source {
 
 /// How a scripted source answers an open.
 #[cfg(test)]
-type ScriptedOpen = dyn FnMut(&SessionTarget, Requester) -> Result<TerminalBackend, OpenError>;
+type ScriptedOpen =
+    dyn FnMut(&SessionTarget, Requester, Option<&str>) -> Result<TerminalBackend, OpenError>;
 
 impl std::fmt::Debug for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -62,17 +74,23 @@ impl std::fmt::Debug for Source {
 /// The tab's session source, target and the places it can run.
 pub struct Sessions {
     source: Source,
+    pending: Option<crate::async_open::PendingOpen>,
     pub state: OpenState,
     /// The target the current (or last attempted) session runs on.
     pub target: Option<SessionTarget>,
     recent: RecentTarget,
     /// Environments the picker offers, as last listed.
     pub environments: Vec<EnvironmentSummary>,
+    /// The person's relays an environment can run on, as last listed.
+    pub relays: Vec<crate::target::RelaySummary>,
     /// Legacy VMs the legacy VM service reports. Empty until that service
     /// exists, which keeps them out of the picker.
     pub legacy_vms: Vec<String>,
     allow: Option<Rc<RefCell<ui::widget::HostShellAllow>>>,
     intent: Option<ui::widget::AppHostIntent>,
+    /// The person took the tab's offer of the device's own shell; opened at
+    /// the next sync.
+    pub host_requested: bool,
 }
 
 impl std::fmt::Debug for Sessions {
@@ -95,13 +113,16 @@ impl Sessions {
     fn with(source: Source, state: OpenState, recent: RecentTarget) -> Self {
         Self {
             source,
+            pending: None,
             state,
             target: None,
             recent,
             environments: Vec::new(),
             legacy_vms: Vec::new(),
+            relays: Vec::new(),
             allow: None,
             intent: None,
+            host_requested: false,
         }
     }
 
@@ -128,11 +149,21 @@ impl Sessions {
         )
     }
 
+    /// A real host grants discovery, without connecting on its UI thread.
+    pub(crate) fn hosted_deferred() -> Self {
+        Self::with(
+            Source::Hosted { first: None },
+            OpenState::Unopened,
+            RecentTarget::discover(),
+        )
+    }
+
     /// A tab whose sessions open through `open` — for tests.
     #[cfg(test)]
     pub fn scripted(
         recent: RecentTarget,
-        open: impl FnMut(&SessionTarget, Requester) -> Result<TerminalBackend, OpenError> + 'static,
+        open: impl FnMut(&SessionTarget, Requester, Option<&str>) -> Result<TerminalBackend, OpenError>
+        + 'static,
     ) -> Self {
         Self::with(
             Source::Scripted(Box::new(open)),
@@ -175,6 +206,7 @@ impl Sessions {
         &mut self,
         target: &SessionTarget,
         requested_by: Requester,
+        relay_session: Option<&str>,
     ) -> Result<TerminalBackend, OpenError> {
         if requested_by == Requester::Agent && target.is_host() {
             return Err(OpenError::Refused(
@@ -185,23 +217,75 @@ impl Sessions {
             Source::None => Err(OpenError::Unavailable(
                 "this terminal has no process service".into(),
             )),
-            Source::Standalone => TerminalBackend::open(target, requested_by),
-            Source::Hosted { first } => {
-                crate::HostedProcessServices::open_session(first.take(), target, requested_by)
-            }
+            Source::Standalone => TerminalBackend::open(target, requested_by, relay_session),
+            Source::Hosted { first } => crate::HostedProcessServices::open_session(
+                first.take(),
+                target,
+                requested_by,
+                relay_session,
+                None,
+            ),
             #[cfg(test)]
-            Source::Scripted(open) => open(target, requested_by),
+            Source::Scripted(open) => open(target, requested_by, relay_session),
+        }
+    }
+
+    /// Start a hosted open on a worker; other sources retain their own routing.
+    pub(crate) fn begin_open(
+        &mut self,
+        target: &SessionTarget,
+        requester: Requester,
+        attach: Option<&str>,
+        waker: std::sync::Arc<std::sync::Mutex<ui::WakeHandle>>,
+    ) -> Option<Result<TerminalBackend, OpenError>> {
+        {
+            // Cancels any superseded request before consuming another connection.
+            self.pending = None;
+            if let Source::Hosted { first } = &mut self.source {
+                if requester == Requester::Agent && target.is_host() {
+                    return Some(Err(OpenError::Refused(
+                        "agents may not open the device's own shell".into(),
+                    )));
+                }
+                match crate::async_open::PendingOpen::start(
+                    first.take(),
+                    target.clone(),
+                    requester,
+                    attach.map(str::to_owned),
+                    waker,
+                ) {
+                    Ok(pending) => {
+                        self.pending = Some(pending);
+                        self.state = OpenState::Opening;
+                        return None;
+                    }
+                    Err(error) => return Some(Err(error)),
+                }
+            }
+        }
+        Some(self.open(target, requester, attach))
+    }
+
+    pub(crate) fn take_open_answer(&mut self) -> Option<OpenAnswer> {
+        {
+            let pending = self.pending.as_ref()?;
+            let result = pending.take_answer()?;
+            let requester = pending.requester;
+            let attach = pending.attach.clone();
+            self.pending = None;
+            Some((requester, attach, result))
         }
     }
 
     /// Ask the shell to put the device's own shell to the person, once.
-    /// Only a shell-hosted tab can ask; elsewhere the reason stays on screen.
+    /// Hosted and native tabs both use the trusted session shell; an unavailable
+    /// shell answers with a refusal.
     pub fn request_allow(&mut self) -> bool {
         #[cfg(test)]
         let scripted = matches!(self.source, Source::Scripted(_));
         #[cfg(not(test))]
         let scripted = false;
-        if scripted || matches!(self.source, Source::Hosted { .. }) {
+        if scripted || matches!(self.source, Source::Hosted { .. } | Source::Standalone) {
             let reply = Rc::new(RefCell::new(ui::widget::HostShellAllow::default()));
             self.intent = Some(ui::widget::AppHostIntent::AllowHostShell {
                 reply: Rc::downgrade(&reply),
@@ -231,7 +315,7 @@ impl Sessions {
             return;
         }
         if matches!(self.source, Source::Hosted { .. }) {
-            self.legacy_vms = xdg_paths::xdg::data_home()
+            self.legacy_vms = tilo_paths::xdg::data_home()
                 .map(|data| legacy_vms_under(&data))
                 .unwrap_or_default();
         }
@@ -241,6 +325,12 @@ impl Sessions {
         }
         if let Ok(list) = self.directory_request(&serde_json::json!({"op": "list-environments"})) {
             self.environments = list;
+        }
+        if matches!(self.source, Source::Hosted { .. })
+            && let Ok(reply) =
+                crate::HostedProcessServices::ask(&serde_json::json!({"op": "list-relays"}))
+        {
+            self.relays = parse_relays_reply(&reply);
         }
     }
 
@@ -362,4 +452,35 @@ pub(crate) fn legacy_vms_under(data_home: &std::path::Path) -> Vec<String> {
         })
         .map(str::to_owned)
         .collect()
+}
+
+/// Decode the supervisor's list of the person's relays; anything else is none.
+pub(crate) fn parse_relays_reply(reply: &str) -> Vec<crate::target::RelaySummary> {
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        relay: String,
+        #[serde(default)]
+        label: String,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "result", rename_all = "kebab-case")]
+    enum Reply {
+        Relays { relays: Vec<Entry> },
+    }
+    match serde_json::from_str::<Reply>(reply.trim()) {
+        Ok(Reply::Relays { relays }) => relays
+            .into_iter()
+            .filter(|entry| {
+                crate::target::Location::Relay {
+                    relay: entry.relay.clone(),
+                }
+                .is_valid()
+            })
+            .map(|entry| crate::target::RelaySummary {
+                relay: entry.relay,
+                label: entry.label,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }

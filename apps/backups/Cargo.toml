@@ -33,12 +33,13 @@ sha2.workspace = true
 walkdir.workspace = true
 vello.workspace = true
 winit.workspace = true
-taffy.workspace = true
+chrono = { workspace = true, features = ["clock", "std"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

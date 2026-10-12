@@ -36,6 +36,7 @@ NATIVE_PREFIXES = ("native/",)
 # The native runner and the tools that drive it.
 NATIVE_RUNNER_FILES = {
     "app/native_runner.rs",
+    "app/native_runner/startup.rs",
     "application/host.rs",
     "dx12_shader_cache.rs",
     "headless.rs",
@@ -46,10 +47,9 @@ NATIVE_RUNNER_FILES = {
     "profiling/resource_trace.rs",
     "render_thread.rs",
     "webview/chromium/mod.rs",
+    "webview/chromium/runtime.rs",
     "webview/frame_trace.rs",
     "webview/profile.rs",
-    "webview/wpe/egl.rs",
-    "webview/wpe/mod.rs",
     "window_icon.rs",
 }
 

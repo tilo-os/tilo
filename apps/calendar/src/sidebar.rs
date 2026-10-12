@@ -1,30 +1,22 @@
 //! Responsive sidebar chrome.
 //!
 //! Presentation state and geometry come from the shared
-//! [`ui::widget::SidebarDrawer`] (docked-vs-overlay, open/collapse memory,
-//! content inset). Calendar-specific header controls stay here; lists and
-//! tasks remain in `CalendarApp`; the mini-month is its own footer component.
+//! [`ui::widget::SidebarDrawer`]: docked beside the calendar when the window
+//! is wide, a floating drawer over it when narrow, and the person's show/hide
+//! choice per size class. The drawer paints the panel, the scrim and the
+//! sidebar toggle; this module adds the header row's overflow menu button and
+//! (when the top bar has no room for it) the view switcher. The navigation
+//! rows themselves are painted by `CalendarApp`, which owns the model.
 
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::widget::{SidebarDrawer, SplitLayout};
-use vello::kurbo::{Affine, Point, Rect};
-
-use crate::app::{
-    center_text, draw_chevron, draw_cross, draw_download, draw_icon_button, draw_upload,
+use ui::theme::Theme;
+use ui::widget::{
+    Button, ButtonFace, ControlSize, SegmentedFace, SidebarDrawer, SplitLayout, ToggleGroup,
 };
-use crate::draw_util::{fill_rect, fill_round, hairline, selected_row};
-use crate::model::View;
-use ui::surface::card;
+use vello::kurbo::{Point, Rect};
 
-const WIDTH: f64 = 252.0;
-/// Matches the shared drawer family's wide dock threshold used across apps
-/// that keep a full calendar column beside the rail.
-const PERSISTENT_MIN: f64 = 900.0;
-const FULLSCREEN_MAX: f64 = 560.0;
-/// At large accessibility text sizes a 252px dock cannot provide usable
-/// columns for names, counts, and priority chips.  Treat the dock as a drawer
-/// instead, so the calendar keeps a full-width, non-overlapping primary view.
-const LARGE_TEXT_DRAWER_SCALE: f32 = 1.35;
+use crate::model::View;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Mode {
@@ -44,87 +36,58 @@ impl Mode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     Dismiss,
-    ToggleCollapsed,
+    /// A press on the floating panel itself, between its controls.
+    Guard,
+    Toggle,
+    Menu,
     View(View),
-    Export,
-    Import,
 }
 
+/// What the chrome pass painted: where the navigation rows start, the theme
+/// to paint them with (the sidebar region's, or the floating drawer's), and
+/// the hit rects of the header controls.
 pub(crate) struct Chrome {
     pub(crate) body_y: f64,
+    pub(crate) theme: Theme,
     pub(crate) hits: Vec<(Rect, Action)>,
 }
 
-/// The window and the panes beside the sidebar: the overlay drawer dims
-/// whichever of `content` and `detail` is showing.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Panes {
-    pub(crate) window: Rect,
-    pub(crate) content: Rect,
-    pub(crate) detail: Rect,
-}
-
-/// One chrome paint pass: the pointer driving hover, and the hit rects the
-/// header controls push.
-struct ChromePaint<'a> {
-    ctx: PaintCtx<'a>,
-    pointer: Point,
-    hits: Vec<(Rect, Action)>,
+/// The window width below which the sidebar floats as a drawer: the docked
+/// sidebar plus a calendar two columns wide (an overview and a detail), so a
+/// month grid is never squeezed beside it.
+fn dock_breakpoint() -> f64 {
+    let m = ui::tokens::Metrics::BASE;
+    f64::from(m.sidebar_width + m.overview_width + m.detail_min_width)
 }
 
 pub(crate) struct Sidebar {
     drawer: SidebarDrawer,
-    text_scale: f32,
+    /// Open once the next layout has decided docked or drawer, so the
+    /// choice lands on the size class the window actually has.
+    open_after_layout: bool,
 }
 
 impl Sidebar {
     pub(crate) fn new() -> Self {
         Self {
-            drawer: SidebarDrawer::new()
-                .left()
-                .docked_width(WIDTH)
-                .overlay_width(WIDTH)
-                .breakpoint(PERSISTENT_MIN)
-                .rail_width(0.0),
-            text_scale: 1.0,
+            drawer: SidebarDrawer::new().left().breakpoint(dock_breakpoint()),
+            open_after_layout: false,
         }
     }
 
-    /// Recompute the responsive drawer and return the x coordinate at which
-    /// the calendar content begins.
-    pub(crate) fn layout(&mut self, window: Rect) -> f64 {
-        let large_text = self.text_scale >= LARGE_TEXT_DRAWER_SCALE;
-        // Force overlay when large text needs the full primary column, even on
-        // a wide window — same policy as before, expressed as a breakpoint the
-        // shared drawer cannot satisfy at this width.
-        let breakpoint = if large_text {
-            window.width() + 1.0
-        } else {
-            PERSISTENT_MIN
-        };
-        let overlay_width = if window.width() < FULLSCREEN_MAX || large_text {
-            window.width()
-        } else {
-            WIDTH
-        };
-        self.drawer.set_breakpoint(breakpoint);
-        self.drawer.set_docked_width(WIDTH);
-        self.drawer.set_overlay_width(overlay_width);
+    /// Recompute the responsive drawer for `window` in `theme` and return the
+    /// x coordinate at which the calendar content begins.
+    pub(crate) fn layout(&mut self, window: Rect, theme: &Theme) -> f64 {
+        self.drawer.scale_for(theme);
         self.drawer.resolve(window);
+        if std::mem::take(&mut self.open_after_layout) {
+            self.drawer.open();
+        }
         // Calendar chrome toggles snap; never tick the eased reveal here so
         // layout stays deterministic for tests and `--shots`.
         let open = self.drawer.is_open();
         self.drawer.snap(open);
         self.drawer.resolve(window).x0
-    }
-
-    /// The current theme scale belongs to layout, not durable sidebar state.
-    pub(crate) fn set_text_scale(&mut self, scale: f32) {
-        self.text_scale = if scale.is_finite() {
-            scale.clamp(0.5, 4.0)
-        } else {
-            1.0
-        };
     }
 
     pub(crate) fn mode(&self) -> Mode {
@@ -135,7 +98,13 @@ impl Sidebar {
         self.drawer.sidebar_rect()
     }
 
-    /// Overlay-flap open flag (unchecked while docked).
+    /// The shared drawer, for the header that draws its toggle while the
+    /// sidebar is hidden.
+    pub(crate) fn drawer(&self) -> &SidebarDrawer {
+        &self.drawer
+    }
+
+    /// Overlay-drawer open flag (unchecked while docked).
     pub(crate) fn is_open(&self) -> bool {
         self.mode() == Mode::Overlay && self.drawer.is_open()
     }
@@ -149,7 +118,8 @@ impl Sidebar {
         self.drawer.snap(open);
     }
 
-    /// Docked-rail collapsed flag (false while overlay).
+    /// Docked sidebar hidden flag (false while overlay).
+    #[cfg(test)]
     pub(crate) fn is_collapsed(&self) -> bool {
         self.mode() == Mode::Persistent && !self.drawer.is_open()
     }
@@ -167,220 +137,133 @@ impl Sidebar {
         self.drawer.snap(self.drawer.is_open());
     }
 
-    pub(crate) fn toggle_collapsed(&mut self) {
-        self.toggle_open();
+    /// The sidebar's band of the window's one header row.
+    fn header(&self, theme: &Theme) -> Rect {
+        let r = self.rect();
+        Rect::new(
+            r.x0,
+            r.y0,
+            r.x1,
+            r.y0 + f64::from(theme.tokens.metrics.header_height),
+        )
     }
 
-    /// Paint the sidebar ground and header controls. `switcher` is the
-    /// active view when the view switcher is the sidebar's to show (it is not
-    /// in the top bar).
+    /// A header-row control square at `x0`, centred on the band.
+    fn header_control(band: Rect, x0: f64, theme: &Theme) -> Rect {
+        let side = f64::from(theme.tokens.metrics.min_pointer_target);
+        let mid = band.center().y;
+        Rect::new(x0, mid - side / 2.0, x0 + side, mid + side / 2.0)
+    }
+
+    /// The show/hide toggle at the sidebar's top-leading corner.
+    pub(crate) fn toggle_rect(&self, theme: &Theme) -> Rect {
+        let band = self.header(theme);
+        Self::header_control(band, band.x0 + f64::from(theme.tokens.spacing.s3), theme)
+    }
+
+    /// The overflow menu button at the trailing end of the sidebar header.
+    pub(crate) fn menu_rect(&self, theme: &Theme) -> Rect {
+        let band = self.header(theme);
+        let side = f64::from(theme.tokens.metrics.min_pointer_target);
+        Self::header_control(
+            band,
+            band.x1 - f64::from(theme.tokens.spacing.s3) - side,
+            theme,
+        )
+    }
+
+    /// Paint the scrim (drawer only), the panel, the header controls and,
+    /// when `switcher` names the active view, the view switcher under the
+    /// header. Returns `None` while the sidebar is hidden.
     pub(crate) fn draw_chrome(
         &self,
         ctx: &mut PaintCtx<'_>,
-        panes: Panes,
         switcher: Option<View>,
         pointer: Point,
     ) -> Option<Chrome> {
         if !self.visible() {
             return None;
         }
-        let Panes {
-            window,
-            content,
-            detail,
-        } = panes;
-        let (scene, transform, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
-        let colors = &theme.tokens.colors;
+        let theme = ctx.theme;
         let mut hits = Vec::new();
-        let overlay = self.mode() == Mode::Overlay;
-        if overlay && (content.area() > 0.0 || detail.area() > 0.0) {
-            let behind = if content.area() > 0.0 {
-                content
-            } else {
-                detail
-            };
-            fill_rect(scene, transform, behind, colors.surfaces.overlay);
-            hits.push((behind, Action::Dismiss));
+        if self.mode() == Mode::Overlay {
+            self.drawer.draw_scrim(ctx.scene, ctx.transform, theme);
+            let scrim = self.drawer.scrim_rect();
+            if scrim.area() > 0.0 {
+                hits.push((scrim, Action::Dismiss));
+            }
+            // The panel swallows presses that land between its rows.
+            hits.push((self.rect(), Action::Guard));
         }
+        let local = self.drawer.paint_panel(ctx.scene, ctx.transform, theme);
 
-        let rect = self.rect();
-        if overlay {
-            // The drawer's elevation over the dimmed content: the theme's
-            // shadow token, not a literal black band.
-            ui::surface::elevation(scene, transform, rect, &theme.tokens.elevation.e3);
-        }
-        fill_rect(scene, transform, rect, colors.surfaces.raised);
-        hairline(
-            scene,
-            transform,
-            colors.surfaces.raised,
-            Point::new(rect.x1, rect.y0),
-            Point::new(rect.x1, rect.y1),
+        let toggle = self.toggle_rect(&local);
+        self.drawer.draw_toggle(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            &local,
+            toggle,
+            toggle.contains(pointer),
         );
+        hits.push((toggle, Action::Toggle));
 
-        let mut paint = ChromePaint {
-            ctx: ctx.reborrow(),
-            pointer,
-            hits,
-        };
-        let mut y = rect.y0 + 22.0;
-        self.draw_chrome_collapse_or_dismiss(&mut paint, window, y);
-        y += 30.0;
+        let menu = self.menu_rect(&local);
+        Button::paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            &local,
+            &ButtonFace::icon_only(menu, Icon::MoreHorizontal, "More")
+                .hovered(menu.contains(pointer)),
+        );
+        hits.push((menu, Action::Menu));
 
-        if overlay && let Some(view) = switcher {
-            y += self.draw_chrome_view_switcher(&mut paint, view, y);
+        let mut body_y = self.header(&local).y1;
+        if let Some(view) = switcher {
+            let inset = f64::from(local.tokens.spacing.s3);
+            let height = SegmentedFace::height(ControlSize::Regular, &local);
+            let r = self.rect();
+            let strip = Rect::new(r.x0 + inset, body_y, r.x1 - inset, body_y + height);
+            let segments = segment_rects(strip, View::ALL.len());
+            let owned: Vec<String> = View::ALL.iter().map(|v| v.display_label()).collect();
+            let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
+            let selected = View::ALL.iter().position(|v| *v == view).unwrap_or(0);
+            let hovered = segments.iter().position(|s| s.contains(pointer));
+            ToggleGroup::paint(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                &local,
+                &SegmentedFace::new(&segments, &labels, selected).hovered(hovered),
+            );
+            for (segment, candidate) in segments.iter().zip(View::ALL) {
+                hits.push((*segment, Action::View(candidate)));
+            }
+            body_y = strip.y1 + inset;
         }
-
-        self.draw_chrome_footer_buttons(&mut paint, y);
 
         Some(Chrome {
-            body_y: y + 46.0,
-            hits: paint.hits,
+            body_y,
+            theme: local,
+            hits,
         })
     }
+}
 
-    /// The collapse (persistent mode) or dismiss (overlay mode, once the
-    /// drawer covers the full window) button, top-right of the sidebar
-    /// header. Split out of [`Self::draw_chrome`] to keep that under the
-    /// line cap.
-    fn draw_chrome_collapse_or_dismiss(&self, paint: &mut ChromePaint<'_>, window: Rect, y: f64) {
-        let (scene, transform, theme) =
-            (&mut *paint.ctx.scene, paint.ctx.transform, paint.ctx.theme);
-        let (pointer, hits) = (paint.pointer, &mut paint.hits);
-        let rect = self.rect();
-        let overlay = self.mode() == Mode::Overlay;
-        let pad = 18.0;
-        let colors = &theme.tokens.colors;
-        if !overlay {
-            let button = Rect::new(rect.x1 - pad - 24.0, y - 3.0, rect.x1 - pad, y + 21.0);
-            if button.contains(pointer) {
-                fill_round(scene, transform, button, 7.0, colors.lift(0.35));
-            }
-            draw_chevron(scene, transform, colors.neutral[7], button.center(), true);
-            hits.push((button, Action::ToggleCollapsed));
-        } else if rect.width() >= window.width() - 0.5 {
-            let button = Rect::new(rect.x1 - pad - 24.0, y - 4.0, rect.x1 - pad, y + 20.0);
-            draw_icon_button(scene, transform, theme, button, button.contains(pointer));
-            draw_cross(scene, transform, colors.neutral[8], button.center());
-            hits.push((button, Action::Dismiss));
-        }
-    }
-
-    /// The overlay-mode Month/Week/Day/Agenda segmented switcher, shown only
-    /// when the switcher doesn't already live in the top bar. Returns the
-    /// vertical space it consumed (`0.0` if not drawn). Split out of
-    /// [`Self::draw_chrome`] to keep that under the line cap.
-    fn draw_chrome_view_switcher(&self, paint: &mut ChromePaint<'_>, view: View, y: f64) -> f64 {
-        let PaintCtx {
-            scene,
-            transform,
-            text,
-            theme,
-        } = &mut paint.ctx;
-        let (transform, theme) = (*transform, *theme);
-        let (pointer, hits) = (paint.pointer, &mut paint.hits);
-        let rect = self.rect();
-        let colors = &theme.tokens.colors;
-        let inset = f64::from(theme.tokens.spacing.s3);
-        let segmented = Rect::new(rect.x0 + inset, y, rect.x1 - inset, y + 36.0);
-        let track_radius = f64::from(theme.tokens.radii.lg);
-        // Segmented track (HIG §9.5): the base tier with its derived edge; the
-        // chosen segment is the selection lift, never an accent fill.
-        card(
-            scene,
-            transform,
-            segmented,
-            track_radius,
-            colors.surfaces.base,
-        );
-        let cell_width = segmented.width() / View::ALL.len() as f64;
-        let seg_inset = f64::from(theme.tokens.spacing.s1) / 2.0 + 1.0;
-        for (index, candidate) in View::ALL.iter().enumerate() {
-            let cell = Rect::new(
-                segmented.x0 + cell_width * index as f64,
-                segmented.y0,
-                segmented.x0 + cell_width * (index as f64 + 1.0),
-                segmented.y1,
-            );
-            selected_row(
-                scene,
-                transform,
-                theme,
-                colors.surfaces.base,
-                cell.inflate(-seg_inset, -seg_inset),
-                track_radius - seg_inset,
-                view == *candidate,
-                cell.contains(pointer),
-            );
-            center_text(
-                scene,
-                text,
-                candidate.label(),
-                13.0,
-                if view == *candidate {
-                    colors.text_primary
-                } else {
-                    colors.neutral[7]
-                },
-                cell,
-                transform,
-            );
-            hits.push((cell, Action::View(*candidate)));
-        }
-        50.0
-    }
-
-    /// The Export/Import footer buttons, side by side at the bottom of the
-    /// sidebar header. Split out of [`Self::draw_chrome`] to keep that under
-    /// the line cap.
-    fn draw_chrome_footer_buttons(&self, paint: &mut ChromePaint<'_>, y: f64) {
-        let PaintCtx {
-            scene,
-            transform,
-            text,
-            theme,
-        } = &mut paint.ctx;
-        let (transform, theme) = (*transform, *theme);
-        let (pointer, hits) = (paint.pointer, &mut paint.hits);
-        let rect = self.rect();
-        let colors = &theme.tokens.colors;
-        let button_width = (rect.width() - 24.0 - 8.0) / 2.0;
-        let export = Rect::new(rect.x0 + 12.0, y, rect.x0 + 12.0 + button_width, y + 32.0);
-        draw_icon_button(scene, transform, theme, export, export.contains(pointer));
-        draw_download(
-            scene,
-            transform,
-            colors.neutral[8],
-            Point::new(export.x0 + 18.0, export.center().y),
-        );
-        text.draw_text(
-            scene,
-            "Export",
-            13.0,
-            colors.neutral[8],
-            transform * Affine::translate((export.x0 + 32.0, export.center().y - 8.0)),
-            None,
-        );
-        hits.push((export, Action::Export));
-
-        let import = Rect::new(export.x1 + 8.0, y, rect.x1 - 12.0, y + 32.0);
-        draw_icon_button(scene, transform, theme, import, import.contains(pointer));
-        draw_upload(
-            scene,
-            transform,
-            colors.neutral[8],
-            Point::new(import.x0 + 18.0, import.center().y),
-        );
-        text.draw_text(
-            scene,
-            "Import",
-            13.0,
-            colors.neutral[8],
-            transform * Affine::translate((import.x0 + 32.0, import.center().y - 8.0)),
-            None,
-        );
-        hits.push((import, Action::Import));
-    }
+/// `count` equal, contiguous segments across `strip`.
+pub(crate) fn segment_rects(strip: Rect, count: usize) -> Vec<Rect> {
+    let width = strip.width() / count.max(1) as f64;
+    (0..count)
+        .map(|index| {
+            Rect::new(
+                strip.x0 + width * index as f64,
+                strip.y0,
+                strip.x0 + width * (index as f64 + 1.0),
+                strip.y1,
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -389,44 +272,65 @@ mod tests {
 
     #[test]
     fn layout_mode_and_visibility_follow_width_text_scale_and_toggles() {
-        // Case `layout_switches_between_inline_flap_and_phone_drawer`.
+        let theme = Theme::dark();
+        let docked = f64::from(theme.tokens.metrics.sidebar_width);
+        // Case `layout_switches_between_docked_sidebar_and_drawer`.
         {
             let mut sidebar = Sidebar::new();
-            assert_eq!(sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 800.0)), WIDTH);
+            assert_eq!(
+                sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 800.0), &theme),
+                docked
+            );
             assert_eq!(sidebar.mode(), Mode::Persistent);
-            assert_eq!(sidebar.rect().width(), WIDTH);
+            assert_eq!(sidebar.rect().width(), docked);
 
-            assert_eq!(sidebar.layout(Rect::new(0.0, 0.0, 700.0, 800.0)), 0.0);
+            assert_eq!(
+                sidebar.layout(Rect::new(0.0, 0.0, 800.0, 600.0), &theme),
+                0.0
+            );
             assert_eq!(sidebar.mode(), Mode::Overlay);
-            assert_eq!(sidebar.rect().width(), WIDTH);
-
-            sidebar.layout(Rect::new(0.0, 0.0, 420.0, 800.0));
-            assert_eq!(sidebar.rect().width(), 420.0);
         }
         // Case `visibility_obeys_the_active_presentation`.
         {
             let mut sidebar = Sidebar::new();
-            sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 800.0), &theme);
             assert!(sidebar.visible());
-            sidebar.toggle_collapsed();
+            sidebar.toggle_open();
             assert!(!sidebar.visible());
+            assert!(sidebar.is_collapsed());
 
-            sidebar.layout(Rect::new(0.0, 0.0, 700.0, 800.0));
+            sidebar.layout(Rect::new(0.0, 0.0, 800.0, 600.0), &theme);
             assert!(!sidebar.visible());
             sidebar.toggle_open();
             assert!(sidebar.visible());
+            assert!(sidebar.is_open());
         }
-        // Case `large_text_uses_a_full_width_drawer_even_on_desktop`.
+        // Case `large_text_moves_the_breakpoint_so_the_calendar_keeps_its_room`.
         {
             let mut sidebar = Sidebar::new();
-            sidebar.set_text_scale(2.0);
-            assert_eq!(sidebar.layout(Rect::new(0.0, 0.0, 1200.0, 900.0)), 0.0);
+            let large = Theme::dark().with_text_scale(2.0);
+            assert_eq!(
+                sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 900.0), &large),
+                0.0
+            );
             assert_eq!(sidebar.mode(), Mode::Overlay);
-            assert_eq!(sidebar.rect().width(), 1200.0);
             assert!(
                 !sidebar.visible(),
-                "drawer stays behind the menu until opened"
+                "the drawer stays hidden until it is opened"
             );
         }
+    }
+
+    #[test]
+    fn header_controls_sit_in_the_header_row() {
+        let theme = Theme::dark();
+        let mut sidebar = Sidebar::new();
+        sidebar.layout(Rect::new(0.0, 0.0, 1280.0, 800.0), &theme);
+        let toggle = sidebar.toggle_rect(&theme);
+        let menu = sidebar.menu_rect(&theme);
+        let header = f64::from(theme.tokens.metrics.header_height);
+        assert!(toggle.y0 >= 0.0 && toggle.y1 <= header);
+        assert!((toggle.center().y - menu.center().y).abs() < 1e-9);
+        assert!(toggle.x1 < menu.x0);
     }
 }

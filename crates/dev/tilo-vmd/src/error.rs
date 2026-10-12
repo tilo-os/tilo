@@ -64,6 +64,8 @@ pub enum DaemonError {
     NoSession(String),
     #[error("this machine runs no session of its own, so it has no device slot")]
     NoDeviceSession,
+    #[error("the {0} slot is the owner's login, and nobody is logged in")]
+    LoggedOut(String),
     #[error("the device slot is the machine's own session; it cannot be {0}")]
     DeviceSlot(String),
     #[error("slot '{0}' has no running session to run the command in")]
@@ -76,6 +78,14 @@ pub enum DaemonError {
     SessionFailed {
         slot: String,
         state: String,
+        log: String,
+    },
+    #[error(
+        "the desktop of the {slot} slot's login did not come back ({detail}); its journal ends with:\n{log}"
+    )]
+    DesktopFailed {
+        slot: String,
+        detail: String,
         log: String,
     },
     #[error("no component '{name}' in the synced os/components.toml")]
@@ -142,6 +152,7 @@ impl DaemonError {
             | Self::NoSession(_)
             | Self::DeviceSlot(_)
             | Self::SessionStopped(_)
+            | Self::LoggedOut(_)
             | Self::HeadlessInput(_)
             | Self::OutputsNeedHeadful(_)
             | Self::BadOutputs(_)
@@ -152,6 +163,7 @@ impl DaemonError {
             | Self::TestIdentity { .. }
             | Self::SessionParity { .. }
             | Self::SessionFailed { .. }
+            | Self::DesktopFailed { .. }
             | Self::BootLoader { .. }
             | Self::Initramfs { .. } => code::APPLY,
             Self::Io { .. } => code::IO,
@@ -236,7 +248,10 @@ impl DaemonError {
             Self::AbiMismatch { .. } => {
                 "rebuild against this VM's base (tilo-vm vm upgrade first if the VM is older than your worktree)".into()
             }
-            Self::NoDeviceSession => "only an image that runs its own session without a greeter (a board dev image) has a device slot; on this machine use your own slot: tilo-vm swap <component>".into(),
+            Self::NoDeviceSession => "a board dev image's own session, or on a laptop its owner's Tilo login through greetd on the built-in display, is the device slot; with neither, use your own slot: tilo-vm swap <component>   (a laptop: the owner logs in at the machine first)".into(),
+            Self::LoggedOut(slot) => format!(
+                "the owner logs in at the machine's login screen first; swaps and rollbacks (tilo-vm rollback --slot {slot}) work meanwhile and reach the next login"
+            ),
             Self::DeviceSlot(_) => "swap into it (tilo-vm swap --slot device <component>) and undo every swap with tilo-vm rollback --slot device --to 0; its session comes and goes with the machine".into(),
             Self::NoSession(_) => "use a headful or headless slot: tilo-vm slot list   (the vm slot's layers are the VM's own /usr: tilo-vm vm ssh -- <command>)".into(),
             Self::SessionStopped(slot) => format!(
@@ -253,6 +268,9 @@ impl DaemonError {
             }
             Self::SessionFailed { slot, .. } => format!(
                 "the journal above names the cause; after fixing it: tilo-vm slot restart {slot}   (full log: tilo-vm logs {slot})"
+            ),
+            Self::DesktopFailed { slot, .. } => format!(
+                "bring the previous build back: tilo-vm rollback --slot {slot}   (it works from the login screen too; full log: tilo-vm logs {slot})"
             ),
             Self::UnknownComponent { known, .. } => format!("pick one of: {}", known.join(", ")),
             Self::UnknownApp { known, .. } if known.is_empty() => {
@@ -331,7 +349,9 @@ impl DaemonError {
             Self::KernelLayer(_) | Self::BootLoader { .. } | Self::Initramfs { .. } => {
                 Some("tilo-vm guide kernel")
             }
-            Self::NoDeviceSession | Self::DeviceSlot(_) => Some("tilo-vm guide devices"),
+            Self::NoDeviceSession | Self::DeviceSlot(_) | Self::LoggedOut(_) => {
+                Some("tilo-vm guide devices")
+            }
             Self::VersionMismatch { .. }
             | Self::HelloRequired
             | Self::InvalidParams(_)
@@ -339,6 +359,7 @@ impl DaemonError {
             | Self::Apply { .. }
             | Self::SessionParity { .. }
             | Self::SessionFailed { .. }
+            | Self::DesktopFailed { .. }
             | Self::RegistryAuth { .. }
             | Self::Io { .. } => Some("tilo-vm guide troubleshooting"),
         }
@@ -431,6 +452,7 @@ mod tests {
             },
             DaemonError::NoSession("vm".into()),
             DaemonError::NoDeviceSession,
+            DaemonError::LoggedOut("device".into()),
             DaemonError::DeviceSlot("removed".into()),
             DaemonError::SessionStopped("a".into()),
             DaemonError::ControlMissing("/usr/bin/tilo-control".into()),
@@ -450,6 +472,11 @@ mod tests {
                 slot: "a".into(),
                 state: "activating".into(),
                 log: "PAM failed: Authentication failure".into(),
+            },
+            DaemonError::DesktopFailed {
+                slot: "device".into(),
+                detail: "logged out".into(),
+                log: "shell: panicked".into(),
             },
             DaemonError::UnknownComponent {
                 name: "x".into(),
@@ -525,12 +552,14 @@ mod tests {
                 | DaemonError::AbiMismatch { .. }
                 | DaemonError::NoSession(_)
                 | DaemonError::NoDeviceSession
+                | DaemonError::LoggedOut(_)
                 | DaemonError::DeviceSlot(_)
                 | DaemonError::SessionStopped(_)
                 | DaemonError::ControlMissing(_)
                 | DaemonError::Apply { .. }
                 | DaemonError::SessionParity { .. }
                 | DaemonError::SessionFailed { .. }
+                | DaemonError::DesktopFailed { .. }
                 | DaemonError::UnknownComponent { .. }
                 | DaemonError::UnknownApp { .. }
                 | DaemonError::SourceMissing(_)

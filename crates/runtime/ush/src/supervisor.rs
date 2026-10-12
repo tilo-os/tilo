@@ -32,7 +32,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -60,6 +60,11 @@ pub struct SessionOptions {
     /// The machine's root. `/` outside tests.
     pub host_root: PathBuf,
     pub verbose: bool,
+    /// The key the shell marks its command runs with for Terminal
+    /// ([`crate::runs`]); `None` marks nothing.
+    pub runs: Option<String>,
+    /// Connected participant-private editing endpoint from this served session.
+    pub editor: Option<Arc<runtime_portal::editor::Socket>>,
 }
 
 impl Default for SessionOptions {
@@ -70,17 +75,19 @@ impl Default for SessionOptions {
             term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
             host_root: PathBuf::from("/"),
             verbose: false,
+            runs: std::env::var(crate::runs::KEY_ENV)
+                .ok()
+                .filter(|key| crate::runs::valid_key(key)),
+            editor: None,
         }
     }
 }
 
-/// Printed under `bwrap`'s own one-line reason, which names a mount option
-/// rather than a cause. Short lines: it lands in a terminal of any width.
+/// Printed beneath the actual setup error, including loader failures.
+/// No mount-specific advice is given for unrelated startup failures.
 const SANDBOX_SETUP_FAILED: &str = "\
 ush: the shell's sandbox could not be set up, so no shell started;
-ush: bwrap's reason is above. An overlay mount refused with \"Invalid
-ush: argument\" usually means the images sit on a filesystem overlayfs
-ush: cannot stack on (another overlay): `dmesg` shows why.";
+ush: the setup error is above.";
 
 /// The first line of every reason a session's sandbox was not built.
 const NOT_STARTED: &str = "ush: the shell's sandbox could not be set up, so no shell started";
@@ -236,6 +243,11 @@ impl Session {
             let tree = self.images.tree(&id).map_err(anyhow::Error::msg)?;
             images.push((format!("{label} {id}"), tree));
         }
+        if !self.images.is_local(&runtime) {
+            // Stderr is the session's terminal: the person sees why there is
+            // no prompt yet, instead of a pane that only echoes their keys.
+            eprintln!("ush: preparing this environment's runtime for its first use…");
+        }
         let tree = self.images.tree(&runtime).map_err(anyhow::Error::msg)?;
         images.push((
             format!("runtime {} {runtime}", environment.runtime.release),
@@ -289,8 +301,17 @@ impl Session {
         // the real path, and a grant of the home must still find the store
         // under it.
         let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let runtime_bin = runtime_binary()?;
+        let helper_runtime = crate::helper_runtime::HelperRuntime::resolve(&runtime_bin)?;
+        let shell = guest_shell(&images);
+        let runs = self
+            .opts
+            .runs
+            .clone()
+            .filter(|_| self.opts.command.is_empty() && crate::runs::is_bash(&shell));
         Ok(GuestPlan {
-            shell: guest_shell(&images),
+            shell,
+            runs,
             images,
             host_root: self.opts.host_root.clone(),
             session_dir,
@@ -305,7 +326,8 @@ impl Session {
             trusted_dirs: policy.trusted_dirs(now),
             readable_dirs: policy.readable_dirs(now),
             grant_root: self.store.grant_root().map(Path::to_path_buf),
-            runtime_bin: runtime_binary()?,
+            runtime_bin,
+            helper_runtime,
             legacy_commands: crate::legacy_commands(),
             broker_socket,
             seccomp_blob,
@@ -313,6 +335,7 @@ impl Session {
             term: self.opts.term.clone(),
             env: Vec::new(),
             resolver: None,
+            editor: None,
         })
     }
 
@@ -406,6 +429,12 @@ impl Session {
         plan.resolver = Some(egress.resolv_conf().to_owned());
         plan.prepare()?;
         seed_guest_home(&plan.guest_home)?;
+        let editor = if self.opts.editor.is_some() && self.opts.command.is_empty() {
+            crate::editor::Prepared::prepare(&plan).unwrap_or(None)
+        } else {
+            None
+        };
+        plan.editor = editor.as_ref().map(|prepared| prepared.guest.clone());
 
         if self.opts.verbose {
             let argv = crate::guest::build_argv(&plan, None);
@@ -422,13 +451,19 @@ impl Session {
         // inside the namespace — using the paths the guest itself will use.
         let shell = plan.shell.clone();
         let user_command = std::mem::take(&mut plan.command);
-        let mut command = vec![
-            format!("{}/tilo-ush", crate::GUEST_BIN_DIR),
-            "guest-init".into(),
-            "--".into(),
-        ];
+        let mut command = plan.helper_runtime.as_ref().map_or_else(
+            || vec![format!("{}/tilo-ush", crate::GUEST_BIN_DIR)],
+            crate::helper_runtime::HelperRuntime::entry,
+        );
+        command.extend(["guest-init".into(), "--".into()]);
         if user_command.is_empty() {
             command.push(shell.to_string_lossy().into_owned());
+            if plan.editor.is_some() {
+                command.extend([
+                    "--rcfile".into(),
+                    format!("{}/rc", crate::editor::GUEST_DIR),
+                ]);
+            }
             command.push("-i".into());
         } else {
             command.extend(user_command);
@@ -436,6 +471,22 @@ impl Session {
         plan.command = command;
 
         let mut child = crate::guest::spawn(&plan, Some(&netns))?;
+        plan.editor = None; // the parent must not retain the inherited producer FD
+        let _editor_worker = match (editor, self.opts.editor.as_ref()) {
+            (Some(editor), Some(app)) => {
+                if let Ok(worker) = editor.start(Arc::clone(app), child.id()) {
+                    Some(worker)
+                } else {
+                    app.retire();
+                    None
+                }
+            }
+            (_, Some(app)) => {
+                app.retire();
+                None
+            }
+            _ => None,
+        };
         let status = child.wait()?;
         let code = status.code().unwrap_or(1);
         if code != 0 && !broker.guest_connected() {
@@ -507,10 +558,23 @@ pub enum ServeRequest {
         /// [`Target::Host`].
         #[serde(default)]
         requested_by: crate::host::RequestedBy,
+        /// For an environment on a relay: the session to re-attach to (hex),
+        /// as an earlier answer named it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_session: Option<String>,
+        /// The key the session's shell marks its command runs with
+        /// ([`crate::runs`]), chosen by the app for this session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runs: Option<String>,
+        /// Explicit opt-in; existing clients continue to receive exactly one FD.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        editor_protocol: Option<u8>,
     },
     /// The environments there are, for Terminal's picker and its
     /// environments panel.
     ListEnvironments,
+    /// The person's relays an environment can run on.
+    ListRelays,
     /// The person allowed Terminal's Host target, for `expiry` (the shell's
     /// permission prompt answers with this). Only a caller outside every app
     /// sandbox — the shell — may record it.
@@ -583,6 +647,17 @@ pub enum ServeResponse {
         session: String,
         /// The environment record the session was built from.
         environment: String,
+        /// For an environment on a relay: the session's id there, which
+        /// re-attaches to it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_session: Option<String>,
+        /// The session's shell is asked to mark its runs with the key the
+        /// request named. A shell other than `bash` writes no marks.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        runs: bool,
+        /// V1 bundles PTY first, private editor second, under this session's lifetime.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        editor_protocol: Option<u8>,
     },
     Denied {
         reason: String,
@@ -592,12 +667,23 @@ pub enum ServeResponse {
     HostNotAllowed {
         reason: String,
     },
+    /// The environment cannot be built here: no `env-runtime` image is
+    /// installed to make the default environment from. The connection stays
+    /// open for another request, so the app can offer the device's own shell
+    /// instead.
+    NoRuntime {
+        reason: String,
+    },
     /// Every environment, by key.
     Environments {
         environments: Vec<EnvironmentEntry>,
     },
     /// The allow was recorded.
     Allowed,
+    /// The person's relays.
+    Relays {
+        relays: Vec<crate::relay::RelayPeer>,
+    },
 }
 
 /// Decide one request: the environment record it names (`None` for the
@@ -617,12 +703,18 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
              is decided by the host gate"
                 .into(),
         ),
-        Target::Environment { record: None } => Ok(None),
+        Target::Environment {
+            location: tilo_environment::Location::Relay { .. },
+            ..
+        } => Err("an environment on a relay is carried there, not built here".into()),
+        Target::Environment { record: None, .. } => Ok(None),
         Target::Environment {
             record: Some(record),
+            ..
         } if is_record_key(record) => Ok(Some(record.clone())),
         Target::Environment {
             record: Some(record),
+            ..
         } => Err(format!("{record:?} does not name an environment record")),
     }
 }
@@ -636,19 +728,19 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
 /// cannot be set to owner-only.
 pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<()> {
     store.ensure()?;
-    let listener = if let Some(listener) = systemd_listener(socket)? {
+    // Invalid activation addressed to this process is fatal: unlinking and
+    // rebinding would race queued clients and could replace an endpoint
+    // systemd already exposed.
+    // SAFETY: called from the `tilo-ush serve` main thread before it spawns
+    // any connection thread; nothing else has started a thread.
+    let activated = unsafe { tilo_files::native::private::activated_socket(socket)? };
+    let listener = if let Some(listener) = activated {
         listener
     } else {
         if let Some(parent) = socket.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::remove_file(socket);
-        let listener = UnixListener::bind(socket)?;
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
-        }
-        listener
+        tilo_files::native::private::bind_socket(socket)?
     };
     tracing::info!(socket = %socket.display(), "ush: serving guests");
 
@@ -665,54 +757,19 @@ pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<(
     Ok(())
 }
 
-/// Consume systemd's one pre-bound service socket when activation metadata is
-/// addressed to this process. Invalid matching metadata is fatal: falling back
-/// to unlinking and rebinding would race queued clients and could replace an
-/// endpoint systemd already exposed.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to guest children; \
-              cleared right after fd 3 is taken, and `serve` calls this before it \
-              spawns any connection thread, from a `tilo-ush serve` main thread \
-              that has started no other threads"
-)]
-fn systemd_listener(expected: &Path) -> anyhow::Result<Option<UnixListener>> {
-    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
+/// Requests one connection may make. A refused open spends nothing — the
+/// connection is the app's one way to ask — so the app may ask again on it
+/// (the device's own shell after an environment could not be built), but not
+/// without end.
+const MAX_REQUESTS_PER_CONNECTION: usize = 8;
 
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
-        return Ok(None);
-    }
-    anyhow::ensure!(
-        std::env::var("LISTEN_FDS").as_deref() == Ok("1"),
-        "systemd must pass exactly one ush listener"
-    );
-    // SAFETY: fcntl only validates the scalar descriptor.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } != -1,
-        "systemd ush listener fd is closed"
-    );
-    // SAFETY: validated activation metadata transfers ownership of fd 3 once.
-    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    anyhow::ensure!(
-        listener.local_addr()?.as_pathname() == Some(expected),
-        "systemd ush listener has an unexpected path"
-    );
-    // Guest processes must never inherit the host supervisor endpoint.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } != -1,
-        "cannot mark systemd ush listener close-on-exec"
-    );
-    // SAFETY: serve is entered before any worker thread is started.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
-    Ok(Some(listener))
+/// Whether a request ended the connection's use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Served {
+    /// Answered for good: a session ran, or the request was not one to retry.
+    Done,
+    /// An open was refused; the app may ask again on this connection.
+    Refused,
 }
 
 fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Result<()> {
@@ -720,19 +777,37 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
     let mut raw = stream.try_clone()?;
     let (caller, carried) = crate::host::read_caller(&mut raw)?;
     let mut reader = BufReader::new(std::io::Cursor::new(carried).chain(raw));
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
+    for _ in 0..MAX_REQUESTS_PER_CONNECTION {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            return Ok(());
+        }
+        if serve_request(stream, &mut writer, store, host_root, &caller, &line)? == Served::Done {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
 
-    let req: ServeRequest = match serde_json::from_str(&line) {
+fn serve_request(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    host_root: &Path,
+    caller: &crate::host::Caller,
+    line: &str,
+) -> anyhow::Result<Served> {
+    let req: ServeRequest = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(e) => {
-            return reply(
-                &mut writer,
+            reply(
+                writer,
                 &ServeResponse::Denied {
                     reason: format!("malformed request: {e}"),
                 },
                 None,
-            );
+            )?;
+            return Ok(Served::Done);
         }
     };
     match &req {
@@ -743,14 +818,23 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
                 Ok(environments) => ServeResponse::Environments { environments },
                 Err(reason) => ServeResponse::Denied { reason },
             };
-            return reply(&mut writer, &response, None);
+            reply(writer, &response, None)?;
+            return Ok(Served::Done);
         }
         ServeRequest::OpenSession {
             target: Target::Host,
             ..
-        } => return serve_host(stream, &mut writer, store, &caller, &req),
+        } => return serve_host(stream, writer, store, caller, &req),
+        ServeRequest::OpenSession { target, .. } if is_relay(target) => {
+            return serve_relay(stream, writer, store, &req);
+        }
+        ServeRequest::ListRelays => {
+            reply(writer, &list_relays(), None)?;
+            return Ok(Served::Done);
+        }
         ServeRequest::AllowHost { expiry } => {
-            return reply(&mut writer, &allow_host(&caller, store, *expiry), None);
+            reply(writer, &allow_host(caller, store, *expiry), None)?;
+            return Ok(Served::Done);
         }
         ServeRequest::OpenSession { .. } => {}
     }
@@ -761,26 +845,75 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
                 &crate::audit::AuditRecord::new("serve", "-", "open-session", false)
                     .because(&reason),
             );
-            return reply(&mut writer, &ServeResponse::Denied { reason }, None);
+            reply(writer, &ServeResponse::Denied { reason }, None)?;
+            return Ok(Served::Refused);
         }
     };
+    serve_guest_session(
+        stream,
+        writer,
+        store,
+        host_root,
+        req,
+        environment.as_deref(),
+    )
+}
 
+fn serve_guest_session(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    host_root: &Path,
+    req: ServeRequest,
+    environment: Option<&str>,
+) -> anyhow::Result<Served> {
+    let record = environment
+        .unwrap_or(tilo_environment::DEFAULT_RECORD)
+        .to_owned();
+
+    // The record must resolve before a terminal is handed out: a guest that
+    // cannot be built would print why on its pty and exit, leaving the app a
+    // dead pane and no chance to offer anything else.
+    if refused_unbuildable(writer, store, environment, &record)? {
+        return Ok(Served::Refused);
+    }
+
+    open_environment(stream, writer, store, host_root, environment, &record, req)
+}
+
+/// Build the guest of an environment on this device on a fresh pty and hand
+/// its master to the app; the connection is the session's lifetime.
+fn open_environment(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    host_root: &Path,
+    environment: Option<&str>,
+    record: &str,
+    req: ServeRequest,
+) -> anyhow::Result<Served> {
+    let record = record.to_owned();
     let ServeRequest::OpenSession {
         cols,
         rows,
         term,
         command,
+        runs,
+        editor_protocol,
         ..
     } = req
     else {
-        return Ok(());
+        return Ok(Served::Done);
     };
+    let runs = runs.filter(|key| command.is_empty() && crate::runs::valid_key(key));
     let (master, slave) = open_pty(cols, rows)?;
+    let editor = if editor_protocol == Some(runtime_portal::editor::VERSION) && command.is_empty() {
+        Some(runtime_portal::editor::Socket::pair()?)
+    } else {
+        None
+    };
 
     let id = uuid::Uuid::new_v4().simple().to_string();
-    let record = environment
-        .clone()
-        .unwrap_or_else(|| tilo_environment::DEFAULT_RECORD.to_owned());
     AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
         &id,
         &record,
@@ -789,10 +922,12 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
     ));
     let launch = Launch {
         store,
-        environment: environment.as_deref(),
+        environment,
         term: term.as_deref().unwrap_or("xterm-256color"),
         host_root,
         command: &command,
+        runs: runs.as_deref(),
+        editor: editor.as_ref().map(|(_, supervisor)| supervisor),
     };
 
     // The guest gets the slave as its stdio; the app gets the master. A *child
@@ -803,14 +938,36 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
     // The child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
-    reply(
-        &mut writer,
-        &ServeResponse::Session {
-            session: id.clone(),
-            environment: record.clone(),
-        },
-        Some(master.as_raw_fd()),
-    )?;
+    let response = ServeResponse::Session {
+        session: id.clone(),
+        environment: record.clone(),
+        relay_session: None,
+        runs: runs.is_some(),
+        editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
+    };
+    let handed = if let Some((app, _)) = &editor {
+        use std::os::fd::AsFd;
+        serde_json::to_vec(&response)
+            .map_err(anyhow::Error::from)
+            .and_then(|mut bytes| {
+                bytes.push(b'\n');
+                runtime_portal::fd_transport::send_with_fds(
+                    writer.as_raw_fd(),
+                    &bytes,
+                    &[master.as_raw_fd(), app.as_fd().as_raw_fd()],
+                )
+                .map_err(anyhow::Error::from)
+            })
+    } else {
+        reply(writer, &response, Some(master.as_raw_fd()))
+    };
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, &record, "close-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+    })?;
+    drop(editor);
     // Hold the master open until the app has it: closing before the descriptor
     // is received would hand over a dead terminal.
     drop(master);
@@ -825,7 +982,61 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
     AuditLog::at(store.audit_dir()).append(
         &crate::audit::AuditRecord::new(&id, &record, "close-session", true).because(termination),
     );
-    Ok(())
+    Ok(Served::Done)
+}
+
+/// Refuse an open whose environment cannot be built, saying why, logging
+/// and auditing it. Returns whether it was refused.
+fn refused_unbuildable(
+    writer: &mut UnixStream,
+    store: &Store,
+    environment: Option<&str>,
+    record: &str,
+) -> anyhow::Result<bool> {
+    let Some((refusal, reason)) =
+        unbuildable(store, environment, &*crate::images::on_this_device())
+    else {
+        return Ok(false);
+    };
+    tracing::warn!(record = %record, %reason, "ush: the environment cannot be built");
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new("serve", record, "open-session", false).because(&reason),
+    );
+    reply(writer, &refusal, None)?;
+    Ok(true)
+}
+
+/// Why the environment `record` (`None`: the default) cannot be built on
+/// this device: the answer for the app and the reason in words. `None` when
+/// it resolves. Nothing is written: the session makes the default
+/// environment on its first use, so this answer — which Terminal waits for
+/// with a short deadline — never includes a durable record write.
+pub fn unbuildable(
+    store: &Store,
+    record: Option<&str>,
+    images: &dyn Images,
+) -> Option<(ServeResponse, String)> {
+    match Records::at(store.records_root()).resolvable(record, images) {
+        Ok(()) => None,
+        Err(crate::records::RecordError::NoRuntime(why)) => {
+            let reason = format!("no environment can be built on this device: {why}");
+            Some((
+                ServeResponse::NoRuntime {
+                    reason: reason.clone(),
+                },
+                reason,
+            ))
+        }
+        Err(error) => {
+            let reason = error.to_string();
+            Some((
+                ServeResponse::Denied {
+                    reason: reason.clone(),
+                },
+                reason,
+            ))
+        }
+    }
 }
 
 /// Record the person's allow for Terminal's Host target. Only a caller
@@ -909,6 +1120,7 @@ fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>,
         }
         ServeRequest::ListEnvironments
         | ServeRequest::OpenSession { .. }
+        | ServeRequest::ListRelays
         | ServeRequest::AllowHost { .. } => {}
     }
     let mut out = Vec::new();
@@ -928,17 +1140,18 @@ fn serve_host(
     store: &Store,
     caller: &crate::host::Caller,
     req: &ServeRequest,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Served> {
     let ServeRequest::OpenSession {
         cols,
         rows,
         term,
         command,
         requested_by,
+        runs,
         ..
     } = req
     else {
-        return Ok(());
+        return Ok(Served::Done);
     };
     let policy = crate::host::HostPolicy::in_force(store);
     let ownership = crate::host::SessionOwnership::discover();
@@ -955,19 +1168,21 @@ fn serve_host(
         } else {
             ServeResponse::Denied { reason }
         };
-        return reply(writer, &response, None);
+        reply(writer, &response, None)?;
+        return Ok(Served::Refused);
     }
     crate::host::HostPolicy::spend_one_time(crate::host::TERMINAL_APP_ID);
     let term = term.as_deref().unwrap_or("xterm-256color");
     let (cols, rows) = (*cols, *rows);
     let Some(account) = crate::host::login_account() else {
-        return reply(
+        reply(
             writer,
             &ServeResponse::Denied {
                 reason: "this account has no passwd entry to take a login shell from".into(),
             },
             None,
-        );
+        )?;
+        return Ok(Served::Done);
     };
     let (master, slave) = open_pty(cols, rows)?;
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -977,22 +1192,308 @@ fn serve_host(
         "open-session",
         true,
     ));
-    let child = spawn_on_pty(crate::host::host_command(&account, term, command), &slave)?;
+    let runs = runs
+        .as_deref()
+        .filter(|key| {
+            command.is_empty()
+                && crate::runs::valid_key(key)
+                && crate::runs::is_bash(&account.shell)
+        })
+        .and_then(|key| {
+            let rc = store.session_dir(&id).join("runs.bash");
+            std::fs::create_dir_all(store.session_dir(&id)).ok()?;
+            std::fs::write(&rc, crate::runs::bash_rc(true)).ok()?;
+            Some((key, rc))
+        });
+    let child = spawn_on_pty(
+        crate::host::host_command(
+            &account,
+            term,
+            command,
+            runs.as_ref().map(|(k, rc)| (*k, rc.as_path())),
+        ),
+        &slave,
+    )?;
     drop(slave);
-    reply(
+    let handed = reply(
         writer,
         &ServeResponse::Session {
             session: id.clone(),
             environment: "host".into(),
+            relay_session: None,
+            runs: runs.is_some(),
+            editor_protocol: None,
         },
         Some(master.as_raw_fd()),
-    )?;
+    );
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, "host", "close-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+    })?;
     drop(master);
     let termination = finish_session(stream, child);
     AuditLog::at(store.audit_dir()).append(
         &crate::audit::AuditRecord::new(&id, "host", "close-session", true).because(termination),
     );
-    Ok(())
+    Ok(Served::Done)
+}
+
+/// The relay session a terminal asks for: re-attaching to `relay_session`,
+/// or opening one on the environment `record` (keyed `key`); why not.
+fn relay_session_to(
+    store: &Store,
+    record: Option<&str>,
+    relay_session: Option<&str>,
+    key: &str,
+) -> Result<crate::relay::RelaySession, String> {
+    match relay_session {
+        Some(session) if crate::relay::is_session_id(session) => {
+            Ok(crate::relay::RelaySession::Attach {
+                session: session.to_owned(),
+            })
+        }
+        Some(_) => Err("not a relay session id".into()),
+        None => {
+            // The relay builds the guest from the record as this device
+            // holds it; the default comes into being on first use, as here.
+            Records::at(store.records_root())
+                .resolve(record, &*crate::images::on_this_device())
+                .map_err(|e| e.to_string())?;
+            Ok(crate::relay::RelaySession::Open {
+                record: key.to_owned(),
+            })
+        }
+    }
+}
+
+/// Carry the terminal to an environment session on one of the person's
+/// relays: `tilo-relay-environment` runs on the pty handed back, so the app
+/// gets a pty from this broker whatever the target. The answer names the
+/// relay session, which re-attaches to it later.
+fn serve_relay(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    req: &ServeRequest,
+) -> anyhow::Result<Served> {
+    let ServeRequest::OpenSession {
+        target:
+            Target::Environment {
+                record,
+                location: tilo_environment::Location::Relay { relay },
+            },
+        cols,
+        rows,
+        term,
+        relay_session,
+        ..
+    } = req
+    else {
+        return Ok(Served::Done);
+    };
+    let denied = |writer: &mut UnixStream, reason: String| {
+        reply(writer, &ServeResponse::Denied { reason }, None)?;
+        Ok(Served::Refused)
+    };
+    let identity = crate::relay::identity_paths();
+    let Some(peer) = crate::relay::relays(&identity)
+        .into_iter()
+        .find(|peer| peer.relay == *relay)
+    else {
+        return denied(writer, format!("{relay} is not one of your relays"));
+    };
+    let key = record
+        .as_deref()
+        .unwrap_or(tilo_environment::DEFAULT_RECORD)
+        .to_owned();
+    let session = match relay_session_to(store, record.as_deref(), relay_session.as_deref(), &key) {
+        Ok(session) => session,
+        Err(reason) => return denied(writer, reason),
+    };
+    let Some(binary) = crate::relay::bridge_binary() else {
+        return denied(
+            writer,
+            "tilo-relay-environment is not installed, so no relay session can open".into(),
+        );
+    };
+    let Some(identity_root) = crate::relay::identity_root(&identity) else {
+        return denied(writer, "this device has no identity".into());
+    };
+    let (master, slave) = open_pty(*cols, *rows)?;
+    let launch = RelayLaunch {
+        binary: &binary,
+        peer: &peer,
+        session: &session,
+        records_root: store.records_root(),
+        identity_root: &identity_root,
+        term: term.as_deref().unwrap_or("xterm-256color"),
+    };
+    let (child, status, session_id) = match start_relay_bridge(&launch, &slave)? {
+        Ok(started) => started,
+        Err(reason) => return denied(writer, reason),
+    };
+    drop(slave);
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
+        &id,
+        &key,
+        "open-relay-session",
+        true,
+    ));
+    let handed = reply(
+        writer,
+        &ServeResponse::Session {
+            session: id.clone(),
+            environment: key.clone(),
+            relay_session: Some(session_id),
+            runs: false,
+            editor_protocol: None,
+        },
+        Some(master.as_raw_fd()),
+    );
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, &key, "close-relay-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+    })?;
+    drop(master);
+    adopt_relay_tools(status, store.records_root().to_path_buf());
+    let termination = finish_session(stream, child);
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new(&id, &key, "close-relay-session", true)
+            .because(termination),
+    );
+    Ok(Served::Done)
+}
+
+fn is_relay(target: &Target) -> bool {
+    matches!(
+        target,
+        Target::Environment {
+            location: tilo_environment::Location::Relay { .. },
+            ..
+        }
+    )
+}
+
+/// The relays a new environment can be opened on, as last heard. When an
+/// answer is older than a minute the relays are asked again in the
+/// background; Terminal reads the list again and sees the answers.
+fn list_relays() -> ServeResponse {
+    let identity = crate::relay::identity_paths();
+    let relays = crate::relay::relays(&identity);
+    if crate::relay::needs_asking(&relays, tilo_clock::unix_now_ms()) {
+        crate::relay::ask_relays_again(&identity);
+    }
+    ServeResponse::Relays {
+        relays: relays
+            .into_iter()
+            .filter(|peer| peer.runs_environments)
+            .collect(),
+    }
+}
+
+/// What a relay session's bridge is started with.
+struct RelayLaunch<'a> {
+    binary: &'a Path,
+    peer: &'a crate::relay::RelayPeer,
+    session: &'a crate::relay::RelaySession,
+    records_root: &'a Path,
+    identity_root: &'a Path,
+    term: &'a str,
+}
+
+type StartedBridge = (std::process::Child, crate::relay::StatusReader, String);
+
+/// Start `tilo-relay-environment` on `slave` and wait for it to name the
+/// session; the inner error is why it did not open.
+fn start_relay_bridge(
+    launch: &RelayLaunch<'_>,
+    slave: &std::fs::File,
+) -> std::io::Result<Result<StartedBridge, String>> {
+    let (status_read, status_write) = crate::relay::status_pipe()?;
+    let mut cmd = crate::relay::bridge_command(
+        launch.binary,
+        launch.peer,
+        launch.session,
+        launch.records_root,
+        launch.identity_root,
+        launch.term,
+    );
+    let write_fd = status_write.as_raw_fd();
+    // SAFETY: `pre_exec` runs between fork and exec; it only calls dup2.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(move || crate::relay::install_status_fd(write_fd));
+    }
+    let mut child = spawn_on_pty(cmd, slave)?;
+    drop(status_write);
+    let mut status = crate::relay::StatusReader::new(status_read);
+    match status.next(Some(crate::relay::OPEN_PATIENCE)) {
+        Some(crate::relay::BridgeStatus::Session { session, .. }) => {
+            Ok(Ok((child, status, session)))
+        }
+        other => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let reason = match other {
+                Some(crate::relay::BridgeStatus::Ended {
+                    reason: Some(reason),
+                    ..
+                }) => reason,
+                _ => format!("the session on {} did not open", launch.peer.label),
+            };
+            // The relay had no worker for it: what the picker shows is out
+            // of date, so ask the relays again.
+            if reason.contains("NoWorker") {
+                crate::relay::ask_relays_again(&crate::relay::identity_paths());
+            }
+            Ok(Err(reason))
+        }
+    }
+}
+
+/// Tools the relay builds for a session become the record's, as a `pkg
+/// install` on this device would.
+fn adopt_relay_tools(mut status: crate::relay::StatusReader, records_root: PathBuf) {
+    std::thread::spawn(move || {
+        let records = Records::at(records_root);
+        while let Some(line) = status.next(None) {
+            if let crate::relay::BridgeStatus::ToolBuilt {
+                record,
+                packages,
+                images,
+            } = line
+            {
+                for (arch, image) in images {
+                    let _ = records.apply(
+                        &record,
+                        Environment::ADD_TOOL.with((packages.clone(), arch, image)),
+                    );
+                }
+            }
+        }
+    });
+}
+
+/// A spawned local guest, host shell or relay bridge belongs to the
+/// supervisor until its descriptor reply is delivered. An abandoned open
+/// must not leave a running child or a zombie behind.
+fn accept_session_handoff(
+    handed: anyhow::Result<()>,
+    mut child: std::process::Child,
+) -> anyhow::Result<std::process::Child> {
+    match handed {
+        Ok(()) => Ok(child),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error)
+        }
+    }
 }
 
 /// Wait for whichever side of a served session ends first and tear the
@@ -1098,6 +1599,9 @@ struct Launch<'a> {
     term: &'a str,
     host_root: &'a Path,
     command: &'a [String],
+    /// The key the session's shell marks its runs with.
+    runs: Option<&'a str>,
+    editor: Option<&'a runtime_portal::editor::Socket>,
 }
 
 /// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
@@ -1113,6 +1617,21 @@ fn spawn_attached(
         cmd.arg("--environment").arg(record);
     }
     cmd.arg("--host-root").arg(launch.host_root);
+    if let Some(editor) = launch.editor {
+        use std::os::fd::AsFd;
+        use std::os::unix::process::CommandExt;
+        let fd = editor.as_fd().as_raw_fd();
+        cmd.arg("--editor-fd").arg(fd.to_string());
+        // SAFETY: only this owned endpoint is inherited by the trusted runtime.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     if !launch.command.is_empty() {
         cmd.arg("--").args(launch.command);
     }
@@ -1122,6 +1641,10 @@ fn spawn_attached(
         cmd.env(crate::store::GRANT_ROOT_ENV, root);
     }
     cmd.env("TERM", launch.term);
+    match launch.runs {
+        Some(key) => cmd.env(crate::runs::KEY_ENV, key),
+        None => cmd.env_remove(crate::runs::KEY_ENV),
+    };
     spawn_on_pty(cmd, slave)
 }
 
@@ -1251,6 +1774,97 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cancelling_a_terminal_connection_kills_and_reaps_its_guest_with_clones_open() {
+        let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
+        let _reader_clone = terminal.try_clone().expect("reader lifetime clone");
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn guest");
+        let pid = libc::pid_t::try_from(child.id()).expect("guest pid");
+        terminal
+            .shutdown(std::net::Shutdown::Both)
+            .expect("cancel pending or accepted session");
+        let termination = finish_session(&supervisor, child);
+        assert!(
+            termination.starts_with("terminal closed; exit"),
+            "{termination}"
+        );
+        // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
+            -1,
+            "production teardown must reap the child, not leave a zombie"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn failed_descriptor_handoff_kills_and_reaps_the_unclaimed_child() {
+        let (mut supervisor, terminal) = UnixStream::pair().expect("socket pair");
+        terminal
+            .shutdown(std::net::Shutdown::Both)
+            .expect("cancel before reply");
+        let (master, _slave) = open_pty(80, 24).expect("PTY");
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn guest or bridge");
+        let pid = libc::pid_t::try_from(child.id()).expect("child pid");
+        let handed = reply(
+            &mut supervisor,
+            &ServeResponse::Session {
+                session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                environment: "default".into(),
+                relay_session: None,
+                runs: false,
+                editor_protocol: None,
+            },
+            Some(master.as_raw_fd()),
+        );
+        assert!(
+            handed.is_err(),
+            "the cancelled terminal cannot accept a descriptor"
+        );
+        assert!(accept_session_handoff(handed, child).is_err());
+        // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
+            -1,
+            "the production failed-handoff path must reap the child"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    /// Terminal parses this reply strictly (`UshSessionReply` in
+    /// `apps/terminal/src/main_body.rs`, unknown fields refused), and its test
+    /// `a_session_that_marks_its_runs_opens_and_keeps_the_key` sends these
+    /// bytes. A field added here must be added there too, or every open of a
+    /// session that sends it fails as a malformed reply.
+    #[test]
+    fn a_session_reply_keeps_its_wire_form() {
+        let reply = ServeResponse::Session {
+            session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            environment: "default".into(),
+            relay_session: None,
+            runs: true,
+            editor_protocol: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&reply).unwrap(),
+            "{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}"
+        );
+    }
+
     fn open(target: Target) -> ServeRequest {
         ServeRequest::OpenSession {
             target,
@@ -1259,6 +1873,9 @@ mod tests {
             term: None,
             command: Vec::new(),
             requested_by: crate::host::RequestedBy::Person,
+            relay_session: None,
+            runs: None,
+            editor_protocol: None,
         }
     }
 
@@ -1267,7 +1884,8 @@ mod tests {
         assert_eq!(decide_serve(&open(Target::default_environment())), Ok(None));
         assert_eq!(
             decide_serve(&open(Target::Environment {
-                record: Some("work".into())
+                record: Some("work".into()),
+                location: tilo_environment::Location::ThisDevice,
             })),
             Ok(Some("work".into()))
         );
@@ -1305,6 +1923,7 @@ mod tests {
         );
         let err = decide_serve(&open(Target::Environment {
             record: Some("../../etc".into()),
+            location: tilo_environment::Location::ThisDevice,
         }))
         .unwrap_err();
         assert!(err.contains("does not name"), "{err}");

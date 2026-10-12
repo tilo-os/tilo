@@ -2,7 +2,8 @@
 use super::*;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use tilo_actions::remote::{
-    Caller, CatalogueQuery, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, PendingPoll, RemoteActionTarget,
 };
 
 fn fixture() -> (
@@ -28,6 +29,7 @@ fn fixture() -> (
             record_id: "record-a".into(),
         },
         actions: vec![PublishedAction {
+            semantic_identity: None,
             resource: "test:block-a".into(),
             action: "update".into(),
             resource_kind: "test.block".into(),
@@ -47,6 +49,12 @@ fn fixture() -> (
         live: true,
     }]);
     let receiver = state.capture_invocations_for_test(7);
+    // This fixture consumes the full InvocationEnvelope UUID, like a stable subscriber.
+    state
+        .stable_invocation_subscribers
+        .lock()
+        .unwrap()
+        .insert(7);
     let caller = Caller::local_person("a1".repeat(32))
         .in_room(room)
         .in_new_execution();
@@ -55,6 +63,7 @@ fn fixture() -> (
 
 fn request() -> InvokeRequest {
     InvokeRequest {
+        on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: "7".into(),
@@ -64,6 +73,7 @@ fn request() -> InvokeRequest {
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
     }
 }
 
@@ -243,6 +253,11 @@ async fn eighty_synthetic_runs_keep_exact_record_and_invocation_identity() {
     surfaces.push(second);
     state.replace_published_surfaces_for_test(surfaces);
     let mut second_app = state.capture_invocations_for_test(8);
+    state
+        .stable_invocation_subscribers
+        .lock()
+        .unwrap()
+        .insert(8);
     let mut events = state.subscribe_execution_activity();
     let mut pending = Vec::new();
     let mut runs = std::collections::HashSet::new();
@@ -507,4 +522,488 @@ async fn failed_terminal_journal_barrier_cannot_publish_success() {
         events.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Closed)
     ));
+}
+
+/// A workspace whose agent `scribe` may write to the test app but is denied
+/// its `erase` action, with a second writing person `b2…`, and the app
+/// publishing `update`, `edit` and `erase`.
+fn continuation_fixture() -> (
+    Arc<CapnpBrokerState>,
+    Caller,
+    mpsc::UnboundedReceiver<InvocationEnvelope>,
+) {
+    use crate::test_support::{Grants as _, KindSet, Role, Subject, TreePath};
+    let mut workspace = Workspace::new(WorkspaceId(53), "Effect continuation");
+    workspace.set_owner("a1".repeat(32));
+    let room = workspace.room.to_string();
+    workspace.admit_agent("scribe", KindSet::READ);
+    workspace.allow_app(Subject::agent("scribe"), "so.tilo.test", KindSet::ALL);
+    workspace.admit("b2".repeat(32), Role::Editor);
+    workspace.deny(
+        Subject::agent("scribe"),
+        &TreePath::root()
+            .app("so.tilo.test")
+            .any(tilo_action_policy::Level::Kind)
+            .resource("test:block-a")
+            .action("erase"),
+        KindSet::ALL,
+    );
+    let mut tree = WorkspaceTree::default();
+    tree.desktop.workspaces.push(workspace);
+    let membership = tree.shared();
+    let broker =
+        CapnpBrokerState::test_broker_with_authority(membership.authority(), membership.services());
+    let state = Arc::clone(broker.state());
+    let action = |action: &str, kind: tilo_actions::OperationKind| PublishedAction {
+        semantic_identity: None,
+        resource: "test:block-a".into(),
+        action: action.into(),
+        resource_kind: "test.block".into(),
+        resource_label: "Block".into(),
+        action_label: action.into(),
+        description: None,
+        operation_kind: kind,
+        params: Vec::new(),
+        contract: tilo_actions::ActionContract {
+            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+            result: tilo_actions::ResultSpec::Job,
+            ..Default::default()
+        },
+        input: PublishedInput::None,
+        view: None,
+    };
+    state.replace_published_surfaces_for_test(vec![PublishedSurface {
+        peer_id: 7,
+        app_id: "so.tilo.test".into(),
+        route: CrdtRoute {
+            app_id: "so.tilo.test".into(),
+            cluster_id: room.clone(),
+            record_id: "record-a".into(),
+        },
+        actions: vec![
+            action("update", tilo_actions::OperationKind::Effect),
+            action("edit", tilo_actions::OperationKind::Effect),
+            action("erase", tilo_actions::OperationKind::Effect),
+        ],
+        live: true,
+    }]);
+    let app = state.capture_invocations_for_test(7);
+    let agent = Caller::local_agent("scribe").in_room(room);
+    (state, agent, app)
+}
+
+/// An edit an effect submits while running for an agent is admitted as
+/// that agent, with their grants: an action their role allows but a grant
+/// denies them stays denied, through the effect as everywhere.
+#[tokio::test]
+async fn an_effects_edit_is_admitted_for_its_invoker_with_their_grants() {
+    let (state, agent, mut app) = continuation_fixture();
+    let invoke = |action: &str| InvokeRequest {
+        target: RemoteActionTarget {
+            provider: "7".into(),
+            address: tilo_actions::ActionAddress::new("test:block-a", action),
+        },
+        ..request()
+    };
+
+    assert!(matches!(
+        state
+            .action_invoke(&agent, None, None, &invoke("update"))
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let running = app.try_recv().unwrap();
+    assert_eq!(running.actor, "agent:scribe");
+
+    // The app's connection names the effect it runs; nobody else's does.
+    let continued = state
+        .continuing_caller(7, running.invocation)
+        .expect("the running effect's caller");
+    assert_eq!(continued, agent);
+    assert!(state.continuing_caller(8, running.invocation).is_none());
+
+    // What the role allows is admitted for the agent; what a grant denies
+    // them is refused.
+    assert!(matches!(
+        state
+            .action_invoke(&continued, Some(7), None, &invoke("edit"))
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    assert_eq!(app.try_recv().unwrap().actor, "agent:scribe");
+    let refused = state
+        .action_invoke(&continued, Some(7), None, &invoke("erase"))
+        .poll_ready();
+    // An action a grant denies is absent to the caller, as in the catalogue.
+    assert!(
+        matches!(
+            refused,
+            PendingPoll::Ready(Err(tilo_actions::remote::ActionHostError::UnknownAction))
+        ),
+        "the denied edit was refused"
+    );
+    assert!(app.try_recv().is_err(), "the denied edit reaches no app");
+    let owner = Caller::local_person("a1".repeat(32)).in_room(continued.room().unwrap().to_owned());
+    assert!(matches!(
+        state
+            .action_invoke(&owner, Some(7), None, &invoke("erase"))
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    assert!(app.try_recv().is_ok(), "the action itself is offered");
+
+    // Once the effect ended it continues nothing.
+    state
+        .apply_invocation_update(
+            7,
+            running.id,
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation: running.invocation,
+                output: tilo_actions::ActionOutput::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(state.continuing_caller(7, running.invocation).is_none());
+}
+
+/// Doors that take the caller's own invocation id can admit two callers'
+/// invocations under one id on the same app. An edit submitted on behalf of
+/// that id names no single caller, so it is admitted for neither, never for
+/// whichever one the registry happens to find first.
+#[test]
+fn an_invocation_id_two_callers_share_continues_neither() {
+    let (state, agent, _app) = continuation_fixture();
+    let room = agent.room().unwrap().to_owned();
+    let other = "b2".repeat(32);
+    state
+        .stable_invocation_subscribers
+        .lock()
+        .unwrap()
+        .insert(7);
+    let shared = tilo_actions::InvocationId::new();
+    let start = |person: &str| {
+        let caller = Caller::local_person(person)
+            .in_room(room.clone())
+            .in_new_execution();
+        state
+            .start_invocation_confirmed_for_origin(
+                7,
+                "test:block-a",
+                "update",
+                InvocationInputs {
+                    requested: Some(shared),
+                    caller: Some(&caller),
+                    execution: ExecutionScope::for_call(&caller, shared),
+                    argument: None,
+                    actor: &BrokerActor::person(person),
+                    confirmation_token: None,
+                    context: None,
+                },
+                None,
+            )
+            .unwrap();
+        caller
+    };
+    let first = start(&"a1".repeat(32));
+    assert_eq!(state.continuing_caller(7, shared), Some(first));
+    start(&other);
+    assert!(
+        state.continuing_caller(7, shared).is_none(),
+        "an ambiguous invocation continues for nobody"
+    );
+}
+
+#[test]
+fn same_principal_runs_receive_distinct_host_owned_participant_views() {
+    let (state, first, mut app) = fixture();
+    let second = first.clone().in_new_execution();
+    let forged = tilo_actions::ParticipantId::new("person-window-forged").unwrap();
+    let mut participants = Vec::new();
+    for caller in [&first, &second, &first] {
+        let mut request = request();
+        request.context = Some(tilo_actions::ActionContext::default().with_invoker(
+            tilo_actions::ActionInvoker::actor("a1".repeat(32)).with_participant(forged.clone()),
+        ));
+        assert!(matches!(
+            state
+                .action_invoke(caller, None, None, &request)
+                .poll_ready(),
+            PendingPoll::Ready(Ok(_))
+        ));
+        let delivery = app.try_recv().unwrap();
+        let invoker =
+            tilo_actions::ActionInvoker::delivered(&delivery.actor, delivery.context.as_ref());
+        assert_eq!(invoker.actor, "a1".repeat(32));
+        let participant = invoker.participant.expect("a run owns a participant view");
+        assert_ne!(participant, forged);
+        participants.push(participant);
+    }
+    assert_ne!(participants[0], participants[1]);
+    assert_eq!(participants[0], participants[2]);
+    first.retire_execution();
+    assert!(matches!(
+        state
+            .action_invoke(&first, None, None, &request())
+            .poll_ready(),
+        PendingPoll::Ready(Err(_))
+    ));
+    assert!(
+        app.try_recv().is_err(),
+        "closed run cannot fall back to the person's view"
+    );
+}
+
+#[test]
+fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
+    let (state, caller, mut app) = fixture();
+    let scoped_request = request();
+    assert!(matches!(
+        state
+            .action_invoke(&caller, None, None, &scoped_request)
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let delivered = app.try_recv().unwrap();
+    assert!(
+        state
+            .action_observe(&caller, &scoped_request.invocation)
+            .is_some()
+    );
+    assert!(matches!(
+        state
+            .action_query(&caller, &CatalogueQuery::default())
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let retained = caller.clone();
+    caller.retire_execution();
+    assert!(matches!(
+        state
+            .action_query(&retained, &CatalogueQuery::default())
+            .poll_ready(),
+        PendingPoll::Ready(Err(_))
+    ));
+    assert!(
+        state
+            .action_observe(&retained, &scoped_request.invocation)
+            .is_none()
+    );
+    assert!(
+        state
+            .action_cancel(&retained, &scoped_request.invocation)
+            .is_err()
+    );
+    assert!(
+        state
+            .remote_job(&retained, &scoped_request.invocation)
+            .is_none()
+    );
+    assert!(
+        state.pending_invocations.lock().unwrap()[&delivered.id]
+            .cancellation_requested_at
+            .is_none(),
+        "retirement and refused cancellation must not cancel an admitted job"
+    );
+
+    let legacy = Caller::local_person("a1".repeat(32)).in_room(caller.room().unwrap());
+    legacy.retire_execution();
+    assert!(matches!(
+        state
+            .action_query(&legacy, &CatalogueQuery::default())
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let legacy_request = request();
+    assert!(matches!(
+        state
+            .action_invoke(&legacy, None, None, &legacy_request)
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    app.try_recv().unwrap();
+    assert!(
+        state
+            .action_observe(&legacy, &legacy_request.invocation)
+            .is_some()
+    );
+    assert!(
+        state
+            .action_cancel(&legacy, &legacy_request.invocation)
+            .is_ok()
+    );
+}
+
+/// The broker's door, counting how often a shortcut run observes through it.
+struct CountedDoor {
+    door: action_host::BrokerDoor,
+    observes: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ActionHost for CountedDoor {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        self.door.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        self.door.invoke(caller, request)
+    }
+
+    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        self.observes.fetch_add(1, Ordering::Relaxed);
+        self.door.observe(caller, id)
+    }
+
+    fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
+        self.door.next_change(caller, id)
+    }
+
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Result<(), ActionHostError> {
+        self.door.cancel(caller, id)
+    }
+}
+
+/// Hooks for a run whose host says when a step changes, so nothing may fall
+/// back to polling it.
+struct NoPolling(crate::automation::DoorHooks);
+
+impl tilo_automation::RunHooks for NoPolling {
+    fn confirm(
+        &self,
+        request: tilo_automation::ConfirmationRequest,
+    ) -> Pending<Option<tilo_actions::remote::Confirmation>> {
+        self.0.confirm(request)
+    }
+
+    fn ask(&self, request: tilo_automation::AskRequest) -> Pending<Option<serde_json::Value>> {
+        self.0.ask(request)
+    }
+
+    fn settle(&self, invocation: tilo_actions::InvocationId) -> Pending<()> {
+        panic!("the broker's door says when {invocation:?} changes; nothing polls it")
+    }
+}
+
+/// A shortcut step that runs in the background is observed once per change
+/// it makes, not once per poll interval for as long as it runs.
+#[tokio::test]
+async fn shortcut_step_observes_once_per_change() {
+    const PROGRESS_UPDATES: u64 = 3;
+    // The look for an earlier invocation, one wake for the admission itself,
+    // then one per progress update and one for the outcome.
+    const MOST_OBSERVES: usize = 6;
+    let (state, caller, mut app) = fixture();
+    let observes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let shortcut = tilo_automation::Shortcut {
+        id: "export".into(),
+        name: "Export".into(),
+        inputs: Vec::new(),
+        steps: vec![tilo_automation::Step::new(
+            "update",
+            tilo_automation::StepKind::Invoke {
+                action: tilo_actions::ActionKey::new("so.tilo.test", "test.block", "update"),
+                resource: tilo_automation::Selector::Fixed("test:block-a".into()),
+                args: std::collections::BTreeMap::new(),
+            },
+        )],
+        output: None,
+        grant: vec![tilo_action_policy::Rule::new(
+            tilo_action_policy::TreePath::root()
+                .any(tilo_action_policy::Level::Room)
+                .app("so.tilo.test"),
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+        )],
+        triggers: Vec::new(),
+        saved_by: None,
+    };
+    let hooks = NoPolling(crate::automation::DoorHooks::new(
+        None,
+        tokio::runtime::Handle::current(),
+    ));
+    let running = tokio::spawn({
+        let state = Arc::clone(&state);
+        let observes = Arc::clone(&observes);
+        async move {
+            let door = CountedDoor {
+                door: action_host::BrokerDoor::new(state),
+                observes,
+            };
+            tilo_automation::run(
+                &door,
+                &hooks,
+                tilo_automation::RunRequest {
+                    shortcut: &shortcut,
+                    run: tilo_automation::RunId::new(),
+                    caller,
+                    mode: tilo_automation::RunMode::Unattended,
+                    trigger: tilo_automation::RunTrigger::Manual,
+                    inputs: serde_json::Map::new(),
+                },
+            )
+            .await
+        }
+    });
+
+    let delivered = app.recv().await.expect("the step reaches the app");
+    // Each pause is many of the old 25 ms poll intervals and well inside the
+    // door's safety interval: only a change may wake the run.
+    let pause = std::time::Duration::from_millis(150);
+    for sequence in 1..=PROGRESS_UPDATES {
+        tokio::time::sleep(pause).await;
+        state
+            .apply_invocation_update(
+                7,
+                delivered.id,
+                tilo_actions::InvocationUpdate::Progress {
+                    invocation: delivered.invocation,
+                    sequence,
+                    phase: "Exporting".into(),
+                    completed: Some(sequence),
+                    total: Some(PROGRESS_UPDATES),
+                    message: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    tokio::time::sleep(pause).await;
+    state
+        .apply_invocation_update(
+            7,
+            delivered.id,
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation: delivered.invocation,
+                output: tilo_actions::ActionOutput::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let report = running.await.expect("the run finishes");
+    assert_eq!(
+        report.outcome,
+        tilo_automation::RunOutcome::Completed,
+        "{report:?}"
+    );
+    let observes = observes.load(Ordering::Relaxed);
+    assert!(
+        observes <= MOST_OBSERVES,
+        "{observes} observations for {PROGRESS_UPDATES} progress updates"
+    );
 }

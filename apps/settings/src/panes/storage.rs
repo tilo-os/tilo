@@ -1,26 +1,22 @@
 //! Storage overview. It accounts bytes here; partitioning and backup workflows
 //! remain in their specialist tools, opened with typed contextual intents.
+//! Reclaiming space is a [`StorageEffect`] the [`StorageModel`] runs.
 
-use std::collections::HashMap;
-use ui::doc::read_bool;
-use ui::widget::{AppModel, ModelPath};
-
-use automerge::{AutoCommit, transaction::Transactable};
 use desktop_policy::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
 use os_actions::{BackupsRoute, DisksRoute, ToolIntent};
 use runtime_fs::storage::{
     DEFAULT_STORAGE_SOCKET, EvictionReport, EvictionSelection, StorageClient, SyncStorageSnapshot,
 };
-use taffy::{NodeId, TaffyTree};
-use ui::theme::Theme;
-use ui::widget::{Button, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
-
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected};
 use ui::i18n::ArgValue;
+use ui::tilo_resource::{self, Effect};
+use ui::widget::{Button, Widget};
 
+use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
+use crate::panes::model::{PaneModel, Replies, Shared};
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
 
 fn category_label(category: StorageCategory) -> String {
@@ -32,15 +28,86 @@ fn category_label(category: StorageCategory) -> String {
     })
 }
 
-// These are edge-triggered, machine-local command latches, not settings.
-// Buttons may mutate them directly because the `.edit` namespace is never
-// exported or replayed; durable settings go through SettingsAction instead.
-pub const CLEAN_KEY: &str = "storage.cleanup.confirmed.edit";
-pub const DISKS_KEY: &str = "storage.open.disks.edit";
-pub const BACKUPS_KEY: &str = "storage.open.backups.edit";
-pub const SYNC_FREE_KEY: &str = "storage.sync.free.edit";
+/// Reclaiming this device's space, and its storage tools.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum StorageEffect {
+    /// Remove the apps' caches.
+    #[effect(job, destructive)]
+    CleanUpCaches,
+    /// Free the local copies of synced files that are safe on the server.
+    #[effect(job, destructive)]
+    FreeSyncedFiles,
+    /// Open Disks.
+    #[effect(job)]
+    OpenDisks,
+    /// Open Backups.
+    #[effect(job)]
+    OpenBackups,
+}
 
-pub struct StoragePane {
+/// Answer `effect` on the area's model.
+#[expect(
+    clippy::unnecessary_wraps,
+    clippy::needless_pass_by_value,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: StorageEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let reply = cx.reply();
+    app.storage().model().borrow_mut().run(&effect, reply);
+    Ok(Effected::Pending)
+}
+
+/// What the storage area keeps for the window: the model, scanned when
+/// first needed.
+pub struct StorageArea {
+    cx: PaneCx,
+    model: std::cell::OnceCell<Shared<StorageModel>>,
+}
+
+impl StorageArea {
+    pub fn new(cx: &PaneCx) -> Self {
+        Self {
+            cx: cx.clone(),
+            model: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The model, created on first use: a capture's scans nothing and asks
+    /// no storage service.
+    pub fn model(&self) -> &Shared<StorageModel> {
+        self.model.get_or_init(|| {
+            let model = if self.cx.reaches_devices() {
+                StorageModel::new(self.cx.clone())
+            } else {
+                StorageModel::with_roots(
+                    self.cx.clone(),
+                    StorageRoots {
+                        app_payloads: None,
+                        room_data: None,
+                        app_cache: None,
+                        sync_replica: None,
+                    },
+                )
+            };
+            std::rc::Rc::new(std::cell::RefCell::new(model))
+        })
+    }
+
+    /// Take in finished background work, if the model exists.
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get() {
+            let _ = model.borrow_mut().poll();
+        }
+    }
+}
+
+pub struct StorageModel {
+    cx: PaneCx,
     roots: StorageRoots,
     snapshot: StorageSnapshot,
     cleanup: Option<CleanupPreview>,
@@ -49,29 +116,28 @@ pub struct StoragePane {
     sync_busy: bool,
     sync_result: Option<std::sync::mpsc::Receiver<Result<EvictionReport, String>>>,
     snapshot_result: Option<std::sync::mpsc::Receiver<Result<SyncStorageSnapshot, String>>>,
-    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
-    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    local_doc: AutoCommit,
-    isolate_document: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    replies: Replies,
+    changed: bool,
 }
 
-impl StoragePane {
-    pub fn new() -> Self {
+impl StorageModel {
+    /// This device's storage, scanned now, with the synced-file accounting
+    /// asked of the storage service.
+    pub fn new(cx: PaneCx) -> Self {
         let roots = StorageRoots::discover();
-        let mut pane = Self::with_roots(roots);
-        pane.refresh_sync();
-        pane
+        let mut model = Self::with_roots(cx, roots);
+        model.refresh_sync();
+        model
     }
 
-    pub fn with_roots(roots: StorageRoots) -> Self {
+    pub fn with_roots(cx: PaneCx, roots: StorageRoots) -> Self {
         let snapshot = desktop_policy::scan_storage(&roots);
         let cleanup = roots
             .app_cache
             .as_deref()
             .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
         Self {
+            cx,
             roots,
             snapshot,
             cleanup,
@@ -80,12 +146,8 @@ impl StoragePane {
             sync_busy: false,
             sync_result: None,
             snapshot_result: None,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            composed: None,
-            rect: Rect::ZERO,
+            replies: Replies::default(),
+            changed: false,
         }
     }
 
@@ -103,48 +165,83 @@ impl StoragePane {
         self.snapshot_result = Some(receiver);
     }
 
-    #[must_use]
-    pub fn with_operation_status(
-        mut self,
-        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
-    ) -> Self {
-        self.operation_status = status.clone();
-        self
-    }
-
-    #[must_use]
-    pub fn with_command_state(
-        mut self,
-        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    ) -> Self {
-        self.command_state = commands.clone();
-        self.isolate_document = true;
-        self
-    }
-
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "callers construct the exact typed request whose token is completed"
-    )]
-    fn finish_local_operation(
-        &self,
-        operation: crate::actions::StorageOperation,
-        result: Result<String, String>,
-    ) {
-        let token = crate::actions::local_operation_token_for(
-            crate::actions::STORAGE_OPERATION_TYPE,
-            &operation,
-        );
-        if !matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: running } if running == token
-        ) {
-            return;
+    /// Start `effect`; `reply` is told how it ends.
+    pub(crate) fn run(&mut self, effect: &StorageEffect, reply: EffectReply) {
+        let id = effect.id();
+        self.replies.wait(id, reply);
+        self.changed = true;
+        match effect {
+            StorageEffect::CleanUpCaches => self.clean_up_caches(),
+            StorageEffect::FreeSyncedFiles => self.free_synced_files(),
+            StorageEffect::OpenDisks => {
+                let result = os_actions::open_tool(ToolIntent::Disks {
+                    route: DisksRoute::Overview,
+                });
+                self.replies
+                    .finish(id, result.map(|()| t("settings-storage-opened-disks")));
+            }
+            StorageEffect::OpenBackups => {
+                let result = os_actions::open_tool(ToolIntent::Backups {
+                    route: BackupsRoute::Overview,
+                });
+                self.replies
+                    .finish(id, result.map(|()| t("settings-storage-opened-backups")));
+            }
         }
-        self.operation_status.set(match result {
-            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
-            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
-        });
+    }
+
+    fn clean_up_caches(&mut self) {
+        if let Some(preview) = &self.cleanup {
+            let selected: Vec<usize> = (0..preview.items.len()).collect();
+            match desktop_policy::apply_cleanup(preview, &selected) {
+                Ok(_) => {
+                    self.snapshot = desktop_policy::scan_storage(&self.roots);
+                    self.cleanup = self
+                        .roots
+                        .app_cache
+                        .as_deref()
+                        .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
+                    self.replies.finish(
+                        StorageEffect::CLEAN_UP_CACHES.id,
+                        Ok(t("settings-storage-cleaned")),
+                    );
+                }
+                Err(error) => self.replies.finish(
+                    StorageEffect::CLEAN_UP_CACHES.id,
+                    Err(t_args(
+                        "settings-storage-clean-failed",
+                        &[("error", error.to_string().into())],
+                    )),
+                ),
+            }
+        } else {
+            self.replies.finish(
+                StorageEffect::CLEAN_UP_CACHES.id,
+                Err(t("settings-storage-no-cache")),
+            );
+        }
+    }
+
+    fn free_synced_files(&mut self) {
+        if !self.sync_busy
+            && let Some(snapshot) = &self.sync_snapshot
+        {
+            let selected = reclaimable_selections(snapshot);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
+                    .and_then(|mut client| client.evict(selected))
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(result);
+            });
+            self.sync_busy = true;
+            self.sync_result = Some(receiver);
+        } else {
+            self.replies.finish(
+                StorageEffect::FREE_SYNCED_FILES.id,
+                Err(t("settings-storage-no-reclaimable")),
+            );
+        }
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -153,7 +250,7 @@ impl StoragePane {
             self.synced_card(),
             self.apps_card(),
             self.cleanup_card(),
-            Self::tools_card(),
+            self.tools_card(),
         ])
     }
 
@@ -238,10 +335,10 @@ impl StoragePane {
                 );
                 card_with_action(
                     &t("settings-storage-synced-card"),
-                    Box::new(
-                        Button::new("storage.sync.free", &free, Some(SYNC_FREE_KEY))
-                            .content_sized(),
-                    ),
+                    Box::new(self.cx.bind_invocation(
+                        Button::new("storage.sync.free", &free),
+                        StorageEffect::FreeSyncedFiles,
+                    )),
                     rows(sync_rows),
                 )
             } else {
@@ -301,9 +398,10 @@ impl StoragePane {
                     "settings-storage-remove",
                     &[("size", ui::format::bytes_si(preview.total_bytes).into())],
                 );
-                let action = Box::new(
-                    Button::new("storage.clean", &remove, Some(CLEAN_KEY)).content_sized(),
-                );
+                let action = Box::new(self.cx.bind_invocation(
+                    Button::new("storage.clean", &remove),
+                    StorageEffect::CleanUpCaches,
+                ));
                 let mut preview_rows = vec![caption(&t("settings-storage-cleanup-caption"))];
                 let cache_item = t("settings-storage-cache-item");
                 preview_rows.extend(preview.items.iter().take(8).map(|i| {
@@ -328,40 +426,129 @@ impl StoragePane {
         }
     }
 
-    fn tools_card() -> El {
+    fn tools_card(&self) -> El {
         let open_disks = t("settings-storage-open-disks");
         let open_backups = t("settings-storage-open-backups");
         card(
             &t("settings-storage-tools"),
             rows(vec![
-                crate::widgets::setting_row_described(
-                    &t("settings-storage-disks"),
-                    &t("settings-storage-disks-desc"),
-                    Box::new(
-                        Button::new("storage.disks", &open_disks, Some(DISKS_KEY)).content_sized(),
-                    ),
-                ),
-                crate::widgets::setting_row_described(
-                    &t("settings-storage-backups"),
-                    &t("settings-storage-backups-desc"),
-                    Box::new(
-                        Button::new("storage.backups", &open_backups, Some(BACKUPS_KEY))
-                            .content_sized(),
-                    ),
-                ),
+                self.cx
+                    .row(t("settings-storage-disks"))
+                    .described(t("settings-storage-disks-desc"))
+                    .button("storage.disks", &open_disks, StorageEffect::OpenDisks),
+                self.cx
+                    .row(t("settings-storage-backups"))
+                    .described(t("settings-storage-backups-desc"))
+                    .button("storage.backups", &open_backups, StorageEffect::OpenBackups),
                 caption(&t("settings-storage-tools-caption")),
             ]),
         )
     }
 }
 
-impl Default for StoragePane {
-    fn default() -> Self {
-        Self::new()
+impl PaneModel for StorageModel {
+    fn compose(&self) -> Box<dyn Widget> {
+        self.build_composition()
     }
-}
-pub fn build() -> Box<dyn Widget> {
-    Box::new(StoragePane::new())
+
+    fn poll(&mut self) -> bool {
+        let waiting = (self.snapshot_result.is_some(), self.sync_result.is_some());
+        if let Some(receiver) = &self.snapshot_result {
+            match receiver.try_recv() {
+                Ok(Ok(snapshot)) => {
+                    self.sync_snapshot = Some(snapshot);
+                    self.snapshot_result = None;
+                    if self.sync_message.as_deref() == Some(t("settings-storage-loading").as_str())
+                    {
+                        self.sync_message = None;
+                    }
+                }
+                Ok(Err(error)) => {
+                    self.sync_snapshot = None;
+                    self.snapshot_result = None;
+                    self.sync_message = Some(t_args(
+                        "settings-storage-service-unavailable",
+                        &[("error", error.into())],
+                    ));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.sync_snapshot = None;
+                    self.snapshot_result = None;
+                    self.sync_message = Some(t("settings-storage-service-ended"));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(receiver) = &self.sync_result {
+            match receiver.try_recv() {
+                Ok(Ok(report)) => {
+                    self.sync_busy = false;
+                    self.sync_result = None;
+                    self.refresh_sync();
+                    self.sync_message =
+                        Some(if report.queued_files > 0 && report.evicted_files > 0 {
+                            t_args(
+                                "settings-storage-freed-queued",
+                                &[
+                                    ("size", ui::format::bytes_si(report.freed_bytes).into()),
+                                    ("evicted", ArgValue::Number(report.evicted_files as f64)),
+                                    ("queued", ArgValue::Number(report.queued_files as f64)),
+                                ],
+                            )
+                        } else if report.queued_files > 0 {
+                            t_args(
+                                "settings-storage-queued-only",
+                                &[("queued", ArgValue::Number(report.queued_files as f64))],
+                            )
+                        } else {
+                            t_args(
+                                "settings-storage-freed",
+                                &[
+                                    ("size", ui::format::bytes_si(report.freed_bytes).into()),
+                                    ("evicted", ArgValue::Number(report.evicted_files as f64)),
+                                ],
+                            )
+                        });
+                    self.replies.finish(
+                        StorageEffect::FREE_SYNCED_FILES.id,
+                        Ok(t("settings-storage-reclaim-done")),
+                    );
+                }
+                Ok(Err(error)) => {
+                    self.sync_busy = false;
+                    self.sync_result = None;
+                    let message = t_args(
+                        "settings-storage-nothing-removed",
+                        &[("error", error.into())],
+                    );
+                    self.sync_message = Some(message.clone());
+                    self.replies
+                        .finish(StorageEffect::FREE_SYNCED_FILES.id, Err(message));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.sync_busy = false;
+                    self.sync_result = None;
+                    self.sync_message = Some(t("settings-storage-request-ended"));
+                    self.replies.finish(
+                        StorageEffect::FREE_SYNCED_FILES.id,
+                        Err(t("settings-storage-service-ended")),
+                    );
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        let finished = (waiting.0 && self.snapshot_result.is_none())
+            || (waiting.1 && self.sync_result.is_none());
+        std::mem::take(&mut self.changed) || finished
+    }
+
+    fn name(&self) -> &'static str {
+        "StoragePane"
+    }
+
+    fn busy(&self) -> bool {
+        self.sync_busy || self.snapshot_result.is_some()
+    }
 }
 
 fn reclaimable_selections(snapshot: &SyncStorageSnapshot) -> Vec<EvictionSelection> {
@@ -371,291 +558,6 @@ fn reclaimable_selections(snapshot: &SyncStorageSnapshot) -> Vec<EvictionSelecti
         .filter(|file| file.reclaimable_bytes > 0)
         .map(EvictionSelection::from)
         .collect()
-}
-
-impl Widget for StoragePane {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pass deliberately coordinates the storage snapshot and each independent command latch"
-    )]
-    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
-        let (shared, _) = ui::doc::document(shared, root);
-        let isolated = self.isolate_document;
-        let mut state = if isolated {
-            std::mem::take(&mut self.local_doc)
-        } else {
-            std::mem::take(shared)
-        };
-        let root = automerge::ROOT;
-        if let Some(crate::actions::LocalPaneCommand::Storage(operation)) = self.command_state.get()
-        {
-            self.command_state.set(None);
-            let key = match operation {
-                crate::actions::StorageOperation::CleanupCaches => CLEAN_KEY,
-                crate::actions::StorageOperation::FreeSyncedFiles => SYNC_FREE_KEY,
-                crate::actions::StorageOperation::OpenDisks => DISKS_KEY,
-                crate::actions::StorageOperation::OpenBackups => BACKUPS_KEY,
-            };
-            let _ = state.put(&root, key, true);
-        }
-        {
-            let state = &mut state;
-            let root = &root;
-            if let Some(receiver) = &self.snapshot_result {
-                match receiver.try_recv() {
-                    Ok(Ok(snapshot)) => {
-                        self.sync_snapshot = Some(snapshot);
-                        self.snapshot_result = None;
-                        if self.sync_message.as_deref()
-                            == Some(t("settings-storage-loading").as_str())
-                        {
-                            self.sync_message = None;
-                        }
-                    }
-                    Ok(Err(error)) => {
-                        self.sync_snapshot = None;
-                        self.snapshot_result = None;
-                        self.sync_message = Some(t_args(
-                            "settings-storage-service-unavailable",
-                            &[("error", error.into())],
-                        ));
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        self.sync_snapshot = None;
-                        self.snapshot_result = None;
-                        self.sync_message = Some(t("settings-storage-service-ended"));
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                }
-            }
-            if let Some(receiver) = &self.sync_result {
-                match receiver.try_recv() {
-                    Ok(Ok(report)) => {
-                        self.sync_busy = false;
-                        self.sync_result = None;
-                        self.refresh_sync();
-                        self.sync_message =
-                            Some(if report.queued_files > 0 && report.evicted_files > 0 {
-                                t_args(
-                                    "settings-storage-freed-queued",
-                                    &[
-                                        ("size", ui::format::bytes_si(report.freed_bytes).into()),
-                                        ("evicted", ArgValue::Number(report.evicted_files as f64)),
-                                        ("queued", ArgValue::Number(report.queued_files as f64)),
-                                    ],
-                                )
-                            } else if report.queued_files > 0 {
-                                t_args(
-                                    "settings-storage-queued-only",
-                                    &[("queued", ArgValue::Number(report.queued_files as f64))],
-                                )
-                            } else {
-                                t_args(
-                                    "settings-storage-freed",
-                                    &[
-                                        ("size", ui::format::bytes_si(report.freed_bytes).into()),
-                                        ("evicted", ArgValue::Number(report.evicted_files as f64)),
-                                    ],
-                                )
-                            });
-                        self.finish_local_operation(
-                            crate::actions::StorageOperation::FreeSyncedFiles,
-                            Ok(t("settings-storage-reclaim-done")),
-                        );
-                    }
-                    Ok(Err(error)) => {
-                        self.sync_busy = false;
-                        self.sync_result = None;
-                        let message = t_args(
-                            "settings-storage-nothing-removed",
-                            &[("error", error.into())],
-                        );
-                        self.sync_message = Some(message.clone());
-                        self.finish_local_operation(
-                            crate::actions::StorageOperation::FreeSyncedFiles,
-                            Err(message),
-                        );
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        self.sync_busy = false;
-                        self.sync_result = None;
-                        self.sync_message = Some(t("settings-storage-request-ended"));
-                        self.finish_local_operation(
-                            crate::actions::StorageOperation::FreeSyncedFiles,
-                            Err(t("settings-storage-service-ended")),
-                        );
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                }
-            }
-            if read_bool(state, root, CLEAN_KEY).unwrap_or(false) {
-                let _ = state.put(root, CLEAN_KEY, false);
-                if let Some(preview) = &self.cleanup {
-                    let selected: Vec<usize> = (0..preview.items.len()).collect();
-                    match desktop_policy::apply_cleanup(preview, &selected) {
-                        Ok(_) => {
-                            self.snapshot = desktop_policy::scan_storage(&self.roots);
-                            self.cleanup = self
-                                .roots
-                                .app_cache
-                                .as_deref()
-                                .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
-                            self.finish_local_operation(
-                                crate::actions::StorageOperation::CleanupCaches,
-                                Ok(t("settings-storage-cleaned")),
-                            );
-                        }
-                        Err(error) => self.finish_local_operation(
-                            crate::actions::StorageOperation::CleanupCaches,
-                            Err(t_args(
-                                "settings-storage-clean-failed",
-                                &[("error", error.to_string().into())],
-                            )),
-                        ),
-                    }
-                } else {
-                    self.finish_local_operation(
-                        crate::actions::StorageOperation::CleanupCaches,
-                        Err(t("settings-storage-no-cache")),
-                    );
-                }
-            }
-            if read_bool(state, root, SYNC_FREE_KEY).unwrap_or(false) {
-                let _ = state.put(root, SYNC_FREE_KEY, false);
-                if !self.sync_busy
-                    && let Some(snapshot) = &self.sync_snapshot
-                {
-                    let selected = reclaimable_selections(snapshot);
-                    let (sender, receiver) = std::sync::mpsc::channel();
-                    std::thread::spawn(move || {
-                        let result = StorageClient::connect(DEFAULT_STORAGE_SOCKET)
-                            .and_then(|mut client| client.evict(selected))
-                            .map_err(|error| error.to_string());
-                        let _ = sender.send(result);
-                    });
-                    self.sync_busy = true;
-                    self.sync_result = Some(receiver);
-                } else {
-                    self.finish_local_operation(
-                        crate::actions::StorageOperation::FreeSyncedFiles,
-                        Err(t("settings-storage-no-reclaimable")),
-                    );
-                }
-            }
-            if read_bool(state, root, DISKS_KEY).unwrap_or(false) {
-                let _ = state.put(root, DISKS_KEY, false);
-                let result = os_actions::open_tool(ToolIntent::Disks {
-                    route: DisksRoute::Overview,
-                });
-                self.finish_local_operation(
-                    crate::actions::StorageOperation::OpenDisks,
-                    result.map(|()| t("settings-storage-opened-disks")),
-                );
-            }
-            if read_bool(state, root, BACKUPS_KEY).unwrap_or(false) {
-                let _ = state.put(root, BACKUPS_KEY, false);
-                let result = os_actions::open_tool(ToolIntent::Backups {
-                    route: BackupsRoute::Overview,
-                });
-                self.finish_local_operation(
-                    crate::actions::StorageOperation::OpenBackups,
-                    result.map(|()| t("settings-storage-opened-backups")),
-                );
-            }
-            if let Some(c) = &mut self.composed {
-                c.sync(state, root);
-            }
-        }
-        if isolated {
-            self.local_doc = state;
-        } else {
-            *shared = state;
-        }
-    }
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        // `child` was just created in this same tree, so this call is not
-        // reachable to fail; if it (impossibly) did, wrap it in itself
-        // rather than panic this panic=abort process.
-        let node = taffy
-            .new_with_children(
-                taffy::Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::auto(),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x + l.size.width),
-            origin.y + f64::from(l.location.y + l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
-    fn name(&self) -> &'static str {
-        "StoragePane"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 }
 
 #[cfg(test)]
@@ -670,12 +572,17 @@ mod tests {
             let cache = tmp.path().join("cache");
             std::fs::create_dir_all(cache.join("so.tilo.browser")).unwrap();
             std::fs::write(cache.join("so.tilo.browser/http"), vec![0u8; 24]).unwrap();
-            let pane = StoragePane::with_roots(StorageRoots {
-                app_payloads: None,
-                room_data: None,
-                app_cache: Some(cache),
-                sync_replica: None,
-            });
+            let profile = tempfile::tempdir().unwrap();
+            let cx = PaneCx::in_file(profile.path().join("settings.json"));
+            let pane = StorageModel::with_roots(
+                cx,
+                StorageRoots {
+                    app_payloads: None,
+                    room_data: None,
+                    app_cache: Some(cache),
+                    sync_replica: None,
+                },
+            );
             assert_eq!(pane.snapshot.reclaimable_bytes(), 24);
             assert_eq!(pane.cleanup.as_ref().unwrap().total_bytes, 24);
         }

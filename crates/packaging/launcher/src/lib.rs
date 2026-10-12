@@ -11,6 +11,8 @@
 //!   loader manifests and a device to expose.
 //! - [`landlock`] / [`landlock_shim`] — FS access planning plus fail-closed
 //!   restriction inside the completed bwrap mount namespace.
+//! - [`loader_preflight`] — whether the sandboxed loader will find every
+//!   library the app links against, checked before `bwrap` runs.
 //! - [`seccomp`] — baseline BPF policy.
 //! - [`services`] — well-known service socket resolution.
 //! - [`capabilities`] — workspace grants resolved into binds; the
@@ -27,11 +29,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -51,13 +49,22 @@ pub mod host;
 pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod landlock_shim;
+#[cfg(target_os = "linux")]
+pub mod lease;
+#[cfg(target_os = "linux")]
+pub mod loader_preflight;
 pub mod managed;
 pub mod manifest;
+pub mod mesa_seed;
 pub mod netgate;
+#[cfg(target_os = "linux")]
+pub mod owned_service;
 pub mod performance;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod provider_sandbox;
+#[cfg(unix)]
+pub mod registration_gate;
 #[cfg(target_os = "linux")]
 pub mod run;
 #[cfg(target_os = "linux")]

@@ -1,6 +1,7 @@
 [package]
 name = "remote"
 version = "0.1.0"
+description = "SSH terminals, VNC/RDP desktops and Tilo-to-Tilo relay sessions"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
@@ -17,7 +18,6 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-private-fs = { path = "../../crates/system/private-fs" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -25,18 +25,11 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # state, so add/edit/rename/favorite/delete of a profile are replayable actions
 # the shell's Ctrl+K palette dispatches — the same ones the on-screen affordances do.
 tilo-actions = { path = "../../crates/collab/actions" }
-# Tilo-device sessions consume the authenticated exact-target mesh placement;
-# Remote does not maintain a second host-selection implementation.
-tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 tilo-callstream = { path = "../../crates/collab/tilo-callstream" }
-# Durable, same-directory replacement for the device-private SSH trust store.
-tilo-files = { path = "../../crates/platform/tilo-files" }
 # Tilo-device connections store the target's endpoint id; only the key types
 # are needed, not the iroh transport.
 iroh-base = { workspace = true, features = ["key"] }
-automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -55,9 +48,7 @@ des = "0.9"
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-# Serialises tests that exercise the process-wide clipboard, so they never
-# race each other under cargo's default parallel runner.
-serial_test.workspace = true
+tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 

@@ -7,8 +7,6 @@
 use crate::shell::chrome_state;
 use settings_store::hardware::{TopBarWidget as StoredWidget, TopBarWidgetsConfig};
 use std::cell::RefCell;
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tilo_desktop::chrome::{
@@ -20,15 +18,19 @@ use tilo_desktop::chrome::{
 pub use tilo_desktop::topbar::*;
 use vello::kurbo::Rect;
 
-/// How often the Clocks app's snapshot is re-read. The bar asks for a
-/// snapshot many times a frame; the file changes at most once a second.
+/// How often the Clocks app's live activity is taken in. The bar asks for a
+/// snapshot many times a frame; the activity changes at most once a second.
 const CLOCK_ACTIVITY_REFRESH: Duration = Duration::from_millis(250);
 
 /// The bar's chrome source for the compositor's `chrome`.
 pub fn native_source(chrome: chrome_state::Chrome) -> Chrome {
+    // Owned fixtures paint at an owned clock value. Reading wall time here
+    // would change an otherwise identical scene at a minute boundary.
+    let fixture_clock = chrome.borrow().hosted_inputs.fixture_clock();
     Rc::new(NativeChrome {
         chrome,
         clock: RefCell::new(ClockPoll::default()),
+        fixture_clock,
         widgets: RefCell::new(stored_widgets(TopBarWidgetsConfig::load())),
     })
 }
@@ -71,22 +73,22 @@ fn save_widgets(widgets: &TopBarWidgets) {
     }
 }
 
+/// The app whose live activity the bar shows as its clock.
+const CLOCKS_APP: &str = "so.tilo.clocks";
+
+/// Hand a control pressed on the floating clock to Clocks, over its channel.
 fn publish_clock_command(command: &str, activity_id: Option<&str>) {
-    let Some(path) =
-        xdg_paths::xdg::runtime_dir().map(|root| root.join("tilo/clocks-command.json"))
-    else {
-        return;
-    };
-    let payload = serde_json::json!({
-        "version": 1,
-        "command": command,
-        "activity_id": activity_id,
-    });
-    let _ = tilo_files::native::atomic::write(&path, payload.to_string().as_bytes());
+    crate::shell::live_activities::board().press(
+        CLOCKS_APP,
+        serde_json::json!({
+            "command": command,
+            "activity_id": activity_id,
+        }),
+    );
 }
 
-/// Read the Clocks app's private snapshot of its running timer or
-/// stopwatch into chrome, and announce a newly due timer once.
+/// Take the live activity Clocks shows — its running timer or stopwatch —
+/// into chrome, and announce a newly due timer once.
 fn refresh_clock_activity(state: &mut chrome_state::ChromeState, poll: &mut ClockPoll) {
     let now = Instant::now();
     if poll
@@ -96,31 +98,14 @@ fn refresh_clock_activity(state: &mut chrome_state::ChromeState, poll: &mut Cloc
         return;
     }
     poll.checked = Some(now);
-    let Some(path) = xdg_paths::xdg::runtime_dir().map(|root| root.join("tilo/clocks.json")) else {
+    let Some(activity) = crate::shell::live_activities::board()
+        .activity(CLOCKS_APP)
+        .and_then(|activity| serde_json::from_value::<chrome_state::ClockActivity>(activity).ok())
+    else {
+        state.overlays.clock = false;
+        state.clock_activity = None;
         return;
     };
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return;
-    };
-    #[cfg(unix)]
-    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode().trailing_zeros() < 6 {
-        return;
-    }
-    let Ok(bytes) = std::fs::read(path) else {
-        return;
-    };
-    if bytes.len() > 4096 {
-        return;
-    }
-    let Ok(activity) = serde_json::from_slice::<chrome_state::ClockActivity>(&bytes) else {
-        return;
-    };
-    if activity.version != 1
-        || activity.producer_pid == 0
-        || !std::path::Path::new(&format!("/proc/{}", activity.producer_pid)).exists()
-    {
-        return;
-    }
     if let Some(notification_id) = activity.notification_id.as_ref()
         && poll.notified_id.as_ref() != Some(notification_id)
     {
@@ -150,13 +135,13 @@ fn refresh_clock_activity(state: &mut chrome_state::ChromeState, poll: &mut Cloc
 /// pins the palette: a screenshot harness comparing whole frames needs every
 /// part still. Unset (every real session) reads the wall clock.
 fn clock_snapshot() -> ClockSnapshot {
-    let now = chrono::Local::now();
+    let now = ui::clock::local_now();
     ClockSnapshot {
         unix_seconds: now.timestamp(),
         clock: std::env::var("TILO_CLOCK")
             .ok()
             .filter(|pinned| !pinned.is_empty())
-            .unwrap_or_else(|| now.format("%H:%M").to_string()),
+            .unwrap_or_else(|| ui::clock::time_of_day(&now)),
         weekday: now.format("%a").to_string(),
         date: now.format("%-d %B").to_string(),
     }
@@ -200,6 +185,7 @@ fn system_status(status: &crate::shell::status::SystemStatus) -> SystemStatus {
 struct NativeChrome {
     chrome: chrome_state::Chrome,
     clock: RefCell<ClockPoll>,
+    fixture_clock: Option<ClockSnapshot>,
     widgets: RefCell<TopBarWidgets>,
 }
 
@@ -208,13 +194,17 @@ impl DesktopChromeSource for NativeChrome {
         self.chrome.borrow().tree().desktop.clone()
     }
 
+    fn take_topbar_editor_request(&self) -> bool {
+        self.chrome.borrow_mut().take_topbar_editor_request()
+    }
+
     fn snapshot(&self) -> DesktopChromeSnapshot {
         let mut state = self.chrome.borrow_mut();
         refresh_clock_activity(&mut state, &mut self.clock.borrow_mut());
         DesktopChromeSnapshot {
             revision: state.revision,
             status: system_status(&state.status),
-            clock: clock_snapshot(),
+            clock: self.fixture_clock.clone().unwrap_or_else(clock_snapshot),
             telemetry: TelemetrySnapshot::default(),
             overlays: ChromeOverlays {
                 overview: state.overlays.overview,
@@ -362,6 +352,54 @@ mod native_source_tests {
     use crate::shell::state::WorkspaceTree;
 
     #[test]
+    fn fixture_clock_is_owned_without_freezing_the_live_source() {
+        let parent = tempfile::tempdir().unwrap();
+        let inputs =
+            crate::shell::hosted_inputs::HostedTileInputs::fixture_in(parent.path()).unwrap();
+        let chrome = chrome_state::ChromeState::new_with_fixture_handle(
+            WorkspaceTree::bootstrap_default().shared(),
+            inputs,
+        );
+        let source = native_source(chrome);
+        assert_eq!(source.snapshot().clock, ClockSnapshot::default());
+
+        let live = native_source(chrome_state::ChromeState::new(
+            WorkspaceTree::bootstrap_default(),
+        ));
+        assert!(live.snapshot().clock.unix_seconds > 0);
+    }
+
+    #[test]
+    fn native_source_uses_each_fixtures_explicit_clock_on_repeated_frames() {
+        let parent = tempfile::tempdir().unwrap();
+        for (unix_seconds, display) in [(1_700_000_000, "09:41"), (1_700_000_060, "09:42")] {
+            let clock = ClockSnapshot {
+                unix_seconds,
+                clock: display.into(),
+                weekday: "Tuesday".into(),
+                date: "14 November".into(),
+            };
+            let inputs = crate::shell::hosted_inputs::HostedTileInputs::fixture_in(parent.path())
+                .unwrap()
+                .with_fixture_clock(clock.clone())
+                .unwrap();
+            let chrome = chrome_state::ChromeState::new_with_fixture_handle(
+                WorkspaceTree::bootstrap_default().shared(),
+                inputs,
+            );
+            let source = native_source(chrome);
+            for _ in 0..3 {
+                assert_eq!(source.snapshot().clock, clock);
+            }
+        }
+        assert!(
+            crate::shell::hosted_inputs::HostedTileInputs::default()
+                .with_fixture_clock(ClockSnapshot::default())
+                .is_err()
+        );
+    }
+
+    #[test]
     fn intents_take_the_compositors_own_mutation_paths() {
         let chrome = chrome_state::ChromeState::new(WorkspaceTree::bootstrap_demo());
         let source = native_source(chrome.clone());
@@ -395,5 +433,40 @@ mod native_source_tests {
                 .is_some_and(|w| !w.widgets.is_empty())
         );
         assert_eq!(source.tree().active, chrome.borrow().tree().desktop.active);
+    }
+
+    #[test]
+    fn the_floating_clock_is_clocks_live_activity_and_its_controls_go_back() {
+        let board = crate::shell::live_activities::board();
+        let chrome = chrome_state::ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let source = native_source(chrome.clone());
+        board.show(
+            CLOCKS_APP,
+            Some(serde_json::json!({
+                "active": true,
+                "activity_id": "timer-1",
+                "label": "Tea",
+                "remaining_secs": 90,
+                "stopwatch": false,
+                "overlay": true,
+            })),
+        );
+        let shown = source
+            .snapshot()
+            .clock_activity
+            .expect("the timer is shown");
+        assert_eq!(shown.label, "Tea");
+        assert_eq!(shown.remaining_secs, 90);
+        assert!(source.snapshot().overlays.clock, "it floats");
+
+        assert!(source.intent(ChromeIntent::ClockCommand {
+            command: "toggle".into(),
+            activity_id: Some("timer-1".into()),
+        }));
+        board.show(CLOCKS_APP, None);
+        // A fresh source takes the ended activity in at once.
+        let source = native_source(chrome.clone());
+        assert!(source.snapshot().clock_activity.is_none(), "it ended");
+        assert!(!chrome.borrow().overlays.clock);
     }
 }

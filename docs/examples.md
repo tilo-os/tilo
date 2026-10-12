@@ -31,6 +31,13 @@ shapes earlier versions offered as templates (data, list, tree, workspace,
 async, qr) were each teaching one widget rather than giving an app a
 starting point, so they are examples now; naming one tells you which.
 
+The starter's generated tests exercise its public actions and live controls,
+Viewer refusal, persistence, and a two-participant edit. That journey checks
+that sync updates both replicas and the running view, history retains the
+peer's authorship, and local undo/redo preserves the collaborator's edit.
+It exchanges production resource documents headlessly; it does not certify
+network transport or sign-in on two devices.
+
 ## Examples
 
 | Example | Teaches | Web |
@@ -45,6 +52,21 @@ starting point, so they are examples now; naming one tells you which.
 | `localized` | Catalogs, arguments, plurals, live language switching, pseudo-locale. | yes |
 | `graph-screens` | Serialized screens, a Rust component mounted in one, the router. | yes |
 | `qr-code` | A generated visual with alternative text, empty until it has input. | yes |
+
+Inspect one example or read just its embedded source without a repository
+checkout or network access:
+
+```bash
+tilo-app examples shared-checklist
+tilo-app examples shared-checklist --file tests/app.rs --json
+tilo-app examples shared-checklist --file src/lib.rs
+```
+
+The named command lists that example's files and scaffold command. With
+`--file`, human output is the file itself; JSON carries the selected example,
+`file` and `content`. Files come from the installed CLI's embedded examples,
+so the tests and code match the examples that version of `new` copies. Unknown
+paths report the available files.
 
 `tilo-app examples` prints this list (`--json` for scripts, with each
 example's path and whether it is web-capable). The examples that load data or

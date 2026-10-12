@@ -1,0 +1,87 @@
+{
+  "artifact_sha256": {
+    "LICENSE.primary": "93c95457270d8076e2795bc47683a066b6f43466941c26c174c8f2049df7a2d9",
+    "c-output.f32": "b3f6304c4f4f5e19953383c6f12b6e5184115155eecb42ada43840cf6592000a",
+    "c-stderr.log": "fca615c10b72b55fbaad2494bdf3f1e89b2ad437d491145d74fb372a1b6ec316",
+    "compile.log": "fca615c10b72b55fbaad2494bdf3f1e89b2ad437d491145d74fb372a1b6ec316",
+    "compiler-version.log": "5b76f507713ac5e09e86916de0531b31fb598d9642d84ccf47e3d339937a3050",
+    "input.f32": "3cb552a13012997340a441614b938a01e9a662de0f800e49d3c6bfae231433b0",
+    "local-source/arithmetic.py": "69e120cbfdf7ecf3841022c076e227ec08c8f0f04b770eb1e286ce5b9337cb64",
+    "local-source/extractor.py": "36b17109a41292e12c1137fe65dd750f056575c3c094344d42d6e98329e3b0c2",
+    "local-source/harness.py": "20ee0ac74e2f0fe8bbc69a67800cd0cb9fd15bd1aefad90ca24ce51195e8d18f",
+    "local-source/primary_pins.py": "dbdc35fb8012739a1c19e3719063d3d13c4fe89e289e47c64071ae639ed7b043",
+    "local-source/reference.py": "5448528f407f74315118402f5910ea3dea9ab7c89c6c6b08b61b10fd393ffcaa",
+    "mutant": "44d7c49a043903178f7d8e78102a7c9ba63a8e1b55b7f82e490435a74d5546e7",
+    "mutant-compile.log": "fca615c10b72b55fbaad2494bdf3f1e89b2ad437d491145d74fb372a1b6ec316",
+    "mutant-output.f32": "d46cc7bdd185a14f8e187402ecd1c1f0bb9c5e26d7bf547c94e2f983565f5992",
+    "mutant.c": "85a85439666b95b001c8b2edcd10c7bbf7db55ffa82a966431d39c2a1486a6e8",
+    "oracle": "bac5f3d8cd818cd96227c03e05865f04d011ebd8e59161b35ad977842695975b",
+    "oracle-libraries.log": "85aeac31040dc4a34c9e7da6ae8cb770e519fffcd9df841b1dfcdac8ccecd081",
+    "oracle.c": "74e0dbb510c7e9d25cbd904a99bf3bed30fbb28757fb915d2ec368489af1c8d9",
+    "reference-output.f32": "876127c6904f55c3236d403b0be37f23648157630fa61568a54cc62447e1e563",
+    "vec.h.primary": "50c6eda724642b753be01b10d4d6e9b870d6ceeecc5777a11291353b41506c9e"
+  },
+  "checks": {
+    "compiled_exponential_sign_fault_detected": "passed",
+    "local_source_lifetime_stable": "passed",
+    "scalar_primary_vs_stabilized_decimal_exp_reference": "passed"
+  },
+  "comparisons": {
+    "additional_FP32_inputs": 2308,
+    "difference_examples": [],
+    "exp_difference_examples": [
+      {
+        "input_bits": 1036910592,
+        "observed_exp_bits": 1063747761,
+        "reference_exp_bits": 1063747760,
+        "ulp": 1
+      }
+    ],
+    "exp_differences": 1,
+    "finite_BF16_sourced_FP32_inputs": 65280,
+    "max_exp_ulp": 1,
+    "max_silu_ulp": 0,
+    "silu_differences": 0,
+    "total_inputs": 67588
+  },
+  "compiler_executable_sha256": "1f28c67c201081aaf051bdf1efdfa559f98b4ec4ddcb6f6f236ac5cd6c1f7db6",
+  "compiler_flags": [
+    "-std=c11",
+    "-O0",
+    "-fno-fast-math",
+    "-ffp-contract=off",
+    "oracle.c",
+    "-lm",
+    "-o",
+    "oracle"
+  ],
+  "compiler_version": "Synthetic contract compiler 1.0",
+  "evidence": "bounded_scalar_silu_libm_characterization",
+  "excludes": [
+    "actual_hidden_states",
+    "model_quality",
+    "SIMD_GPU_equivalence",
+    "correct_rounding_proof_for_all_FP32",
+    "RTL",
+    "PPA"
+  ],
+  "local_source_sha256": {
+    "arithmetic": "69e120cbfdf7ecf3841022c076e227ec08c8f0f04b770eb1e286ce5b9337cb64",
+    "extractor": "36b17109a41292e12c1137fe65dd750f056575c3c094344d42d6e98329e3b0c2",
+    "harness": "20ee0ac74e2f0fe8bbc69a67800cd0cb9fd15bd1aefad90ca24ce51195e8d18f",
+    "primary_pins": "dbdc35fb8012739a1c19e3719063d3d13c4fe89e289e47c64071ae639ed7b043",
+    "reference": "5448528f407f74315118402f5910ea3dea9ab7c89c6c6b08b61b10fd393ffcaa"
+  },
+  "mutation_differing_silu_words": 39410,
+  "observed_linked_library_sha256": {
+    "/lib64/libc.so.6": "361d2faaf2055b0218fa592ad51afa7cd5eb265cb35d7a9bea7e64d411917d7f",
+    "/lib64/libm.so.6": "f8a9610dcb0551bc55129953246586099e7ecef783efee8a545fa438adde7189"
+  },
+  "primary_revision": "0a84d860862eaae2f91a6986a5f08483c755f132",
+  "primary_source_sha256": {
+    "LICENSE": "93c95457270d8076e2795bc47683a066b6f43466941c26c174c8f2049df7a2d9",
+    "vec.h": "50c6eda724642b753be01b10d4d6e9b870d6ceeecc5777a11291353b41506c9e"
+  },
+  "schema_version": 1,
+  "status": "passed"
+}

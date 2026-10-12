@@ -5,54 +5,23 @@
     reason = "funnel projection is bounded floating-point geometry"
 )]
 
-use std::collections::HashMap;
-
-use crate::widget::{AppModel, ModelPath};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use crate::widget::ModelPath;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
+use crate::widget::Widget;
+use crate::widget::chart_data::ChartItem;
+use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_item,
+    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
 };
-use crate::widget::{TaffyTreeExt, Widget};
-
-#[derive(Clone, Debug)]
-pub struct FunnelStage {
-    pub id: String,
-    pub label: String,
-    pub value: f64,
-    pub color: Option<Color>,
-    pub detail: String,
-}
-
-impl FunnelStage {
-    pub fn new(id: impl Into<String>, label: impl Into<String>, value: f64) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-            value,
-            color: None,
-            detail: String::new(),
-        }
-    }
-    #[must_use]
-    pub fn colored(mut self, color: Color) -> Self {
-        self.color = Some(color);
-        self
-    }
-    #[must_use]
-    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
-        self.detail = detail.into();
-        self
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunnelDirection {
@@ -94,11 +63,14 @@ struct StageGeometry {
     index: usize,
     path: BezPath,
     bounds: Rect,
+    /// The stage's narrower and wider edge.
+    narrow_width: f64,
+    wide_width: f64,
     conversion: f64,
 }
 
 pub struct FunnelChart {
-    stages: Vec<FunnelStage>,
+    stages: Vec<ChartItem>,
     style: FunnelStyle,
     title: String,
     height: f32,
@@ -111,7 +83,7 @@ pub struct FunnelChart {
 }
 
 impl FunnelChart {
-    pub fn new(stages: Vec<FunnelStage>) -> Self {
+    pub fn new(stages: Vec<ChartItem>) -> Self {
         Self {
             stages,
             style: FunnelStyle::default(),
@@ -154,10 +126,6 @@ impl FunnelChart {
     pub fn with_height(mut self, height: f32) -> Self {
         self.height = height.max(150.0);
         self
-    }
-    pub fn set_stages(&mut self, stages: Vec<FunnelStage>) {
-        self.stages = stages;
-        self.hovered = None;
     }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
@@ -270,26 +238,120 @@ impl FunnelChart {
                 index: *index,
                 path,
                 bounds,
+                narrow_width: top_width.min(bottom_width),
+                wide_width: top_width.max(bottom_width),
                 conversion: stage.value / previous.max(f64::EPSILON),
             });
             y += height + self.style.gap;
         }
         output
     }
+    /// A stage's name, and its value under it where there is room: inside
+    /// the stage where both fit its narrower edge, otherwise beside the
+    /// funnel on the leading side, shortened to the room there and dropped
+    /// (the tooltip names the stage) only where not even a short name fits.
+    fn draw_stage_label(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        geometry: &StageGeometry,
+        color: Color,
+    ) {
+        let Some(stage) = self.stages.get(geometry.index) else {
+            return;
+        };
+        let name_style = theme
+            .text(TextRole::Label)
+            .with_weight(TextWeight::Semibold);
+        let value_style = theme.text(TextRole::Caption);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let value = self.style.show_values.then(|| format_compact(stage.value));
+        let (nw, nh) = tr.measure_style(&stage.label, None, &name_style);
+        let (nw, nh) = (f64::from(nw), f64::from(nh));
+        let (vw, vh) = value.as_deref().map_or((0.0, 0.0), |v| {
+            let (w, h) = tr.measure_style(v, None, &value_style);
+            (f64::from(w), f64::from(h))
+        });
+        let bounds = geometry.bounds;
+        // The narrower of the stage's two edges is the room inside it.
+        let narrow = geometry.narrow_width;
+        let inside_ink = theme
+            .tokens
+            .colors
+            .ink_on(color, theme.tokens.colors.text_primary, 4.5);
+        let two_lines = vh > 0.0 && nh + vh + pad <= bounds.height();
+        let block_h = if two_lines { nh + vh } else { nh };
+        let top = bounds.center().y - block_h / 2.0;
+        if nw.max(if two_lines { vw } else { 0.0 }) + 2.0 * pad <= narrow
+            && nh + pad <= bounds.height()
+        {
+            let cx = bounds.center().x;
+            tr.draw_style(
+                scene,
+                &stage.label,
+                inside_ink,
+                transform * Affine::translate((cx - nw / 2.0, top)),
+                None,
+                &name_style,
+            );
+            if two_lines && let Some(value) = value.as_deref() {
+                tr.draw_style(
+                    scene,
+                    value,
+                    inside_ink,
+                    transform * Affine::translate((cx - vw / 2.0, top + nh)),
+                    None,
+                    &value_style,
+                );
+            }
+            return;
+        }
+        // Beside the stage, trailing-aligned to its leading edge at its middle.
+        let edge = bounds.center().x - narrow.max(geometry.wide_width) / 2.0;
+        let room = edge - pad - self.rect.x0 - pad;
+        let Some((name, w, _)) =
+            crate::widget::chart_labels::fit_label(tr, &stage.label, room, &name_style)
+        else {
+            return;
+        };
+        let x1 = edge - pad;
+        tr.draw_style(
+            scene,
+            &name,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((x1 - w, top)),
+            None,
+            &name_style,
+        );
+        if two_lines
+            && let Some(value) = value.as_deref()
+            && vw <= room
+        {
+            tr.draw_style(
+                scene,
+                value,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((x1 - vw, top + nh)),
+                None,
+                &value_style,
+            );
+        }
+    }
+
     fn palette(theme: &Theme, index: usize) -> Color {
-        let colors = &theme.tokens.colors;
-        let palette = [
-            colors.accent.stops[5],
-            colors.semantic.info,
-            colors.semantic.success,
-            colors.semantic.warning,
-            colors.accent.stops[8],
-            colors.semantic.danger,
-        ];
-        palette
-            .get(index % palette.len())
-            .copied()
-            .unwrap_or(theme.accent_primary)
+        theme.tokens.colors.presence.series(index)
+    }
+}
+
+impl InteractiveChart for FunnelChart {
+    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
+        (
+            &mut self.pointer,
+            &mut self.keyboard_inspection,
+            &mut self.touch,
+        )
     }
     fn update_hover(&mut self) {
         self.hovered = self
@@ -298,34 +360,34 @@ impl FunnelChart {
             .find(|stage| stage.bounds.contains(self.pointer))
             .map(|stage| stage.index);
     }
+    fn clear_hover(&mut self) {
+        self.hovered = None;
+    }
+    fn activate_hovered(&mut self) -> bool {
+        let Some(stage) = self.hovered.and_then(|index| self.stages.get(index)) else {
+            return false;
+        };
+        self.activated = Some(stage.id.clone());
+        true
+    }
+    fn move_keyboard_inspection(&mut self, action: ChartNavAction) -> bool {
+        let candidates = self.valid();
+        self.hovered = moved_item(self.hovered, &candidates, action);
+        if let Some(bounds) = self
+            .geometry()
+            .into_iter()
+            .find(|stage| Some(stage.index) == self.hovered)
+            .map(|stage| stage.bounds)
+        {
+            self.pointer = bounds.center();
+        }
+        self.hovered.is_some()
+    }
 }
 
 impl Widget for FunnelChart {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     #[allow(
         clippy::too_many_lines,
         reason = "the retained draw pass keeps stages, labels, conversions, and tooltip painting together"
@@ -348,14 +410,13 @@ impl Widget for FunnelChart {
             self.pointer = bounds.center();
         }
         if !self.title.is_empty() {
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.title,
-                theme.tokens.typography.scale.lg,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Heading),
             );
         }
         for geometry in self.geometry() {
@@ -375,48 +436,17 @@ impl Widget for FunnelChart {
                     &geometry.path,
                 );
             }
-            let ink = theme
-                .tokens
-                .colors
-                .ink_on(color, theme.tokens.colors.text_primary, 4.5);
-            let value = if self.style.show_values {
-                format!("{}  ·  {}", stage.label, format_compact(stage.value))
-            } else {
-                stage.label.clone()
-            };
-            let (width, height) = tr.measure_weighted(
-                &value,
-                theme.tokens.typography.scale.sm,
-                None,
-                TextWeight::Semibold,
-            );
-            if f64::from(width) + 24.0 <= geometry.bounds.width()
-                && f64::from(height) + 8.0 <= geometry.bounds.height()
-            {
-                tr.draw_text_weighted(
-                    scene,
-                    &value,
-                    theme.tokens.typography.scale.sm,
-                    ink,
-                    transform
-                        * Affine::translate((
-                            geometry.bounds.center().x - f64::from(width) / 2.0,
-                            geometry.bounds.center().y - f64::from(height) / 2.0,
-                        )),
-                    None,
-                    TextWeight::Semibold,
-                );
-            }
+            self.draw_stage_label(scene, transform, tr, theme, &geometry, color);
             if self.style.show_conversion && geometry.conversion < 0.999 {
                 let label = format!("{:.0}%", geometry.conversion * 100.0);
-                tr.draw_text(
+                tr.draw_style(
                     scene,
                     &label,
-                    theme.tokens.typography.scale.xs,
                     theme.tokens.colors.text_dim,
                     transform
                         * Affine::translate((geometry.bounds.x1 + 10.0, geometry.bounds.y0 + 4.0)),
                     None,
+                    &theme.text(TextRole::Caption),
                 );
             }
         }
@@ -428,110 +458,20 @@ impl Widget for FunnelChart {
             } else {
                 stage.detail.clone()
             };
-            let (tw, _) = tr.measure(&stage.label, theme.tokens.typography.scale.sm, None);
-            let (dw, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
-            let width = f64::from(tw.max(dw)).max(140.0) + 28.0;
-            let mut x = self.pointer.x + 16.0;
-            let mut y = self.pointer.y + 16.0;
-            if x + width > self.rect.x1 {
-                x = self.pointer.x - width - 16.0;
-            }
-            if y + 66.0 > self.rect.y1 {
-                y = self.pointer.y - 76.0;
-            }
-            let tooltip = Rect::new(x, y, x + width, y + 64.0);
-            scene.fill(
-                Fill::NonZero,
+            crate::widget::chart_labels::draw_tooltip(
+                scene,
                 transform,
-                theme.tokens.colors.surfaces.overlay,
-                None,
-                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.md)),
-            );
-            tr.draw_text_weighted(
-                scene,
-                &stage.label,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y + 11.0)),
-                None,
-                TextWeight::Semibold,
-            );
-            tr.draw_text(
-                scene,
-                &detail,
-                theme.tokens.typography.scale.xs,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 14.0, y + 37.0)),
-                None,
+                tr,
+                theme,
+                self.pointer,
+                self.rect,
+                140.0,
+                (&stage.label, &detail),
             );
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    if let Some(stage) = self.hovered.and_then(|index| self.stages.get(index)) {
-                        self.activated = Some(stage.id.clone());
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.update_hover();
-                self.keyboard_inspection = false;
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => self.hovered = None,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(stage) = self.hovered.and_then(|index| self.stages.get(index)) {
-                    self.activated = Some(stage.id.clone());
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            _ if chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                if action == ChartNavAction::Activate {
-                    if let Some(stage) = self.hovered.and_then(|index| self.stages.get(index)) {
-                        self.activated = Some(stage.id.clone());
-                    }
-                } else {
-                    let candidates = self.valid();
-                    self.hovered = moved_item(self.hovered, &candidates, action);
-                    self.keyboard_inspection = self.hovered.is_some();
-                    if let Some(bounds) = self
-                        .geometry()
-                        .into_iter()
-                        .find(|stage| Some(stage.index) == self.hovered)
-                        .map(|stage| stage.bounds)
-                    {
-                        self.pointer = bounds.center();
-                    }
-                }
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let children = self
@@ -563,52 +503,28 @@ impl Widget for FunnelChart {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            key_path,
+            self.stages.iter().map(|stage| &stage.id),
+        ) else {
             return false;
         };
-        if let Some(stage) = self
-            .stages
-            .iter()
-            .find(|stage| crate::a11y::hash_key(&stage.id) == *key)
-        {
-            self.activated = Some(stage.id.clone());
-            return true;
-        }
-        false
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "FunnelChart"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
-    }
-}
-
-fn format_compact(value: f64) -> String {
-    if value.abs() >= 1_000_000.0 {
-        format!("{:.1}M", value / 1_000_000.0)
-    } else if value.abs() >= 1_000.0 {
-        format!("{:.1}K", value / 1_000.0)
-    } else if value.abs() >= 10.0 {
-        format!("{value:.0}")
-    } else {
-        format!("{value:.1}")
     }
 }
 
@@ -618,8 +534,8 @@ mod tests {
     #[test]
     fn invalid_stages_are_omitted() {
         let chart = FunnelChart::new(vec![
-            FunnelStage::new("bad", "Bad", f64::NAN),
-            FunnelStage::new("zero", "Zero", 0.0),
+            ChartItem::new("bad", "Bad", f64::NAN),
+            ChartItem::new("zero", "Zero", 0.0),
         ]);
         assert!(chart.valid().is_empty());
     }

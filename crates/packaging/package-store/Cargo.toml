@@ -15,12 +15,15 @@ homepage.workspace = true
 # catalogue. Installing, removing and collecting garbage additionally needs
 # the content store.
 default = []
-# Honour `TILO_APPS_SYSTEM_DIR` / `TILO_APPS_SYSTEM_PAYLOAD_DIR` in a release
-# build (see `layout::DEV_ENV_OVERRIDES`). Debug builds always honour them;
-# shipped images never enable this.
+# Honour the developer-only environment overrides (`package_store::dev_env`)
+# in a release build. Debug builds always honour them; shipped images never
+# enable this.
 dev-overrides = []
+# Launch leases on payload trees (`package_store::lease`): the launcher holds
+# one per launch, and the store's removals respect them.
+lease = ["dep:tilo-advisory-lock"]
 store = [
-    "dep:tilo-advisory-lock",
+    "lease",
     "dep:tilo-files",
     "dep:bytes",
     "dep:tilo-fs",
@@ -32,7 +35,7 @@ store = [
 ]
 
 [dependencies]
-tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 tilo-app-package = { version = "0.1.0", path = "../tilo-app-package" }
 ed25519-dalek.workspace = true
 hex.workspace = true
@@ -40,7 +43,7 @@ serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 
-# The store's exclusive lock across processes.
+# The store's exclusive lock across processes, and launch leases.
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock", optional = true }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 bytes = { workspace = true, optional = true }

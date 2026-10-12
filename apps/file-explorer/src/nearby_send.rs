@@ -23,6 +23,7 @@ const MAX_VISIBLE_HISTORY: usize = 32;
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Pending {
     Snapshot { open_picker: bool },
+    AirDropAvailability,
     Send,
     Decide,
     Cancel,
@@ -31,6 +32,7 @@ enum Pending {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NearbyUiEffect {
+    AvailabilityChanged,
     OpenPicker(Vec<NearbyTransferTarget>),
     Offer {
         transfer: NearbyTransferStatus,
@@ -50,6 +52,8 @@ pub struct NearbySendState {
     shown_offer: Option<NearbyTransferHandle>,
     observed_phases: BTreeMap<NearbyTransferHandle, NearbyTransferPhase>,
     history: VecDeque<NearbyTransferStatus>,
+    airdrop_available: bool,
+    queried_airdrop: bool,
 }
 
 impl Default for NearbySendState {
@@ -63,11 +67,41 @@ impl Default for NearbySendState {
             shown_offer: None,
             observed_phases: BTreeMap::new(),
             history: VecDeque::new(),
+            airdrop_available: false,
+            queried_airdrop: false,
         }
     }
 }
 
 impl NearbySendState {
+    pub fn airdrop_available(&self) -> bool {
+        self.airdrop_available
+    }
+
+    /// The app submits no certificate/trust assertion. Those are collected
+    /// on the compositor-owned verification sheet for this one attempt.
+    ///
+    /// # Errors
+    /// Returns a localized error if lab availability, Unix source-path
+    /// representation or the bounded literal endpoint is invalid.
+    pub fn send_airdrop(&mut self, path: &Path, address: String, port: u16) -> Result<(), String> {
+        if !self.airdrop_available {
+            return Err(crate::i18n::t("files-airdrop-unavailable"));
+        }
+        let Some(path) = host_fs::names::unix_path_bytes(path) else {
+            return Err(crate::i18n::t("files-share-not-available"));
+        };
+        let command = NearbyTransferCommand::SendAirDrop {
+            source_path: path.to_vec(),
+            address,
+            port,
+        };
+        if !command.valid() {
+            return Err(crate::i18n::t("files-airdrop-endpoint-invalid"));
+        }
+        self.queue(command, Pending::Send);
+        Ok(())
+    }
     fn queue(&mut self, command: NearbyTransferCommand, pending: Pending) {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
@@ -132,10 +166,6 @@ impl NearbySendState {
         &self.snapshot.destinations
     }
 
-    pub fn history(&self) -> &VecDeque<NearbyTransferStatus> {
-        &self.history
-    }
-
     pub fn cancel(&mut self, handle: NearbyTransferHandle) {
         self.queue(NearbyTransferCommand::Cancel { handle }, Pending::Cancel);
     }
@@ -158,6 +188,13 @@ impl NearbySendState {
             NearbyTransferCommand::Snapshot,
             Pending::Snapshot { open_picker: false },
         );
+        if !self.queried_airdrop {
+            self.queried_airdrop = true;
+            self.queue(
+                NearbyTransferCommand::AirDropAvailability,
+                Pending::AirDropAvailability,
+            );
+        }
     }
 
     pub fn next_poll(&self) -> Instant {
@@ -193,6 +230,25 @@ impl NearbySendState {
         let reply = match result {
             Ok(reply) => reply,
             Err(error) => {
+                if pending == (Pending::Snapshot { open_picker: false }) {
+                    // Discovery may be disabled by the person's privacy settings.
+                    // Withdraw old targets without interrupting unrelated work;
+                    // an explicit picker/send still reports its own refusal.
+                    let changed = self.snapshot != NearbyTransferSnapshot::default();
+                    self.apply_snapshot(NearbyTransferSnapshot::default(), false);
+                    return if changed {
+                        vec![NearbyUiEffect::AvailabilityChanged]
+                    } else {
+                        Vec::new()
+                    };
+                }
+                if pending == Pending::AirDropAvailability {
+                    if self.airdrop_available {
+                        self.airdrop_available = false;
+                        return vec![NearbyUiEffect::AvailabilityChanged];
+                    }
+                    return Vec::new();
+                }
                 if pending == Pending::Send {
                     return vec![
                         NearbyUiEffect::SendResult(Err(error.clone())),
@@ -213,6 +269,25 @@ impl NearbySendState {
         reply: &NearbyTransferReply,
     ) -> Vec<NearbyUiEffect> {
         match (pending, reply) {
+            (
+                Pending::AirDropAvailability,
+                NearbyTransferReply::AirDropAvailability { available },
+            ) => {
+                self.queried_airdrop = false;
+                if self.airdrop_available == *available {
+                    return Vec::new();
+                }
+                self.airdrop_available = *available;
+                vec![NearbyUiEffect::AvailabilityChanged]
+            }
+            (Pending::AirDropAvailability, _) => {
+                if self.airdrop_available {
+                    self.airdrop_available = false;
+                    vec![NearbyUiEffect::AvailabilityChanged]
+                } else {
+                    Vec::new()
+                }
+            }
             (Pending::Snapshot { open_picker }, NearbyTransferReply::Snapshot { snapshot }) => {
                 self.apply_snapshot(snapshot.clone(), open_picker)
             }
@@ -279,10 +354,12 @@ impl NearbySendState {
         transfer: &NearbyTransferStatus,
         effects: &mut Vec<NearbyUiEffect>,
     ) {
-        if matches!(
-            transfer.phase,
-            NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
-        ) && self.shown_offer != Some(transfer.handle)
+        if transfer.direction == ui::collaboration::NearbyTransferDirection::Receiving
+            && matches!(
+                transfer.phase,
+                NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
+            )
+            && self.shown_offer != Some(transfer.handle)
         {
             self.shown_offer = Some(transfer.handle);
             effects.push(NearbyUiEffect::Offer {
@@ -315,7 +392,7 @@ impl NearbySendState {
                     .saturating_mul(100)
                     .checked_div(transfer.total_bytes)
                     .unwrap_or(0);
-                Some(format!("Sending {} · {percent}%", transfer.name))
+                Some(format!("Sending {} ({percent}%)", transfer.name))
             }
             NearbyTransferPhase::Completed => {
                 Some(format!("Nearby Send completed: {}", transfer.name))
@@ -323,7 +400,7 @@ impl NearbySendState {
             NearbyTransferPhase::Failed => {
                 effects.push(NearbyUiEffect::Failed(transfer.clone()));
                 Some(format!(
-                    "Nearby Send failed: {} · retry available",
+                    "Nearby Send failed: {}. Retry is available",
                     transfer.name
                 ))
             }
@@ -342,6 +419,169 @@ impl NearbySendState {
 mod tests {
     use super::*;
     use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase, NearbyTransferReply};
+
+    #[test]
+    fn airdrop_availability_is_typed_and_failure_withdraws_the_action() {
+        let mut state = NearbySendState::default();
+        assert!(!state.airdrop_available());
+        assert!(
+            state
+                .send_airdrop(Path::new("/fixture"), "127.0.0.1".into(), 443)
+                .is_err()
+        );
+        state.poll_if_due(ui::time::now());
+        let requests = state.take_requests();
+        let request_id = requests
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::NearbyTransferCommand {
+                    request_id,
+                    command: NearbyTransferCommand::AirDropAvailability,
+                    ..
+                } => Some(*request_id),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(NearbyTransferReply::AirDropAvailability { available: true }),
+            }),
+            vec![NearbyUiEffect::AvailabilityChanged]
+        );
+        assert!(state.airdrop_available());
+        state.queue(
+            NearbyTransferCommand::AirDropAvailability,
+            Pending::AirDropAvailability,
+        );
+        let CollabRequest::NearbyTransferCommand { request_id, .. } =
+            state.take_requests().pop().unwrap()
+        else {
+            panic!("request")
+        };
+        assert_eq!(
+            state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Err("host disconnected".into()),
+            }),
+            vec![NearbyUiEffect::AvailabilityChanged]
+        );
+        assert!(!state.airdrop_available());
+        assert!(
+            state
+                .send_airdrop(Path::new("/fixture"), "127.0.0.1".into(), 443)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn background_discovery_refusal_withdraws_targets_and_explicit_picker_reports_failure() {
+        for had_targets in [false, true] {
+            let mut state = NearbySendState::default();
+            if had_targets {
+                state.snapshot.targets.push(NearbyTransferTarget {
+                    handle: NearbyTargetHandle::from_issued_bytes([4; 16]),
+                    label: "Desk".into(),
+                    online: true,
+                });
+            }
+            state.poll_if_due(ui::time::now());
+            let request_id = state
+                .take_requests()
+                .into_iter()
+                .find_map(|request| match request {
+                    CollabRequest::NearbyTransferCommand {
+                        request_id,
+                        command: NearbyTransferCommand::Snapshot,
+                        ..
+                    } => Some(request_id),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                    request_id,
+                    result: Err("privacy refusal".into()),
+                }),
+                if had_targets {
+                    vec![NearbyUiEffect::AvailabilityChanged]
+                } else {
+                    Vec::new()
+                }
+            );
+            assert!(state.targets().is_empty());
+            state.open_picker();
+            let CollabRequest::NearbyTransferCommand { request_id, .. } =
+                state.take_requests().pop().unwrap()
+            else {
+                panic!("picker request")
+            };
+            assert_eq!(
+                state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                    request_id,
+                    result: Err("privacy refusal".into()),
+                }),
+                vec![NearbyUiEffect::Status(
+                    "Nearby Send unavailable: privacy refusal".into()
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn optional_availability_mismatch_is_silent_and_withdraws_old_support() {
+        let mut state = NearbySendState::default();
+        for previously_available in [false, true] {
+            state.airdrop_available = previously_available;
+            state.queue(
+                NearbyTransferCommand::AirDropAvailability,
+                Pending::AirDropAvailability,
+            );
+            let CollabRequest::NearbyTransferCommand { request_id, .. } =
+                state.take_requests().pop().unwrap()
+            else {
+                panic!("availability request")
+            };
+            let effects = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
+                request_id,
+                result: Ok(NearbyTransferReply::Snapshot {
+                    snapshot: NearbyTransferSnapshot::default(),
+                }),
+            });
+            assert_eq!(
+                effects,
+                if previously_available {
+                    vec![NearbyUiEffect::AvailabilityChanged]
+                } else {
+                    Vec::new()
+                }
+            );
+            assert!(!state.airdrop_available());
+        }
+    }
+
+    #[test]
+    fn outgoing_airdrop_consent_never_opens_a_receive_offer() {
+        let mut state = NearbySendState::default();
+        let snapshot = NearbyTransferSnapshot {
+            transfers: vec![NearbyTransferStatus {
+                handle: NearbyTransferHandle::from_issued_bytes([19; 16]),
+                name: "report.txt".into(),
+                device_label: "AirDrop · 127.0.0.1:443".into(),
+                direction: NearbyTransferDirection::Sending,
+                phase: NearbyTransferPhase::AwaitingConsent,
+                transferred_bytes: 0,
+                total_bytes: 8,
+            }],
+            ..Default::default()
+        };
+        assert!(
+            !state
+                .apply_snapshot(snapshot, false)
+                .iter()
+                .any(|effect| matches!(effect, NearbyUiEffect::Offer { .. }))
+        );
+    }
 
     /// Picker and receiver consent follow typed broker results and the receiver decision uses only opaque destination authority.
     #[test]
@@ -418,9 +658,18 @@ mod tests {
     fn identical_background_snapshot_is_not_a_ui_effect() {
         let mut state = NearbySendState::default();
         state.poll_if_due(ui::time::now());
-        let request = state.take_requests().pop().expect("snapshot request");
-        let CollabRequest::NearbyTransferCommand { request_id, .. } = request else {
-            panic!("wrong request");
+        let request = state
+            .take_requests()
+            .into_iter()
+            .next()
+            .expect("snapshot request");
+        let CollabRequest::NearbyTransferCommand {
+            request_id,
+            command: NearbyTransferCommand::Snapshot,
+            ..
+        } = request
+        else {
+            panic!("background snapshot must remain the first request");
         };
         let idle = NearbyTransferSnapshot::default();
         let first = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
@@ -434,9 +683,18 @@ mod tests {
             "an empty idle roster must not open chrome"
         );
         state.poll_if_due(ui::time::now() + super::POLL_INTERVAL);
-        let request = state.take_requests().pop().expect("second snapshot");
-        let CollabRequest::NearbyTransferCommand { request_id, .. } = request else {
-            panic!("wrong request");
+        let request = state
+            .take_requests()
+            .into_iter()
+            .next()
+            .expect("second snapshot");
+        let CollabRequest::NearbyTransferCommand {
+            request_id,
+            command: NearbyTransferCommand::Snapshot,
+            ..
+        } = request
+        else {
+            panic!("background snapshot must remain the first request");
         };
         let second = state.handle_event(&CollabEvent::NearbyTransferCommandResult {
             request_id,

@@ -27,8 +27,8 @@ use shell::bluetooth_prompt::ENTRY_FIELD_ID;
 use shell::compositor::frame::FrameBuilder;
 use tilo_bluez::{AGENT_CAPABILITY, AGENT_PATH, BluezClient, DeviceNames, PairingPrompt};
 use vello::kurbo::{Point, Rect};
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey, SmolStr};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey, SmolStr};
 use zbus::connection::Builder;
 use zbus::zvariant::ObjectPath;
 
@@ -133,7 +133,16 @@ impl Rig {
                 .expect("the agent registers with the daemon");
             (bluez, service)
         });
-        let mut fb = FrameBuilder::new((W, H));
+        // The dialog over the bare desktop: an app page behind it, painted
+        // in the same ground as the capture placeholder, would make what
+        // the dialog shows locally indistinguishable from the placeholder.
+        let mut tree = shell::shell::state::WorkspaceTree::bootstrap_demo();
+        for workspace in &mut tree.desktop.workspaces {
+            for strip in &mut workspace.strips {
+                strip.window_groups.clear();
+            }
+        }
+        let mut fb = FrameBuilder::with_tree(tree, (W, H));
         fb.host_mut().set_pairing_prompt_handle(handle);
         let mut rig = Self {
             rt,
@@ -219,7 +228,7 @@ impl Rig {
         self.fb.dispatch_event(
             event,
             &Modifiers::default(),
-            &mut self.doc,
+            &mut ui::widget::Edits::lend(&mut self.doc),
             &ROOT,
             &mut self.focus,
         );
@@ -233,14 +242,12 @@ impl Rig {
             .unwrap_or_else(|| panic!("{test_id} is on screen"));
         let at: Point = rect.center();
         self.send(&WindowEvent::CursorMoved {
-            // SAFETY: an opaque id no handler inspects.
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(at.x, at.y),
         });
         for state in [ElementState::Pressed, ElementState::Released] {
             self.send(&WindowEvent::MouseInput {
-                // SAFETY: an opaque id no handler inspects.
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 state,
                 button: MouseButton::Left,
             });
@@ -249,21 +256,14 @@ impl Rig {
 
     fn key(&mut self, key: Key, text: Option<&str>) {
         for state in [ElementState::Pressed, ElementState::Released] {
-            // SAFETY: `KeyEvent` has a platform-private field and no public
-            // constructor; every field a handler reads is set below.
-            let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-            event.logical_key = key.clone();
-            event.physical_key =
-                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-            event.location = KeyLocation::Standard;
-            event.state = state;
-            event.repeat = false;
-            event.text = text
-                .filter(|_| state == ElementState::Pressed)
-                .map(SmolStr::new);
+            let event = ui::synthetic_input::key_event(
+                key.clone(),
+                text.filter(|_| state == ElementState::Pressed)
+                    .map(SmolStr::new),
+                state,
+            );
             self.send(&WindowEvent::KeyboardInput {
-                // SAFETY: an opaque id no handler inspects.
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 event,
                 is_synthetic: false,
             });

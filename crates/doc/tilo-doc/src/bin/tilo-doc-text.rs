@@ -237,12 +237,12 @@ mod tests {
 
         // The reply from a running app cannot be searched as bytes, only decoded.
         assert!(
-            !contains_bytes(FROM_A_RUNNING_APP, TYPED),
+            !contains_bytes(FROM_A_RUNNING_APP.as_slice(), TYPED),
             "a substring search over the saved document does not find the \
              phrase — this is the false negative the tool exists to remove",
         );
         assert_eq!(
-            strings(FROM_A_RUNNING_APP)
+            strings(FROM_A_RUNNING_APP.as_slice())
                 .iter()
                 .find(|(_, t)| t == TYPED)
                 .map(|(p, _)| p.as_str()),
@@ -268,10 +268,17 @@ mod tests {
 
     /// The document a real word processor answered with, captured byte-for-byte from a running
     /// packaged app (headless session, text typed, a client asking for the document) — makes the checks that read it claims about the product, not guesses about Automerge's encoder.
-    const FROM_A_RUNNING_APP: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/word-processor-typed.automerge"
-    ));
+    static FROM_A_RUNNING_APP: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/word-processor-typed.automerge.hex"
+        ))
+        .split_ascii_whitespace()
+        .map(|byte| {
+            u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
+        })
+        .collect()
+    });
 
     fn contains_bytes(haystack: &[u8], needle: &str) -> bool {
         haystack

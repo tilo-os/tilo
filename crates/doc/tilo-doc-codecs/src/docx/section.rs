@@ -24,6 +24,7 @@
 
 use super::container::DocxContainer;
 use super::headers::{ExportedParts, FOOTER_REL_ID, HEADER_REL_ID, KeptRegions, normalize_target};
+use super::styles::attr_val;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeSet;
@@ -99,13 +100,6 @@ struct Rel {
     external: bool,
 }
 
-fn attr(e: &BytesStart, key: &[u8]) -> Option<String> {
-    e.attributes()
-        .flatten()
-        .find(|a| a.key.as_ref() == key)
-        .and_then(|a| crate::unescape_attr(&a))
-}
-
 fn document_rels(c: &DocxContainer) -> Vec<Rel> {
     let Some(xml) = c
         .get(DOCUMENT_RELS)
@@ -118,14 +112,16 @@ fn document_rels(c: &DocxContainer) -> Vec<Rel> {
     while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Empty(e) | Event::Start(e) if e.name().as_ref() == b"Relationship" => {
-                if let (Some(id), Some(ty), Some(target)) =
-                    (attr(&e, b"Id"), attr(&e, b"Type"), attr(&e, b"Target"))
-                {
+                if let (Some(id), Some(ty), Some(target)) = (
+                    attr_val(&e, b"Id"),
+                    attr_val(&e, b"Type"),
+                    attr_val(&e, b"Target"),
+                ) {
                     out.push(Rel {
                         id,
                         kind: Kind::of_rel_type(&ty),
                         part: normalize_target(&target),
-                        external: attr(&e, b"TargetMode").as_deref() == Some("External"),
+                        external: attr_val(&e, b"TargetMode").as_deref() == Some("External"),
                     });
                 }
             }
@@ -167,8 +163,8 @@ fn split_sectpr(xml: &str) -> (Option<String>, Vec<Child>) {
         let reference = |e: &BytesStart| {
             Kind::of_element(e.name().as_ref()).map(|kind| Reference {
                 kind,
-                is_default: attr(e, b"w:type").is_none_or(|t| t == "default"),
-                id: attr(e, b"r:id").unwrap_or_default(),
+                is_default: attr_val(e, b"w:type").is_none_or(|t| t == "default"),
+                id: attr_val(e, b"r:id").unwrap_or_default(),
             })
         };
         match ev {
@@ -272,7 +268,7 @@ fn prune_header_footer_rels(c: &mut DocxContainer, rels: &[Rel], keep: &BTreeSet
             .map(|b| String::from_utf8_lossy(b).into_owned())
     {
         let pruned = remove_elements(&xml, b"Relationship", |e| {
-            attr(e, b"Id").is_some_and(|id| dropped.contains(id.as_str()))
+            attr_val(e, b"Id").is_some_and(|id| dropped.contains(id.as_str()))
         });
         c.set(DOCUMENT_RELS, pruned.into_bytes());
     }
@@ -310,7 +306,7 @@ fn prune_header_footer_rels(c: &mut DocxContainer, rels: &[Rel], keep: &BTreeSet
         && let Some(xml) = content_types
     {
         let pruned = remove_elements(&xml, b"Override", |e| {
-            attr(e, b"PartName").is_some_and(|p| orphans.contains(p.trim_start_matches('/')))
+            attr_val(e, b"PartName").is_some_and(|p| orphans.contains(p.trim_start_matches('/')))
         });
         c.set(CONTENT_TYPES, pruned.into_bytes());
     }
@@ -323,11 +319,11 @@ fn header_footer_overrides(content_types: &str) -> Vec<String> {
     while let Ok(ev) = reader.read_event() {
         match ev {
             Event::Empty(e) | Event::Start(e) if e.name().as_ref() == b"Override" => {
-                let ct = attr(&e, b"ContentType");
+                let ct = attr_val(&e, b"ContentType");
                 if matches!(
                     ct.as_deref(),
                     Some(HEADER_CONTENT_TYPE | FOOTER_CONTENT_TYPE)
-                ) && let Some(part) = attr(&e, b"PartName")
+                ) && let Some(part) = attr_val(&e, b"PartName")
                 {
                     out.push(part.trim_start_matches('/').to_string());
                 }
@@ -539,7 +535,7 @@ mod tests {
         {
             let xml = r#"<R><X Id="a"/><X Id="b"></X><Y Id="a"/></R>"#;
             assert_eq!(
-                remove_elements(xml, b"X", |e| attr(e, b"Id").is_some()),
+                remove_elements(xml, b"X", |e| attr_val(e, b"Id").is_some()),
                 r#"<R><Y Id="a"/></R>"#
             );
         }

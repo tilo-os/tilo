@@ -252,6 +252,20 @@ impl DesktopHandle {
         shared.changed();
     }
 
+    /// The room snapshot, excluding process-local stream proxies and
+    /// device presentation. Durable profile saves still use the full tree.
+    pub fn shared_tree(&self) -> DesktopTree {
+        self.read(|tree| crate::shared_tree::projection(tree.clone()))
+    }
+
+    /// Apply room topology without replacing this device's stream bindings
+    /// or focus. Only `local_tabs` survive omission from the shared snapshot;
+    /// removed workspaces and strips still retire their contents.
+    pub fn replace_shared_tree(&self, tree: DesktopTree, local_tabs: &[TabId]) {
+        let tree = self.read(|local| crate::shared_tree::receive(local, tree, local_tabs));
+        self.replace_tree(tree);
+    }
+
     /// Ask the [`TileSource`] for `tab`'s content again on a coming update
     /// pass, as when the tab was first shown: for a host whose first answer
     /// was a notice (its record had not arrived). The host schedules a frame.
@@ -877,7 +891,7 @@ impl DesktopSurface {
         clippy::too_many_lines,
         reason = "one pass: every command against the tree, then its widget follow-ups in order"
     )]
-    fn apply_commands(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn apply_commands(&mut self, state: &AutoCommit, path: &ObjId) {
         let queue = std::mem::take(&mut self.shared.borrow_mut().queue);
         if queue.is_empty() {
             return;
@@ -1173,11 +1187,6 @@ impl DesktopSurface {
                 }]);
             }
         }
-    }
-
-    /// The workspace shown, for hosts that label their chrome.
-    pub fn shown_workspace(&self) -> Option<WorkspaceId> {
-        Some(self.shared.borrow().tree.active_workspace()?.id)
     }
 
     /// Whether the strip takes this wheel event. A trackpad's sideways swipe
@@ -1505,19 +1514,19 @@ impl Widget for DesktopSurface {
         "DesktopSurface"
     }
 
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         if let Some(row) = self.shown_row() {
             row.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         let before = self.shared.borrow().revision;
         let search_was_open = self.search.is_open();
         self.reconcile();
         self.harvest();
         {
-            let (doc, root) = ui::doc::document(state, path);
+            let (doc, root) = ui::doc::document_ref(state, path);
             self.apply_commands(doc, root);
             // Search opens over the tree as these commands left it, and what
             // it chose applies in this same pass.
@@ -1536,7 +1545,7 @@ impl Widget for DesktopSurface {
         self.refresh_notifications();
         if !self.shared.borrow().queue.is_empty() {
             // The pane or the centre opened a window.
-            let (doc, root) = ui::doc::document(state, path);
+            let (doc, root) = ui::doc::document_ref(state, path);
             self.apply_commands(doc, root);
             self.show_active_strip();
             self.present();
@@ -1575,30 +1584,20 @@ impl Widget for DesktopSurface {
             .chain(activity)
             .chain(notices)
             .collect();
-        let node = taffy.parent_node(
-            Style {
-                display: ui::taffy::Display::Flex,
-                flex_direction: ui::taffy::FlexDirection::Column,
-                size: ui::taffy::Size {
-                    width: ui::taffy::Dimension::percent(1.0),
-                    height: ui::taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
+        let style = Style {
+            display: ui::taffy::Display::Flex,
+            flex_direction: ui::taffy::FlexDirection::Column,
+            size: ui::taffy::Size {
+                width: ui::taffy::Dimension::percent(1.0),
+                height: ui::taffy::Dimension::percent(1.0),
             },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let nodes = taffy.children(node).unwrap_or_default();
         let has_row = self.shown_row().is_some();
@@ -1685,25 +1684,7 @@ impl Widget for DesktopSurface {
         presence: &ui::presence::PresenceCtx,
     ) {
         if let Some(row) = self.shown_row() {
-            row.draw(scene, transform, text, theme, presence);
-        }
-        self.draw_overlays(scene, transform, text, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.rect) {
-            return;
-        }
-        if let Some(row) = self.shown_row() {
-            row.draw_with_presence(scene, transform, text, theme, presence, permissions);
+            ui::widget::draw_child(row, scene, transform, text, theme, presence);
         }
         self.draw_overlays(scene, transform, text, theme, presence);
     }
@@ -1765,6 +1746,26 @@ impl Widget for DesktopSurface {
             .chain(activity)
             .chain(notices)
             .collect()
+    }
+
+    fn visit_retained_components(
+        &mut self,
+        request: &mut ui::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), ui::bound_dispatch::BoundDispatchError> {
+        for row in self.rows.values_mut() {
+            request.visit(row)?;
+        }
+        // Retain original visible overlay callback reach after the retained rows.
+        if self.search.is_open() {
+            request.visit(self.search.palette_mut())?;
+        }
+        if let Some(activity) = &mut self.activity {
+            request.visit(activity)?;
+        }
+        if let Some(notices) = &mut self.notices {
+            request.visit(notices)?;
+        }
+        Ok(())
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -1945,6 +1946,72 @@ mod tests {
         DesktopSurface::new(tree, 7, Box::new(Notices))
     }
 
+    #[test]
+    fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
+        let (mut surface, handle) = desktop(3);
+        let state = AutoCommit::new();
+        surface.update(&state, &ui::automerge::ROOT);
+        let mut local = handle.read(Clone::clone);
+        let strip = &mut local.workspaces[0].strips[0];
+        let stream = strip.window_groups[2].tabs[0].id;
+        strip.window_groups[2].tabs[0].tile = tilo_desktop_model::TileContent::PeerWindow {
+            app_id: "so.tilo.terminal".into(),
+            label: "Terminal".into(),
+            note: String::new(),
+            missing: None,
+        };
+        let removed = strip.window_groups[1].tabs[0].id;
+        handle.replace_tree(local.clone());
+        surface.update(&state, &ui::automerge::ROOT);
+        assert!(handle.focus_tab(stream));
+        surface.update(&state, &ui::automerge::ROOT);
+
+        let projected = handle.shared_tree();
+        assert!(projected.active_group.is_empty());
+        assert!(
+            projected.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .flat_map(|g| &g.tabs)
+                .all(|t| t.id != stream)
+        );
+        assert!(handle.focus_tab(removed));
+        surface.update(&state, &ui::automerge::ROOT);
+        assert_eq!(
+            serde_json::to_value(handle.shared_tree()).unwrap(),
+            serde_json::to_value(projected).unwrap()
+        );
+        assert!(handle.focus_tab(stream));
+        surface.update(&state, &ui::automerge::ROOT);
+        let before = handle.snapshot("g", vec![]).active;
+        let mut incoming = local;
+        incoming.remove_tab(stream);
+        incoming.remove_tab(removed);
+        incoming.workspaces[0].name = "Shared rename".into();
+        // Reproduce the browser's inbound snapshot replacement.
+        handle.replace_shared_tree(incoming, &[stream]);
+        surface.update(&state, &ui::automerge::ROOT);
+        assert_eq!(handle.snapshot("g", vec![]).active, before);
+        handle.read(|tree| {
+            assert_eq!(tree.workspaces[0].name, "Shared rename");
+            let tabs: Vec<_> = tree.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect();
+            assert!(tabs.contains(&stream));
+            assert!(!tabs.contains(&removed));
+        });
+        // Removal of the containing workspace still retires the stream.
+        let mut incoming = handle.shared_tree();
+        incoming.workspaces.clear();
+        handle.replace_shared_tree(incoming, &[stream]);
+        surface.update(&state, &ui::automerge::ROOT);
+        assert!(handle.snapshot("g", vec![]).active.is_none());
+        assert!(handle.read(|tree| tree.workspaces.is_empty()));
+    }
+
     struct RetainedHistory {
         log: Rc<std::cell::RefCell<AutoCommit>>,
     }
@@ -2007,7 +2074,7 @@ mod tests {
         surface.set_history_source(Box::new(RetainedHistory {
             log: Rc::clone(&log),
         }));
-        let mut state = AutoCommit::new();
+        let state = AutoCommit::new();
         for view in [
             navigation::ActivityView::CatchUp,
             navigation::ActivityView::Explore,
@@ -2023,7 +2090,7 @@ mod tests {
                     "g",
                 )
                 .unwrap();
-            surface.update(&mut state, &ui::automerge::ROOT);
+            surface.update(&state, &ui::automerge::ROOT);
             let snapshot = handle.snapshot("g", vec![]);
             let activity = snapshot.workspace_activity.unwrap();
             assert_eq!(activity.view, view);
@@ -2041,7 +2108,7 @@ mod tests {
             "Ada",
             3_000,
         ));
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         assert_eq!(surface.activity.as_ref().unwrap().pane().entries().len(), 2);
         handle
             .dispatch(
@@ -2052,7 +2119,7 @@ mod tests {
                 "g",
             )
             .unwrap();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         assert!(surface.activity.is_none());
         assert!(handle.snapshot("g", vec![]).workspace_activity.is_none());
     }
@@ -2097,8 +2164,8 @@ mod tests {
                 app_id: "so.tilo.clocks".into(),
                 label: "Clocks".into(),
             });
-        let mut state = AutoCommit::new();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        let state = AutoCommit::new();
+        surface.update(&state, &ui::automerge::ROOT);
         assert!(handle.focus_app("so.tilo.clocks"));
         assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
         assert_eq!(notifications.counts(), (0, 1));
@@ -2124,8 +2191,8 @@ mod tests {
                 "g",
             )
             .unwrap();
-        let mut state = AutoCommit::new();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        let state = AutoCommit::new();
+        surface.update(&state, &ui::automerge::ROOT);
         let snapshot = handle.snapshot("g", vec![]);
         assert_eq!(
             snapshot.notifications,
@@ -2145,7 +2212,7 @@ mod tests {
                 "g",
             )
             .unwrap();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         assert!(
             !handle
                 .snapshot("g", vec![])
@@ -2157,8 +2224,8 @@ mod tests {
     }
 
     fn focused(surface: &mut DesktopSurface, handle: &DesktopHandle) -> usize {
-        let mut state = AutoCommit::new();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        let state = AutoCommit::new();
+        surface.update(&state, &ui::automerge::ROOT);
         handle.read(|tree| {
             let active = navigation::active_route(tree).unwrap();
             tree.workspaces[0].strips[0]

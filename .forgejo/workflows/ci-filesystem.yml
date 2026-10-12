@@ -46,26 +46,30 @@ on:
       - "crates/system/content/**"
       - "crates/system/fs-content/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-protocol/**"
       - "crates/system/fs/**"
       - "crates/system/power/**"
-      - "crates/system/private-fs/**"
       - "crates/system/sandbox-core/**"
       - "crates/system/secret-vault/**"
       - "crates/system/settings-store/**"
       - "crates/platform/tilo-clock/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
+      - "crates/system/tilo-nm/**"
       - "crates/platform/tilo-net/**"
       - "crates/platform/tilo-files/**"
       - "crates/platform/tilo-paths/**"
+      - "crates/platform/tilo-platform-caps/**"
       - "crates/platform/tilo-secrets/**"
       - "crates/system/tilo-seal/**"
       - "crates/system/wire-frame/**"
-      - "crates/system/xdg-paths/**"
       - "crates/workspace-hack/**"
       - "apps/file-explorer/**"
       - "vendor/automerge/**"
+      - "vendor/iroh/**"
+      - "vendor/iroh-gossip/**"
       - "vendor/genawaiter-proc-macro/**"
+      - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
       - "os/containers/tilo-relay/**"
       - "os/tests/tilo-session-lifecycle.sh"
@@ -84,10 +88,10 @@ on:
       - ".forgejo/workflows/ci-filesystem.yml"
       - ".forgejo/workflows/resolve-builder.yml"
   pull_request:
-    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # Stacked PRs (a PR whose base is another task branch) get the
     # same gate; affected-package selection diffs against that base, so each
     # layer tests its own change.
-    branches: ["main", "pr/sdk-*"]
+    branches: ["main", "pr/sdk-*", "codex/**"]
     paths:
       - ".cargo/**"
       - "crates/collab/**"
@@ -129,26 +133,30 @@ on:
       - "crates/system/content/**"
       - "crates/system/fs-content/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-protocol/**"
       - "crates/system/fs/**"
       - "crates/system/power/**"
-      - "crates/system/private-fs/**"
       - "crates/system/sandbox-core/**"
       - "crates/system/secret-vault/**"
       - "crates/system/settings-store/**"
       - "crates/platform/tilo-clock/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
+      - "crates/system/tilo-nm/**"
       - "crates/platform/tilo-net/**"
       - "crates/platform/tilo-files/**"
       - "crates/platform/tilo-paths/**"
+      - "crates/platform/tilo-platform-caps/**"
       - "crates/platform/tilo-secrets/**"
       - "crates/system/tilo-seal/**"
       - "crates/system/wire-frame/**"
-      - "crates/system/xdg-paths/**"
       - "crates/workspace-hack/**"
       - "apps/file-explorer/**"
       - "vendor/automerge/**"
+      - "vendor/iroh/**"
+      - "vendor/iroh-gossip/**"
       - "vendor/genawaiter-proc-macro/**"
+      - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
       - "os/containers/tilo-relay/**"
       - "os/tests/tilo-session-lifecycle.sh"
@@ -182,7 +190,6 @@ env:
   # unit by all CARGO_* variables, and this workflow never runs on main, so it
   # only reuses compiler outputs that main's check runs store.
   CARGO_BUILD_JOBS: "8"
-  CARGO_HOME: /cargo-home
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
@@ -271,7 +278,7 @@ jobs:
       - name: Enforce named delivery and governed identity
         run: |
           bash scripts/ci-run.sh "authenticated named-share delivery" -- cargo test --locked -p tilo-fs named_share_delivery --lib -- --nocapture
-          bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p collab-types share_control --lib -- --nocapture
+          bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p fs-protocol share_control --lib -- --nocapture
           bash scripts/ci-run.sh "governed identity projection schema" -- cargo test --locked -p tilo-user-identity projection --lib -- --nocapture
           bash scripts/ci-run.sh "governed room identity projection" -- cargo test --locked -p shell root_signed_governance_projects_identity_and_additive_revocation --lib -- --nocapture
 
@@ -321,9 +328,6 @@ jobs:
       TILO_TEST_NEXTCLOUD_PASSWORD: conformance-password
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     services:
       webdav:
         image: docker.io/bytemark/webdav:latest
@@ -385,9 +389,6 @@ jobs:
       TILO_LIVE_NEXTCLOUD_PASSWORD: ${{ secrets.TILO_LIVE_NEXTCLOUD_PASSWORD }}
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -420,9 +421,6 @@ jobs:
       TILO_REQUIRE_FUSE: "0"
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
       # Privilege applies inside the disposable guest only: loop devices,
       # Btrfs mounts, fanotify filesystem marks and pre-content groups.
       options: --privileged

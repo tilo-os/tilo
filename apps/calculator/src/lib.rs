@@ -4,7 +4,7 @@
 //! graphing. Durable artifacts (history and plotted functions) live in an
 //! Automerge document so undo/redo and live collaboration use the same state;
 //! per-window expression, selection, angle unit, and camera state stay local.
-//! The panels are custom Vello-drawn widgets.
+//! The panels are painted by the app over the toolkit's controls and regions.
 //!
 //! [`CalculatorShell`] is the app: the binary runs it, `--shots` captures its
 //! scenarios, and [`definition`] is what other hosts mount.
@@ -27,11 +27,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -40,7 +36,7 @@
 
 pub mod actions;
 pub mod app;
-pub mod doc;
+pub mod chrome;
 pub mod draw;
 pub mod engine;
 pub mod graph2d;
@@ -48,6 +44,7 @@ pub mod graph3d;
 pub mod keypad;
 pub mod mathfield;
 pub mod model;
+pub mod plot_panel;
 pub mod resource;
 pub mod zoom;
 
@@ -57,5 +54,5 @@ pub use resource::{Calculator, CalculatorShell};
 /// The calculator's application definition, which the browser desktop and
 /// other hosts mount.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::framework::definition::<CalculatorShell>()
+    ui::built_in_definition!(CalculatorShell)
 }

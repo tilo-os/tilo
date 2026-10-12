@@ -3,29 +3,50 @@
 //!
 //! A grant is issued to an authenticated browser session for one workspace
 //! it may subscribe to, and is presented in the carrier's admission preface.
-//! Permission is observed once per [`OBSERVATION`] for every grant together
-//! (PR 541's batched observation): the session is still open, the device is
-//! not revoked, and it is still admitted to the workspace. The relay reads
-//! that snapshot on every per-session recheck, so a revoked or removed
-//! device loses its live session within one observation plus the relay's
-//! recheck interval, and no recheck ever waits on the workspace locks.
+//! Permission is observed for every grant together (PR 541's batched
+//! observation): the session is still open, the device is not revoked, and it
+//! is still admitted to the workspace. [`LiveGrants::follow`] observes when
+//! one of those may have changed — an announced authority change
+//! ([`crate::authority_epoch`]), a session ending or running out, a grant
+//! issued — and on the janitor's sweep as a backstop, not on a fixed clock.
+//! The relay reads each grant's observed permission on every per-session
+//! recheck, so a revoked or removed device loses its live session within the
+//! relay's recheck interval of the change, and no recheck ever waits on the
+//! workspace locks.
 //!
 //! Frames are checked with the host's canonical codec for sealed live frames
 //! ([`tilo_relay_protocol::live::SealedLiveFrame`]): only their clear kind,
 //! sequence and record are read, never their content.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_moq::live::{Admission, AuthorizationStatus, LiveAuthority, LiveSession};
+use tilo_moq::live::{AuthorizationStatus, Denied, LiveAuthority, LiveSession};
 use tilo_relay_protocol::live::{LiveKind, SealedLiveFrame};
 use tilo_relay_protocol::web::{LiveGrant, agent_publisher, live_room};
+use tokio::sync::Notify;
 
+use crate::auth::AuthenticatedPeer;
+use crate::room_access::{self, RoomOperation};
 use crate::web::sessions::Sessions;
 
-/// How often grant permission is observed.
-pub(crate) const OBSERVATION: Duration = Duration::from_millis(50);
+// The live relay (`tilo-moq`, which stays free of the host's wire crate) and
+// the host's canonical live codec must agree on every frame and rate limit.
+const _: () =
+    assert!(tilo_moq::live::MAX_PRESENCE_RATE == tilo_relay_protocol::live::MAX_PRESENCE_RATE);
+const _: () = assert!(tilo_moq::live::MAX_OPS_RATE == tilo_relay_protocol::live::MAX_OPS_RATE);
+const _: () = assert!(
+    tilo_moq::live::MAX_DATAGRAM_FRAME_BYTES == tilo_relay_protocol::live::MAX_PRESENCE_FRAME_BYTES
+);
+const _: () = assert!(
+    tilo_moq::live::MAX_STREAM_FRAME_BYTES == tilo_relay_protocol::live::MAX_OPS_FRAME_BYTES
+);
+
+/// How often idle sessions are swept and, with them, every grant observed
+/// even though nothing announced a change.
+const SWEEP: Duration = Duration::from_secs(5);
 /// Grant lifetime; the page asks for a new one before it ends.
 const GRANT_TTL: Duration = Duration::from_secs(10 * 60);
 const MAX_GRANTS: usize = 512;
@@ -37,38 +58,64 @@ struct Grant {
     room: String,
     publisher: String,
     expires: Instant,
+    permitted: AtomicBool,
 }
 
 /// Grants and their observed permission.
 pub(crate) struct LiveGrants {
     grants: Mutex<HashMap<[u8; 32], Arc<Grant>>>,
-    permitted: RwLock<HashMap<[u8; 32], bool>>,
+    /// Signalled when a grant is issued: its admission may predate a change
+    /// an observation already ran for.
+    issued: Notify,
 }
 
 impl LiveGrants {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             grants: Mutex::default(),
-            permitted: RwLock::default(),
+            issued: Notify::new(),
         })
     }
 
-    /// Issue a grant for `workspace_id` to the session `token`, if its
-    /// device is subscribed-capable there now.
+    /// Observe every grant whenever its permission may have changed, and
+    /// sweep `sessions` every [`SWEEP`]. Runs until aborted.
+    pub(crate) async fn follow(self: Arc<Self>, sessions: Arc<Sessions>) {
+        let mut authority = crate::authority_epoch::subscribe();
+        let mut sweep = tokio::time::interval(SWEEP);
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            // A session that runs out is no longer open, and nothing
+            // announces it.
+            let expiry = sessions.next_expiry().map(tokio::time::Instant::from_std);
+            tokio::select! {
+                // The epoch's sender is a process-wide static and never
+                // closes, so this cannot spin on an error.
+                _ = authority.changed() => {}
+                () = sessions.ended() => {}
+                () = self.issued.notified() => {}
+                () = tokio::time::sleep_until(expiry.unwrap_or_else(tokio::time::Instant::now)), if expiry.is_some() => {}
+                _ = sweep.tick() => sessions.sweep(),
+            }
+            self.observe(&sessions).await;
+        }
+    }
+
+    /// Issue a grant for `workspace_id` to the session `token` of `peer`, if
+    /// it is admitted to the room's live plane now.
     /// With `agent`, the grant publishes as that agent of the device
     /// ([`agent_publisher`]).
     pub(crate) async fn issue(
         &self,
         sessions: &Sessions,
         token: [u8; 32],
-        device: [u8; 32],
-        user: [u8; 32],
+        peer: &AuthenticatedPeer,
         workspace_id: u64,
         agent: Option<&str>,
     ) -> Option<LiveGrant> {
-        if !admitted(sessions, device, user, workspace_id).await {
+        if !admitted(sessions, peer, workspace_id).await {
             return None;
         }
+        let device = peer.device_public_key;
         let grant_token: [u8; 32] = rand::random();
         let room = live_room(workspace_id);
         let publisher = agent.map_or_else(
@@ -84,6 +131,7 @@ impl LiveGrants {
             expires: Instant::now()
                 .checked_add(GRANT_TTL)
                 .unwrap_or_else(Instant::now),
+            permitted: AtomicBool::new(true),
         });
         {
             let mut grants = self
@@ -96,10 +144,7 @@ impl LiveGrants {
             }
             grants.insert(grant_token, grant.clone());
         }
-        self.permitted
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(grant_token, true);
+        self.issued.notify_one();
         Some(LiveGrant {
             token: grant_token.to_vec(),
             room: grant.room.clone(),
@@ -134,69 +179,53 @@ impl LiveGrants {
 
     /// Observe every grant once.
     pub(crate) async fn observe(&self, sessions: &Sessions) {
-        let grants: Vec<([u8; 32], Arc<Grant>)> = self
+        let grants: Vec<Arc<Grant>> = self
             .grants
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .map(|(token, grant)| (*token, grant.clone()))
+            .values()
+            .cloned()
             .collect();
-        let open: HashMap<[u8; 32], [u8; 32]> = sessions
-            .open_devices()
-            .into_iter()
-            .map(|(token, peer)| (token, peer.user_public_key))
-            .collect();
-        let mut next = HashMap::with_capacity(grants.len());
-        for (token, grant) in grants {
+        let open: HashMap<[u8; 32], AuthenticatedPeer> =
+            sessions.open_devices().into_iter().collect();
+        for grant in grants {
             let permitted = grant.expires > Instant::now()
                 && match open.get(&grant.session) {
-                    Some(user) => admitted(sessions, grant.device, *user, grant.workspace_id).await,
-                    None => false,
+                    Some(peer) if peer.device_public_key == grant.device => {
+                        admitted(sessions, peer, grant.workspace_id).await
+                    }
+                    Some(_) | None => false,
                 };
-            next.insert(token, permitted);
+            // Update only grants this observation checked. A grant issued
+            // while admission awaits a workspace lock keeps its own decision.
+            grant.permitted.store(permitted, Ordering::Release);
         }
-        *self
-            .permitted
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
     }
 }
 
-/// Whether `device` of `user` may be in `workspace_id`'s live plane now:
-/// not revoked and admitted exactly as a subscribe would be.
+/// Whether `peer` may be in `workspace_id`'s live plane now: its
+/// certificate current relay-wide and admitted by the room, see
+/// [`room_access::decide`].
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the guard only lives for the lookup; the value kept is a clone"
 )]
 pub(crate) async fn admitted(
     sessions: &Sessions,
-    device: [u8; 32],
-    user: [u8; 32],
+    peer: &AuthenticatedPeer,
     workspace_id: u64,
 ) -> bool {
     let relay = &sessions.context().relay;
-    if relay
-        .revocations
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .is_revoked(&device)
-    {
-        return false;
-    }
     let workspace = relay.workspaces.lock().await.get(&workspace_id).cloned();
     let Some(workspace) = workspace else {
         return false;
     };
     let workspace = workspace.lock().await;
-    workspace.admit_authenticated
-        || workspace.membership.contains(&device)
-        || workspace.admitted_users.contains(&user)
+    room_access::decide(&workspace, &relay.trust(), peer, RoomOperation::Live).admitted()
 }
 
 struct Admitted {
-    token: [u8; 32],
     grant: Arc<Grant>,
-    grants: Arc<LiveGrants>,
 }
 
 impl LiveSession for Admitted {
@@ -213,14 +242,7 @@ impl LiveSession for Admitted {
         true
     }
     fn status(&self) -> AuthorizationStatus {
-        let permitted = self
-            .grants
-            .permitted
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&self.token)
-            .copied()
-            .unwrap_or(false);
+        let permitted = self.grant.permitted.load(Ordering::Acquire);
         if permitted && self.grant.expires > Instant::now() {
             AuthorizationStatus::Current
         } else {
@@ -233,8 +255,8 @@ impl LiveSession for Admitted {
 pub(crate) struct Authority(pub(crate) Arc<LiveGrants>);
 
 impl LiveAuthority for Authority {
-    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission> {
-        let token: [u8; 32] = token.try_into().map_err(|_| Admission::Denied)?;
+    fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Denied> {
+        let token: [u8; 32] = token.try_into().map_err(|_| Denied)?;
         let grant = self
             .0
             .grants
@@ -242,15 +264,11 @@ impl LiveAuthority for Authority {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&token)
             .cloned()
-            .ok_or(Admission::Denied)?;
-        let session = Admitted {
-            token,
-            grant,
-            grants: self.0.clone(),
-        };
+            .ok_or(Denied)?;
+        let session = Admitted { grant };
         match session.status() {
             AuthorizationStatus::Current => Ok(Arc::new(session)),
-            _ => Err(Admission::Denied),
+            AuthorizationStatus::Denied => Err(Denied),
         }
     }
 
@@ -274,6 +292,24 @@ mod tests {
     use tilo_relay_protocol::live::{LiveFrame, LiveRecord, OpsFrame, PresenceFrame};
 
     use super::*;
+
+    #[test]
+    fn expired_live_grants_are_denied_before_the_next_observation() {
+        let grants = LiveGrants::new();
+        let grant = Arc::new(Grant {
+            session: [1; 32],
+            device: [2; 32],
+            workspace_id: 3,
+            room: live_room(3),
+            publisher: hex::encode([2; 32]),
+            expires: Instant::now(),
+            permitted: AtomicBool::new(true),
+        });
+        grants.grants.lock().unwrap().insert([4; 32], grant.clone());
+        let held = Admitted { grant };
+        assert!(matches!(held.status(), AuthorizationStatus::Denied));
+        assert!(matches!(Authority(grants).try_admit(&[4; 32]), Err(Denied)));
+    }
 
     fn record() -> LiveRecord {
         LiveRecord {

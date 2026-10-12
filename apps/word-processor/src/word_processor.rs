@@ -9,8 +9,10 @@ use crate::num;
 use crate::styles::{StyleProps, StyleSheet};
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use tilo_doc::model::Region;
-use tilo_doc::{Containers, DocMut, IdGen};
+use tilo_doc::{Containers, IdGen};
 use ui::text_edit::{Edit, EditCore};
+#[cfg(test)]
+use ui::widget::Edits;
 
 /// One block's `(block_id, start, end)` character range, as returned by the
 /// selection/format-span readers below.
@@ -130,6 +132,11 @@ pub struct WordProcessor {
     /// Where the document's binary inputs (its images) live. The document only references them
     /// by content address. In memory until the app hands over its store.
     content: tilo_content::ContentStore,
+    /// Where every edit goes: the framework's dispatcher, which checks the
+    /// participant's permission, attributes the edit and groups typing into
+    /// undo steps. Without one (a view that was never attached) nothing is
+    /// written.
+    dispatch: Option<ui::framework::Dispatcher<crate::framework::Document>>,
 }
 
 impl Default for WordProcessor {
@@ -151,7 +158,16 @@ impl WordProcessor {
             footer_caret: None,
             edit_core: EditCore::new(),
             content: tilo_content::ContentStore::memory(),
+            dispatch: None,
         }
+    }
+
+    /// Submit every edit through `dispatch` from now on.
+    pub(crate) fn attach(
+        &mut self,
+        dispatch: ui::framework::Dispatcher<crate::framework::Document>,
+    ) {
+        self.dispatch = Some(dispatch);
     }
 
     /// Keep the document's binary inputs in `content` (the app's store) from now on.
@@ -189,7 +205,7 @@ impl WordProcessor {
     /// For Header/Footer this lazily creates an empty paragraph if the region is
     /// empty, so there is always a block to type into. Returns the caret block id
     /// the context lands on (empty string only if the doc isn't bound).
-    pub fn focus_region(&mut self, state: &mut AutoCommit, region: Region) -> String {
+    pub fn focus_region(&mut self, state: &mut ui::widget::Edits<'_>, region: Region) -> String {
         if region == self.region {
             // Already here — still guarantee a block exists (header/footer may be
             // empty) and the caret is valid.
@@ -215,14 +231,14 @@ impl WordProcessor {
     }
 
     /// Convenience: focus the body context (Esc / clicking the body).
-    pub fn focus_body(&mut self, state: &mut AutoCommit) -> String {
+    pub fn focus_body(&mut self, state: &mut ui::widget::Edits<'_>) -> String {
         self.focus_region(state, Region::Body)
     }
 
     /// Guarantee the active region has at least one block and the caret sits on a
     /// real one (clamped). Creates an empty paragraph in an empty header/footer.
     /// Returns the resolved caret block id.
-    fn ensure_region_block(&mut self, state: &mut AutoCommit) -> String {
+    fn ensure_region_block(&mut self, state: &mut ui::widget::Edits<'_>) -> String {
         if self.containers.is_none() {
             return String::new();
         }
@@ -386,36 +402,17 @@ impl WordProcessor {
         (plain.join("\n"), blocks)
     }
 
-    /// Replace the character range `[char_start, char_end)` of `block_id` with
-    /// `text` (used by Find & Replace).
-    pub fn splice_block(
-        &mut self,
-        state: &mut AutoCommit,
-        block_id: &str,
-        char_start: usize,
-        char_end: usize,
-        text: &str,
-    ) {
-        if self.containers.is_none() || self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SpliceText {
-            region: self.action_region(),
-            block: block_id.to_string(),
-            at: char_start,
-            del: char_end.saturating_sub(char_start),
-            ins: text.to_string(),
-        };
-        let _ = action.apply_under(state, &automerge::ROOT);
-    }
-
     /// Replace the **entire body** with `markdown`, in place, on the live document:
     /// existing block ids are deleted and imported content appended as new blocks,
     /// so undo/redo and sync see one coherent action. Used by "New from template"
     /// (re-import over the open document) without discarding the host `ui::State`'s
     /// undo history / collaboration session. Caret moves to the first imported
     /// block; returns `false` (document untouched) if unbound or import fails.
-    pub fn replace_with_markdown(&mut self, state: &mut AutoCommit, markdown: &[u8]) -> bool {
+    pub fn replace_with_markdown(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        markdown: &[u8],
+    ) -> bool {
         self.replace_with_format(state, markdown, crate::WpFormat::Markdown)
     }
 
@@ -424,11 +421,11 @@ impl WordProcessor {
     /// format-aware codec. A decode failure leaves the document and caret intact.
     pub fn replace_with_format(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         bytes: &[u8],
         format: crate::WpFormat,
     ) -> bool {
-        let Some(action) = self.stage_replacement(state, bytes, format) else {
+        let Some(action) = self.stage_replacement(bytes, format) else {
             return false;
         };
         if !self.apply_rich(state, action) {
@@ -442,39 +439,12 @@ impl WordProcessor {
     /// Does not write `state`. The returned action is what Open submits.
     pub fn stage_replacement(
         &mut self,
-        state: &AutoCommit,
         bytes: &[u8],
         format: crate::WpFormat,
     ) -> Option<crate::actions::RichTextAction> {
-        let containers = self.containers.clone()?;
-        let mut ids = self.ids.clone()?;
-        // Codecs can reject malformed input after writing partial content. Stage
-        // the entire replacement so a failed Open cannot delete the live body,
-        // annotations, or other document state (including pending local edits).
-        let mut staged = state.clone();
-        let existing = tilo_doc::model::blocks_in_order(&staged, &containers);
-        let mut dm = DocMut {
-            doc: &mut staged,
-            c: &containers,
-            ids: &mut ids,
-        };
-        for id in &existing {
-            dm.remove_block(id);
-        }
-        let mut inputs = tilo_content::ContentInputs::new();
-        if format.import(bytes, &mut dm, &mut inputs).is_err() {
-            return None;
-        }
-        // The document only names its images; keep them before the shared write.
-        if let Err(error) = self.content.put_inputs(&inputs) {
-            eprintln!("word-processor: could not keep the opened file's images: {error}");
-            return None;
-        }
-        let format = Self::import_format(format)?;
-        Some(crate::actions::RichTextAction::ReplaceFormatted {
-            format,
-            bytes: bytes.to_vec(),
-        })
+        crate::import_action(bytes, format, &self.content)
+            .map_err(|error| eprintln!("word-processor: could not open the file: {error}"))
+            .ok()
     }
 
     /// Move the caret to the start of the document after a replacement action
@@ -497,18 +467,6 @@ impl WordProcessor {
         self.clear_anchor();
     }
 
-    fn import_format(format: crate::WpFormat) -> Option<crate::actions::ImportFormat> {
-        match format {
-            crate::WpFormat::Markdown => Some(crate::actions::ImportFormat::Markdown),
-            crate::WpFormat::Text => Some(crate::actions::ImportFormat::Text),
-            crate::WpFormat::Html => Some(crate::actions::ImportFormat::Html),
-            crate::WpFormat::Rtf => Some(crate::actions::ImportFormat::Rtf),
-            crate::WpFormat::Docx => Some(crate::actions::ImportFormat::Docx),
-            crate::WpFormat::Odt => Some(crate::actions::ImportFormat::Odt),
-            crate::WpFormat::Pdf | crate::WpFormat::Epub => None,
-        }
-    }
-
     /// Load the document's stylesheet from the **CRDT styles container** (the
     /// field-level-mergeable, ODF-round-trippable source of truth), or the
     /// built-in defaults when it holds none.
@@ -526,10 +484,11 @@ impl WordProcessor {
         // imported, user-defined, or edited built-ins — overlay them.
         let mut sheet = StyleSheet::default();
         for id in ids {
-            sheet.styles.insert(
-                id.clone(),
-                StyleProps::from_attrs(&tilo_doc::model::style_props(state, c, &id)),
-            );
+            // Typed style actions persist individual fields. Missing fields
+            // keep the resolved base style instead of becoming zero metrics.
+            let mut props = sheet.get(&id).to_attrs();
+            props.extend(tilo_doc::model::style_props(state, c, &id));
+            sheet.styles.insert(id, StyleProps::from_attrs(&props));
         }
         sheet
     }
@@ -538,7 +497,7 @@ impl WordProcessor {
     /// per [`crate::actions::RichTextAction::SetStyleProperty`], so replicas
     /// merge fields. A custom style dropped from `sheet` is deleted. Built-in
     /// styles stay; they are the default layer under the container.
-    pub fn set_stylesheet(&mut self, state: &mut AutoCommit, sheet: &StyleSheet) {
+    pub fn set_stylesheet(&mut self, state: &mut ui::widget::Edits<'_>, sheet: &StyleSheet) {
         let Some(containers) = self.containers.clone() else {
             return;
         };
@@ -583,19 +542,6 @@ impl WordProcessor {
         }
     }
 
-    /// On first bind, seed the built-in defaults into the styles container if it
-    /// is empty. Idempotent — a doc whose container already has styles is left
-    /// untouched.
-    fn seed_styles(&mut self, state: &mut AutoCommit) {
-        let Some(c) = self.containers.as_ref() else {
-            return;
-        };
-        if !tilo_doc::model::style_ids(state, c).is_empty() {
-            return;
-        }
-        self.set_stylesheet(state, &StyleSheet::default());
-    }
-
     /// The document's persisted page margins as `[top, right, bottom, left]` (px),
     /// or `None` when the document does not record them (a fresh / legacy doc, so
     /// the widget keeps its defaults). Stored as four document-level meta strings
@@ -612,25 +558,9 @@ impl WordProcessor {
         ])
     }
 
-    /// Persist the page margins `[top, right, bottom, left]` (px) into the document
-    /// as four meta registers, so they round-trip through save/reopen and merge
-    /// field-by-field across replicas.
-    pub fn set_page_margins(&mut self, state: &mut AutoCommit, margins: [f64; 4]) {
-        if self.containers.is_none() || self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetPageMargins {
-            top: margins[0],
-            right: margins[1],
-            bottom: margins[2],
-            left: margins[3],
-        };
-        let _ = action.apply_under(state, &automerge::ROOT);
-    }
-
     /// Assign a style id to every block in the selection (or the caret's block).
     /// Empty clears it, reverting to the kind-derived default style.
-    pub fn set_block_style(&mut self, state: &mut AutoCommit, style_id: &str) {
+    pub fn set_block_style(&mut self, state: &mut ui::widget::Edits<'_>, style_id: &str) {
         if self.containers.is_none() {
             return;
         }
@@ -653,7 +583,7 @@ impl WordProcessor {
             key: "style".into(),
             value: crate::actions::AttrVal::Str(style_id.to_string()),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Delete a **custom** paragraph style: remove it from the document's style
@@ -661,7 +591,7 @@ impl WordProcessor {
     /// those blocks fall back to their kind-derived default). Built-in styles are
     /// never deletable — the call is a no-op and returns `false`. Returns `true`
     /// when the style existed and was removed.
-    pub fn delete_style(&mut self, state: &mut AutoCommit, style_id: &str) -> bool {
+    pub fn delete_style(&mut self, state: &mut ui::widget::Edits<'_>, style_id: &str) -> bool {
         if StyleSheet::is_builtin(style_id) {
             return false;
         }
@@ -695,7 +625,11 @@ impl WordProcessor {
     /// naming it "`<name>` copy", and persist it into the document's style
     /// container. Returns the new style id (or `None` if the source is unknown).
     /// The caller decides whether to also apply it to the caret block.
-    pub fn duplicate_style(&mut self, state: &mut AutoCommit, style_id: &str) -> Option<String> {
+    pub fn duplicate_style(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        style_id: &str,
+    ) -> Option<String> {
         let mut sheet = self.stylesheet(state);
         let mut props = sheet.styles.get(style_id)?.clone();
         let new_id = sheet.fresh_custom_id();
@@ -705,24 +639,12 @@ impl WordProcessor {
         Some(new_id)
     }
 
-    /// The caret's block id when it is an `image` block (i.e. an image is
-    /// "selected"), else `None`. Drives the panel's image-inspector affordances
-    /// (resize / flip) and the on-page selection handles.
-    pub fn selected_image_block(&self, state: &AutoCommit) -> Option<String> {
-        let c = self.containers.as_ref()?;
-        let snap = tilo_doc::model::materialize(state, c);
-        snap.blocks
-            .iter()
-            .find(|b| b.id == self.caret.block && b.kind == "image")
-            .map(|b| b.id.clone())
-    }
-
     /// Set the explicit display size (px) of an `image` block, recording `width`
     /// and `height` attrs the renderer/exporter honour. Values are floored to a
     /// sane minimum so an image can never be scaled to nothing.
     pub fn set_image_size(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         block_id: &str,
         width: f64,
         height: f64,
@@ -740,13 +662,18 @@ impl WordProcessor {
             width: w,
             height: h,
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Toggle a mirror flip on an `image` block: `horizontal` flips the
     /// `flip_h` attr (mirror left↔right), otherwise the `flip_v` attr (mirror
     /// top↔bottom). Returns the new flip state for that axis.
-    pub fn flip_image(&mut self, state: &mut AutoCommit, block_id: &str, horizontal: bool) -> bool {
+    pub fn flip_image(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        block_id: &str,
+        horizontal: bool,
+    ) -> bool {
         let Some(containers) = self.containers.clone() else {
             return false;
         };
@@ -766,7 +693,7 @@ impl WordProcessor {
             key: key.into(),
             value: crate::actions::AttrVal::Bool(next),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
         next
     }
 
@@ -788,7 +715,7 @@ impl WordProcessor {
 
     /// Insert a rich fragment at the caret (replacing the selection), preserving
     /// marks + paragraph styles.
-    pub fn insert_rich(&mut self, state: &mut AutoCommit, blocks: &[ClipBlock]) {
+    pub fn insert_rich(&mut self, state: &mut ui::widget::Edits<'_>, blocks: &[ClipBlock]) {
         if blocks.is_empty() {
             self.delete_selection(state);
             return;
@@ -851,7 +778,7 @@ impl WordProcessor {
     }
 
     /// Delete the current selection (no-op if none); returns whether it deleted.
-    pub fn delete_selection(&mut self, state: &mut AutoCommit) -> bool {
+    pub fn delete_selection(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         let Some((start, end)) = self.selection_span(state) else {
             return false;
         };
@@ -876,7 +803,7 @@ impl WordProcessor {
     /// table (alignment and font still apply to cells via their own methods).
     pub fn set_paragraph_style(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         kind: &str,
         level: Option<i64>,
         ordered: Option<bool>,
@@ -905,12 +832,12 @@ impl WordProcessor {
             level,
             ordered,
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     fn set_block_attr(
         &self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         blocks: Vec<String>,
         key: &str,
         value: crate::actions::AttrVal,
@@ -924,18 +851,27 @@ impl WordProcessor {
             key: key.to_string(),
             value,
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     #[allow(
         clippy::needless_pass_by_value,
         reason = "callers construct owned RichTextAction values at the call site"
     )]
-    fn apply_rich(&self, state: &mut AutoCommit, action: crate::actions::RichTextAction) -> bool {
+    fn apply_rich(
+        &self,
+        state: &mut ui::widget::Edits<'_>,
+        action: crate::actions::RichTextAction,
+    ) -> bool {
         if self.containers.is_none() || self.ids.is_none() {
             return false;
         }
-        action.apply_under(state, &automerge::ROOT).is_ok()
+        let Some(dispatch) = &self.dispatch else {
+            return false;
+        };
+        dispatch
+            .apply_now(state, &crate::model::action(&action))
+            .is_ok()
     }
 
     fn action_region(&self) -> crate::actions::RegionKind {
@@ -967,7 +903,7 @@ impl WordProcessor {
     }
 
     /// Set alignment on every block in the selection (or the caret block).
-    pub fn set_align(&mut self, state: &mut AutoCommit, align: &str) {
+    pub fn set_align(&mut self, state: &mut ui::widget::Edits<'_>, align: &str) {
         if self.containers.is_none() {
             return;
         }
@@ -981,31 +917,13 @@ impl WordProcessor {
             key: "align".into(),
             value: crate::actions::AttrVal::Str(align.to_string()),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
-    }
-
-    /// Whether the caret's block forces a page break before it (the
-    /// `page_break_before` block attr). False for a fresh/legacy block.
-    pub fn caret_page_break_before(&self, state: &AutoCommit) -> bool {
-        let Some(c) = self.containers.as_ref() else {
-            return false;
-        };
-        let snap = tilo_doc::model::materialize(state, c);
-        snap.blocks
-            .iter()
-            .find(|b| b.id == self.caret.block)
-            .is_some_and(|b| {
-                matches!(
-                    b.attrs.get("page_break_before"),
-                    Some(tilo_doc::AttrVal::Bool(true))
-                )
-            })
+        let _ = self.apply_rich(state, action);
     }
 
     /// Set the `page_break_before` attr on the caret's block (forcing pagination
     /// to start that block on a fresh page when `on`). Table cells are skipped —
     /// a cell breaking mid-table would split the grid.
-    pub fn set_page_break_before(&mut self, state: &mut AutoCommit, on: bool) {
+    pub fn set_page_break_before(&mut self, state: &mut ui::widget::Edits<'_>, on: bool) {
         if self.containers.is_none() {
             return;
         }
@@ -1019,21 +937,13 @@ impl WordProcessor {
             key: "page_break_before".into(),
             value: crate::actions::AttrVal::Bool(on),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
-    }
-
-    /// Toggle the page break on the caret's block (Ctrl+Enter when the caret
-    /// already starts a paragraph). Returns the new state.
-    pub fn toggle_page_break_before(&mut self, state: &mut AutoCommit) -> bool {
-        let on = !self.caret_page_break_before(state);
-        self.set_page_break_before(state, on);
-        on
+        let _ = self.apply_rich(state, action);
     }
 
     /// Insert a manual page break at the caret: split the current block (like
     /// Enter) and mark the new block to start on a fresh page. The caret follows
     /// into the new block so typing continues on the next page.
-    pub fn insert_page_break(&mut self, state: &mut AutoCommit) {
+    pub fn insert_page_break(&mut self, state: &mut ui::widget::Edits<'_>) {
         // A page break inside a table cell would split the grid; ignore it.
         if self.block_meta(state, &self.caret.block).0 == "cell" {
             return;
@@ -1063,7 +973,7 @@ impl WordProcessor {
     /// (`color`, `font`, `size`).
     pub fn set_mark_value(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         name: &str,
         value: &tilo_doc::document::MarkValue,
     ) {
@@ -1082,18 +992,18 @@ impl WordProcessor {
             value: Some(Self::mark_val(value)),
             also_clear: Vec::new(),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Set the font size (pt) over the selection (per-run), or the caret block.
     /// Stored as a `size` Int run mark (the codec contract's character format).
-    pub fn set_font_size(&mut self, state: &mut AutoCommit, size: i64) {
+    pub fn set_font_size(&mut self, state: &mut ui::widget::Edits<'_>, size: i64) {
         self.set_mark_value(state, "size", &tilo_doc::document::MarkValue::Int(size));
     }
 
     /// Set the font family (`sans` | `serif` | `mono`) over the selection
     /// (per-run), or the caret block. Stored as a `font` Str run mark.
-    pub fn set_font_family(&mut self, state: &mut AutoCommit, family: &str) {
+    pub fn set_font_family(&mut self, state: &mut ui::widget::Edits<'_>, family: &str) {
         self.set_mark_value(
             state,
             "font",
@@ -1103,7 +1013,7 @@ impl WordProcessor {
 
     /// Set the text colour (`#rrggbb`) over the selection (per-run), or the caret
     /// block. Stored as a `color` Str run mark.
-    pub fn set_text_color(&mut self, state: &mut AutoCommit, hex: &str) {
+    pub fn set_text_color(&mut self, state: &mut ui::widget::Edits<'_>, hex: &str) {
         self.set_mark_value(
             state,
             "color",
@@ -1114,7 +1024,7 @@ impl WordProcessor {
     /// Remove a named run mark over the selection (per-run), or the caret block —
     /// the inverse of `set_mark_value`. Used by the toolbar's neutral colour
     /// swatch to clear a `color` mark (reverting to the block's style ink).
-    pub fn clear_mark(&mut self, state: &mut AutoCommit, name: &str) {
+    pub fn clear_mark(&mut self, state: &mut ui::widget::Edits<'_>, name: &str) {
         let ranges = self.font_ranges(state);
         if self.containers.is_none() || self.ids.is_none() {
             return;
@@ -1130,11 +1040,11 @@ impl WordProcessor {
             value: None,
             also_clear: Vec::new(),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Toggle an inline mark over the selection (across blocks). Region-aware.
-    pub fn toggle_mark(&mut self, state: &mut AutoCommit, name: &str) {
+    pub fn toggle_mark(&mut self, state: &mut ui::widget::Edits<'_>, name: &str) {
         let sel = self.selection_blocks(state);
         if sel.is_empty() || self.containers.is_none() || self.ids.is_none() {
             return;
@@ -1158,13 +1068,13 @@ impl WordProcessor {
             },
             also_clear: Vec::new(),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Set the highlight (background) colour (`#rrggbb`) over the selection
     /// (per-run), or the caret block. Stored as a `highlight` Str run mark; the
     /// widget maps it to a `RichSpan.background` band behind the glyphs.
-    pub fn set_highlight(&mut self, state: &mut AutoCommit, hex: &str) {
+    pub fn set_highlight(&mut self, state: &mut ui::widget::Edits<'_>, hex: &str) {
         self.set_mark_value(
             state,
             "highlight",
@@ -1178,7 +1088,7 @@ impl WordProcessor {
     /// mark; deletion: remove the struck text). The change record is removed from
     /// the `changes` container, so it stops being reported in the materialized
     /// snapshot. No-op for an unknown id or an unbound document.
-    pub fn accept_change(&mut self, state: &mut AutoCommit, change_id: &str) {
+    pub fn accept_change(&mut self, state: &mut ui::widget::Edits<'_>, change_id: &str) {
         self.review_change(state, Some(change_id), true);
     }
 
@@ -1186,24 +1096,11 @@ impl WordProcessor {
     /// deletion: keep the text, drop its `del` mark) — the inverse of
     /// [`Self::accept_change`]. The change record is removed either way. No-op
     /// for an unknown id or an unbound document.
-    pub fn reject_change(&mut self, state: &mut AutoCommit, change_id: &str) {
+    pub fn reject_change(&mut self, state: &mut ui::widget::Edits<'_>, change_id: &str) {
         self.review_change(state, Some(change_id), false);
     }
 
-    /// Accept every tracked change in the document. Processed in reverse
-    /// document order so an accepted deletion's text removal never shifts the
-    /// anchored range of an earlier-but-not-yet-processed change.
-    pub fn accept_all_changes(&mut self, state: &mut AutoCommit) {
-        self.review_change(state, None, true);
-    }
-
-    /// Reject every tracked change in the document (see [`Self::accept_all_changes`]
-    /// for the ordering rationale).
-    pub fn reject_all_changes(&mut self, state: &mut AutoCommit) {
-        self.review_change(state, None, false);
-    }
-
-    fn review_change(&self, state: &mut AutoCommit, id: Option<&str>, accept: bool) {
+    fn review_change(&self, state: &mut ui::widget::Edits<'_>, id: Option<&str>, accept: bool) {
         if self.containers.is_none() || self.ids.is_none() {
             return;
         }
@@ -1216,48 +1113,7 @@ impl WordProcessor {
                 id: id.map(str::to_string),
             }
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
-    }
-
-    /// The tracked-change ids present in the document, sorted by their anchored
-    /// `(block-order, start)` body position (earliest first). Falls back to the
-    /// canonical id order for changes whose anchoring mark is gone.
-    #[allow(
-        dead_code,
-        reason = "review navigation helper kept beside Accept/Reject until wired"
-    )]
-    fn changes_in_doc_order(&self, state: &AutoCommit) -> Vec<String> {
-        let Some(c) = self.containers.as_ref() else {
-            return Vec::new();
-        };
-        let block_order = self.ordered_blocks(state);
-        let pos = |bid: &str| {
-            block_order
-                .iter()
-                .position(|b| b == bid)
-                .unwrap_or(usize::MAX)
-        };
-        let mut ids = tilo_doc::model::change_ids(state, c);
-        ids.sort_by_key(|id| {
-            tilo_doc::model::change_range(state, c, id)
-                .map_or((usize::MAX, usize::MAX), |(b, s, _)| (pos(&b), s))
-        });
-        ids
-    }
-
-    /// Delete a comment by id: remove its anchoring `comment` mark over the body
-    /// range it covers, then drop the comment entry from the `comments`
-    /// container. After this the comment no longer appears in the materialized
-    /// snapshot and its highlight band disappears. No-op for an unknown id or an
-    /// unbound document.
-    pub fn delete_comment(&mut self, state: &mut AutoCommit, comment_id: &str) {
-        if self.containers.is_none() || self.ids.is_none() {
-            return;
-        }
-        let action = crate::actions::RichTextAction::ResolveComment {
-            id: comment_id.to_string(),
-        };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Whether a named boolean run mark covers the whole of `ranges`.
@@ -1355,7 +1211,12 @@ impl WordProcessor {
     /// selection — the whole caret block. `clears` is a sibling mark removed
     /// whenever this one is turned on, so a pair like `super`/`sub` stays mutually
     /// exclusive. Returns nothing; reads/writes happen in document order.
-    fn toggle_exclusive_run_mark(&self, state: &mut AutoCommit, name: &str, clears: &str) {
+    fn toggle_exclusive_run_mark(
+        &self,
+        state: &mut ui::widget::Edits<'_>,
+        name: &str,
+        clears: &str,
+    ) {
         let ranges = self.font_ranges(state);
         if self.containers.is_none() || self.ids.is_none() {
             return;
@@ -1380,18 +1241,18 @@ impl WordProcessor {
                 vec![clears.to_string()]
             },
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Toggle the `super` (superscript) run mark over the selection / caret block,
     /// clearing any `sub` mark on the same range (the pair is mutually exclusive).
-    pub fn toggle_super(&mut self, state: &mut AutoCommit) {
+    pub fn toggle_super(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.toggle_exclusive_run_mark(state, "super", "sub");
     }
 
     /// Toggle the `sub` (subscript) run mark over the selection / caret block,
     /// clearing any `super` mark on the same range (mutually exclusive).
-    pub fn toggle_sub(&mut self, state: &mut AutoCommit) {
+    pub fn toggle_sub(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.toggle_exclusive_run_mark(state, "sub", "super");
     }
 
@@ -1399,7 +1260,7 @@ impl WordProcessor {
     /// the selection (or the caret block). Stored as the `line_spacing` Float
     /// block attr; the layout pass feeds it to `RichTextLayout::shape` as the
     /// `line_height_mult`. A multiplier of `1.0` clears the attr (the default).
-    pub fn set_line_spacing(&mut self, state: &mut AutoCommit, mult: f64) {
+    pub fn set_line_spacing(&mut self, state: &mut ui::widget::Edits<'_>, mult: f64) {
         self.set_block_attr(
             state,
             self.selected_block_ids(state),
@@ -1459,14 +1320,8 @@ impl WordProcessor {
         self.block_num_attr(state, block, "indent")
     }
 
-    /// The first-line indent (px) of an arbitrary block — the `first_line_indent`
-    /// attr, `0.0` when unset.
-    pub fn block_first_line_indent(&self, state: &AutoCommit, block: &str) -> f64 {
-        self.block_num_attr(state, block, "first_line_indent")
-    }
-
     /// Set the left / hanging indent (px) on `block`. Clamped non-negative.
-    pub fn set_block_indent(&mut self, state: &mut AutoCommit, block: &str, px: f64) {
+    pub fn set_block_indent(&mut self, state: &mut ui::widget::Edits<'_>, block: &str, px: f64) {
         self.set_block_attr(
             state,
             vec![block.to_string()],
@@ -1477,7 +1332,12 @@ impl WordProcessor {
 
     /// Set the first-line indent (px) on `block`. May be negative (a hanging
     /// indent draws the first line back toward the margin).
-    pub fn set_block_first_line_indent(&mut self, state: &mut AutoCommit, block: &str, px: f64) {
+    pub fn set_block_first_line_indent(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        block: &str,
+        px: f64,
+    ) {
         self.set_block_attr(
             state,
             vec![block.to_string()],
@@ -1512,7 +1372,12 @@ impl WordProcessor {
 
     /// Replace `block`'s tab stops with `stops` (deduplicated + sorted). An empty
     /// list clears the attr to the empty string.
-    pub fn set_block_tab_stops(&mut self, state: &mut AutoCommit, block: &str, stops: &[f64]) {
+    pub fn set_block_tab_stops(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        block: &str,
+        stops: &[f64],
+    ) {
         if self.containers.is_none() {
             return;
         }
@@ -1532,38 +1397,11 @@ impl WordProcessor {
         );
     }
 
-    /// Add a tab stop at `px` (from the left text margin) on the caret's block.
-    pub fn add_tab_stop(&mut self, state: &mut AutoCommit, px: f64) {
-        let block = self.caret.block.clone();
-        let mut stops = self.block_tab_stops(state, &block);
-        // Ignore a stop that coincides with an existing one.
-        if stops.iter().any(|p| (*p - px).abs() < 2.0) {
-            return;
-        }
-        stops.push(px.max(0.0));
-        self.set_block_tab_stops(state, &block, &stops);
-    }
-
-    /// Tab key: advance the caret to the next tab stop on its block, if any.
-    /// Returns `true` when a stop existed and the caret advanced (the caller then
-    /// skips the legacy "insert spaces" fallback). The advance is recorded in the
-    /// document as a single tab character so it survives save/reload and reflows
-    /// with edits — the layout treats the run up to the next stop as the tab's
-    /// width (full per-stop glyph expansion is a v1 limitation).
-    pub fn tab_advance(&mut self, state: &mut AutoCommit) -> bool {
-        let stops = self.block_tab_stops(state, &self.caret.block.clone());
-        if stops.is_empty() {
-            return false;
-        }
-        self.insert_str(state, "\t");
-        true
-    }
-
     /// Insert a `rows`×`cols` table after the caret block. Cells are modeled as
     /// consecutive top-level `cell` blocks tagged with `table`/`row`/`col`, so
     /// they edit/select/collaborate through the normal block machinery; the
     /// widget renders consecutive same-`table` cells as a grid.
-    pub fn insert_table(&mut self, state: &mut AutoCommit, rows: usize, cols: usize) {
+    pub fn insert_table(&mut self, state: &mut ui::widget::Edits<'_>, rows: usize, cols: usize) {
         let after = self.caret.block.clone();
         let action = crate::actions::insert_table_action(&after, rows, cols);
         if !self.apply_rich(state, action) {
@@ -1591,7 +1429,7 @@ impl WordProcessor {
     ///
     /// Decodable bytes record intrinsic pixel `width`/`height` as attrs (matching
     /// ODF import); undecodable bytes still produce a valid block (a placeholder).
-    pub fn insert_image_bytes(&mut self, state: &mut AutoCommit, bytes: &[u8]) {
+    pub fn insert_image_bytes(&mut self, state: &mut ui::widget::Edits<'_>, bytes: &[u8]) {
         if self.containers.is_none() {
             return;
         }
@@ -1662,17 +1500,17 @@ impl WordProcessor {
     }
 
     /// Add a row below the caret's row (toolbar `+Row`).
-    pub fn table_add_row(&mut self, state: &mut AutoCommit) {
+    pub fn table_add_row(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.insert_row(state, true);
     }
 
     /// Insert a blank row immediately above the caret's row.
-    pub fn insert_row_above(&mut self, state: &mut AutoCommit) {
+    pub fn insert_row_above(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.insert_row(state, false);
     }
 
     /// Insert a blank row immediately below the caret's row.
-    pub fn insert_row_below(&mut self, state: &mut AutoCommit) {
+    pub fn insert_row_below(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.insert_row(state, true);
     }
 
@@ -1681,7 +1519,7 @@ impl WordProcessor {
     /// kept rectangular: the new row has exactly `ncols` cells and every row at or
     /// past the insertion point has its `row` attr bumped by one. The caret moves
     /// to the first cell of the new row.
-    fn insert_row(&mut self, state: &mut AutoCommit, below: bool) {
+    fn insert_row(&mut self, state: &mut ui::widget::Edits<'_>, below: bool) {
         let Some((tid, cells)) = self.caret_table(state) else {
             return;
         };
@@ -1711,17 +1549,17 @@ impl WordProcessor {
     }
 
     /// Add a column to the right of the caret's column (toolbar `+Col`).
-    pub fn table_add_col(&mut self, state: &mut AutoCommit) {
+    pub fn table_add_col(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.insert_col(state, true);
     }
 
     /// Insert a blank column immediately to the left of the caret's column.
-    pub fn insert_col_left(&mut self, state: &mut AutoCommit) {
+    pub fn insert_col_left(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.insert_col(state, false);
     }
 
     /// Insert a blank column immediately to the right of the caret's column.
-    pub fn insert_col_right(&mut self, state: &mut AutoCommit) {
+    pub fn insert_col_right(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.insert_col(state, true);
     }
 
@@ -1730,7 +1568,7 @@ impl WordProcessor {
     /// rectangular: one cell is added per row at `new_col`, and every existing
     /// cell at or past `new_col` has its `col` attr bumped. The caret moves to the
     /// new cell in the caret's row.
-    fn insert_col(&mut self, state: &mut AutoCommit, right: bool) {
+    fn insert_col(&mut self, state: &mut ui::widget::Edits<'_>, right: bool) {
         let Some((tid, cells)) = self.caret_table(state) else {
             return;
         };
@@ -1771,7 +1609,7 @@ impl WordProcessor {
     /// moves to the previous cell
     /// (staying put at the very first cell). Returns `true` when the caret was in
     /// a cell and was handled here (so the caller should not insert a tab).
-    pub fn tab_cell(&mut self, state: &mut AutoCommit, forward: bool) -> bool {
+    pub fn tab_cell(&mut self, state: &mut ui::widget::Edits<'_>, forward: bool) -> bool {
         let Some((_, cells)) = self.caret_table(state) else {
             return false;
         };
@@ -1846,7 +1684,7 @@ impl WordProcessor {
     }
 
     /// Delete the caret's row (deletes the whole table if it was the last row).
-    pub fn table_del_row(&mut self, state: &mut AutoCommit) {
+    pub fn table_del_row(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some((tid, cells)) = self.caret_table(state) else {
             return;
         };
@@ -1882,7 +1720,7 @@ impl WordProcessor {
     }
 
     /// Delete the caret's column (deletes the whole table if it was the last).
-    pub fn table_del_col(&mut self, state: &mut AutoCommit) {
+    pub fn table_del_col(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some((tid, cells)) = self.caret_table(state) else {
             return;
         };
@@ -1918,7 +1756,7 @@ impl WordProcessor {
     }
 
     /// Delete the whole table the caret is in; caret moves to the block before it.
-    pub fn table_delete(&mut self, state: &mut AutoCommit) {
+    pub fn table_delete(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some((tid, cells)) = self.caret_table(state) else {
             return;
         };
@@ -1962,7 +1800,7 @@ impl WordProcessor {
     }
 
     /// Insert text, splitting on newlines into new paragraphs (multi-line paste).
-    pub fn insert_multiline(&mut self, state: &mut AutoCommit, text: &str) {
+    pub fn insert_multiline(&mut self, state: &mut ui::widget::Edits<'_>, text: &str) {
         let normalized = text.replace('\r', "");
         let mut first = true;
         for line in normalized.split('\n') {
@@ -1974,32 +1812,6 @@ impl WordProcessor {
             }
             first = false;
         }
-    }
-
-    /// Initialize a new canonical document before an application projects it.
-    ///
-    /// # Errors
-    ///
-    /// Never fails today; the `Result` matches the record-initializer contract.
-    pub fn initialize_empty_document(state: &mut AutoCommit) -> Result<(), String> {
-        let mut editor = Self::new();
-        editor.bind(state, &automerge::ROOT);
-        Ok(())
-    }
-
-    /// Project an admitted document without seeding schema, styles or paragraphs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the document does not carry the Writer schema.
-    pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
-        let containers =
-            tilo_doc::model::open(state, &automerge::ROOT).map_err(|error| error.to_string())?;
-        let mut editor = Self::new();
-        editor.ids = Some(tilo_doc::model::seeded_id_gen(state, &containers));
-        editor.containers = Some(containers);
-        editor.reconcile(state);
-        Ok(editor)
     }
 
     /// Reconcile caret state without authoring document changes.
@@ -2038,7 +1850,9 @@ impl WordProcessor {
     /// seat the caret, writing nothing.
     pub fn bind_view_only(&mut self, state: &AutoCommit, root: &ObjId) {
         if self.containers.is_none() {
-            let Ok(c) = tilo_doc::model::open(state, root) else {
+            let Some(c) = crate::model::body_at(state, root)
+                .and_then(|body| tilo_doc::model::open(state, &body).ok())
+            else {
                 return;
             };
             self.containers = Some(c);
@@ -2061,7 +1875,7 @@ impl WordProcessor {
         }
     }
 
-    pub fn bind(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    pub fn bind(&mut self, state: &AutoCommit, root: &ObjId) {
         // A canonical body caret proves that the body is nonempty. Resolve
         // only its block instead of sorting the entire body twice per sync.
         // Match ordered_keys membership exactly; a map key alone is not enough.
@@ -2077,30 +1891,17 @@ impl WordProcessor {
                 .min(self.block_len(state, &self.caret.block));
             return;
         }
-        let containers = if let Some(c) = self.containers.clone() {
-            c
-        } else {
-            let c = tilo_doc::model::open(state, root)
-                .unwrap_or_else(|_| tilo_doc::model::init(state, root));
+        if self.containers.is_none() {
+            // The record's genesis made the document; a view never creates it.
+            let Some(c) = crate::model::body_at(state, root)
+                .and_then(|body| tilo_doc::model::open(state, &body).ok())
+            else {
+                return;
+            };
             // Seed past existing block ids so editing a loaded/imported document
             // never re-mints (and overwrites) an existing block.
             self.ids = Some(tilo_doc::model::seeded_id_gen(state, &c));
-            self.containers = Some(c.clone());
-            // Populate the styles container with the built-in defaults on
-            // first bind.
-            self.seed_styles(state);
-            c
-        };
-        // A document always has somewhere to write. The framework seed and
-        // this action both insert one empty paragraph, and a replay is a
-        // no-op once a block exists.
-        if tilo_doc::model::blocks_in_order(state, &containers).is_empty() {
-            let _ = self.apply_rich(
-                state,
-                crate::actions::RichTextAction::EnsureRegionBlock {
-                    region: crate::actions::RegionKind::Body,
-                },
-            );
+            self.containers = Some(c);
         }
         self.reconcile(state);
     }
@@ -2168,7 +1969,7 @@ impl WordProcessor {
 
     fn region_splice(
         &self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         block: &str,
         idx: usize,
         del: isize,
@@ -2187,10 +1988,10 @@ impl WordProcessor {
             del,
             ins: ins.to_string(),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
-    fn region_set_kind(&self, state: &mut AutoCommit, block: &str, kind: &str) {
+    fn region_set_kind(&self, state: &mut ui::widget::Edits<'_>, block: &str, kind: &str) {
         if self.containers.is_none() || self.ids.is_none() {
             return;
         }
@@ -2201,10 +2002,10 @@ impl WordProcessor {
             level: None,
             ordered: None,
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
-    fn region_remove_block(&self, state: &mut AutoCommit, block: &str) {
+    fn region_remove_block(&self, state: &mut ui::widget::Edits<'_>, block: &str) {
         if self.containers.is_none() || self.ids.is_none() {
             return;
         }
@@ -2218,41 +2019,12 @@ impl WordProcessor {
                 blocks: vec![block.to_string()],
             }
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
-    }
-
-    #[allow(
-        dead_code,
-        reason = "clear-mark helper kept for region edits not yet on RichTextAction"
-    )]
-    fn region_remove_mark(
-        &self,
-        state: &mut AutoCommit,
-        block: &str,
-        start: usize,
-        end: usize,
-        name: &str,
-    ) {
-        if start >= end {
-            return;
-        }
-        let action = crate::actions::RichTextAction::SetMark {
-            region: self.action_region(),
-            spans: vec![crate::actions::Span {
-                block: block.to_string(),
-                start,
-                end,
-            }],
-            name: name.to_string(),
-            value: None,
-            also_clear: Vec::new(),
-        };
         let _ = self.apply_rich(state, action);
     }
 
     /// Insert a page-number field at the caret in the active region. Works in the
     /// body too (renders as a `field` mark; the body renderer substitutes it).
-    pub fn insert_page_number(&mut self, state: &mut AutoCommit) {
+    pub fn insert_page_number(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.delete_selection(state);
         let block = self.caret.block.clone();
         let idx = self.caret.offset;
@@ -2330,7 +2102,7 @@ impl WordProcessor {
     /// the inserted TOC block ids (top-to-bottom).
     pub fn generate_toc(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         entries: &[crate::actions::TocTarget],
     ) -> Vec<String> {
         let Some(containers) = self.containers.clone() else {
@@ -2388,7 +2160,7 @@ impl WordProcessor {
     /// On a space typed right after a markdown-ish line prefix in a plain
     /// paragraph, convert the block's style and consume the prefix. Returns true
     /// if it transformed (caller then skips inserting the space).
-    pub fn autoformat_on_space(&mut self, state: &mut AutoCommit) -> bool {
+    pub fn autoformat_on_space(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         let Some(c) = self.containers.clone() else {
             return false;
         };
@@ -2491,31 +2263,73 @@ impl WordProcessor {
         });
     }
 
-    fn apply_edit_core(&mut self, state: &mut AutoCommit, text: &str, edit: &Edit) -> bool {
+    fn apply_edit_core(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        text: &str,
+        edit: &Edit,
+    ) -> bool {
         if edit.is_noop() {
             return false;
         }
-        let end = edit.at.saturating_add(edit.removed);
-        let Some(prefix) = text.get(..edit.at) else {
+        let Some(splice) = edit.char_splice(text) else {
             return false;
         };
-        let Some(removed_text) = text.get(edit.at..end) else {
-            return false;
-        };
-        let start = prefix.chars().count();
-        let removed = removed_text.chars().count();
         let block = self.caret.block.clone();
         self.region_splice(
             state,
             &block,
-            start,
-            num::isize_of_usize(removed),
+            splice.at,
+            splice.removed_isize(),
             &edit.inserted,
         );
         let mut updated = text.to_owned();
-        updated.replace_range(edit.at..end, &edit.inserted);
+        edit.apply(&mut updated);
         self.sync_state_from_edit_core(&updated);
         true
+    }
+
+    /// Delete the character (grapheme cluster) before or after the caret
+    /// within its block through the shared core. Returns whether it did.
+    fn delete_grapheme(&mut self, state: &mut ui::widget::Edits<'_>, backward: bool) -> bool {
+        let text = self.current_text(state);
+        self.sync_edit_core_from_state(&text);
+        let edit = if backward {
+            self.edit_core.delete_backward(&text, false)
+        } else {
+            self.edit_core.delete_forward(&text, false)
+        };
+        self.apply_edit_core(state, &text, &edit)
+    }
+
+    /// Show `text` as the input method's composition at the caret; it is
+    /// not part of the document until committed.
+    pub fn set_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
+        self.edit_core.set_preedit(text, cursor);
+    }
+
+    /// Drop the composition.
+    pub fn clear_preedit(&mut self) {
+        self.edit_core.clear_preedit();
+    }
+
+    /// The composition in progress (empty when none).
+    pub fn preedit(&self) -> &str {
+        self.edit_core.preedit()
+    }
+
+    /// The composition in progress as an edit core over the caret block's
+    /// committed `text`, its caret at the document caret, or `None` while
+    /// nothing is being composed. Its display mapping lays the composition
+    /// out inside the paragraph.
+    pub fn composition(&self, text: &str) -> Option<EditCore> {
+        if !self.edit_core.has_preedit() {
+            return None;
+        }
+        let mut core = self.edit_core.clone();
+        core.set_caret(crate::text_offsets::char_to_byte(text, self.caret.offset));
+        core.clamp_to(text);
+        Some(core)
     }
 
     /// Select the entire document (Ctrl+A).
@@ -2541,7 +2355,7 @@ impl WordProcessor {
 
     /// Insert `s` at the caret and advance. Replaces the selection if any.
     /// Routes through the active region (body / header / footer).
-    pub fn insert_str(&mut self, state: &mut AutoCommit, s: &str) {
+    pub fn insert_str(&mut self, state: &mut ui::widget::Edits<'_>, s: &str) {
         if self
             .selection_anchor
             .as_ref()
@@ -2569,7 +2383,7 @@ impl WordProcessor {
     /// the list (the item becomes a paragraph). Headings split into a paragraph.
     /// Region-aware: in a header/footer the same split logic runs against that
     /// region's container.
-    pub fn enter(&mut self, state: &mut AutoCommit) {
+    pub fn enter(&mut self, state: &mut ui::widget::Edits<'_>) {
         if self.containers.is_none() {
             return;
         }
@@ -2617,7 +2431,7 @@ impl WordProcessor {
 
     /// Delete the character before the caret; at offset 0 merge into the
     /// previous block. Region-aware.
-    pub fn backspace(&mut self, state: &mut AutoCommit) {
+    pub fn backspace(&mut self, state: &mut ui::widget::Edits<'_>) {
         if self
             .selection_anchor
             .as_ref()
@@ -2640,8 +2454,7 @@ impl WordProcessor {
         let offset = self.caret.offset;
 
         if offset > 0 {
-            self.region_splice(state, &block, offset - 1, 1, "");
-            self.caret.offset = offset - 1;
+            self.delete_grapheme(state, true);
             return;
         }
 
@@ -2676,7 +2489,7 @@ impl WordProcessor {
 
     /// Delete the character after the caret; at end-of-block merge the next
     /// block in. Region-aware.
-    pub fn delete_forward(&mut self, state: &mut AutoCommit) {
+    pub fn delete_forward(&mut self, state: &mut ui::widget::Edits<'_>) {
         if self
             .selection_anchor
             .as_ref()
@@ -2700,7 +2513,7 @@ impl WordProcessor {
         let len = self.block_len(state, &block);
 
         if offset < len {
-            self.region_splice(state, &block, offset, 1, "");
+            self.delete_grapheme(state, false);
             return;
         }
 
@@ -2866,17 +2679,19 @@ mod tests {
 
     fn bound() -> (WordProcessor, AutoCommit) {
         let mut wp = WordProcessor::new();
+        wp.attach(ui::framework::testing::detached_dispatcher("test-author"));
         let mut state = AutoCommit::new();
-        wp.bind(&mut state, &ROOT);
+        crate::initialize_empty_document(&mut state).unwrap();
+        wp.bind(&state, &ROOT);
         (wp, state)
     }
 
     fn assert_failed_import_preserves_document(format: crate::WpFormat) {
         let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "Saved draft");
+        wp.insert_str(&mut Edits::lend(&mut state), "Saved draft");
         state.commit();
         // Do not commit this edit: recovery must retain the host's open transaction.
-        wp.insert_str(&mut state, " plus unsaved work");
+        wp.insert_str(&mut Edits::lend(&mut state), " plus unsaved work");
         wp.select_all(&state);
         let before_text = wp.block_texts(&state);
         let before_caret = wp.caret.clone();
@@ -2884,7 +2699,11 @@ mod tests {
         let before_pending = state.pending_ops();
         let before_bytes = state.clone().save();
 
-        assert!(!wp.replace_with_format(&mut state, b"not a ZIP archive", format));
+        assert!(!wp.replace_with_format(
+            &mut Edits::lend(&mut state),
+            b"not a ZIP archive",
+            format
+        ));
         assert_eq!(wp.block_texts(&state), before_text);
         assert_eq!(wp.caret, before_caret);
         assert_eq!(wp.selection_anchor, before_anchor);
@@ -2893,8 +2712,8 @@ mod tests {
 
         // The failed attempt must not poison the block-id/order bookkeeping.
         wp.clear_anchor();
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "still editable");
+        wp.enter(&mut Edits::lend(&mut state));
+        wp.insert_str(&mut Edits::lend(&mut state), "still editable");
         assert!(
             wp.block_texts(&state)
                 .iter()
@@ -2922,11 +2741,11 @@ mod tests {
             assert_failed_import_preserves_document(crate::WpFormat::Odt);
         }
 
-        // Phase: successful_format_import_preserves_live_document_identity_and_commit_boundary.
+        // Phase: successful_format_import_preserves_live_document_identity.
         {
             for format in [crate::WpFormat::Docx, crate::WpFormat::Odt] {
                 let (mut source, mut source_state) = bound();
-                source.insert_str(&mut source_state, "Imported document");
+                source.insert_str(&mut Edits::lend(&mut source_state), "Imported document");
                 let bytes = format
                     .export(
                         tilo_doc::DocRef {
@@ -2938,12 +2757,12 @@ mod tests {
                     .unwrap();
                 let (mut wp, mut state) = bound();
                 state.put(ROOT, "host-marker", "preserve me").unwrap();
-                wp.insert_str(&mut state, "Previous document");
+                wp.insert_str(&mut Edits::lend(&mut state), "Previous document");
                 let heads = state.get_heads();
                 let actor = state.get_actor().clone();
                 let blocks = wp.containers.as_ref().unwrap().blocks.clone();
 
-                assert!(wp.replace_with_format(&mut state, &bytes, format));
+                assert!(wp.replace_with_format(&mut Edits::lend(&mut state), &bytes, format));
                 assert_eq!(wp.block_texts(&state), vec!["Imported document"]);
                 assert_eq!(state.get_actor(), &actor);
                 assert_eq!(wp.containers.as_ref().unwrap().blocks, blocks);
@@ -2951,11 +2770,6 @@ mod tests {
                     state.get(ROOT, "host-marker").unwrap().unwrap().0.as_str(),
                     Some("preserve me")
                 );
-                assert!(
-                    state.pending_ops() > 0,
-                    "the host still owns the commit boundary"
-                );
-                state.commit();
                 assert_eq!(
                     state.get_changes(&heads).len(),
                     1,
@@ -2975,7 +2789,7 @@ mod tests {
         // Phase: bound_body_caret_refresh_avoids_order_scans_and_clamps_remote_unicode_edits.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "abcdef");
+            wp.insert_str(&mut Edits::lend(&mut state), "abcdef");
             let anchor = Caret {
                 block: wp.caret.block.clone(),
                 offset: 1,
@@ -2983,7 +2797,7 @@ mod tests {
             wp.selection_anchor = Some(anchor.clone());
             let before = tilo_doc::model::ordered_keys_scan_count();
             for _ in 0..3 {
-                wp.bind(&mut state, &ROOT);
+                wp.bind(&state, &ROOT);
             }
             assert_eq!(
                 tilo_doc::model::ordered_keys_scan_count(),
@@ -3000,7 +2814,7 @@ mod tests {
             remote.splice_text(&text, 0, 6, "é🦀").unwrap();
             state.merge_incoming(&mut remote).unwrap();
             let before = tilo_doc::model::ordered_keys_scan_count();
-            wp.bind(&mut state, &ROOT);
+            wp.bind(&state, &ROOT);
             assert_eq!(tilo_doc::model::ordered_keys_scan_count(), before);
             assert_eq!(
                 wp.caret.offset, 2,
@@ -3017,7 +2831,7 @@ mod tests {
         // Phase: bind_accepts_empty_byte_order_and_recovers_after_last_body_deletion.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "text");
+            wp.insert_str(&mut Edits::lend(&mut state), "text");
             let c = wp.containers.as_ref().unwrap().clone();
             let id = wp.caret.block.clone();
             let (_, block) = state.get(&c.blocks, &id).unwrap().unwrap();
@@ -3034,7 +2848,7 @@ mod tests {
                 vec![id.clone()]
             );
             let before = tilo_doc::model::ordered_keys_scan_count();
-            wp.bind(&mut state, &ROOT);
+            wp.bind(&state, &ROOT);
             assert_eq!(tilo_doc::model::ordered_keys_scan_count(), before);
             assert_eq!(
                 wp.caret,
@@ -3045,18 +2859,11 @@ mod tests {
             );
             wp.selection_anchor = Some(wp.caret.clone());
             state.delete(&c.blocks, &id).unwrap();
-            wp.bind(&mut state, &ROOT);
-            let canonical = tilo_doc::model::blocks_in_order(&state, &c);
-            assert_eq!(canonical.len(), 1, "empty body is reseeded");
-            assert_ne!(canonical[0], id);
-            assert_eq!(
-                wp.caret,
-                Caret {
-                    block: canonical[0].clone(),
-                    offset: 0
-                }
+            wp.bind(&state, &ROOT);
+            assert!(
+                tilo_doc::model::blocks_in_order(&state, &c).is_empty(),
+                "a view never reseeds the body"
             );
-            assert_eq!(wp.selection_anchor, None);
         }
 
         // Phase: bind_rejects_noncanonical_body_carets_and_keeps_region_fallbacks.
@@ -3064,9 +2871,9 @@ mod tests {
             for damage in ["deleted", "scalar_block", "missing_order", "scalar_order"] {
                 let (mut wp, mut state) = bound();
                 let first = wp.caret.block.clone();
-                wp.insert_str(&mut state, "first");
-                wp.enter(&mut state);
-                wp.insert_str(&mut state, "second");
+                wp.insert_str(&mut Edits::lend(&mut state), "first");
+                wp.enter(&mut Edits::lend(&mut state));
+                wp.insert_str(&mut Edits::lend(&mut state), "second");
                 wp.selection_anchor = Some(Caret {
                     block: first.clone(),
                     offset: 1,
@@ -3084,7 +2891,7 @@ mod tests {
                 }
                 let canonical = tilo_doc::model::blocks_in_order(&state, &c);
                 assert!(!canonical.contains(&target));
-                wp.bind(&mut state, &ROOT);
+                wp.bind(&state, &ROOT);
                 assert_eq!(
                     wp.caret,
                     Caret {
@@ -3098,9 +2905,9 @@ mod tests {
             for region in [Region::Header, Region::Footer] {
                 let (mut wp, mut state) = bound();
                 let body = wp.caret.block.clone();
-                wp.focus_region(&mut state, region);
-                wp.insert_str(&mut state, "running text");
-                wp.bind(&mut state, &ROOT);
+                wp.focus_region(&mut Edits::lend(&mut state), region);
+                wp.insert_str(&mut Edits::lend(&mut state), "running text");
+                wp.bind(&state, &ROOT);
                 assert_eq!(wp.region, region);
                 assert_eq!(wp.caret.offset, 12);
                 let caret_block = wp.caret.block.clone();
@@ -3111,7 +2918,7 @@ mod tests {
                     ids: &mut ids,
                 }
                 .remove_block_in(region, &caret_block);
-                wp.bind(&mut state, &ROOT);
+                wp.bind(&state, &ROOT);
                 assert_eq!(wp.region, Region::Body);
                 assert_eq!(
                     wp.caret,
@@ -3124,26 +2931,28 @@ mod tests {
         }
     }
 
-    /// `bind` seeds builtin styles into the container and `set_stylesheet` persists through it.
+    /// A new document resolves the built-in styles without writing them, and
+    /// `set_stylesheet` persists through the container.
     #[test]
-    fn stylesheets_seed_and_persist_through_the_container() {
-        // Phase: bind_seeds_builtin_styles_into_the_container.
+    fn stylesheets_resolve_builtins_and_persist_through_the_container() {
+        // Phase: a_new_document_resolves_builtin_styles_without_writing_them.
         {
-            let (wp, state) = bound();
+            let (wp, mut state) = bound();
+            let heads = state.get_heads();
             let c = wp.containers.as_ref().unwrap();
-            let ids = tilo_doc::model::style_ids(&state, c);
-            for k in ["body", "heading1", "heading2", "heading3", "list", "quote"] {
-                assert!(
-                    ids.contains(&k.to_string()),
-                    "built-in style {k} seeded into container: {ids:?}"
-                );
-            }
-            // And `stylesheet()` reads them back faithfully (incl. fractional size).
+            assert!(
+                tilo_doc::model::style_ids(&state, c).is_empty(),
+                "viewing a document writes no styles into it"
+            );
             let sheet = wp.stylesheet(&state);
+            for k in ["body", "heading1", "heading2", "heading3", "list", "quote"] {
+                assert!(sheet.styles.contains_key(k), "built-in style {k} resolves");
+            }
+            assert_eq!(state.get_heads(), heads);
             assert_eq!(sheet.get("body").name, "Body");
             assert!(
                 (sheet.get("body").size - 16.5).abs() < 1e-6,
-                "fractional size survived the container"
+                "the built-in body keeps its fractional size"
             );
             assert!(sheet.get("quote").italic, "quote stays italic");
         }
@@ -3162,7 +2971,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            wp.set_stylesheet(&mut state, &sheet);
+            wp.set_stylesheet(&mut Edits::lend(&mut state), &sheet);
 
             // Read back via the container (a fresh read path, not the in-memory sheet).
             let back = wp.stylesheet(&state);
@@ -3184,7 +2993,7 @@ mod tests {
         // Phase: type_text_advances_caret.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "hello");
+            wp.insert_str(&mut Edits::lend(&mut state), "hello");
             assert_eq!(wp.current_text(&state), "hello");
             assert_eq!(wp.caret.offset, 5);
         }
@@ -3192,13 +3001,13 @@ mod tests {
         // Phase: enter_splits_block.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "helloworld");
+            wp.insert_str(&mut Edits::lend(&mut state), "helloworld");
             // move caret back to between "hello" and "world"
             for _ in 0..5 {
                 wp.move_left(&state);
             }
             assert_eq!(wp.caret.offset, 5);
-            wp.enter(&mut state);
+            wp.enter(&mut Edits::lend(&mut state));
             assert_eq!(
                 wp.block_texts(&state),
                 vec!["hello".to_string(), "world".to_string()]
@@ -3210,22 +3019,22 @@ mod tests {
         // Phase: backspace_within_and_across_blocks.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "ab");
-            wp.enter(&mut state);
-            wp.insert_str(&mut state, "cd");
+            wp.insert_str(&mut Edits::lend(&mut state), "ab");
+            wp.enter(&mut Edits::lend(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "cd");
             assert_eq!(
                 wp.block_texts(&state),
                 vec!["ab".to_string(), "cd".to_string()]
             );
 
             // delete 'd'
-            wp.backspace(&mut state);
+            wp.backspace(&mut Edits::lend(&mut state));
             assert_eq!(wp.current_text(&state), "c");
             // delete 'c'
-            wp.backspace(&mut state);
+            wp.backspace(&mut Edits::lend(&mut state));
             assert_eq!(wp.current_text(&state), "");
             // now at offset 0 of second block → merge into first
-            wp.backspace(&mut state);
+            wp.backspace(&mut Edits::lend(&mut state));
             assert_eq!(wp.block_texts(&state), vec!["ab".to_string()]);
             assert_eq!(wp.caret.offset, 2, "caret lands at the merge point");
         }
@@ -3233,23 +3042,23 @@ mod tests {
         // Phase: delete_forward_merges_next.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "ab");
-            wp.enter(&mut state);
-            wp.insert_str(&mut state, "cd");
+            wp.insert_str(&mut Edits::lend(&mut state), "ab");
+            wp.enter(&mut Edits::lend(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "cd");
             // caret at end of "cd"; move to end of first block
             wp.move_to_block(&state, 0);
             wp.move_end(&state);
             assert_eq!(wp.current_text(&state), "ab");
-            wp.delete_forward(&mut state);
+            wp.delete_forward(&mut Edits::lend(&mut state));
             assert_eq!(wp.block_texts(&state), vec!["abcd".to_string()]);
         }
 
         // Phase: caret_motion_crosses_blocks.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "ab");
-            wp.enter(&mut state);
-            wp.insert_str(&mut state, "cd");
+            wp.insert_str(&mut Edits::lend(&mut state), "ab");
+            wp.enter(&mut Edits::lend(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "cd");
             // caret at end of "cd"; move_right at end → no-op (last block)
             wp.move_right(&state);
             assert_eq!(wp.current_text(&state), "cd");
@@ -3264,7 +3073,7 @@ mod tests {
         // Phase: caret_motion_extends_an_active_selection.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "abcd");
+            wp.insert_str(&mut Edits::lend(&mut state), "abcd");
 
             wp.move_home();
             wp.set_anchor();
@@ -3287,7 +3096,7 @@ mod tests {
         // Phase: selection_delete_and_replace.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "hello world");
+            wp.insert_str(&mut Edits::lend(&mut state), "hello world");
             // select "hello" (0..5)
             wp.caret.offset = 0;
             wp.set_anchor();
@@ -3300,7 +3109,7 @@ mod tests {
                 vec![(0, 5)]
             );
             // typing replaces the selection
-            wp.insert_str(&mut state, "HI");
+            wp.insert_str(&mut Edits::lend(&mut state), "HI");
             assert_eq!(wp.current_text(&state), "HI world");
             assert_eq!(wp.caret.offset, 2);
             assert!(wp.selection_anchor.is_none());
@@ -3309,7 +3118,7 @@ mod tests {
         // Phase: select_word_picks_word_under_caret.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "hello world foo");
+            wp.insert_str(&mut Edits::lend(&mut state), "hello world foo");
             wp.caret.offset = 7; // inside "world" (chars 6..11)
             wp.select_word(&state);
             let sel = wp.selection_blocks(&state);
@@ -3331,14 +3140,14 @@ mod tests {
         {
             use tilo_doc::document::MarkValue;
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "hello world");
+            wp.insert_str(&mut Edits::lend(&mut state), "hello world");
             // select "hello" (0..5)
             wp.caret.offset = 0;
             wp.set_anchor();
             wp.caret.offset = 5;
-            wp.set_text_color(&mut state, "#ff0000");
-            wp.set_font_size(&mut state, 24);
-            wp.set_font_family(&mut state, "serif");
+            wp.set_text_color(&mut Edits::lend(&mut state), "#ff0000");
+            wp.set_font_size(&mut Edits::lend(&mut state), 24);
+            wp.set_font_family(&mut Edits::lend(&mut state), "serif");
             let c = wp.containers.as_ref().unwrap();
             let snap = tilo_doc::model::materialize(&state, c);
             let blk = &snap.blocks[0];
@@ -3366,11 +3175,11 @@ mod tests {
         {
             use tilo_doc::document::MarkValue;
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "hello world");
+            wp.insert_str(&mut Edits::lend(&mut state), "hello world");
             wp.caret.offset = 0;
             wp.set_anchor();
             wp.caret.offset = 5;
-            wp.set_highlight(&mut state, "#fff35c");
+            wp.set_highlight(&mut Edits::lend(&mut state), "#fff35c");
             let c = wp.containers.as_ref().unwrap();
             let snap = tilo_doc::model::materialize(&state, c);
             let blk = &snap.blocks[0];
@@ -3387,7 +3196,7 @@ mod tests {
             wp.caret.offset = 0;
             wp.set_anchor();
             wp.caret.offset = 5;
-            wp.clear_mark(&mut state, "highlight");
+            wp.clear_mark(&mut Edits::lend(&mut state), "highlight");
             let snap = tilo_doc::model::materialize(&state, wp.containers.as_ref().unwrap());
             assert!(
                 !snap.blocks[0].marks.iter().any(|m| m.name == "highlight"),
@@ -3398,12 +3207,12 @@ mod tests {
         // Phase: super_and_sub_are_mutually_exclusive.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "x2");
+            wp.insert_str(&mut Edits::lend(&mut state), "x2");
             // Select "2".
             wp.caret.offset = 1;
             wp.set_anchor();
             wp.caret.offset = 2;
-            wp.toggle_super(&mut state);
+            wp.toggle_super(&mut Edits::lend(&mut state));
             let c = wp.containers.clone().unwrap();
             assert!(
                 tilo_doc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "super"),
@@ -3418,7 +3227,7 @@ mod tests {
             wp.caret.offset = 1;
             wp.set_anchor();
             wp.caret.offset = 2;
-            wp.toggle_sub(&mut state);
+            wp.toggle_sub(&mut Edits::lend(&mut state));
             assert!(
                 tilo_doc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
                 "sub applied"
@@ -3432,7 +3241,7 @@ mod tests {
             wp.caret.offset = 1;
             wp.set_anchor();
             wp.caret.offset = 2;
-            wp.toggle_sub(&mut state);
+            wp.toggle_sub(&mut Edits::lend(&mut state));
             assert!(
                 !tilo_doc::model::has_mark_over(&state, &c, &wp.caret.block, 1, 2, "sub"),
                 "sub toggled off"
@@ -3442,12 +3251,12 @@ mod tests {
         // Phase: line_spacing_writes_block_attr_and_reads_back.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "a paragraph");
+            wp.insert_str(&mut Edits::lend(&mut state), "a paragraph");
             assert!(
                 (wp.caret_line_spacing(&state) - 1.0).abs() < 1e-9,
                 "default 1.0 when unset"
             );
-            wp.set_line_spacing(&mut state, 2.0);
+            wp.set_line_spacing(&mut Edits::lend(&mut state), 2.0);
             let c = wp.containers.as_ref().unwrap();
             let snap = tilo_doc::model::materialize(&state, c);
             match snap.blocks[0].attrs.get("line_spacing") {
@@ -3465,11 +3274,11 @@ mod tests {
         // Phase: align_applies_across_selected_paragraphs.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "one");
-            wp.enter(&mut state);
-            wp.insert_str(&mut state, "two");
-            wp.enter(&mut state);
-            wp.insert_str(&mut state, "three");
+            wp.insert_str(&mut Edits::lend(&mut state), "one");
+            wp.enter(&mut Edits::lend(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "two");
+            wp.enter(&mut Edits::lend(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "three");
             let blocks = wp.ordered_blocks(&state);
             assert_eq!(blocks.len(), 3);
             wp.set_caret(Caret {
@@ -3481,7 +3290,7 @@ mod tests {
                 block: blocks[2].clone(),
                 offset: 5,
             });
-            wp.set_align(&mut state, "center");
+            wp.set_align(&mut Edits::lend(&mut state), "center");
             for b in &blocks {
                 assert_eq!(
                     align_of(&wp, &state, b).as_deref(),
@@ -3494,7 +3303,7 @@ mod tests {
         // Phase: align_applies_across_selected_cells.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_table(&mut state, 2, 2);
+            wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
             let snap = tilo_doc::model::materialize(&state, wp.containers.as_ref().unwrap());
             let cells: Vec<String> = snap
                 .blocks
@@ -3512,7 +3321,7 @@ mod tests {
                 block: cells[3].clone(),
                 offset: 0,
             });
-            wp.set_align(&mut state, "center");
+            wp.set_align(&mut Edits::lend(&mut state), "center");
             for c in &cells {
                 assert_eq!(
                     align_of(&wp, &state, c).as_deref(),
@@ -3525,19 +3334,19 @@ mod tests {
         // Phase: toggle_mark_adds_then_removes.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "hello");
+            wp.insert_str(&mut Edits::lend(&mut state), "hello");
             wp.caret.offset = 0;
             wp.set_anchor();
             wp.caret.offset = 5;
             let c = wp.containers.clone().unwrap();
             let block = wp.caret.block.clone();
 
-            wp.toggle_mark(&mut state, "strong");
+            wp.toggle_mark(&mut Edits::lend(&mut state), "strong");
             assert!(
                 tilo_doc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"),
                 "mark applied"
             );
-            wp.toggle_mark(&mut state, "strong");
+            wp.toggle_mark(&mut Edits::lend(&mut state), "strong");
             assert!(
                 !tilo_doc::model::has_mark_over(&state, &c, &block, 0, 5, "strong"),
                 "mark toggled off"
@@ -3547,9 +3356,9 @@ mod tests {
         // Phase: set_align_and_paragraph_style.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "Title");
-            wp.set_align(&mut state, "center");
-            wp.set_paragraph_style(&mut state, "heading", Some(2), None);
+            wp.insert_str(&mut Edits::lend(&mut state), "Title");
+            wp.set_align(&mut Edits::lend(&mut state), "center");
+            wp.set_paragraph_style(&mut Edits::lend(&mut state), "heading", Some(2), None);
             let c = wp.containers.clone().unwrap();
             let snap = tilo_doc::model::materialize(&state, &c);
             assert_eq!(snap.blocks[0].kind, "heading");
@@ -3576,11 +3385,11 @@ mod tests {
         // Phase: multi_block_selection_copy_and_delete.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "first");
-            wp.enter(&mut state);
-            wp.insert_str(&mut state, "second");
-            wp.enter(&mut state);
-            wp.insert_str(&mut state, "third");
+            wp.insert_str(&mut Edits::lend(&mut state), "first");
+            wp.enter(&mut Edits::lend(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "second");
+            wp.enter(&mut Edits::lend(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "third");
             let blocks = wp.ordered_blocks(&state);
             assert_eq!(blocks.len(), 3);
 
@@ -3599,7 +3408,7 @@ mod tests {
             assert_eq!(wp.selection_text(&state), "rst\nsecond\nthi");
 
             // Deleting the selection merges the surviving heads/tails into one block.
-            assert!(wp.delete_selection(&mut state));
+            assert!(wp.delete_selection(&mut Edits::lend(&mut state)));
             assert_eq!(wp.block_texts(&state), vec!["fird".to_string()]);
             assert!(!wp.has_selection());
         }
@@ -3607,7 +3416,7 @@ mod tests {
         // Phase: insert_multiline_splits_into_paragraphs.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_multiline(&mut state, "alpha\nbeta\ngamma");
+            wp.insert_multiline(&mut Edits::lend(&mut state), "alpha\nbeta\ngamma");
             assert_eq!(
                 wp.block_texts(&state),
                 vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
@@ -3617,12 +3426,12 @@ mod tests {
         // Phase: rich_copy_paste_preserves_formatting.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "hello world");
+            wp.insert_str(&mut Edits::lend(&mut state), "hello world");
             // bold "hello"
             wp.caret.offset = 0;
             wp.set_anchor();
             wp.caret.offset = 5;
-            wp.toggle_mark(&mut state, "strong");
+            wp.toggle_mark(&mut Edits::lend(&mut state), "strong");
 
             // re-select "hello" and copy a rich fragment
             wp.caret.offset = 0;
@@ -3642,7 +3451,7 @@ mod tests {
             // paste rich at the end → the pasted run keeps its bold
             wp.clear_anchor();
             wp.move_end(&state);
-            wp.insert_rich(&mut state, &blocks);
+            wp.insert_rich(&mut Edits::lend(&mut state), &blocks);
             let c = wp.containers.clone().unwrap();
             let block = wp.caret.block.clone();
             assert_eq!(wp.current_text(&state), "hello worldhello");
@@ -3655,8 +3464,11 @@ mod tests {
         // Phase: autoformat_markdown_prefixes.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "-");
-            assert!(wp.autoformat_on_space(&mut state), "'- ' autoformatted");
+            wp.insert_str(&mut Edits::lend(&mut state), "-");
+            assert!(
+                wp.autoformat_on_space(&mut Edits::lend(&mut state)),
+                "'- ' autoformatted"
+            );
             let b = wp.caret.block.clone();
             let (kind, ordered, _) = wp.block_meta(&state, &b);
             assert_eq!(kind, "list_item");
@@ -3665,10 +3477,10 @@ mod tests {
             assert_eq!(wp.caret.offset, 0);
 
             // "## " → heading 2
-            wp.set_paragraph_style(&mut state, "paragraph", None, None);
+            wp.set_paragraph_style(&mut Edits::lend(&mut state), "paragraph", None, None);
             wp.move_end(&state);
-            wp.insert_str(&mut state, "##");
-            assert!(wp.autoformat_on_space(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "##");
+            assert!(wp.autoformat_on_space(&mut Edits::lend(&mut state)));
             let b = wp.caret.block.clone();
             let (kind, _, level) = wp.block_meta(&state, &b);
             assert_eq!(kind, "heading");
@@ -3676,9 +3488,9 @@ mod tests {
 
             // No false positive in the middle of text.
             let (mut wp2, mut s2) = bound();
-            wp2.insert_str(&mut s2, "a-");
+            wp2.insert_str(&mut Edits::lend(&mut s2), "a-");
             assert!(
-                !wp2.autoformat_on_space(&mut s2),
+                !wp2.autoformat_on_space(&mut Edits::lend(&mut s2)),
                 "mid-line dash not autoformatted"
             );
         }
@@ -3686,17 +3498,17 @@ mod tests {
         // Phase: enter_continues_and_exits_lists.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "-");
-            wp.autoformat_on_space(&mut state);
-            wp.insert_str(&mut state, "first");
-            wp.enter(&mut state);
+            wp.insert_str(&mut Edits::lend(&mut state), "-");
+            wp.autoformat_on_space(&mut Edits::lend(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "first");
+            wp.enter(&mut Edits::lend(&mut state));
             let b = wp.caret.block.clone();
             assert_eq!(
                 wp.block_meta(&state, &b).0,
                 "list_item",
                 "Enter continues the list"
             );
-            wp.enter(&mut state); // empty item → exit
+            wp.enter(&mut Edits::lend(&mut state)); // empty item → exit
             let b = wp.caret.block.clone();
             assert_eq!(
                 wp.block_meta(&state, &b).0,
@@ -3708,11 +3520,11 @@ mod tests {
         // Phase: backspace_at_list_start_unlists.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "-");
-            wp.autoformat_on_space(&mut state);
-            wp.insert_str(&mut state, "item");
+            wp.insert_str(&mut Edits::lend(&mut state), "-");
+            wp.autoformat_on_space(&mut Edits::lend(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "item");
             wp.move_home();
-            wp.backspace(&mut state);
+            wp.backspace(&mut Edits::lend(&mut state));
             let b = wp.caret.block.clone();
             assert_eq!(
                 wp.block_meta(&state, &b).0,
@@ -3747,7 +3559,7 @@ mod tests {
         // Phase: table_add_and_delete_rows_cols.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_table(&mut state, 2, 2);
+            wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
             let count = |wp: &WordProcessor, st: &AutoCommit| {
                 tilo_doc::model::materialize(st, wp.containers.as_ref().unwrap())
                     .blocks
@@ -3756,23 +3568,23 @@ mod tests {
                     .count()
             };
             assert_eq!(count(&wp, &state), 4);
-            wp.table_add_row(&mut state);
+            wp.table_add_row(&mut Edits::lend(&mut state));
             assert_eq!(count(&wp, &state), 6);
-            wp.table_add_col(&mut state);
+            wp.table_add_col(&mut Edits::lend(&mut state));
             assert_eq!(count(&wp, &state), 9);
-            wp.table_del_row(&mut state);
+            wp.table_del_row(&mut Edits::lend(&mut state));
             assert_eq!(count(&wp, &state), 6);
-            wp.table_del_col(&mut state);
+            wp.table_del_col(&mut Edits::lend(&mut state));
             assert_eq!(count(&wp, &state), 4);
-            wp.table_delete(&mut state);
+            wp.table_delete(&mut Edits::lend(&mut state));
             assert_eq!(count(&wp, &state), 0);
         }
 
         // Phase: insert_table_creates_editable_cells.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "before");
-            wp.insert_table(&mut state, 2, 3);
+            wp.insert_str(&mut Edits::lend(&mut state), "before");
+            wp.insert_table(&mut Edits::lend(&mut state), 2, 3);
             let snap = tilo_doc::model::materialize(&state, wp.containers.as_ref().unwrap());
             let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
             assert_eq!(cells.len(), 6, "2x3 = 6 cells");
@@ -3788,7 +3600,7 @@ mod tests {
             );
             // caret landed in the first cell; typing edits it
             assert!(cells.iter().any(|c| c.id == wp.caret.block));
-            wp.insert_str(&mut state, "A1");
+            wp.insert_str(&mut Edits::lend(&mut state), "A1");
             let snap2 = tilo_doc::model::materialize(&state, wp.containers.as_ref().unwrap());
             let first = snap2
                 .blocks
@@ -3801,8 +3613,8 @@ mod tests {
         // Phase: insert_image_bytes_round_trips_blob_and_dims.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "above");
-            wp.insert_image_bytes(&mut state, TINY_PNG);
+            wp.insert_str(&mut Edits::lend(&mut state), "above");
+            wp.insert_image_bytes(&mut Edits::lend(&mut state), TINY_PNG);
 
             let c = wp.containers.clone().unwrap();
             let snap = tilo_doc::model::materialize(&state, &c);
@@ -3839,12 +3651,12 @@ mod tests {
         // Phase: insert_image_splits_text_around_caret.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "helloworld");
+            wp.insert_str(&mut Edits::lend(&mut state), "helloworld");
             // caret between "hello" and "world"
             for _ in 0..5 {
                 wp.move_left(&state);
             }
-            wp.insert_image_bytes(&mut state, TINY_PNG);
+            wp.insert_image_bytes(&mut Edits::lend(&mut state), TINY_PNG);
             let texts = wp.block_texts(&state);
             // head paragraph, image (empty text), tail paragraph
             assert_eq!(
@@ -3861,10 +3673,10 @@ mod tests {
         // Phase: insert_row_grows_table_and_stays_rectangular.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_table(&mut state, 2, 3);
+            wp.insert_table(&mut Edits::lend(&mut state), 2, 3);
             assert_rectangular(&table_grid(&wp, &state), 2, 3);
             // Caret is in the first cell (row 0) after insert_table.
-            wp.insert_row_below(&mut state);
+            wp.insert_row_below(&mut Edits::lend(&mut state));
             let grid = table_grid(&wp, &state);
             let rows = grid.iter().map(|(r, _)| *r).max().unwrap() + 1;
             assert_eq!(rows, 3, "row count increased by one");
@@ -3877,7 +3689,7 @@ mod tests {
         // Phase: insert_row_above_inserts_before_caret_row.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_table(&mut state, 2, 2);
+            wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
             // Move caret to row 1.
             let (_, cells) = wp.caret_table(&state).unwrap();
             let r1c0 = cells
@@ -3890,7 +3702,7 @@ mod tests {
                 block: r1c0,
                 offset: 0,
             });
-            wp.insert_row_above(&mut state);
+            wp.insert_row_above(&mut Edits::lend(&mut state));
             assert_rectangular(&table_grid(&wp, &state), 3, 2);
             let (cr, _) = wp.caret_rc(&wp.caret_table(&state).unwrap().1);
             assert_eq!(cr, 1, "the new row took row 1's slot; caret is on it");
@@ -3899,10 +3711,10 @@ mod tests {
         // Phase: delete_col_removes_one_cell_per_row.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_table(&mut state, 3, 3);
+            wp.insert_table(&mut Edits::lend(&mut state), 3, 3);
             let before = table_grid(&wp, &state).len();
             assert_eq!(before, 9);
-            wp.table_del_col(&mut state);
+            wp.table_del_col(&mut Edits::lend(&mut state));
             let grid = table_grid(&wp, &state);
             assert_eq!(grid.len(), before - 3, "exactly one cell removed per row");
             assert_rectangular(&grid, 3, 2);
@@ -3911,7 +3723,7 @@ mod tests {
         // Phase: insert_col_left_and_right_stay_rectangular.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_table(&mut state, 2, 2);
+            wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
             // Move to col 1 so left/right are unambiguous.
             let (_, cells) = wp.caret_table(&state).unwrap();
             let r0c1 = cells
@@ -3924,17 +3736,17 @@ mod tests {
                 block: r0c1,
                 offset: 0,
             });
-            wp.insert_col_left(&mut state);
+            wp.insert_col_left(&mut Edits::lend(&mut state));
             assert_rectangular(&table_grid(&wp, &state), 2, 3);
-            wp.insert_col_right(&mut state);
+            wp.insert_col_right(&mut Edits::lend(&mut state));
             assert_rectangular(&table_grid(&wp, &state), 2, 4);
         }
 
         // Phase: delete_last_row_removes_table.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_table(&mut state, 1, 2);
-            wp.table_del_row(&mut state);
+            wp.insert_table(&mut Edits::lend(&mut state), 1, 2);
+            wp.table_del_row(&mut Edits::lend(&mut state));
             let c = wp.containers.as_ref().unwrap();
             let snap = tilo_doc::model::materialize(&state, c);
             assert!(
@@ -3997,11 +3809,11 @@ mod tests {
         // Phase: tab_walks_cells_but_leaves_structural_append_to_the_action_host.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_table(&mut state, 2, 2); // caret in (0,0)
+            wp.insert_table(&mut Edits::lend(&mut state), 2, 2); // caret in (0,0)
             // Tab forward through every cell: (0,0)->(0,1)->(1,0)->(1,1).
             for expect in [(0, 1), (1, 0), (1, 1)] {
                 assert!(
-                    wp.tab_cell(&mut state, true),
+                    wp.tab_cell(&mut Edits::lend(&mut state), true),
                     "tab handled inside the table"
                 );
                 assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), expect);
@@ -4009,7 +3821,7 @@ mod tests {
             // The editing core deliberately does not perform a hidden structural
             // mutation at the edge. The widget detects this position and dispatches
             // an absolute `EditTable::InsertRow` through the shared action host.
-            assert!(wp.tab_cell(&mut state, true));
+            assert!(wp.tab_cell(&mut Edits::lend(&mut state), true));
             let grid = table_grid(&wp, &state);
             assert_rectangular(&grid, 2, 2);
             assert_eq!(
@@ -4022,7 +3834,7 @@ mod tests {
         // Phase: shift_tab_walks_backwards.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_table(&mut state, 2, 2);
+            wp.insert_table(&mut Edits::lend(&mut state), 2, 2);
             // Jump to the last cell, then Shift-Tab back one.
             let (_, cells) = wp.caret_table(&state).unwrap();
             let last = cells
@@ -4035,7 +3847,7 @@ mod tests {
                 block: last,
                 offset: 0,
             });
-            assert!(wp.tab_cell(&mut state, false));
+            assert!(wp.tab_cell(&mut Edits::lend(&mut state), false));
             assert_eq!(
                 wp.caret_rc(&wp.caret_table(&state).unwrap().1),
                 (1, 0),
@@ -4046,7 +3858,7 @@ mod tests {
         // Phase: vertical_arrows_move_between_cells.
         {
             let (mut wp, mut state) = bound();
-            wp.insert_table(&mut state, 2, 2); // caret in (0,0)
+            wp.insert_table(&mut Edits::lend(&mut state), 2, 2); // caret in (0,0)
             assert!(wp.cell_vertical(&state, true), "down moved into a cell");
             assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), (1, 0));
             assert!(wp.cell_vertical(&state, false), "up moved back");
@@ -4063,20 +3875,20 @@ mod tests {
     /// paragraph between them, returning `(wp, state)`.
     fn doc_with_headings() -> (WordProcessor, AutoCommit) {
         let (mut wp, mut state) = bound();
-        wp.insert_str(&mut state, "Introduction");
-        wp.set_paragraph_style(&mut state, "heading", Some(1), None);
-        wp.enter(&mut state);
-        wp.set_paragraph_style(&mut state, "paragraph", None, None);
-        wp.insert_str(&mut state, "Body text here.");
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "Background");
-        wp.set_paragraph_style(&mut state, "heading", Some(2), None);
-        wp.enter(&mut state);
-        wp.set_paragraph_style(&mut state, "paragraph", None, None);
-        wp.insert_str(&mut state, "More body.");
-        wp.enter(&mut state);
-        wp.insert_str(&mut state, "Conclusion");
-        wp.set_paragraph_style(&mut state, "heading", Some(1), None);
+        wp.insert_str(&mut Edits::lend(&mut state), "Introduction");
+        wp.set_paragraph_style(&mut Edits::lend(&mut state), "heading", Some(1), None);
+        wp.enter(&mut Edits::lend(&mut state));
+        wp.set_paragraph_style(&mut Edits::lend(&mut state), "paragraph", None, None);
+        wp.insert_str(&mut Edits::lend(&mut state), "Body text here.");
+        wp.enter(&mut Edits::lend(&mut state));
+        wp.insert_str(&mut Edits::lend(&mut state), "Background");
+        wp.set_paragraph_style(&mut Edits::lend(&mut state), "heading", Some(2), None);
+        wp.enter(&mut Edits::lend(&mut state));
+        wp.set_paragraph_style(&mut Edits::lend(&mut state), "paragraph", None, None);
+        wp.insert_str(&mut Edits::lend(&mut state), "More body.");
+        wp.enter(&mut Edits::lend(&mut state));
+        wp.insert_str(&mut Edits::lend(&mut state), "Conclusion");
+        wp.set_paragraph_style(&mut Edits::lend(&mut state), "heading", Some(1), None);
         (wp, state)
     }
 
@@ -4114,7 +3926,7 @@ mod tests {
                     page: Some(1),
                 })
                 .collect();
-            let inserted = wp.generate_toc(&mut state, &entries);
+            let inserted = wp.generate_toc(&mut Edits::lend(&mut state), &entries);
             assert_eq!(inserted.len(), 3, "one TOC block per heading");
 
             let c = wp.containers.clone().unwrap();
@@ -4149,7 +3961,7 @@ mod tests {
                     page: Some(2),
                 })
                 .collect();
-            wp.generate_toc(&mut state, &entries);
+            wp.generate_toc(&mut Edits::lend(&mut state), &entries);
             // Regenerate from the (now TOC-prefixed) document: headings() excludes the
             // TOC's own lines, so the entry set is unchanged.
             let entries2: Vec<crate::actions::TocTarget> = wp
@@ -4167,7 +3979,7 @@ mod tests {
                 3,
                 "TOC lines are not mistaken for headings on regen"
             );
-            wp.generate_toc(&mut state, &entries2);
+            wp.generate_toc(&mut Edits::lend(&mut state), &entries2);
 
             let c = wp.containers.clone().unwrap();
             let snap = tilo_doc::model::materialize(&state, &c);
@@ -4222,14 +4034,14 @@ mod tests {
         {
             let (mut wp, mut state) = bound();
             // Body has its seeded empty paragraph.
-            wp.insert_str(&mut state, "body-content");
+            wp.insert_str(&mut Edits::lend(&mut state), "body-content");
             assert_eq!(wp.region(), Region::Body);
 
             // Focus the header context — an empty header paragraph is created lazily.
-            wp.focus_region(&mut state, Region::Header);
+            wp.focus_region(&mut Edits::lend(&mut state), Region::Header);
             assert_eq!(wp.region(), Region::Header);
             assert!(wp.in_running_region());
-            wp.insert_str(&mut state, "My Title");
+            wp.insert_str(&mut Edits::lend(&mut state), "My Title");
 
             // The text lands in the HEADER container, asserted on the materialized snap.
             assert_eq!(header_texts(&wp, &state), vec!["My Title".to_string()]);
@@ -4240,27 +4052,27 @@ mod tests {
         // Phase: switching_back_to_body_edits_the_body_again.
         {
             let (mut wp, mut state) = bound();
-            wp.focus_region(&mut state, Region::Header);
-            wp.insert_str(&mut state, "Head");
+            wp.focus_region(&mut Edits::lend(&mut state), Region::Header);
+            wp.insert_str(&mut Edits::lend(&mut state), "Head");
             // Return to the body and type — edits go to the body, header preserved.
-            wp.focus_body(&mut state);
+            wp.focus_body(&mut Edits::lend(&mut state));
             assert_eq!(wp.region(), Region::Body);
-            wp.insert_str(&mut state, "Body");
+            wp.insert_str(&mut Edits::lend(&mut state), "Body");
             assert_eq!(body_texts(&wp, &state), vec!["Body".to_string()]);
             assert_eq!(header_texts(&wp, &state), vec!["Head".to_string()]);
             // Returning to the header restores its caret (end of "Head") and appends.
-            wp.focus_region(&mut state, Region::Header);
-            wp.insert_str(&mut state, "er");
+            wp.focus_region(&mut Edits::lend(&mut state), Region::Header);
+            wp.insert_str(&mut Edits::lend(&mut state), "er");
             assert_eq!(header_texts(&wp, &state), vec!["Header".to_string()]);
         }
 
         // Phase: footer_enter_splits_into_two_footer_blocks.
         {
             let (mut wp, mut state) = bound();
-            wp.focus_region(&mut state, Region::Footer);
-            wp.insert_str(&mut state, "ab");
-            wp.enter(&mut state);
-            wp.insert_str(&mut state, "cd");
+            wp.focus_region(&mut Edits::lend(&mut state), Region::Footer);
+            wp.insert_str(&mut Edits::lend(&mut state), "ab");
+            wp.enter(&mut Edits::lend(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "cd");
             assert_eq!(
                 footer_texts(&wp, &state),
                 vec!["ab".to_string(), "cd".to_string()]
@@ -4272,22 +4084,22 @@ mod tests {
         // Phase: header_backspace_within_and_merges_blocks.
         {
             let (mut wp, mut state) = bound();
-            wp.focus_region(&mut state, Region::Header);
-            wp.insert_str(&mut state, "ab");
-            wp.enter(&mut state);
-            wp.insert_str(&mut state, "cd");
+            wp.focus_region(&mut Edits::lend(&mut state), Region::Header);
+            wp.insert_str(&mut Edits::lend(&mut state), "ab");
+            wp.enter(&mut Edits::lend(&mut state));
+            wp.insert_str(&mut Edits::lend(&mut state), "cd");
             assert_eq!(
                 header_texts(&wp, &state),
                 vec!["ab".to_string(), "cd".to_string()]
             );
             // Delete 'd', 'c', then merge into the previous header block.
-            wp.backspace(&mut state);
-            wp.backspace(&mut state);
+            wp.backspace(&mut Edits::lend(&mut state));
+            wp.backspace(&mut Edits::lend(&mut state));
             assert_eq!(
                 header_texts(&wp, &state),
                 vec!["ab".to_string(), String::new()]
             );
-            wp.backspace(&mut state);
+            wp.backspace(&mut Edits::lend(&mut state));
             assert_eq!(header_texts(&wp, &state), vec!["ab".to_string()]);
             assert_eq!(
                 wp.caret.offset, 2,
@@ -4298,11 +4110,11 @@ mod tests {
         // Phase: header_bold_mark_routes_to_the_header_block.
         {
             let (mut wp, mut state) = bound();
-            wp.focus_region(&mut state, Region::Header);
-            wp.insert_str(&mut state, "Title");
+            wp.focus_region(&mut Edits::lend(&mut state), Region::Header);
+            wp.insert_str(&mut Edits::lend(&mut state), "Title");
             // Select the whole word, then toggle bold.
             wp.select_all(&state);
-            wp.toggle_mark(&mut state, "strong");
+            wp.toggle_mark(&mut Edits::lend(&mut state), "strong");
 
             let c = wp.containers.as_ref().unwrap();
             let hv = tilo_doc::model::materialize_region(&state, c, Region::Header);
@@ -4315,7 +4127,7 @@ mod tests {
             );
             // Toggling again clears it (uses the region-aware unmark path).
             wp.select_all(&state);
-            wp.toggle_mark(&mut state, "strong");
+            wp.toggle_mark(&mut Edits::lend(&mut state), "strong");
             let hv2 = tilo_doc::model::materialize_region(
                 &state,
                 wp.containers.as_ref().unwrap(),
@@ -4330,9 +4142,9 @@ mod tests {
         // Phase: insert_page_number_in_footer_writes_a_field_mark.
         {
             let (mut wp, mut state) = bound();
-            wp.focus_region(&mut state, Region::Footer);
-            wp.insert_str(&mut state, "Page ");
-            wp.insert_page_number(&mut state);
+            wp.focus_region(&mut Edits::lend(&mut state), Region::Footer);
+            wp.insert_str(&mut Edits::lend(&mut state), "Page ");
+            wp.insert_page_number(&mut Edits::lend(&mut state));
 
             let c = wp.containers.as_ref().unwrap();
             let fv = tilo_doc::model::materialize_region(&state, c, Region::Footer);
@@ -4356,11 +4168,11 @@ mod tests {
             // Regression guard: with the default Body context the ops behave exactly
             // as before (the body path must stay intact).
             let (mut wp, mut state) = bound();
-            wp.insert_str(&mut state, "helloworld");
+            wp.insert_str(&mut Edits::lend(&mut state), "helloworld");
             for _ in 0..5 {
                 wp.move_left(&state);
             }
-            wp.enter(&mut state);
+            wp.enter(&mut Edits::lend(&mut state));
             assert_eq!(
                 wp.block_texts(&state),
                 vec!["hello".to_string(), "world".to_string()]

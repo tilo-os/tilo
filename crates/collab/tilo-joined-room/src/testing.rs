@@ -24,6 +24,77 @@ pub mod governor;
 
 pub const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub const APP: &str = "so.tilo.chat";
+
+/// Enroll an empty interactive room through the real signed join protocol.
+/// This helper neither seeds application records nor grants capabilities.
+///
+/// # Errors
+/// Returns a refusal when the genuine governor challenge or completion fails.
+pub fn enroll_interactive_governor(
+    owner: &NativeWorkspaceOwner,
+    key: &SigningKey,
+    certificate: &DeviceCert,
+) -> Result<governor::TestGovernor, String> {
+    let mut governor =
+        governor::TestGovernor::empty_interactive(certificate.clone(), key.clone(), ROOM).unwrap();
+    let endpoint = iroh_base::EndpointAddr::new(
+        iroh_base::EndpointId::from_bytes(&certificate.device_public_key).unwrap(),
+    );
+    let hint = governor.hint(endpoint);
+    let now = SystemTime::now();
+    let now_ns = ns(now).unwrap();
+    let invitation = governor.issue(
+        vec![hint.clone()],
+        join::MemberRole::Editor,
+        Some(certificate.user_public_key),
+        None,
+        now_ns.checked_add(60_000_000_000).unwrap(),
+    );
+    let verified = join::decode_and_verify_invitation(
+        &invitation,
+        Some(certificate.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let response = governor.handle(
+        certificate.device_public_key,
+        join::JoinTransportRequest::Challenge(join::JoinChallengeRequest {
+            signed_invitation: invitation,
+            device_cert: certificate.clone(),
+            request_id: [95; 32],
+        }),
+    );
+    let join::JoinTransportResponse::Challenge(response) = response else {
+        return Err("actual governor challenge refused".into());
+    };
+    let complete = join::JoinCompleteRequest {
+        proof: join::sign_join_proof(response.challenge, key).unwrap(),
+    };
+    let intent = VerifiedNativeEnrollmentIntent::from_proof(
+        verified,
+        complete.clone(),
+        certificate.clone(),
+        hint,
+        now,
+    )
+    .unwrap();
+    let pending = owner.prepare_enrollment_into(&intent, None, now).unwrap();
+    let response = governor.handle(
+        certificate.device_public_key,
+        join::JoinTransportRequest::Complete(complete),
+    );
+    let join::JoinTransportResponse::Complete(bootstrap) = response else {
+        return Err("actual governor enrollment refused".into());
+    };
+    if !bootstrap.records.is_empty() {
+        return Err("empty governor supplied seeded application records".into());
+    }
+    owner
+        .install(&finalize(intent, pending, bootstrap).unwrap(), now)
+        .unwrap();
+    Ok(governor)
+}
 /// Most outgoing entries one room holds.
 pub const MAX_OUTGOING_ENTRIES: usize = publication::MAX_ENTRIES;
 /// Largest outgoing publication one room holds.
@@ -156,9 +227,13 @@ pub fn raw_fixture_at(
     .unwrap();
     let mut chat = AutoCommit::new();
     let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
-    let channel = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+    let channel = {
+        let entry = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
+        chat.put_object(&entry, "v", ObjType::Map).unwrap()
+    };
     chat.put(&channel, "kind", "voice").unwrap();
     chat.put(&channel, "workspace", "home").unwrap();
+    collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
     peer.install_seed(
         SeedState {
             room_changes: seed_room(ROOM, &governor, &[governor.clone(), host.clone()]).unwrap(),

@@ -26,8 +26,8 @@ use crate::touch_model::NextKeyDistribution;
 /// Bound the local adaptation cache. Prediction is helpful only while it is
 /// cheap and private; it must never turn an unusually long typing session into
 /// an unbounded in-memory profile.
-const MAX_LEARNED_CONTEXTS: usize = 512;
-const MAX_LEARNED_WORDS_PER_CONTEXT: usize = 32;
+pub(crate) const MAX_LEARNED_CONTEXTS: usize = 512;
+pub(crate) const MAX_LEARNED_WORDS_PER_CONTEXT: usize = 32;
 
 /// Weight of the previous word's bigram successors against the plain lexicon
 /// when estimating the next letter.
@@ -118,21 +118,34 @@ impl Predictor {
         self.bigrams.len()
     }
 
-    /// Teach the predictor one committed transition. Repetition increases its
-    /// rank with a saturating counter, entirely offline.
-    pub fn learn_transition(&mut self, previous: Option<&str>, word: &str) {
+    /// The transition a committed `word` after `previous` teaches, as the
+    /// predictor keeps it: the context (empty at a start) and the word, both
+    /// lower case. `None` for a word that is not all letters.
+    pub fn transition(previous: Option<&str>, word: &str) -> Option<(String, String)> {
         let word = word.trim().to_lowercase();
         if word.is_empty() || !word.chars().all(char::is_alphabetic) {
-            return;
+            return None;
         }
-        let context = previous.map(str::to_lowercase).unwrap_or_default();
+        Some((previous.map(str::to_lowercase).unwrap_or_default(), word))
+    }
+
+    /// Teach the predictor one committed transition. Repetition increases its
+    /// rank with a saturating counter, entirely offline. Returns what it
+    /// learned, if anything.
+    pub fn learn_transition(
+        &mut self,
+        previous: Option<&str>,
+        word: &str,
+    ) -> Option<(String, String)> {
+        let (context, word) = Self::transition(previous, word)?;
+        let learned = (context.clone(), word.clone());
         if !self.learned.contains_key(&context) && self.learned.len() >= MAX_LEARNED_CONTEXTS {
-            return;
+            return None;
         }
         if self.learned.get(&context).is_some_and(|words| {
             !words.contains_key(&word) && words.len() >= MAX_LEARNED_WORDS_PER_CONTEXT
         }) {
-            return;
+            return None;
         }
         let count = self
             .learned
@@ -141,6 +154,34 @@ impl Predictor {
             .entry(word)
             .or_default();
         *count = count.saturating_add(1);
+        Some(learned)
+    }
+
+    /// Take `learned` (context → word → count) as what this user taught the
+    /// predictor, replacing what it learned before.
+    pub fn adopt_learned<'a>(
+        &mut self,
+        learned: impl IntoIterator<
+            Item = (
+                &'a String,
+                &'a std::collections::BTreeMap<String, ui::tilo_resource::Counter>,
+            ),
+        >,
+    ) {
+        self.learned = learned
+            .into_iter()
+            .take(MAX_LEARNED_CONTEXTS)
+            .map(|(context, words)| {
+                let words = words
+                    .iter()
+                    .take(MAX_LEARNED_WORDS_PER_CONTEXT)
+                    .map(|(word, count)| {
+                        (word.clone(), u32::try_from(count.get()).unwrap_or(u32::MAX))
+                    })
+                    .collect();
+                (context.clone(), words)
+            })
+            .collect();
     }
 
     /// Whether this user has committed `word` before (in any context).

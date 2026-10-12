@@ -9,7 +9,7 @@
 //! behind an `Rc<RefCell<_>>`; each rebuilt watch tree gets a fresh, cheap
 //! `PlayerHost` pointing at that same shared player.
 //!
-//! `PlayerHost` is the taffy node (a fixed 16:9 leaf, same slot the poster used)
+//! `PlayerHost` is the taffy node (a fixed 16:9 leaf)
 //! and forwards every `Widget` pass to the shared player. Only the host is
 //! registered in the App's `node_map`; the inner player is never aliased there,
 //! so the short `RefCell` borrows each pass takes can't overlap a raw-pointer
@@ -26,10 +26,14 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
+use ui::ImageStore;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{FullscreenProvider, VideoPlayer, Widget};
+use ui::widget::{
+    FullscreenProvider, MediaArt, MediaAspect, MediaCardFace, MediaSource, TaffyTreeExt,
+    VideoPlayer, Widget, layout_rect,
+};
 
 /// A shared, persistent [`VideoPlayer`]. Cloned cheaply into each rebuilt tree.
 pub type SharedPlayer = Rc<RefCell<VideoPlayer>>;
@@ -42,7 +46,7 @@ pub const PLAYER_HOST_ID: &str = "watch_video_surface";
 /// width-driven 16:9 height.
 pub struct PlayerHost {
     player: SharedPlayer,
-    /// 16:9-derived player height (logical px), matching the poster's slot.
+    /// 16:9-derived player height (logical px).
     player_h: f32,
     /// This host's own laid-out rect (mirrors the inner player's).
     rect: Rect,
@@ -59,6 +63,31 @@ impl PlayerHost {
             node: None,
         }
     }
+
+    /// Show the video's art until the player has a frame to show, so a
+    /// watch page that is still starting playback never stands empty. The
+    /// art is the player's own poster, under its controls: the thumbnail
+    /// (`url` from `store`), or without one the art generated for `title`,
+    /// the same its card shows.
+    #[must_use]
+    pub fn with_poster(self, store: Option<ImageStore>, url: &str, title: &str) -> Self {
+        let poster = if let Some(store) = store.filter(|_| !url.is_empty()) {
+            MediaSource::Url {
+                store,
+                url: url.to_string(),
+            }
+        } else {
+            let title = title.to_string();
+            MediaSource::Paint(Box::new(move |ctx, rect| {
+                MediaCardFace::new(MediaArt::Placeholder)
+                    .aspect(MediaAspect::Wide)
+                    .title(&title)
+                    .paint(ctx, rect);
+            }))
+        };
+        self.player.borrow_mut().set_poster(Some(poster));
+        self
+    }
 }
 
 impl FullscreenProvider for PlayerHost {
@@ -74,7 +103,7 @@ impl FullscreenProvider for PlayerHost {
 impl Widget for PlayerHost {
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // Pumps the engine (pulls the freshest decoded frame + playhead).
         self.player.borrow_mut().sync(state, path);
     }
@@ -85,28 +114,25 @@ impl Widget for PlayerHost {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Same slot the poster occupied: full column width, fixed 16:9 height.
+        // Full column width, fixed 16:9 height.
         // The host (not the inner player) is registered in `node_map`, so events
         // route here and delegate — the inner player is never aliased by a raw
         // pointer.
-        let node = super::leaf_node(
-            taffy,
-            Style {
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: length(self.player_h),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
+        let node = taffy.leaf_node(Style {
+            size: taffy::Size {
+                width: percent(1.0_f32),
+                height: length(self.player_h),
             },
-        );
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = super::layout_rect(taffy, node, origin);
+        self.rect = layout_rect(taffy, node, origin);
         // Drive the shared player's rect from this host's node.
         self.player.borrow_mut().apply_layout(taffy, node, origin);
     }

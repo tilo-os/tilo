@@ -17,10 +17,6 @@ pub const APP_TITLE: &str = "Virtual List";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use std::collections::HashMap;
 use std::ops::Range;
 use ui::i18n::I18nManager;
@@ -47,7 +43,10 @@ pub struct Feed {
 impl Feed {
     /// Open an activity.
     #[action]
-    pub fn open(&mut self, #[param("Stable activity id")] id: u64) -> Result<(), &'static str> {
+    pub fn open_activity(
+        &mut self,
+        #[param("Stable activity id")] id: u64,
+    ) -> Result<(), &'static str> {
         if !usize::try_from(id).is_ok_and(|index| index < ITEM_COUNT) {
             return Err("no such activity");
         }
@@ -180,8 +179,11 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Feed>) -> Element {
-        install_catalog();
         let actions = cx.actions();
         let list = VirtualList::new_async(
             ActivityModel::new(ITEM_COUNT),
@@ -192,9 +194,8 @@ impl ResourceApp for App {
                     ListRowState::Ready if model.is_loaded(index) => {
                         let label = I18nManager::format("list-row", &[("id", (*key).into())]);
                         let open = actions.bind_invocation(
-                            Button::new(&format!("open-{key}"), "list-open", None)
-                                .fit_content(36.0),
-                            Feed::OPEN.with(*key),
+                            Button::new(&format!("open-{key}"), "list-open"),
+                            Feed::OPEN_ACTIVITY.with(*key),
                         );
                         Box::new(Container::new().with_height(height).with_child(Box::new(
                             ui::row![ui::column![Text::new(&label)].with_no_padding(), open,],

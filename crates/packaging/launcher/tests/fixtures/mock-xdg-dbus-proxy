@@ -3,7 +3,10 @@
 # Creates the socket path the launcher waits for, then stays alive until
 # signalled. exec, not a backgrounded child: the guard signals and reaps
 # this pid, and a child of a shell it killed would be orphaned.
+notify=0
+if [ "$1" = --fd=0 ]; then notify=1; shift; fi
 : >"$2"
+if [ "$notify" = 1 ]; then printf x >&0; fi
 if [ -x /usr/bin/sleep ]; then
     exec /usr/bin/sleep infinity
 fi

@@ -1148,10 +1148,13 @@ mod tests {
             on_ui_thread(|scope, wakes| {
                 let ui_thread = std::thread::current().id();
                 let mut request = LatestRequest::new();
-                assert!(request.spawn(async {
+                // Held until the checks below, so the result cannot already
+                // be there when they look.
+                let (release, gate) = tokio::sync::oneshot::channel::<()>();
+                assert!(request.spawn(async move {
                     // Cross an await point, so a runtime driven from the caller
                     // would have to be polled again here.
-                    tokio::task::yield_now().await;
+                    let _ = gate.await;
                     let current = std::thread::current();
                     (
                         current.id(),
@@ -1163,6 +1166,7 @@ mod tests {
                 // future inline.
                 assert!(!tilo_rt::in_runtime());
                 assert!(request.try_take().is_none());
+                release.send(()).unwrap();
 
                 let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
                 assert!(scope.accepts(&event));
@@ -1244,5 +1248,44 @@ mod tests {
         fn drop(&mut self) {
             let _ = self.0.send(());
         }
+    }
+}
+
+/// The queue a view's controls write what they ask for to, and its app
+/// applies in one ordered place after the event: a click, a key and an
+/// accessibility action all become the same intent. Clones share the queue.
+pub struct Intents<T>(std::rc::Rc<std::cell::RefCell<Vec<T>>>);
+
+impl<T> Clone for Intents<T> {
+    fn clone(&self) -> Self {
+        Self(std::rc::Rc::clone(&self.0))
+    }
+}
+
+impl<T> Default for Intents<T> {
+    fn default() -> Self {
+        Self(std::rc::Rc::default())
+    }
+}
+
+impl<T> Intents<T> {
+    /// Queue `intent`.
+    pub fn push(&self, intent: T) {
+        self.0.borrow_mut().push(intent);
+    }
+
+    /// Everything queued, oldest first, leaving the queue empty.
+    #[must_use]
+    pub fn take(&self) -> Vec<T> {
+        std::mem::take(&mut *self.0.borrow_mut())
+    }
+}
+
+impl<T: Clone + 'static> Intents<T> {
+    /// A callback that queues `intent` each time it runs, for a control's
+    /// `on_view` / `on_effect`.
+    pub fn sender(&self, intent: T) -> impl FnMut() + 'static {
+        let intents = self.clone();
+        move || intents.push(intent.clone())
     }
 }

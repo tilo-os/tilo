@@ -28,6 +28,7 @@ use crate::Error;
 pub fn cpu_pool() -> &'static rayon::ThreadPool {
     static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
     POOL.get_or_init(|| {
+        crate::panic_boundary::abort_outside_boundaries_in_release();
         let builder = rayon::ThreadPoolBuilder::new();
         #[cfg(target_family = "wasm")]
         let builder = builder.num_threads(1).use_current_thread();

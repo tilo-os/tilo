@@ -1,27 +1,3 @@
-use automerge::{AutoCommit, ROOT, transaction::Transactable};
-use ui::Widget;
-
-#[test]
-fn existing_projection_and_repeated_sync_do_not_author_changes() {
-    let mut doc = AutoCommit::new();
-    word_processor::initialize_empty_document(&mut doc).unwrap();
-    doc.commit();
-    let before = (doc.base_heads(), doc.pending_ops());
-    let mut widget = word_processor::WordProcessorWidget::from_document(&doc).unwrap();
-    for _ in 0..3 {
-        widget.sync(&mut doc, &ROOT);
-    }
-    assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-    assert!(!ui::resources::resources(&widget, &doc).is_empty());
-}
-
-#[test]
-fn projection_rejects_missing_schema_instead_of_creating_it() {
-    let doc = AutoCommit::new();
-    assert!(word_processor::WordProcessorWidget::from_document(&doc).is_err());
-    assert_eq!(doc.pending_ops(), 0);
-}
-
 fn harness() -> (
     ui::headless::FrameHarness,
     ui::record::RecordStore,
@@ -37,12 +13,10 @@ fn harness() -> (
         .open(definition.app_id, "room")
         .unwrap();
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "room").unwrap());
-    let permissions = Rc::new(RefCell::new(
-        ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
-            vec![],
-        ),
-    ));
+    let permissions = Rc::new(RefCell::new(ui::permissions::PermissionContext::member(
+        "author",
+        ui::permissions::Role::Owner,
+    )));
     let context = HostContext::prepare(
         definition,
         HostContextInputs {
@@ -61,8 +35,7 @@ fn harness() -> (
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
         .unwrap();
     let checkout = component.record().clone();
-    let font_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/sdk/ui-core/assets/fonts");
+    let font_root = ui::font_catalog::checkout_root();
     let fonts = ui::font_catalog::FontCatalog::product(&font_root, "en-US")
         .load_bytes(|name| std::fs::read(font_root.join(name)).ok())
         .unwrap();

@@ -5,9 +5,12 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
-use ui::widget::{AppModel, ModelPath};
+#[cfg(test)]
+use ui::widget::Edits;
+use ui::widget::ModelPath;
 
-use automerge::{AutoCommit, ObjId};
+#[cfg(test)]
+use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
@@ -17,46 +20,41 @@ use winit::keyboard::{Key as WKey, NamedKey};
 
 use ui::Widget;
 use ui::framework::Dispatcher;
-use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
+use ui::interaction::InteractionEnvironment;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::{ControlSize, SegmentedFace, SegmentedStyle, ToggleGroup};
 
-use crate::actions::{self, CalculatorAction, GraphKind};
-use crate::draw::{self, Align};
+use crate::actions::{self, GraphKind};
+use crate::chrome::Header;
 use crate::engine;
-use crate::graph2d::Graph2dScreen;
+use crate::graph2d::{Graph2dScreen, Pointer};
 use crate::graph3d::Graph3dScreen;
 use crate::keypad::{CalcScreen, MEM_KEYS};
+use crate::mathfield::MathField;
 use crate::model::{self, CalcModel, Mode, PlotFn};
-use crate::resource::{Calculator, CalculatorState};
+use crate::plot_panel::PlotPanel;
+use crate::resource::Calculator;
+use ui::chrome::HeaderRowMetrics;
+use ui::tilo_resource::Id;
 
-const TOPBAR_H: f64 = 60.0;
-/// Gap between the segments of the mode switch and of the RAD/DEG toggle:
-/// one `s1`, so no two segments touch inside their shared track (HIG §7).
-const SEG_GAP: f64 = ui::tokens::spacing::Spacing::BASE.s1 as f64;
+/// The labels of the angle-unit strip, and the condensed forms for a narrow
+/// header.
+const UNIT_LABELS: [&str; 2] = ["Radians", "Degrees"];
+const UNIT_SHORT: [&str; 2] = ["Rad", "Deg"];
 
-/// Painted widths of the topbar's widest labels (see
-/// `CalculatorApp::measure_topbar_labels`). Zero before the first draw, where
-/// `relayout` falls back to the control's ordinary minimum widths.
+/// Painted widths of the header strips, measured at the size they paint at
+/// (see `CalculatorApp::measure_header`). Zero before the first draw.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct TopbarLabels {
-    /// Widest full mode label ("Calculator").
-    full: f64,
-    /// Widest condensed mode label ("Calc").
-    short: f64,
-    /// Wider of "RAD" / "DEG".
-    toggle: f64,
-}
-
-impl TopbarLabels {
-    /// Base font sizes the topbar paints its labels at (scaled at paint time).
-    const SEG_FONT: f32 = 14.0;
-    const TOGGLE_FONT: f32 = 13.0;
-    /// Horizontal breathing room either side of a label inside its control.
-    const SEG_PAD_X: f64 = 16.0;
-    const TOGGLE_PAD_X: f64 = 10.0;
+struct StripWidths {
+    /// The mode strip with every full label ("Calculator", "Graph 2D", ...).
+    mode_full: f64,
+    /// The mode strip with the condensed labels ("Calc", "2D", "3D").
+    mode_short: f64,
+    /// The angle-unit strip with its full labels, and condensed.
+    unit_full: f64,
+    unit_short: f64,
 }
 
 #[allow(
@@ -72,20 +70,41 @@ pub struct CalculatorApp {
     g2: Graph2dScreen,
     g3: Graph3dScreen,
 
+    /// The whole window.
     area: Rect,
-    topbar: Rect,
-    body: Rect,
+    /// The header row's measurements in the last theme.
+    header: Header,
+    /// The window header row's measurements in the last theme.
+    row_metrics: HeaderRowMetrics,
+    /// Holds the window's History control the host offers.
+    history: ui::widget::HistoryOpener,
+    /// Where the History control stands in the window's trailing corner.
+    history_rect: Rect,
+    /// The retained History button was replaced: the layout tree is rebuilt.
+    structure_dirty: bool,
+    /// The header row over the content column.
+    header_band: Rect,
     seg_rects: [Rect; 3],
-    rad_rect: Rect,
-    deg_rect: Rect,
+    unit_rects: [Rect; 2],
     /// Whether the mode segments are too narrow for full labels and must use
     /// the short forms ("Calc" / "2D" / "3D"). Re-derived every `relayout`.
     seg_short: bool,
-    /// Widest topbar labels as the renderer actually paints them, refreshed
-    /// each draw. `relayout` sizes the mode segments and the RAD/DEG halves
-    /// from these so enlarged type widens its control instead of overrunning
-    /// a fixed-width neighbour.
-    topbar_labels: TopbarLabels,
+    /// Whether the unit strip condenses too ("Rad" / "Deg").
+    unit_short: bool,
+    /// The header strips' widths as the renderer actually paints them,
+    /// refreshed each draw. `relayout` sizes the strips from these so
+    /// enlarged type widens its control instead of overrunning a neighbour.
+    strips: StripWidths,
+    /// The strips' height.
+    strip_height: f64,
+    /// The segment under the pointer in the mode strip / the unit strip.
+    mode_hover: Option<usize>,
+    unit_hover: Option<usize>,
+    /// What kind of pointer drives the window, for the canvas hint's copy.
+    environment: InteractionEnvironment,
+    /// The person has panned, orbited or zoomed a plot, so the hint that
+    /// teaches it is no longer shown.
+    navigated: bool,
 
     mouse: Point,
     dragging: bool,
@@ -104,16 +123,21 @@ pub struct CalculatorApp {
     /// `mark_drawn`; without it the default (dirty every frame) repainted the
     /// whole desktop on every pointer move while the Calculator was active.
     dirty: bool,
+    /// The peers' carets last painted into a plot's formula. They follow
+    /// peer pointers, which the window does not damage for its widgets.
+    drawn_remote_carets: Vec<(Point, Color)>,
+    /// An effect taken on the next sync, where the document is.
+    pending_effect: Option<actions::CalculatorEffect>,
     node: Option<NodeId>,
 
-    /// The resource's door: every on-screen affordance submits its
-    /// [`CalculatorAction`] here. `None` until the framework attaches the
-    /// surface, and for a bare widget in a layout test.
+    /// The resource's door: every on-screen affordance submits its field
+    /// edit or verb here. `None` until the framework attaches the surface,
+    /// and for a bare widget in a layout test.
     dispatch: Option<Dispatcher<Calculator>>,
     /// The durable rows last presented, with their stable ids.
-    rows: Rc<CalculatorState>,
+    rows: Rc<Calculator>,
     /// A graph row this window just added, to select once it is presented.
-    select: Option<(GraphKind, String)>,
+    select: Option<(GraphKind, Id)>,
 }
 
 impl CalculatorApp {
@@ -137,13 +161,22 @@ impl CalculatorApp {
             g2: Graph2dScreen::default(),
             g3: Graph3dScreen::default(),
             area: Rect::ZERO,
-            topbar: Rect::ZERO,
-            body: Rect::ZERO,
+            header: Header::default(),
+            row_metrics: HeaderRowMetrics::default(),
+            history: ui::widget::HistoryOpener::new(),
+            history_rect: Rect::ZERO,
+            structure_dirty: false,
+            header_band: Rect::ZERO,
             seg_rects: [Rect::ZERO; 3],
-            rad_rect: Rect::ZERO,
-            deg_rect: Rect::ZERO,
+            unit_rects: [Rect::ZERO; 2],
             seg_short: false,
-            topbar_labels: TopbarLabels::default(),
+            unit_short: false,
+            strips: StripWidths::default(),
+            strip_height: SegmentedFace::height(ControlSize::Regular, &Theme::dark()),
+            mode_hover: None,
+            unit_hover: None,
+            environment: InteractionEnvironment::POINTER,
+            navigated: false,
             mouse: Point::ZERO,
             dragging: false,
             drag_last: Point::ZERO,
@@ -153,6 +186,8 @@ impl CalculatorApp {
             last_click_pos: Point::ZERO,
             model_dirty: false,
             dirty: true,
+            drawn_remote_carets: Vec::new(),
+            pending_effect: None,
             node: None,
             dispatch: None,
             rows: Rc::default(),
@@ -161,17 +196,14 @@ impl CalculatorApp {
     }
 
     /// Adopt durable history and graph rows from the framework resource state.
-    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<CalculatorState>) {
-        self.model.history = state.history.iter().map(|(_, e)| e.clone()).collect();
-        self.model.funcs = state.funcs.iter().map(|(_, f)| f.clone()).collect();
-        self.model.surfaces = state.surfaces.iter().map(|(_, f)| f.clone()).collect();
+    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<Calculator>) {
+        self.model.history = state.history.values().cloned().collect();
+        self.model.funcs = state.funcs.values().cloned().collect();
+        self.model.surfaces = state.surfaces.values().cloned().collect();
         self.rows = Rc::clone(state);
         if let Some((kind, id)) = self.select.take() {
-            match state.graphs(kind).iter().position(|(row, _)| *row == id) {
-                Some(index) => match kind {
-                    GraphKind::Curve2d => self.model.active_fn = index,
-                    GraphKind::Surface3d => self.model.active_surface = index,
-                },
+            match state.graphs(kind).position(&id) {
+                Some(index) => *self.model.active_graph_mut(kind) = index,
                 // Not presented yet: keep waiting for it.
                 None => self.select = Some((kind, id)),
             }
@@ -193,142 +225,189 @@ impl CalculatorApp {
         self.dispatch = Some(dispatcher);
     }
 
-    /// Stage the view a screenshot scenario shows, over the rows its
-    /// actions wrote.
+    /// Stage the view a screenshot scenario shows over the rows its actions
+    /// wrote, the way a person's input would: the mode, the expression being
+    /// typed, the memory register, which panel is open. Never called in a
+    /// live window.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         if scenario == Some("empty") {
             return;
         }
+        self.navigated = false;
         let lived_in = CalcModel::seeded();
         self.model.expr = lived_in.expr;
         self.model.ans = lived_in.ans;
         self.model.memory = lived_in.memory;
         match scenario {
-            Some("calculator" | "history-open" | "history-closed" | "narrow") => {
+            Some(
+                "calculator" | "history-open" | "history-closed" | "narrow" | "narrow-history",
+            ) => {
                 self.set_mode(Mode::Calc);
             }
             Some("error") => self.model.apply_error_demo(),
-            Some("graph3d") => self.set_mode(Mode::Graph3d),
+            Some("graph3d" | "narrow-graph3d") => self.set_mode(Mode::Graph3d),
             _ => self.set_mode(Mode::Graph2d),
         }
+        // The drawer decides docked or floating from the window it has been
+        // laid out in, so lay the mode out before staging its panel.
+        self.relayout();
         match scenario {
-            Some("history-open") => self.calc.snap_sidebar(true),
+            Some("history-open" | "narrow-history") => self.calc.snap_sidebar(true),
             Some("history-closed") => self.calc.snap_sidebar(false),
-            Some("narrow-functions") => self.g2.open_panel(),
+            Some("narrow-functions") => self.g2.panel.side_mut().snap(true),
             _ => {}
         }
-        if self.model.mode == Mode::Graph2d {
-            self.g2.sync_fields(&self.model);
-            if let Some(field) = self.g2.active_field_mut(self.model.active_fn) {
-                match scenario {
-                    Some("long-formula") => field.park_caret_at_end(),
-                    Some("selection") => field.park_demo_selection(),
-                    _ => {}
-                }
-            }
+        if self.model.mode == Mode::Graph2d
+            && let Some(field) = self.graph_field(GraphKind::Curve2d, self.model.active_fn)
+            && scenario == Some("long-formula")
+        {
+            field.park_caret_at_end();
         }
         self.model_dirty = true;
         self.dirty = true;
     }
 
-    /// Recompute the header geometry from `self.area`. The mode switcher and the
-    /// RAD/DEG toggle are packed so they never overlap or clip, reflowing down to
-    /// a ~400 px window: the wordmark drops out first, then the mode labels
-    /// condense to short forms and the toggle shrinks. All of this is derived
-    /// from the *current* width every call, so a resize between breakpoints
-    /// reflows rather than staying frozen at the launch layout.
+    /// Lay out the active screen in the window, then the header row over its
+    /// content column. Derived from the current size every call, so a resize
+    /// between breakpoints reflows rather than staying frozen at the launch
+    /// layout.
     fn relayout(&mut self) {
-        self.topbar = Rect::new(
-            self.area.x0,
-            self.area.y0,
-            self.area.x1,
-            self.area.y0 + TOPBAR_H,
-        );
-        self.body = Rect::new(
-            self.area.x0,
-            self.area.y0 + TOPBAR_H,
-            self.area.x1,
-            self.area.y1,
-        );
-
-        let w = self.area.width();
-        let seg_h = 36.0;
-        let y0 = self.area.y0 + (TOPBAR_H - seg_h) / 2.0;
-
-        // The OS draws the window title/app-name — the toolbar reserves only a
-        // small left margin, then hands the rest to the functional controls.
-        let brand_right = self.area.x0 + 12.0;
-
-        // RAD/DEG anchored to the right edge; compact form when tight. Each
-        // half must seat its measured label, so enlarged type widens the
-        // toggle rather than spilling out of it.
-        let compact_toggle = w < 620.0;
-        let toggle_min =
-            2.0 * (self.topbar_labels.toggle + 2.0 * TopbarLabels::TOGGLE_PAD_X) + SEG_GAP;
-        let toggle_base: f64 = if compact_toggle { 100.0 } else { 124.0 };
-        let toggle_w = toggle_base.max(toggle_min);
-        let right_margin = if compact_toggle { 12.0 } else { 24.0 };
-        let ax1 = self.area.x1 - right_margin;
-        let ax0 = ax1 - toggle_w;
-        let half = (toggle_w - SEG_GAP) / 2.0;
-        self.rad_rect = Rect::new(ax0, y0, ax0 + half, y0 + seg_h);
-        self.deg_rect = Rect::new(ax0 + half + SEG_GAP, y0, ax1, y0 + seg_h);
-
-        // The mode switcher fills the gap between the brand and the toggle,
-        // centred, with each segment clamped to a tappable width. The clamps
-        // grow with the measured labels: a segment is never narrower than its
-        // short label and may widen to seat the full one; the switch to short
-        // labels happens where the full label would no longer fit.
-        let full_w = self.topbar_labels.full + 2.0 * TopbarLabels::SEG_PAD_X;
-        let short_w = self.topbar_labels.short + 2.0 * TopbarLabels::SEG_PAD_X;
-        let seg_min = 46.0_f64.max(short_w);
-        let seg_max = 128.0_f64.max(full_w);
-        let seg_area_left = brand_right + 12.0;
-        let seg_area_right = ax0 - 12.0;
-        let avail = (seg_area_right - seg_area_left).max(3.0 * seg_min + 2.0 * SEG_GAP);
-        let seg_w = ((avail - 2.0 * SEG_GAP) / 3.0).clamp(seg_min, seg_max);
-        self.seg_short = seg_w < 104.0_f64.max(full_w);
-        let seg_total = seg_w * 3.0 + 2.0 * SEG_GAP;
-        let seg_start =
-            seg_area_left + ((seg_area_right - seg_area_left) - seg_total).max(0.0) / 2.0;
-        for (i, rect) in self.seg_rects.iter_mut().enumerate() {
-            let sx = seg_start + i as f64 * (seg_w + SEG_GAP);
-            *rect = Rect::new(sx, y0, sx + seg_w, y0 + seg_h);
-        }
-    }
-
-    /// Measure the topbar's labels at the size they are about to be painted.
-    /// Returns `true` when a width changed (first frame, a text-scale change),
-    /// so the caller re-runs `relayout` before painting this frame.
-    fn measure_topbar_labels(&mut self, tr: &mut TextRenderer) -> bool {
-        let widest = |tr: &mut TextRenderer, labels: &[&str], size: f32| {
-            labels
-                .iter()
-                .map(|label| draw::measure_w(tr, label, size, TextWeight::Semibold))
-                .fold(0.0_f64, f64::max)
+        let reserve = if self.history.is_shown() {
+            self.row_metrics.chip + self.row_metrics.gap
+        } else {
+            0.0
         };
-        let modes = Mode::all();
-        let full: Vec<&str> = modes.iter().map(|m| m.label()).collect();
-        let short: Vec<&str> = modes.iter().map(|m| m.short_label()).collect();
-        let measured = TopbarLabels {
-            full: widest(tr, &full, TopbarLabels::SEG_FONT),
-            short: widest(tr, &short, TopbarLabels::SEG_FONT),
-            toggle: widest(tr, &["RAD", "DEG"], TopbarLabels::TOGGLE_FONT),
-        };
-        let changed = measured != self.topbar_labels;
-        self.topbar_labels = measured;
-        changed
+        self.calc.set_trailing_reserve(reserve);
+        self.layout_active();
+        self.layout_header();
     }
 
     fn layout_active(&mut self) {
         match self.model.mode {
-            Mode::Calc => self.calc.layout(self.body, &self.model),
-            Mode::Graph2d => self.g2.layout(self.body, &self.model),
-            Mode::Graph3d => self.g3.layout(self.body, &self.model),
+            Mode::Calc => self.calc.layout(self.area, &self.model),
+            Mode::Graph2d => self.g2.layout(self.area, &self.model),
+            Mode::Graph3d => self.g3.layout(self.area, &self.model),
         }
     }
 
-    /// Submit one [`CalculatorAction`] through the resource's door — the one
+    /// The column the header's mode and unit controls sit over: the one beside
+    /// the active screen's panel.
+    fn content_column(&self) -> Rect {
+        match self.model.mode.graph() {
+            None => self.calc.content_column(),
+            Some(kind) => self.panel(kind).side().content(),
+        }
+    }
+
+    /// Whether the panel's show/hide button sits in the content column's
+    /// header (the panel is hidden), and at which end.
+    fn toggle_on_content(&self) -> bool {
+        let seated = |rect: Rect| rect != Rect::ZERO && self.content_column().contains_rect(rect);
+        match self.model.mode.graph() {
+            None => seated(self.calc.toggle_rect()),
+            Some(kind) => self.panel(kind).toggle_rect().is_some_and(seated),
+        }
+    }
+
+    /// Place the mode strip and the angle-unit strip in the header row of
+    /// the content column. The unit strip anchors to the trailing edge, the
+    /// mode strip centres in what is left and condenses to its short labels
+    /// where the full ones would not fit. The panel's show/hide button takes
+    /// its seat first when it sits in this header.
+    fn layout_header(&mut self) {
+        let content = self.content_column();
+        let h = self.header;
+        self.header_band = h.band(content);
+        let band = self.header_band;
+        let (mut left, mut right) = (band.x0 + h.inset, band.x1 - h.inset);
+        let row = Rect::new(self.area.x0, band.y0, self.area.x1, band.y1);
+        self.history_rect = if self.history.is_shown() {
+            self.row_metrics.trailing_chip(row, 0)
+        } else {
+            Rect::ZERO
+        };
+        if let Some(button) = self.history.button_mut() {
+            button.apply_layout_external(self.history_rect);
+        }
+        // The History control stands in the window's trailing corner, so a
+        // content column that reaches it leaves the room.
+        if self.history_rect != Rect::ZERO && band.x1 >= self.area.x1 - 0.5 {
+            right -= self.row_metrics.chip + self.row_metrics.gap;
+        }
+        if self.toggle_on_content() {
+            let seat = h.chip + h.gap;
+            match self.model.mode {
+                Mode::Calc => right -= seat,
+                Mode::Graph2d | Mode::Graph3d => left += seat,
+            }
+        }
+        let y0 = band.y0 + (band.height() - self.strip_height) / 2.0;
+        let y1 = y0 + self.strip_height;
+
+        // Full labels where they fit; the mode strip condenses first, then
+        // the unit strip.
+        let s = self.strips;
+        let room = (right - left).max(0.0) - h.cluster_gap;
+        (self.seg_short, self.unit_short) = if s.mode_full + s.unit_full <= room {
+            (false, false)
+        } else if s.mode_short + s.unit_full <= room {
+            (true, false)
+        } else {
+            (true, true)
+        };
+        let unit_w = if self.unit_short {
+            s.unit_short
+        } else {
+            s.unit_full
+        };
+        let unit_w = unit_w.min((right - left).max(0.0));
+        let unit_x0 = right - unit_w;
+        let half = unit_w / 2.0;
+        self.unit_rects = [
+            Rect::new(unit_x0, y0, unit_x0 + half, y1),
+            Rect::new(unit_x0 + half, y0, right, y1),
+        ];
+
+        let region = Rect::new(left, y0, (unit_x0 - h.cluster_gap).max(left), y1);
+        let wide = if self.seg_short {
+            s.mode_short
+        } else {
+            s.mode_full
+        };
+        let w = wide.min(region.width());
+        let centred = band.center().x - w / 2.0;
+        let x0 = centred.clamp(region.x0, (region.x1 - w).max(region.x0));
+        let seg_w = w / 3.0;
+        for (i, rect) in self.seg_rects.iter_mut().enumerate() {
+            let sx = x0 + i as f64 * seg_w;
+            *rect = Rect::new(sx, y0, sx + seg_w, y1);
+        }
+    }
+
+    /// Measure the strips at the size they are about to be painted. Returns
+    /// `true` when a width changed (first frame, a text-scale change), so the
+    /// caller re-runs `relayout` before painting this frame.
+    fn measure_header(&mut self, tr: &mut TextRenderer, theme: &Theme) -> bool {
+        self.header = Header::of(theme);
+        self.row_metrics = HeaderRowMetrics::resolve(theme);
+        let size = ControlSize::Regular;
+        let modes = Mode::all();
+        let full: Vec<&str> = modes.iter().map(|m| m.label()).collect();
+        let short: Vec<&str> = modes.iter().map(|m| m.short_label()).collect();
+        let measured = StripWidths {
+            mode_full: SegmentedFace::intrinsic_width(&full, size, tr, theme),
+            mode_short: SegmentedFace::intrinsic_width(&short, size, tr, theme),
+            unit_full: SegmentedFace::intrinsic_width(&UNIT_LABELS, size, tr, theme),
+            unit_short: SegmentedFace::intrinsic_width(&UNIT_SHORT, size, tr, theme),
+        };
+        let height = SegmentedFace::height(size, theme);
+        let changed = measured != self.strips || (height - self.strip_height).abs() > 0.01;
+        self.strips = measured;
+        self.strip_height = height;
+        changed
+    }
+
+    /// Submit one field edit or verb through the resource's door — the one
     /// way this window changes the document, shared with the palette, agents
     /// and scripts. It applies now, inside the event, so a formula's next
     /// keystroke builds on this one; the rows it changed are presented back
@@ -338,11 +417,15 @@ impl CalculatorApp {
     /// Only ever call this for an action that genuinely mutates the document —
     /// the affordances gate on a real change (a non-empty history to clear, an
     /// existing row to toggle/delete).
-    fn submit(&self, doc: &mut AutoCommit, action: &CalculatorAction) {
+    fn submit(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        submit: impl ui::framework::Submit<Calculator>,
+    ) {
         if let Some(dispatch) = &self.dispatch {
             // A refusal (a participant who may only view) writes nothing, and
             // the stored rows are presented again.
-            let _ = dispatch.apply_now(doc, action);
+            let _ = dispatch.submit_now(doc, submit);
         }
     }
 
@@ -356,73 +439,73 @@ impl CalculatorApp {
 
     /// Add a graph row (empty, or a starter formula), select it, and submit
     /// its `AddGraph`.
-    fn add_graph(&mut self, kind: GraphKind, expr: &str, doc: &mut AutoCommit) {
+    fn add_graph(&mut self, kind: GraphKind, expr: &str, doc: &mut ui::widget::Edits<'_>) {
         self.settle_edit();
-        let action = actions::add_graph_action(kind, expr);
-        if let CalculatorAction::AddGraph { id, .. } = &action {
-            self.select = Some((kind, id.clone()));
-        }
+        let id = actions::new_row_id(kind);
+        self.select = Some((kind, id.clone()));
         let row = PlotFn {
             expr: expr.to_owned(),
             visible: true,
         };
-        match kind {
-            GraphKind::Curve2d => {
-                self.model.funcs.push(row);
-                self.model.active_fn = self.model.funcs.len() - 1;
-            }
-            GraphKind::Surface3d => {
-                self.model.surfaces.push(row);
-                self.model.active_surface = self.model.surfaces.len() - 1;
-            }
-        }
-        self.submit(doc, &action);
+        let added = kind
+            .rows()
+            .insert_as(&id, self.rows.graphs(kind).len(), &row);
+        let rows = self.model.graphs_mut(kind);
+        rows.push(row);
+        let last = rows.len() - 1;
+        *self.model.active_graph_mut(kind) = last;
+        self.submit(doc, added);
         self.model_dirty = true;
     }
 
     /// Show or hide the `index`-th row of a graph list.
-    fn toggle_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut AutoCommit) -> bool {
-        let rows = match kind {
-            GraphKind::Curve2d => &mut self.model.funcs,
-            GraphKind::Surface3d => &mut self.model.surfaces,
-        };
+    fn toggle_graph_row(
+        &mut self,
+        kind: GraphKind,
+        index: usize,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        let rows = self.model.graphs_mut(kind);
         let Some(row) = rows.get_mut(index) else {
             return false;
         };
         row.visible = !row.visible;
+        let shown = row.visible;
         if let Some(id) = self.rows.graph_id(kind, index) {
-            let action = actions::toggle_graph_visible_action(kind, id);
-            self.submit(doc, &action);
+            let edit = kind.rows().item(id).visible.set(shown);
+            self.submit(doc, edit);
         }
         self.model_dirty = true;
         true
     }
 
     /// Replace the formula of the `index`-th row of a graph list, as typed.
-    fn set_graph_expr(&mut self, kind: GraphKind, index: usize, expr: &str, doc: &mut AutoCommit) {
-        let rows = match kind {
-            GraphKind::Curve2d => &mut self.model.funcs,
-            GraphKind::Surface3d => &mut self.model.surfaces,
-        };
+    fn set_graph_expr(
+        &mut self,
+        kind: GraphKind,
+        index: usize,
+        expr: &str,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
+        let rows = self.model.graphs_mut(kind);
         if let Some(row) = rows.get_mut(index) {
             expr.clone_into(&mut row.expr);
         }
         if let Some(id) = self.rows.graph_id(kind, index) {
-            let action = actions::set_graph_expr_action(kind, id, expr);
-            self.submit(doc, &action);
+            let edit = kind.rows().item(id).expr.replace(expr);
+            self.submit(doc, edit);
         }
         self.model_dirty = true;
     }
 
     /// Empty the history.
-    fn clear_history(&mut self, doc: &mut AutoCommit) {
+    fn clear_history(&mut self, doc: &mut ui::widget::Edits<'_>) {
         // Only a non-empty history is a real mutation.
         if self.model.history.is_empty() {
             return;
         }
         self.model.history.clear();
-        let ids = self.rows.history.iter().map(|(id, _)| id.clone()).collect();
-        self.submit(doc, &actions::clear_history_ids_action(ids));
+        self.submit(doc, Calculator::CLEAR_HISTORY.with(()));
         self.model_dirty = true;
     }
 
@@ -431,11 +514,11 @@ impl CalculatorApp {
     /// the [`CommitHistory`](CalculatorAction::CommitHistory) action so the new
     /// history row lands on the shared, replayable, undoable path. A failed or
     /// empty evaluation commits nothing and dispatches nothing.
-    fn commit_equals(&mut self, doc: &mut AutoCommit) {
+    fn commit_equals(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(entry) = self.model.commit_equals() {
             self.submit(
                 doc,
-                &actions::commit_history_action(&entry.expr, &entry.result),
+                Calculator::COMMIT_HISTORY.with((entry.expr, entry.result)),
             );
         }
         self.model_dirty = true;
@@ -457,7 +540,7 @@ impl CalculatorApp {
     /// editable starter — an empty curve, an example surface — through the
     /// same `AddGraph` action the palette offers, so it is undoable and
     /// reaches collaborators.
-    fn switch_mode(&mut self, m: Mode, doc: &mut AutoCommit) {
+    fn switch_mode(&mut self, m: Mode, doc: &mut ui::widget::Edits<'_>) {
         self.settle_edit();
         self.set_mode(m);
         match m {
@@ -481,113 +564,97 @@ impl CalculatorApp {
         }
     }
 
-    fn draw_topbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let mut ctx = PaintCtx::new(scene, t, tr, theme);
-        let c = &theme.tokens.colors;
-        ctx.fill_rect(self.topbar, c.surfaces.raised);
-        draw::line(
-            ctx.scene,
-            t,
-            Point::new(self.topbar.x0, self.topbar.y1),
-            Point::new(self.topbar.x1, self.topbar.y1),
-            ui::chrome::chrome_hairline(theme),
-            1.0,
-        );
-
-        // The OS owns window chrome (title/app-name/logo) — the app draws only
-        // its functional toolbar controls here.
-
-        // segmented mode control
-        let outer = Rect::new(
-            self.seg_rects[0].x0 - 4.0,
-            self.seg_rects[0].y0 - 4.0,
-            self.seg_rects[2].x1 + 4.0,
-            self.seg_rects[2].y1 + 4.0,
-        );
-        ui::surface::card(ctx.scene, t, outer, 10.0, c.neutral[2]);
-        let sel = self.model.mode.index();
-        let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
-        for (i, (m, &r)) in Mode::all().iter().zip(self.seg_rects.iter()).enumerate() {
-            if i == sel {
-                ctx.fill_round(r, 8.0, c.accent[5]);
-            }
-            let col = if i == sel { on_accent } else { c.text_dim };
-            let label = if self.seg_short {
-                m.short_label()
-            } else {
-                m.label()
-            };
-            draw::text_in(
-                &mut ctx,
-                r,
-                label,
-                &TextStyle::new(TopbarLabels::SEG_FONT).with_weight(TextWeight::Semibold),
-                col,
-                Align::Center,
-            );
-        }
-
-        // DEG / RAD toggle
-        let outer2 = Rect::new(
-            self.rad_rect.x0 - 4.0,
-            self.rad_rect.y0 - 4.0,
-            self.deg_rect.x1 + 4.0,
-            self.deg_rect.y1 + 4.0,
-        );
-        ui::surface::card(ctx.scene, t, outer2, 10.0, c.neutral[2]);
-        if self.model.deg {
-            ctx.fill_round(self.deg_rect, 8.0, c.accent[5]);
+    /// Paint the header row over the content column: its hairline, the mode
+    /// strip and the angle-unit strip.
+    fn draw_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        ui::widget::toolbar::paint_band(scene, t, theme, self.header_band);
+        let modes = Mode::all();
+        let labels: Vec<&str> = modes
+            .iter()
+            .map(|m| {
+                if self.seg_short {
+                    m.short_label()
+                } else {
+                    m.label()
+                }
+            })
+            .collect();
+        let face = SegmentedFace::new(&self.seg_rects, &labels, self.model.mode.index())
+            .hovered(self.mode_hover);
+        ToggleGroup::paint(scene, t, tr, theme, &face);
+        // The angle unit refines the mode, so it is the quiet strip.
+        let units = if self.unit_short {
+            &UNIT_SHORT
         } else {
-            ctx.fill_round(self.rad_rect, 8.0, c.accent[5]);
-        }
-        let rad_col = if self.model.deg {
-            c.text_dim
-        } else {
-            on_accent
+            &UNIT_LABELS
         };
-        let deg_col = if self.model.deg {
-            on_accent
-        } else {
-            c.text_dim
-        };
-        draw::text_in(
-            &mut ctx,
-            self.rad_rect,
-            "RAD",
-            &TextStyle::new(TopbarLabels::TOGGLE_FONT).with_weight(TextWeight::Semibold),
-            rad_col,
-            Align::Center,
-        );
-        draw::text_in(
-            &mut ctx,
-            self.deg_rect,
-            "DEG",
-            &TextStyle::new(TopbarLabels::TOGGLE_FONT).with_weight(TextWeight::Semibold),
-            deg_col,
-            Align::Center,
-        );
+        let face = SegmentedFace::new(&self.unit_rects, units, usize::from(self.model.deg))
+            .style(SegmentedStyle::Quiet)
+            .hovered(self.unit_hover);
+        ToggleGroup::paint(scene, t, tr, theme, &face);
     }
 
     // -- pointer routing -----------------------------------------------------
 
-    fn on_press(&mut self, p: Point, doc: &mut AutoCommit) {
+    /// Whether a floating drawer is up over the window, so the header and the
+    /// content beneath it take no presses.
+    fn drawer_blocks(&self) -> bool {
+        match self.model.mode.graph() {
+            None => self.calc.is_overlay() && self.calc.sidebar_open(),
+            Some(kind) => self.panel(kind).floats_open(),
+        }
+    }
+
+    /// Track the pointer over every control. Returns whether anything the
+    /// window paints in response changed.
+    fn track_pointer(&mut self, p: Point) -> bool {
+        let blocked = self.drawer_blocks();
+        let mode_hover = (!blocked)
+            .then(|| self.seg_rects.iter().position(|r| r.contains(p)))
+            .flatten();
+        let unit_hover = (!blocked)
+            .then(|| self.unit_rects.iter().position(|r| r.contains(p)))
+            .flatten();
+        let mut changed = mode_hover != self.mode_hover || unit_hover != self.unit_hover;
+        self.mode_hover = mode_hover;
+        self.unit_hover = unit_hover;
+        changed |= match self.model.mode.graph() {
+            None => self.calc.set_pointer(p),
+            Some(kind) => self.panel_mut(kind).set_pointer(p),
+        };
+        changed
+    }
+
+    /// What the plot under the pointer shows: the trace of Graph 2D, and the
+    /// navigation hint until the person has navigated a plot.
+    fn plot_pointer(&self) -> Pointer {
+        let over = self
+            .model
+            .mode
+            .graph()
+            .is_some_and(|kind| self.canvas_contains(kind, self.mouse));
+        Pointer {
+            trace: (over && self.model.mode == Mode::Graph2d).then_some(self.mouse),
+            hint: (over && !self.navigated).then_some(self.environment),
+        }
+    }
+
+    fn on_press(&mut self, p: Point, doc: &mut ui::widget::Edits<'_>) {
         // A press ends the formula edit in progress: the next keystroke is
         // an undo step of its own.
         self.settle_edit();
-        // header first
-        for (i, r) in self.seg_rects.iter().enumerate() {
-            if r.contains(p) {
-                self.switch_mode(Mode::from_index(i), doc);
+        // header first (a floating drawer covers it)
+        if !self.drawer_blocks() {
+            for (i, r) in self.seg_rects.iter().enumerate() {
+                if r.contains(p) {
+                    self.switch_mode(Mode::from_index(i), doc);
+                    return;
+                }
+            }
+            if let Some(i) = self.unit_rects.iter().position(|r| r.contains(p)) {
+                self.set_degrees(i == 1);
                 return;
             }
-        }
-        if self.rad_rect.contains(p) {
-            self.set_degrees(false);
-            return;
-        }
-        if self.deg_rect.contains(p) {
-            self.set_degrees(true);
-            return;
         }
 
         // Double-click detection (≤400 ms, within 5 px).
@@ -599,57 +666,65 @@ impl CalculatorApp {
         self.last_click = Some(now);
         self.last_click_pos = p;
 
-        match self.model.mode {
-            Mode::Calc => self.on_press_calc(p, doc),
-            Mode::Graph2d => self.on_press_g2(p, double, doc),
-            Mode::Graph3d => self.on_press_g3(p, double, doc),
+        match self.model.mode.graph() {
+            None => self.on_press_calc(p, doc),
+            Some(kind) => self.on_press_graph(kind, p, double, doc),
         }
     }
 
-    fn on_press_g3(&mut self, p: Point, double: bool, doc: &mut AutoCommit) {
+    fn on_press_graph(
+        &mut self,
+        kind: GraphKind,
+        p: Point,
+        double: bool,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         // Overlay-drawer chrome takes priority over the canvas underneath.
-        if self.g3.toggle_at(p) {
-            self.g3.toggle_panel();
+        let panel = self.panel(kind);
+        if panel.side().toggle_at(p) {
+            self.panel_mut(kind).side_mut().toggle();
             return;
         }
-        if self.g3.scrim_at(p) {
-            self.g3.close_panel();
+        if panel.side().scrim_at(p) {
+            self.panel_mut(kind).side_mut().close();
             return;
         }
-        if self.g3.add_at(p) {
-            self.add_graph(GraphKind::Surface3d, "", doc);
-        } else if let Some(i) = self.g3.delete_at(p) {
-            self.delete_graph_row(GraphKind::Surface3d, i, doc);
-        } else if let Some(i) = self.g3.vis_at(p) {
-            self.toggle_graph_row(GraphKind::Surface3d, i, doc);
-        } else if let Some(i) = self.g3.field_at(p) {
-            self.model.active_surface = i;
-            self.g3.sync_fields(&self.model);
-            if let Some(field) = self.g3.active_field_mut(i) {
+        if panel.add_at(p) {
+            self.add_graph(kind, "", doc);
+        } else if let Some(i) = panel.delete_at(p) {
+            self.delete_graph_row(kind, i, doc);
+        } else if let Some(i) = panel.vis_at(p) {
+            self.toggle_graph_row(kind, i, doc);
+        } else if let Some(i) = panel.field_at(p) {
+            // Click landed in row i's editor: activate it and place the caret.
+            // The field has no text renderer here, so the press hit-tests
+            // its cached layout; it relays out on the next draw.
+            *self.model.active_graph_mut(kind) = i;
+            if let Some(field) = self.graph_field(kind, i) {
                 field.on_press_cached(p, double);
                 self.field_dragging = true;
             }
             self.model_dirty = true;
-        } else if let Some(i) = self.g3.row_at(p) {
-            self.model.active_surface = i;
+        } else if let Some(i) = panel.row_at(p) {
+            *self.model.active_graph_mut(kind) = i;
             self.model_dirty = true;
-        } else if self.g3.overlay_captures(p) {
+        } else if panel.side().covers(p) {
             // Press inside an open drawer (not a widget): consume it so it
-            // doesn't fall through to the canvas as an orbit.
-        } else if self.g3.canvas_contains(p) {
+            // doesn't fall through to the canvas as a pan or orbit.
+        } else if self.canvas_contains(kind, p) {
             self.dragging = true;
             self.drag_last = p;
         }
     }
 
-    fn on_press_calc(&mut self, p: Point, doc: &mut AutoCommit) {
+    fn on_press_calc(&mut self, p: Point, doc: &mut ui::widget::Edits<'_>) {
         // History sidebar chrome takes priority over the keypad underneath.
         if self.calc.toggle_at(p) {
             self.calc.toggle_sidebar();
             return;
         }
         if self.calc.scrim_at(p) {
-            // Tapping outside an open overlay drawer dismisses it (Adwaita).
+            // Tapping outside an open overlay drawer dismisses it.
             self.calc.close_sidebar();
             return;
         }
@@ -681,82 +756,32 @@ impl CalculatorApp {
         }
     }
 
-    fn on_press_g2(&mut self, p: Point, double: bool, doc: &mut AutoCommit) {
-        // Overlay-drawer chrome takes priority over the canvas underneath.
-        if self.g2.toggle_at(p) {
-            self.g2.toggle_panel();
-            return;
-        }
-        if self.g2.scrim_at(p) {
-            self.g2.close_panel();
-            return;
-        }
-        if self.g2.add_at(p) {
-            self.add_graph(GraphKind::Curve2d, "", doc);
-        } else if let Some(i) = self.g2.delete_at(p) {
-            self.delete_graph_row(GraphKind::Curve2d, i, doc);
-        } else if let Some(i) = self.g2.vis_at(p) {
-            self.toggle_graph_row(GraphKind::Curve2d, i, doc);
-        } else if let Some(i) = self.g2.field_at(p) {
-            // Click landed in row i's editor: activate it and place the caret.
-            self.model.active_fn = i;
-            self.g2.sync_fields(&self.model);
-            self.field_press_g2(i, p, double);
-            self.model_dirty = true;
-        } else if let Some(i) = self.g2.row_at(p) {
-            self.model.active_fn = i;
-            self.model_dirty = true;
-        } else if self.g2.overlay_captures(p) {
-            // Press inside an open drawer (not a widget): consume it so it
-            // doesn't fall through to the canvas as a pan.
-        } else if self.g2.canvas_contains(p) {
-            self.dragging = true;
-            self.drag_last = p;
-        }
-    }
-
-    fn field_press_g2(&mut self, i: usize, p: Point, double: bool) {
-        // Borrow the renderer-free press path: MathField needs a TextRenderer
-        // to lay out for hit-testing. We don't have one here, so the field
-        // relays out lazily on the next draw; press uses the cached layout.
-        if let Some(field) = self.g2.active_field_mut(i) {
-            field.on_press_cached(p, double);
-            self.field_dragging = true;
-        }
-    }
-
     /// Delete one graph row through the same stable, tombstoned action the
     /// palette offers. The model is deliberately not spliced optimistically:
     /// the presented rows are the exact merged list a collaborator sees, and
     /// keep active-row clamping in one place (`adopt_resource_state`).
-    fn delete_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut AutoCommit) {
-        if let Some(id) = self.rows.graph_id(kind, index) {
-            let action = actions::delete_graph_action(kind, id);
-            self.submit(doc, &action);
+    fn delete_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut ui::widget::Edits<'_>) {
+        if let Some(id) = self.rows.graph_id(kind, index).cloned() {
+            match kind {
+                GraphKind::Curve2d => self.submit(doc, Calculator::DELETE_FUNCTION.with(id)),
+                GraphKind::Surface3d => self.submit(doc, Calculator::DELETE_SURFACE.with(id)),
+            }
             self.model_dirty = true;
         }
     }
 
     /// Extend a math-field drag-selection to the current pointer position.
     fn on_field_drag(&mut self, p: Point) {
-        match self.model.mode {
-            Mode::Graph2d => {
-                let a = self.model.active_fn;
-                if let Some(field) = self.g2.active_field_mut(a) {
-                    field.on_drag_cached(p);
-                }
+        if let Some(kind) = self.model.mode.graph() {
+            let active = self.model.active_graph(kind);
+            if let Some(field) = self.panel_mut(kind).active_field_mut(active) {
+                field.on_drag_cached(p);
             }
-            Mode::Graph3d => {
-                let a = self.model.active_surface;
-                if let Some(field) = self.g3.active_field_mut(a) {
-                    field.on_drag_cached(p);
-                }
-            }
-            Mode::Calc => {}
         }
     }
 
     fn on_drag(&mut self, d: Vec2) {
+        self.navigated = true;
         match self.model.mode {
             Mode::Graph2d => {
                 let s = self.model.view2d.scale;
@@ -780,26 +805,13 @@ impl CalculatorApp {
     fn on_wheel(&mut self, step: f64) {
         // Scrolling over a math editor scrolls its (clipped) content — the axis
         // that actually overflows moves; the other is clamped to a no-op.
-        match self.model.mode {
-            Mode::Graph2d => {
-                if let Some(i) = self.g2.field_at(self.mouse) {
-                    self.g2.sync_fields(&self.model);
-                    if let Some(f) = self.g2.active_field_mut(i) {
-                        f.scroll_by(-step * 24.0, -step * 24.0);
-                    }
-                    return;
-                }
+        if let Some(kind) = self.model.mode.graph()
+            && let Some(i) = self.panel(kind).field_at(self.mouse)
+        {
+            if let Some(f) = self.graph_field(kind, i) {
+                f.scroll_by(-step * 24.0, -step * 24.0);
             }
-            Mode::Graph3d => {
-                if let Some(i) = self.g3.field_at(self.mouse) {
-                    self.g3.sync_fields(&self.model);
-                    if let Some(f) = self.g3.active_field_mut(i) {
-                        f.scroll_by(-step * 24.0, -step * 24.0);
-                    }
-                    return;
-                }
-            }
-            Mode::Calc => {}
+            return;
         }
 
         let factor = (1.0 + step * 0.12).clamp(0.4, 2.5);
@@ -811,6 +823,7 @@ impl CalculatorApp {
                 self.calc.history_scroll = (self.calc.history_scroll - step * 48.0).max(0.0);
             }
             Mode::Graph2d if self.g2.canvas_contains(self.mouse) => {
+                self.navigated = true;
                 let v0 = self.model.view2d;
                 let before = self.g2.to_world(self.mouse, &v0);
                 let mut v = v0;
@@ -826,6 +839,7 @@ impl CalculatorApp {
                 self.model_dirty = true;
             }
             Mode::Graph3d if self.g3.canvas_contains(self.mouse) => {
+                self.navigated = true;
                 self.model.view3d.zoom = (self.model.view3d.zoom * factor).clamp(0.25, 8.0);
                 self.g3.begin_zoom();
                 self.model_dirty = true;
@@ -854,7 +868,12 @@ impl CalculatorApp {
             && self.model.expr.is_empty()
     }
 
-    fn on_key(&mut self, key: &WKey, modifiers: winit::event::Modifiers, doc: &mut AutoCommit) {
+    fn on_key(
+        &mut self,
+        key: &WKey,
+        modifiers: winit::event::Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         self.on_key_with_paste(key, modifiers, doc, ui::clipboard_paste);
     }
 
@@ -862,7 +881,7 @@ impl CalculatorApp {
         &mut self,
         key: &WKey,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         paste: impl FnOnce() -> Option<String>,
     ) {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
@@ -890,17 +909,13 @@ impl CalculatorApp {
         // still available on a second Escape in Calculator mode, but an open
         // overlay must never trap a keyboard user behind its scrim.
         if matches!(key, WKey::Named(NamedKey::Escape)) {
-            let dismissed = match self.model.mode {
-                Mode::Calc if self.calc.sidebar_open() => {
+            let dismissed = match self.model.mode.graph() {
+                None if self.calc.sidebar_open() => {
                     self.calc.close_sidebar();
                     true
                 }
-                Mode::Graph2d if self.g2.panel_open() => {
-                    self.g2.close_panel();
-                    true
-                }
-                Mode::Graph3d if self.g3.panel_open() => {
-                    self.g3.close_panel();
+                Some(kind) if self.panel(kind).side().is_open() => {
+                    self.panel_mut(kind).side_mut().close();
                     true
                 }
                 _ => false,
@@ -911,18 +926,10 @@ impl CalculatorApp {
         }
 
         // The graph editors own a real math field; route their input there.
-        match self.model.mode {
-            Mode::Graph2d => {
-                if self.on_key_g2(key, modifiers, doc) {
-                    return;
-                }
-            }
-            Mode::Graph3d => {
-                if self.on_key_g3(key, modifiers, doc) {
-                    return;
-                }
-            }
-            Mode::Calc => {}
+        if let Some(kind) = self.model.mode.graph()
+            && self.on_key_graph(kind, key, modifiers, doc)
+        {
+            return;
         }
 
         match key {
@@ -983,17 +990,17 @@ impl CalculatorApp {
         }
     }
 
-    /// Route a key to the active Graph 2D function field. Returns whether the
-    /// key was consumed by the field.
-    fn on_key_g2(
+    /// Route a key to the active row's field of a graph list. Returns
+    /// whether the key was consumed by the field.
+    fn on_key_graph(
         &mut self,
+        kind: GraphKind,
         key: &WKey,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
-        self.g2.sync_fields(&self.model);
-        let a = self.model.active_fn;
-        let Some(field) = self.g2.active_field_mut(a) else {
+        let active = self.model.active_graph(kind);
+        let Some(field) = self.graph_field(kind, active) else {
             return false;
         };
         // Only consume keys the field actually handles (so e.g. mode switches
@@ -1003,48 +1010,48 @@ impl CalculatorApp {
         }
         if field.handle_key(key, &modifiers) {
             let linear = field.current_linear();
-            self.set_graph_expr(GraphKind::Curve2d, a, &linear, doc);
+            self.set_graph_expr(kind, active, &linear, doc);
         }
         true
     }
 
-    /// Route a key to the active Graph 3D surface field. Returns whether the
-    /// key was consumed by the field.
-    fn on_key_g3(
-        &mut self,
-        key: &WKey,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-    ) -> bool {
-        self.g3.sync_fields(&self.model);
-        let a = self.model.active_surface;
-        let Some(field) = self.g3.active_field_mut(a) else {
-            return false;
+    /// The formula panel of a graph list.
+    fn panel(&self, kind: GraphKind) -> &PlotPanel {
+        match kind {
+            GraphKind::Curve2d => &self.g2.panel,
+            GraphKind::Surface3d => &self.g3.panel,
+        }
+    }
+
+    fn panel_mut(&mut self, kind: GraphKind) -> &mut PlotPanel {
+        match kind {
+            GraphKind::Curve2d => &mut self.g2.panel,
+            GraphKind::Surface3d => &mut self.g3.panel,
+        }
+    }
+
+    /// Row `index`'s editor, reconciled with the model's rows first.
+    fn graph_field(&mut self, kind: GraphKind, index: usize) -> Option<&mut MathField> {
+        let panel = match kind {
+            GraphKind::Curve2d => &mut self.g2.panel,
+            GraphKind::Surface3d => &mut self.g3.panel,
         };
-        if !field_handles(key, modifiers) {
-            return false;
+        panel.sync_fields(self.model.graphs(kind));
+        panel.active_field_mut(index)
+    }
+
+    /// Whether `p` is on a graph's interactive plot.
+    fn canvas_contains(&self, kind: GraphKind, p: Point) -> bool {
+        match kind {
+            GraphKind::Curve2d => self.g2.canvas_contains(p),
+            GraphKind::Surface3d => self.g3.canvas_contains(p),
         }
-        if field.handle_key(key, &modifiers) {
-            let linear = field.current_linear();
-            self.set_graph_expr(GraphKind::Surface3d, a, &linear, doc);
-        }
-        true
     }
 }
 
 impl Default for CalculatorApp {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-impl CalculatorApp {
-    /// Screen-space center of the Calc keypad key labelled `label`, after the
-    /// current layout. `None` if the key is absent or the pad isn't laid out.
-    fn calc_key_center(&self, label: &str) -> Option<Point> {
-        let i = self.calc.key_index_for_label(label)?;
-        self.calc.key_center(i)
     }
 }
 
@@ -1139,55 +1146,70 @@ fn key_accessible_name(key: &model::Key) -> String {
 }
 
 impl CalculatorApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        if kind != tilo_actions::OperationKind::View {
-            return Err("Mode changes require a View invocation".into());
-        }
-        if let actions::CalculatorOperation::RecallHistory { id } = &operation {
-            let (_, entry) = self
+    /// Each presented history entry as its live row: recalling it.
+    pub(crate) fn history_rows(&self) -> Vec<ui::framework::LiveRow> {
+        self.rows
+            .history
+            .iter()
+            .map(|(id, entry)| crate::resource::history_row(id, entry))
+            .collect()
+    }
+
+    /// Take `effect` on the next sync, where the document is: showing a graph
+    /// for the first time adds its starter row.
+    pub(crate) fn queue_effect(&mut self, effect: actions::CalculatorEffect) -> Result<(), String> {
+        if let actions::CalculatorEffect::Open { entry } = &effect
+            && self
                 .rows
                 .history
-                .iter()
-                .find(|(row, _)| row == id)
-                .ok_or("Calculation no longer exists")?;
-            self.model.expr.clone_from(&entry.expr);
-            self.model.after_equals = false;
-            self.model_dirty = true;
-            self.set_mode(Mode::Calc);
-            return Ok(true);
+                .get(&Id::from_raw(entry.as_str()))
+                .is_none()
+        {
+            return Err("Calculation no longer exists".into());
         }
+        self.pending_effect = Some(effect);
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn perform_effect(
+        &mut self,
+        effect: actions::CalculatorEffect,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
+        let mode = match effect {
+            actions::CalculatorEffect::Open { entry } => {
+                if let Some(past) = self.rows.history.get(&Id::from_raw(entry.as_str())) {
+                    self.model.expr.clone_from(&past.expr);
+                    self.model.after_equals = false;
+                    self.model_dirty = true;
+                    self.set_mode(Mode::Calc);
+                }
+                return;
+            }
+            actions::CalculatorEffect::ShowCalculator => Mode::Calc,
+            actions::CalculatorEffect::ShowGraph2d => Mode::Graph2d,
+            actions::CalculatorEffect::ShowGraph3d => Mode::Graph3d,
+        };
         // Showing a mode is presentation, except that a first graph visit
         // adds its starter row through the resource's action.
-        self.switch_mode(
-            match operation {
-                actions::CalculatorOperation::ShowCalculator => Mode::Calc,
-                actions::CalculatorOperation::ShowGraph2d => Mode::Graph2d,
-                actions::CalculatorOperation::ShowGraph3d => Mode::Graph3d,
-                actions::CalculatorOperation::RecallHistory { .. } => {
-                    return Ok(false);
-                }
-            },
-            doc,
-        );
-        Ok(true)
+        self.switch_mode(mode, doc);
     }
 }
 
 impl Widget for CalculatorApp {
+    ui::provides!(
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls
+    );
+
     fn is_focusable(&self) -> bool {
         true
+    }
+
+    fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
+        self.dirty |= self.environment != environment;
+        self.environment = environment;
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -1203,10 +1225,9 @@ impl Widget for CalculatorApp {
         if !self.host_focused {
             return None;
         }
-        match self.model.mode {
-            Mode::Calc => self.calc.expression_ime_rect(),
-            Mode::Graph2d => self.g2.field_rect(self.model.active_fn),
-            Mode::Graph3d => self.g3.field_rect(self.model.active_surface),
+        match self.model.mode.graph() {
+            None => self.calc.expression_ime_rect(),
+            Some(kind) => self.panel(kind).field_rect(self.model.active_graph(kind)),
         }
     }
 
@@ -1215,63 +1236,71 @@ impl Widget for CalculatorApp {
             .then_some(winit::window::ImePurpose::Normal)
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[actions::CALCULATOR_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
+        if let Some(effect) = self.pending_effect.take() {
+            self.perform_effect(effect, edits);
         }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `new_leaf` only errs when the tree is at capacity; degrade to an
-        // inert node rather than aborting the whole session.
+        // A History button the header replaced may be dropped now: this pass
+        // rebuilds the tree without it. The button is seated by hand in the
+        // header row, so its taffy geometry is unused; the node exists so the
+        // button is registered for a11y, focus and events.
+        self.history.tree_rebuilt();
+        let children: Vec<NodeId> = self
+            .history
+            .button_mut()
+            .into_iter()
+            .map(|button| button.build_layout(taffy, theme, node_map))
+            .collect();
+        // `new_with_children` only errs when the tree is at capacity or a
+        // child belongs to another tree; degrade to an inert node rather than
+        // aborting the whole session.
         let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            })
+                &children,
+            )
             .unwrap_or_else(|_| NodeId::from(0u64));
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.node = Some(node);
         node
     }
 
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.history
+            .button()
+            .into_iter()
+            .map(|button| button as &dyn Widget)
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.history
+            .button_mut()
+            .into_iter()
+            .map(|button| button as &mut dyn Widget)
+            .collect()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty)
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        let area = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        let area = ui::widget::layout_rect(taffy, node, origin);
         self.dirty |= area != self.area;
         self.area = area;
         self.relayout();
@@ -1285,59 +1314,65 @@ impl Widget for CalculatorApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, self.area, c.surfaces.base);
-        // Size the topbar controls from the labels as this frame paints them
-        // (the screens below set the same paint scale before their own text).
-        draw::set_text_scale(draw::paint_scale(tr, theme));
-        if self.measure_topbar_labels(tr) {
-            self.relayout();
-        }
-        let body = self.body;
+        // The window ground is the framework's; this paints content on it.
+        // Size the header strips from the labels as this frame paints them.
+        self.measure_header(tr, theme);
+        let area = self.area;
         match self.model.mode {
-            Mode::Calc => self.calc.draw(scene, t, tr, theme, &self.model, body),
+            Mode::Calc => self.calc.prepare(tr, theme, &self.model, area),
+            Mode::Graph2d => self.g2.prepare(tr, theme, &self.model, area),
+            Mode::Graph3d => self.g3.prepare(tr, theme, &self.model, area),
+        }
+        self.layout_header();
+
+        // Content, then the header row over its column, then the panel (and
+        // the scrim of a floating drawer) over both.
+        let pointer = self.plot_pointer();
+        match self.model.mode {
+            Mode::Calc => self.calc.draw_content(scene, t, tr, theme, &self.model),
+            Mode::Graph2d => self
+                .g2
+                .draw_content(scene, t, tr, theme, &self.model, pointer),
+            Mode::Graph3d => self
+                .g3
+                .draw_content(scene, t, tr, theme, &self.model, pointer),
+        }
+        self.draw_header(scene, t, tr, theme);
+        if let Some(button) = self.history.button_mut() {
+            button.draw(scene, t, tr, theme, presence);
+        }
+        match self.model.mode {
+            Mode::Calc => self.calc.draw_panel(scene, t, tr, theme, &self.model),
             Mode::Graph2d => {
-                let trace = if self.g2.canvas_contains(self.mouse) {
-                    Some(self.mouse)
-                } else {
-                    None
-                };
-                self.g2.draw(scene, t, tr, theme, &self.model, body, trace);
+                self.g2
+                    .draw_panel(scene, t, tr, theme, &self.model, self.host_focused);
             }
-            Mode::Graph3d => self.g3.draw(scene, t, tr, theme, &self.model, body),
+            Mode::Graph3d => {
+                self.g3
+                    .draw_panel(scene, t, tr, theme, &self.model, self.host_focused);
+            }
         }
 
         // Remote collaborators' carets, mapped into the active formula field's
         // 2D glyph layout (peers editing the same graph show up as coloured
         // carets inside the math, not just as a pointer over the window).
-        let remote = remote_carets(presence);
-        if !remote.is_empty() {
-            match self.model.mode {
-                Mode::Graph2d => {
-                    self.g2
-                        .draw_remote_carets(scene, t, self.model.active_fn, &remote);
-                }
-                Mode::Graph3d => {
-                    self.g3
-                        .draw_remote_carets(scene, t, self.model.active_surface, &remote);
-                }
-                Mode::Calc => {}
-            }
+        let remote = match self.model.mode {
+            Mode::Calc => Vec::new(),
+            Mode::Graph2d | Mode::Graph3d => remote_carets(presence),
+        };
+        if !remote.is_empty()
+            && let Some(kind) = self.model.mode.graph()
+        {
+            let active = self.model.active_graph(kind);
+            self.panel(kind)
+                .draw_remote_carets(scene, t, active, &remote);
         }
-
-        self.draw_topbar(scene, t, tr, theme);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
+        // Moved, arrived or left carets change pixels no edit dirtied: report
+        // them as this frame's damage (collected after drawing).
+        if remote != self.drawn_remote_carets {
+            self.drawn_remote_carets = remote;
+            self.dirty = true;
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1349,30 +1384,31 @@ impl Widget for CalculatorApp {
             return;
         }
         self.relayout();
-        self.layout_active();
-        let hover_before = (
-            self.calc.hovered_key,
-            self.calc.hovered_mem,
-            self.g2.hovered_row,
-            self.g3.hovered_row,
-        );
+
+        // The window's History control is a retained button seated in the
+        // header row; the layout tree may lag it by a frame when it was just
+        // offered, so one with no node yet is addressed by the window's own.
+        if !self.drawer_blocks() {
+            let node = ctx
+                .taffy
+                .children(ctx.node_id)
+                .ok()
+                .and_then(|nodes| nodes.first().copied())
+                .unwrap_or(ctx.node_id);
+            if let Some(button) = self.history.button_mut() {
+                button.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+                if *ctx.handled {
+                    self.dirty = true;
+                    return;
+                }
+            }
+        }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.mouse = p;
-                match self.model.mode {
-                    Mode::Calc => {
-                        self.calc.hovered_key = self.calc.key_at(p);
-                        self.calc.hovered_mem = self.calc.mem_at(p);
-                    }
-                    Mode::Graph2d => {
-                        self.g2.hovered_row = self.g2.row_at(p);
-                    }
-                    Mode::Graph3d => {
-                        self.g3.hovered_row = self.g3.row_at(p);
-                    }
-                }
+                let hover_changed = self.track_pointer(p);
                 if self.field_dragging {
                     self.on_field_drag(p);
                 } else if self.dragging {
@@ -1380,22 +1416,20 @@ impl Widget for CalculatorApp {
                     self.on_drag(d);
                     self.drag_last = p;
                 }
-                // Motion that changed no hover state and drags nothing is
-                // inert: leave it unconsumed so the host can skip the frame.
-                let hover_now = (
-                    self.calc.hovered_key,
-                    self.calc.hovered_mem,
-                    self.g2.hovered_row,
-                    self.g3.hovered_row,
-                );
-                *ctx.handled = self.dragging || self.field_dragging || hover_now != hover_before;
+                // Motion that changed no hover state, traces nothing and drags
+                // nothing is inert: leave it unconsumed so the host can skip
+                // the frame.
+                *ctx.handled = self.dragging
+                    || self.field_dragging
+                    || hover_changed
+                    || self.plot_pointer().trace.is_some();
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_press(self.mouse, ctx.state);
+                self.on_press(self.mouse, &mut ctx.state);
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -1405,8 +1439,8 @@ impl Widget for CalculatorApp {
             } => {
                 self.dragging = false;
                 self.field_dragging = false;
-                self.g2.release_fields();
-                self.g3.release_fields();
+                self.g2.panel.release_fields();
+                self.g3.panel.release_fields();
                 self.calc.pressed_key = None;
                 *ctx.handled = true;
             }
@@ -1422,13 +1456,13 @@ impl Widget for CalculatorApp {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
                 *ctx.handled = !self.escape_is_idle(&key_event.logical_key);
-                self.on_key(&key_event.logical_key, *ctx.modifiers, ctx.state);
+                self.on_key(&key_event.logical_key, *ctx.modifiers, &mut ctx.state);
             }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 self.on_key(
                     &WKey::Character(text.clone().into()),
                     winit::event::Modifiers::default(),
-                    ctx.state,
+                    &mut ctx.state,
                 );
                 *ctx.handled = true;
             }
@@ -1504,12 +1538,12 @@ impl Widget for CalculatorApp {
                 AccessNode::new(Role::ToggleButton)
                     .with_name("Radians")
                     .with_action_target("calculator.angle:radians")
-                    .with_bounds(self.rad_rect)
+                    .with_bounds(self.unit_rects.first().copied().unwrap_or(Rect::ZERO))
                     .with_state(AccessState::new().focusable(true).checked(!self.model.deg)),
                 AccessNode::new(Role::ToggleButton)
                     .with_name("Degrees")
                     .with_action_target("calculator.angle:degrees")
-                    .with_bounds(self.deg_rect)
+                    .with_bounds(self.unit_rects.get(1).copied().unwrap_or(Rect::ZERO))
                     .with_state(AccessState::new().focusable(true).checked(self.model.deg)),
             ]);
         let mut children = vec![top_bar];
@@ -1648,7 +1682,7 @@ impl Widget for CalculatorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
@@ -1763,8 +1797,8 @@ impl Widget for CalculatorApp {
     fn needs_animation_frame(&self) -> bool {
         match self.model.mode {
             Mode::Calc => self.calc.drawer_animating(),
-            Mode::Graph2d => self.g2.zoom_active(),
-            Mode::Graph3d => self.g3.zoom_active(),
+            Mode::Graph2d => self.g2.zoom_active() || self.g2.panel.side().is_animating(),
+            Mode::Graph3d => self.g3.zoom_active() || self.g3.panel.side().is_animating(),
         }
     }
 
@@ -1782,6 +1816,20 @@ impl Widget for CalculatorApp {
         self.area == Rect::ZERO
     }
 }
+
+/// The header row is the window's: it holds the History control the host
+/// offers, so the window draws no History bar above the calculator.
+impl ui::widget::WindowHeader for CalculatorApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+            self.structure_dirty |= self.history.take_rebuilt();
+            self.dirty = true;
+        }
+    }
+}
+
+impl ui::widget::controls::ActionControls for CalculatorApp {}
 
 impl ui::widget::AppWidget for CalculatorApp {
     fn app_kind(&self) -> ui::widget::AppKind {
@@ -1807,24 +1855,14 @@ impl CalculatorApp {
     /// Retained semantics for the custom-painted graph editor panels.
     fn graph_accessibility(&self, kind: GraphKind) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
-        let (title, slug, rows, open, toggle_bounds, add_bounds) = match kind {
-            GraphKind::Curve2d => (
-                "Functions",
-                "2d",
-                &self.model.funcs,
-                self.g2.panel_open(),
-                self.g2.toggle_rect(),
-                self.g2.add_rect(),
-            ),
-            GraphKind::Surface3d => (
-                "Surfaces",
-                "3d",
-                &self.model.surfaces,
-                self.g3.panel_open(),
-                self.g3.toggle_rect(),
-                self.g3.add_rect(),
-            ),
+        let (title, slug) = match kind {
+            GraphKind::Curve2d => ("Functions", "2d"),
+            GraphKind::Surface3d => ("Surfaces", "3d"),
         };
+        let rows = self.model.graphs(kind);
+        let panel = self.panel(kind);
+        let open = panel.side().is_open();
+        let (toggle_bounds, add_bounds) = (panel.toggle_rect(), panel.add_rect());
         let mut children = Vec::new();
         if let Some(bounds) = toggle_bounds {
             children.push(
@@ -1837,18 +1875,11 @@ impl CalculatorApp {
         }
         if open {
             for (index, row) in rows.iter().enumerate() {
-                let (field_bounds, visible_bounds, delete_bounds) = match kind {
-                    GraphKind::Curve2d => (
-                        self.g2.field_rect(index),
-                        self.g2.visibility_rect(index),
-                        self.g2.delete_rect(index),
-                    ),
-                    GraphKind::Surface3d => (
-                        self.g3.field_rect(index),
-                        self.g3.visibility_rect(index),
-                        self.g3.delete_rect(index),
-                    ),
-                };
+                let (field_bounds, visible_bounds, delete_bounds) = (
+                    panel.field_rect(index),
+                    panel.visibility_rect(index),
+                    panel.delete_rect(index),
+                );
                 let mut field = AccessNode::new(Role::TextInput)
                     .with_name(format!(
                         "{} {} formula",
@@ -1915,7 +1946,7 @@ impl CalculatorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         use ui::a11y::Action;
         let Some(rest) = target.strip_prefix("calculator.graph.") else {
@@ -1934,37 +1965,25 @@ impl CalculatorApp {
             parts.get(2).and_then(|s| s.parse::<usize>().ok()),
             action,
         ) {
-            (Some("panel"), None, Action::Activate | Action::ToggleCheck) => match kind {
-                GraphKind::Curve2d => self.g2.toggle_panel(),
-                GraphKind::Surface3d => self.g3.toggle_panel(),
-            },
+            (Some("panel"), None, Action::Activate | Action::ToggleCheck) => {
+                self.panel_mut(kind).side_mut().toggle();
+            }
             (Some("add"), None, Action::Activate) => self.add_graph(kind, "", doc),
             (Some("visible"), Some(index), Action::Activate | Action::ToggleCheck) => {
                 return self.toggle_graph_row(kind, index, doc);
             }
             (Some("delete"), Some(index), Action::Activate) => {
-                let exists = match kind {
-                    GraphKind::Curve2d => index < self.model.funcs.len(),
-                    GraphKind::Surface3d => index < self.model.surfaces.len(),
-                };
-                if !exists {
+                if index >= self.model.graphs(kind).len() {
                     return false;
                 }
                 self.delete_graph_row(kind, index, doc);
             }
             (Some("field"), Some(index), Action::SetValue(expr)) => {
-                let changed = match kind {
-                    GraphKind::Curve2d => self
-                        .model
-                        .funcs
-                        .get(index)
-                        .is_some_and(|row| row.expr != *expr),
-                    GraphKind::Surface3d => self
-                        .model
-                        .surfaces
-                        .get(index)
-                        .is_some_and(|row| row.expr != *expr),
-                };
+                let changed = self
+                    .model
+                    .graphs(kind)
+                    .get(index)
+                    .is_some_and(|row| row.expr != *expr);
                 if changed {
                     // A value set by assistive technology is one edit.
                     self.settle_edit();
@@ -1972,15 +1991,12 @@ impl CalculatorApp {
                     self.settle_edit();
                 }
             }
-            (Some("field"), Some(index), Action::Activate | Action::Focus) => match kind {
-                GraphKind::Curve2d if index < self.model.funcs.len() => {
-                    self.model.active_fn = index;
+            (Some("field"), Some(index), Action::Activate | Action::Focus) => {
+                if index >= self.model.graphs(kind).len() {
+                    return false;
                 }
-                GraphKind::Surface3d if index < self.model.surfaces.len() => {
-                    self.model.active_surface = index;
-                }
-                _ => return false,
-            },
+                *self.model.active_graph_mut(kind) = index;
+            }
             _ => return false,
         }
         true
@@ -2255,7 +2271,7 @@ mod tests {
         let caret = app
             .ime_cursor_rect()
             .expect("text entry must enable the browser editor and platform IME");
-        assert!(caret.height() > 0.0 && app.body.contains(caret.center()));
+        assert!(caret.height() > 0.0 && app.area.contains(caret.center()));
         assert_eq!(app.ime_purpose(), Some(winit::window::ImePurpose::Normal));
         app.set_focus(false);
         assert!(app.ime_cursor_rect().is_none());
@@ -2274,7 +2290,7 @@ mod tests {
             app.on_key_with_paste(
                 &WKey::Character("v".into()),
                 primary.into(),
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 || Some("2^2".into()),
             );
             assert_eq!(app.model.expr, "2^2");
@@ -2293,11 +2309,19 @@ mod tests {
     /// and is presentation only, open to a participant who may only view.
     #[test]
     fn history_recall_by_published_action_uses_stable_identity() {
-        let mut app = TestApp::<CalculatorShell>::capture(Some("graph3d")).unwrap();
-        let (id, expression) = app.state().history[1].clone();
-        let expression = expression.expr;
+        // A window someone uses, where effects run, over the scenario's book.
+        let mut app = TestApp::<CalculatorShell>::new().unwrap();
+        for invoke in <CalculatorShell as ui::framework::ResourceApp>::scenario(Some("graph3d")) {
+            app.invoke(invoke).unwrap();
+        }
+        app.settle();
+        let (id, expression) = {
+            let state = app.state();
+            let (id, entry) = state.history.iter().nth(1).unwrap();
+            (id.clone(), entry.expr.clone())
+        };
         // A new calculation moves every positional index.
-        app.invoke(Invoke::apply(&actions::commit_history_action("999+1", "1000")).unwrap())
+        app.invoke(Calculator::COMMIT_HISTORY.with(("999+1".to_owned(), "1000".to_owned())))
             .unwrap();
         let heads = app.read_document(|doc| doc.clone().get_heads());
         app.call_on(&history_entry_id(&id), "open", serde_json::json!({}))
@@ -2318,7 +2342,7 @@ mod tests {
             "recall shows the calculator"
         );
 
-        app.invoke_confirmed(Invoke::apply(&actions::delete_history_entry_action(&id)).unwrap())
+        app.invoke_confirmed(Calculator::DELETE_HISTORY_ENTRY.with(id.clone()))
             .unwrap();
         assert!(
             app.call_on(&history_entry_id(&id), "open", serde_json::json!({}))
@@ -2341,15 +2365,18 @@ mod tests {
         assert_eq!(app.model.ans, 0.0, "live launch: ans is 0");
 
         let mut app = hosted();
-        assert_eq!(app.state(), CalculatorState::default());
+        assert_eq!(app.state(), Calculator::default());
         click(&mut app, "calculator.mode:1");
         let state = app.state();
         assert_eq!(state.funcs.len(), 1, "Graph 2D adds one empty row");
-        assert!(state.funcs[0].1.expr.is_empty());
+        assert!(state.funcs.values().next().unwrap().expr.is_empty());
         click(&mut app, "calculator.mode:2");
         let state = app.state();
         assert_eq!(state.surfaces.len(), 1, "Graph 3D adds one starter surface");
-        assert_eq!(state.surfaces[0].1.expr, model::DEFAULT_SURFACE);
+        assert_eq!(
+            state.surfaces.values().next().unwrap().expr,
+            model::DEFAULT_SURFACE
+        );
         // A second visit adds nothing.
         click(&mut app, "calculator.mode:1");
         assert_eq!(app.state().funcs.len(), 1);
@@ -2357,7 +2384,7 @@ mod tests {
         assert_eq!(app.state().surfaces.len(), 0);
     }
 
-    /// The semantic tree exposes the topbar, keypad, expression and graph
+    /// The semantic tree exposes the header, keypad, expression and graph
     /// formula controls, and activating/setting them through
     /// `perform_semantic_action` drives the model. Fresh app per phase.
     #[test]
@@ -2373,14 +2400,14 @@ mod tests {
         use ui::a11y::Action;
         use ui::widget::Widget as _;
 
-        // phase accessibility_exposes_and_activates_topbar_controls
+        // phase accessibility_exposes_and_activates_header_controls
         {
             let mut app = CalculatorApp::new();
             let tree = app.accessibility().expect("calculator semantics");
             assert_eq!(
                 tree.name.as_deref(),
                 Some("Calculator"),
-                "topbar: root name"
+                "header: root name"
             );
             let mode_bar = &tree.children[0].children[0];
             fn siblings_are_consistently_keyed(nodes: &[ui::a11y::AccessNode]) -> bool {
@@ -2399,7 +2426,7 @@ mod tests {
                     node.action_target.as_deref() == Some("calculator.mode:1")
                         && node.name.as_deref() == Some("Graph 2D")
                 }),
-                "topbar: Graph 2D mode control exposed"
+                "header: Graph 2D mode control exposed"
             );
 
             let mut doc = AutoCommit::new();
@@ -2407,22 +2434,22 @@ mod tests {
                 app.perform_semantic_action(
                     "calculator.mode:1",
                     &Action::Activate,
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
-                "topbar: mode activate handled"
+                "header: mode activate handled"
             );
-            assert_eq!(app.model.mode, Mode::Graph2d, "topbar: mode switched");
+            assert_eq!(app.model.mode, Mode::Graph2d, "header: mode switched");
             assert!(
                 app.perform_semantic_action(
                     "calculator.angle:degrees",
                     &Action::ToggleCheck,
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
-                "topbar: angle toggle handled"
+                "header: angle toggle handled"
             );
-            assert!(app.model.deg, "topbar: degrees on");
+            assert!(app.model.deg, "header: degrees on");
         }
 
         // phase accessibility_exposes_keypad_and_graph_formula_controls
@@ -2457,7 +2484,7 @@ mod tests {
                 app.perform_semantic_action(
                     seven.action_target.as_deref().unwrap_or_default(),
                     &Action::Activate,
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "keypad: key 7 handled"
@@ -2467,7 +2494,7 @@ mod tests {
                 app.perform_semantic_action(
                     expression.action_target.as_deref().unwrap_or_default(),
                     &Action::SetValue("sqrt(9)".into()),
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "keypad: expression SetValue handled"
@@ -2496,7 +2523,7 @@ mod tests {
                 app.perform_semantic_action(
                     formula.action_target.as_deref().unwrap_or_default(),
                     &Action::SetValue("2*x".into()),
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "graph: formula SetValue handled"
@@ -2505,18 +2532,65 @@ mod tests {
         }
     }
 
-    /// Topbar geometry: the mode switcher and RAD/DEG toggle never clip or
-    /// collide down to 400 px, reflow between breakpoints on resize, and widen
-    /// to seat their measured labels at a large text scale (1× unchanged).
+    impl CalculatorApp {
+        /// Screen-space center of the Calc keypad key labelled `label`, after
+        /// the current layout. `None` if the key is absent or not laid out.
+        fn key_center(&self, label: &str) -> Option<Point> {
+            let i = self.calc.key_index_for_label(label)?;
+            self.calc.key_center(i)
+        }
+    }
+
+    /// A seeded app sized `w` by 720 with its header strips measured, as the
+    /// first draw leaves it.
+    fn laid_out(w: f64, theme: &Theme) -> CalculatorApp {
+        let mut app = CalculatorApp::seeded();
+        app.area = Rect::new(0.0, 0.0, w, 720.0);
+        app.measure_header(&mut TextRenderer::new(), theme);
+        app.relayout();
+        app
+    }
+
+    /// The window's History control stands in the trailing corner of the header
+    /// row, and nothing else on the row reaches under it.
     #[test]
-    fn topbar_layout_reflows_and_seats_labels_without_overlap() {
-        // phase topbar_never_overlaps_or_clips_down_to_400
-        // The mode switcher and RAD/DEG toggle must reflow so they neither clip
-        // past the window edge nor collide, at every width down to 400 px.
-        for w in [400.0, 460.0, 520.0, 560.0, 620.0, 680.0, 800.0, 1280.0] {
-            let mut app = CalculatorApp::seeded();
-            app.area = Rect::new(0.0, 0.0, w, 720.0);
+    fn history_control_seats_in_the_trailing_corner_clear_of_the_row() {
+        use ui::widget::{HistoryControl, WindowHeader};
+        for w in [1280.0, 520.0] {
+            let theme = Theme::dark();
+            let mut app = laid_out(w, &theme);
+            assert_eq!(app.history_rect, Rect::ZERO, "no control, no seat");
+            app.set_history_control(Some(HistoryControl::Closed));
             app.relayout();
+            let seat = app.history_rect;
+            assert!(
+                seat.width() > 0.0 && (seat.x1 - w).abs() < 16.0,
+                "the control stands in the corner at {w}: {seat:?}"
+            );
+            assert!(
+                app.unit_rects[1].x1 <= seat.x0 + 0.5,
+                "the unit strip clears the control at {w}: {:?} vs {seat:?}",
+                app.unit_rects[1]
+            );
+            let toggle = app.calc.toggle_rect();
+            assert!(
+                toggle == Rect::ZERO || toggle.x1 <= seat.x0 + 0.5,
+                "the panel button clears the control at {w}: {toggle:?} vs {seat:?}"
+            );
+        }
+    }
+
+    /// Header geometry: the mode strip and the angle-unit strip never clip or
+    /// collide down to 400 px, reflow between
+    /// breakpoints on resize, and widen to seat their measured labels at a
+    /// large text scale (1× unchanged).
+    #[test]
+    fn header_layout_reflows_and_seats_labels_without_overlap() {
+        // phase header_never_overlaps_or_clips_down_to_400
+        // The strips must reflow so they neither clip past the window edge nor
+        // collide, at every width down to 400 px.
+        for w in [400.0, 460.0, 520.0, 560.0, 620.0, 680.0, 800.0, 1280.0] {
+            let app = laid_out(w, &Theme::dark());
             for (i, r) in app.seg_rects.iter().enumerate() {
                 assert!(
                     r.x0 >= app.area.x0 - 0.5 && r.x1 <= app.area.x1 + 0.5,
@@ -2524,96 +2598,71 @@ mod tests {
                 );
             }
             assert!(
-                app.seg_rects[2].x1 <= app.rad_rect.x0 + 0.5,
-                "mode switcher overlaps the RAD/DEG toggle at w={w} \
-                 (seg end {} vs toggle start {})",
+                app.seg_rects[2].x1 <= app.unit_rects[0].x0 + 0.5,
+                "mode strip overlaps the angle-unit strip at w={w} \
+                 (seg end {} vs unit start {})",
                 app.seg_rects[2].x1,
-                app.rad_rect.x0
+                app.unit_rects[0].x0
             );
             assert!(
-                app.deg_rect.x1 <= app.area.x1 + 0.5,
-                "RAD/DEG toggle clipped the window edge at w={w}"
+                app.unit_rects[1].x1 <= app.area.x1 + 0.5,
+                "angle-unit strip clipped the window edge at w={w}"
             );
         }
 
-        // phase topbar_controls_seat_their_measured_labels_at_large_text
+        // phase header_strips_widen_to_seat_their_labels_at_large_text
         {
-            // At an accessibility text scale the topbar's segments and RAD/DEG halves
-            // widen to seat the labels the renderer actually paints — measured on the
-            // production draw path — instead of keeping their 1× widths and letting
-            // the labels run into each other.
-            let mut app = CalculatorApp::seeded();
-            app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
-            app.relayout();
+            // At an accessibility text scale the strips widen to seat the
+            // labels the renderer actually paints — measured on the production
+            // draw path — instead of keeping their 1× widths and letting the
+            // labels run into each other.
+            let one = laid_out(1280.0, &Theme::dark());
             let theme = Theme::dark().with_text_scale(2.0);
+            let mut app = laid_out(1280.0, &theme);
             let mut tr = TextRenderer::new();
-            tr.set_text_scale(2.0);
-            let mut scene = Scene::new();
             app.draw(
-                &mut scene,
+                &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut tr,
                 &theme,
                 &PresenceCtx::empty(),
             );
-            let labels = app.topbar_labels;
             assert!(
-                labels.full > 0.0 && labels.toggle > 0.0,
-                "labels measured: {labels:?}"
+                app.strips.mode_full > one.strips.mode_full
+                    && app.strips.unit_full > one.strips.unit_full,
+                "strips widen with the text: {:?} vs {:?}",
+                app.strips,
+                one.strips
             );
-            let seg_label = if app.seg_short {
-                labels.short
-            } else {
-                labels.full
-            };
-            for (i, r) in app.seg_rects.iter().enumerate() {
-                assert!(
-                    r.width() + 0.5 >= seg_label + 2.0 * TopbarLabels::SEG_PAD_X,
-                    "segment {i} {r:?} must seat its label ({seg_label}px) with padding"
-                );
-            }
-            for (name, r) in [("RAD", app.rad_rect), ("DEG", app.deg_rect)] {
-                assert!(
-                    r.width() + 0.5 >= labels.toggle + 2.0 * TopbarLabels::TOGGLE_PAD_X,
-                    "{name} half {r:?} must seat its label ({}px)",
-                    labels.toggle
-                );
-            }
             assert!(
-                app.seg_rects[2].x1 <= app.rad_rect.x0 + 0.5,
-                "the widened switcher still clears the toggle: {} vs {}",
+                app.seg_rects[2].x1 <= app.unit_rects[0].x0 + 0.5,
+                "the widened mode strip still clears the unit strip: {} vs {}",
                 app.seg_rects[2].x1,
-                app.rad_rect.x0
+                app.unit_rects[0].x0
             );
-            // 1× keeps its authored geometry: the measured labels fit the ordinary
-            // clamps, so nothing widens.
-            let mut base = CalculatorApp::seeded();
-            base.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
-            base.relayout();
-            let before = (base.seg_rects, base.rad_rect, base.deg_rect);
-            let mut tr1 = TextRenderer::new();
+            // 1× keeps its geometry: drawing measures the same widths.
+            let mut base = laid_out(1280.0, &Theme::dark());
+            let before = (base.seg_rects, base.unit_rects);
             base.draw(
                 &mut Scene::new(),
                 Affine::IDENTITY,
-                &mut tr1,
+                &mut TextRenderer::new(),
                 &Theme::dark(),
                 &PresenceCtx::empty(),
             );
             assert_eq!(
-                (base.seg_rects, base.rad_rect, base.deg_rect),
+                (base.seg_rects, base.unit_rects),
                 before,
-                "1× topbar geometry is unchanged by measurement"
+                "1× header geometry is unchanged by drawing"
             );
         }
 
-        // phase topbar_reflows_on_resize_between_breakpoints
+        // phase header_reflows_on_resize_between_breakpoints
         {
             // Re-derive the layout from the CURRENT width every relayout: shrinking a
             // laid-out instance must switch to condensed mode labels, and
             // re-widening must restore them (not freeze at the first frame).
-            let mut app = CalculatorApp::seeded();
-            app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
-            app.relayout();
+            let mut app = laid_out(1280.0, &Theme::dark());
             assert!(!app.seg_short, "wide: full mode labels");
             app.area = Rect::new(0.0, 0.0, 430.0, 720.0);
             app.relayout();
@@ -2622,6 +2671,74 @@ mod tests {
             app.relayout();
             assert!(!app.seg_short, "re-widening must restore the full labels");
         }
+    }
+
+    /// The canvas hint teaches navigation only while the pointer is over a
+    /// plot the person has not navigated yet; the trace follows the pointer
+    /// over Graph 2D only.
+    #[test]
+    fn navigation_hint_shows_over_an_unnavigated_plot_only() {
+        let mut app = wide(CalculatorApp::seeded()); // Graph 2D
+        let over_plot = app.g2.canvas.center();
+        app.mouse = over_plot;
+        let pointer = app.plot_pointer();
+        assert!(pointer.hint.is_some(), "hint over a fresh plot");
+        assert_eq!(
+            pointer.trace,
+            Some(over_plot),
+            "Graph 2D traces the pointer"
+        );
+
+        app.mouse = Point::new(10.0, app.g2.canvas.y0 + 10.0);
+        let pointer = app.plot_pointer();
+        assert!(
+            pointer.hint.is_none() && pointer.trace.is_none(),
+            "no hint over the panel"
+        );
+
+        app.mouse = over_plot;
+        app.on_drag(Vec2::new(5.0, 0.0));
+        assert!(
+            app.plot_pointer().hint.is_none(),
+            "no hint once the person has panned"
+        );
+
+        let mut app = wide(CalculatorApp::seeded());
+        app.set_mode(Mode::Graph3d);
+        app.relayout();
+        app.mouse = app.g3.canvas.center();
+        let pointer = app.plot_pointer();
+        assert!(pointer.hint.is_some(), "hint over a fresh surface plot");
+        assert!(pointer.trace.is_none(), "only Graph 2D traces");
+
+        app.set_mode(Mode::Calc);
+        app.relayout();
+        assert!(app.plot_pointer().hint.is_none(), "no plot in Calculator");
+    }
+
+    /// A scenario stages the view a capture shows: the mode, the expression
+    /// being typed, and the panel as an open floating drawer when it asks for
+    /// one. A plain capture shows the lived-in 2D graph.
+    #[test]
+    fn scenarios_stage_the_view_they_name() {
+        let stage = |name: Option<&str>, w: f64| {
+            let mut app = CalculatorApp::seeded();
+            app.area = Rect::new(0.0, 0.0, w, 800.0);
+            app.stage_scenario(name);
+            app
+        };
+        assert_eq!(stage(None, 1280.0).model.mode, Mode::Graph2d);
+        assert_eq!(stage(Some("graph2d"), 1280.0).model.mode, Mode::Graph2d);
+        assert_eq!(stage(Some("graph3d"), 1280.0).model.mode, Mode::Graph3d);
+        let calc = stage(Some("calculator"), 1280.0);
+        assert_eq!(calc.model.mode, Mode::Calc);
+        assert_eq!(calc.model.expr, "sin(0.5)+cos(0.5)");
+        let error = stage(Some("error"), 1280.0);
+        assert!(engine::evaluate(&error.model.expr, &error.model.ctx()).is_err());
+        let drawer = stage(Some("narrow-functions"), 480.0);
+        assert!(drawer.g2.panel.side().is_overlay() && drawer.g2.panel.side().is_open());
+        let drawer = stage(Some("narrow-history"), 480.0);
+        assert!(drawer.calc.is_overlay() && drawer.calc.sidebar_open());
     }
 
     /// The real key path (`on_key`): Ctrl+digit switches mode, typing and
@@ -2640,7 +2757,11 @@ mod tests {
             let mut app = CalculatorApp::new();
             let mut st = ui::State::new();
             let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-            app.on_key(&WKey::Character("3".into()), ctrl, &mut st.doc);
+            app.on_key(
+                &WKey::Character("3".into()),
+                ctrl,
+                &mut Edits::lend(&mut st.doc),
+            );
             assert_eq!(app.model.mode, Mode::Graph3d, "ctrl+3 switches to Graph 3D");
             assert_eq!(app.model.surfaces.len(), 1, "with its starter surface");
         }
@@ -2652,11 +2773,15 @@ mod tests {
             let escape = WKey::Named(NamedKey::Escape);
             app.calc.snap_sidebar(true);
             assert!(!app.escape_is_idle(&escape), "Escape dismisses the drawer");
-            app.on_key(&escape, none, &mut st.doc);
+            app.on_key(&escape, none, &mut Edits::lend(&mut st.doc));
             assert!(!app.calc.sidebar_open());
-            app.on_key(&WKey::Character("7".into()), none, &mut st.doc);
+            app.on_key(
+                &WKey::Character("7".into()),
+                none,
+                &mut Edits::lend(&mut st.doc),
+            );
             assert!(!app.escape_is_idle(&escape), "Escape clears the expression");
-            app.on_key(&escape, none, &mut st.doc);
+            app.on_key(&escape, none, &mut Edits::lend(&mut st.doc));
             assert!(app.model.expr.is_empty());
             assert!(app.escape_is_idle(&escape), "nothing left for Escape to do");
             assert!(!app.escape_is_idle(&WKey::Named(NamedKey::Backspace)));
@@ -2674,7 +2799,11 @@ mod tests {
             }];
             app.model.active_fn = 0;
             for ch in ["2", "*", "x"] {
-                app.on_key(&WKey::Character(ch.into()), none, &mut st.doc);
+                app.on_key(
+                    &WKey::Character(ch.into()),
+                    none,
+                    &mut Edits::lend(&mut st.doc),
+                );
             }
             assert_eq!(app.model.funcs[0].expr, "2*x", "typing into 2D field");
         }
@@ -2689,8 +2818,12 @@ mod tests {
                 visible: true,
             }];
             app.model.active_surface = 0;
-            // on_key_g3 resyncs the active field to the surface before editing.
-            app.on_key(&WKey::Named(NamedKey::Backspace), none, &mut st.doc);
+            // on_key_graph resyncs the active field to the surface before editing.
+            app.on_key(
+                &WKey::Named(NamedKey::Backspace),
+                none,
+                &mut Edits::lend(&mut st.doc),
+            );
             assert_eq!(app.model.surfaces[0].expr, "x+", "backspace in 3D field");
         }
 
@@ -2707,10 +2840,18 @@ mod tests {
             }];
             app.model.active_fn = 0;
             for ch in ["s", "i", "n", "(", "x", ")"] {
-                app.on_key(&WKey::Character(ch.into()), none, &mut st.doc);
+                app.on_key(
+                    &WKey::Character(ch.into()),
+                    none,
+                    &mut Edits::lend(&mut st.doc),
+                );
             }
             assert_eq!(app.model.funcs[0].expr, "sin(x)", "enter 2D: typed row");
-            app.on_key(&WKey::Named(NamedKey::Enter), none, &mut st.doc);
+            app.on_key(
+                &WKey::Named(NamedKey::Enter),
+                none,
+                &mut Edits::lend(&mut st.doc),
+            );
             assert_eq!(
                 app.model.funcs.len(),
                 2,
@@ -2731,10 +2872,14 @@ mod tests {
         {
             let mut app = CalculatorApp::new();
             let mut st = ui::State::new();
-            app.switch_mode(Mode::Graph3d, &mut st.doc); // adds one starter surface
+            app.switch_mode(Mode::Graph3d, &mut Edits::lend(&mut st.doc)); // adds one starter surface
             let start = app.model.surfaces.len();
             assert_eq!(start, 1);
-            app.on_key(&WKey::Named(NamedKey::Enter), none, &mut st.doc);
+            app.on_key(
+                &WKey::Named(NamedKey::Enter),
+                none,
+                &mut Edits::lend(&mut st.doc),
+            );
             assert_eq!(
                 app.model.surfaces.len(),
                 start + 1,
@@ -2758,8 +2903,7 @@ mod tests {
     #[test]
     fn formula_keystrokes_are_one_undo_step_and_peer_edits_are_presented() {
         let mut app = hosted();
-        app.invoke(Invoke::apply(&actions::add_graph_action(GraphKind::Curve2d, "")).unwrap())
-            .unwrap();
+        app.invoke(Calculator::ADD_FUNCTION.with("")).unwrap();
         click(&mut app, "calculator.mode:1");
         click(&mut app, "calculator.graph.field:2d:0");
         // Keyboard input goes to the focused calculator: Tab to it.
@@ -2776,7 +2920,7 @@ mod tests {
         app.harness().type_text("2*x");
         app.settle();
         assert_eq!(
-            app.state().funcs[0].1.expr,
+            app.state().funcs.values().next().unwrap().expr,
             "2*x",
             "every keystroke is written"
         );
@@ -2789,19 +2933,21 @@ mod tests {
         assert_eq!(app.state().funcs.len(), 1);
         assert!(app.undo(), "undo the typing");
         assert_eq!(
-            app.state().funcs[0].1.expr,
+            app.state().funcs.values().next().unwrap().expr,
             "",
             "one undo takes back the whole typed formula"
         );
         assert!(app.redo());
-        assert_eq!(app.state().funcs[0].1.expr, "2*x");
+        assert_eq!(app.state().funcs.values().next().unwrap().expr, "2*x");
 
-        let id = app.state().funcs[0].0.clone();
+        let id = app.state().funcs.ids().next().cloned().unwrap();
         app.merge_peer_edit(|doc| {
-            use tilo_actions::Action as _;
-            actions::set_graph_expr_action(GraphKind::Curve2d, id.as_str(), "x*x+1")
-                .apply(doc)
-                .unwrap();
+            let mut peer = ui::tilo_resource::Replica::<Calculator>::from_doc(doc.clone());
+            peer.apply(
+                Invoke::edit(&GraphKind::Curve2d.rows().item(&id).expr.replace("x*x+1")).unwrap(),
+            )
+            .unwrap();
+            *doc = peer.doc().clone();
         });
         app.settle();
         assert_eq!(
@@ -2822,46 +2968,21 @@ mod tests {
     // fine.
 
     fn send(app: &mut CalculatorApp, st: &mut ui::State, ev: &WindowEvent) -> bool {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        let mods = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: &mut st.doc,
-                path: &st.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(&mut st.doc)
+            .path(&st.root)
+            .send(app, ev)
+            .handled
     }
 
     fn cursor(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        ui::synthetic_input::cursor_moved(p.x, p.y)
     }
     fn btn(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left)
     }
     fn wheel(y: f64) -> WindowEvent {
-        WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, y as f32),
-            phase: winit::event::TouchPhase::Moved,
-        }
+        ui::synthetic_input::mouse_wheel(0.0, y as f32)
     }
 
     /// A full click (move → press → release) at scene point `p`.
@@ -2879,16 +3000,23 @@ mod tests {
         send(app, st, &btn(ElementState::Released));
     }
 
-    /// A laid-out app at the wide 1280×800 area used by the pointer tests.
+    /// An app at the wide 1280×800 area used by the pointer tests, after one
+    /// real frame: the controls are measured at the size they paint at.
     fn wide(mut app: CalculatorApp) -> CalculatorApp {
         app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
         app.relayout();
-        app.layout_active();
         app
     }
 
     /// Calculator-mode pointer path: keycaps append, a history row recalls,
-    /// Clear empties history, memory keys accumulate/clear, and the RAD/DEG
+    /// Clear empties history, memory keys accumulate/clear, and the angle-unit
     /// toggle changes trig output. Fresh app + state per phase.
     #[test]
     fn calc_pointer_clicks_drive_keypad_history_memory_and_angle() {
@@ -2898,10 +3026,10 @@ mod tests {
             // real keycap rects (not a model-level apply_key shortcut).
             let mut app = wide(CalculatorApp::new()); // Calc mode, empty
             let mut st = ui::State::new();
-            let seven = app.calc_key_center("7").expect("7 keycap laid out");
+            let seven = app.key_center("7").expect("7 keycap laid out");
             tap(&mut app, &mut st, seven);
             assert_eq!(app.model.expr, "7", "tapping a digit keycap must append it");
-            let plus = app.calc_key_center("+").expect("+ keycap laid out");
+            let plus = app.key_center("+").expect("+ keycap laid out");
             tap(&mut app, &mut st, plus);
             assert_eq!(
                 app.model.expr, "7+",
@@ -2980,12 +3108,13 @@ mod tests {
 
         // phase deg_toggle_click_changes_angle_mode_and_trig_output
         {
-            // on_press → deg_rect / rad_rect → model.deg, and the change must flow
+            // on_press → unit_rects → model.deg, and the change must flow
             // through model.ctx() so trig actually evaluates differently.
             use crate::engine;
             let mut app = CalculatorApp::new();
             let mut st = ui::State::new();
             app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.measure_header(&mut TextRenderer::new(), &Theme::dark());
             app.relayout();
             assert!(!app.model.deg, "default is radians");
             let rad_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
@@ -2993,7 +3122,7 @@ mod tests {
                 (rad_val - 1.0).abs() > 0.01,
                 "RAD sin(90) must not be 1 (got {rad_val})"
             );
-            let deg_pt = app.deg_rect.center();
+            let deg_pt = app.unit_rects[1].center();
             tap(&mut app, &mut st, deg_pt);
             assert!(app.model.deg, "clicking DEG must switch to degrees");
             let deg_val = engine::evaluate("sin(90)", &app.model.ctx()).unwrap();
@@ -3001,7 +3130,7 @@ mod tests {
                 (deg_val - 1.0).abs() < 1e-9,
                 "DEG sin(90) must be 1 (got {deg_val})"
             );
-            let rad_pt = app.rad_rect.center();
+            let rad_pt = app.unit_rects[0].center();
             tap(&mut app, &mut st, rad_pt);
             assert!(!app.model.deg, "clicking RAD must switch back to radians");
         }
@@ -3009,7 +3138,7 @@ mod tests {
 
     /// Graph-mode pointer path: drag pans / orbits and the wheel zooms the 2D and
     /// 3D views, the narrow Functions drawer opens from its toggle, and the row
-    /// visibility dot and delete button act on the tapped row. Fresh app + state
+    /// visibility toggle and delete button act on the tapped row. Fresh app + state
     /// per phase.
     #[test]
     #[allow(
@@ -3089,7 +3218,6 @@ mod tests {
 
         // phase narrow_graph2d_toggle_opens_drawer_via_handle_event
         {
-            use taffy::{Style, TaffyTree};
             // Drive the REAL production event path (handle_event → on_press) at a
             // narrow width and assert the collapsed Functions drawer opens.
             let mut app = CalculatorApp::new();
@@ -3097,71 +3225,64 @@ mod tests {
             app.area = Rect::new(0.0, 0.0, 560.0, 720.0);
             app.relayout();
             app.layout_active();
-            assert!(!app.g2.panel_open(), "narrow default must start collapsed");
+            assert!(
+                !app.g2.panel.side().is_open(),
+                "narrow default must start collapsed"
+            );
             let toggle = app
                 .g2
+                .panel
                 .toggle_center()
                 .expect("a collapsed toggle must be present");
 
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
             let mut st = ui::State::new();
-            let mods = winit::event::Modifiers::default();
-            let mut handled = false;
-            let mut focus = None;
             let dev = winit::event::DeviceId::dummy();
-            app.handle_event(
-                &WindowEvent::CursorMoved {
-                    device_id: dev,
-                    position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut st.doc,
-                    path: &st.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            app.handle_event(
-                &WindowEvent::MouseInput {
-                    device_id: dev,
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut st.doc,
-                    path: &st.root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let moved = ui::testing::Dispatch::new()
+                .doc(&mut st.doc)
+                .path(&st.root)
+                .send(
+                    &mut app,
+                    &WindowEvent::CursorMoved {
+                        device_id: dev,
+                        position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
+                    },
+                );
+            ui::testing::Dispatch::new()
+                .doc(&mut st.doc)
+                .path(&st.root)
+                .handled(moved.handled)
+                .focus_target(moved.focus_target)
+                .send(
+                    &mut app,
+                    &WindowEvent::MouseInput {
+                        device_id: dev,
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                    },
+                );
             assert!(
-                app.g2.panel_open(),
+                app.g2.panel.side().is_open(),
                 "tapping the toggle must open the Functions drawer"
             );
         }
 
         // phase vis_dot_click_toggles_function_visibility
         {
-            // on_press_g2 → vis_at → funcs[i].visible flips, via the real dot rect.
+            // on_press_graph → vis_at → funcs[i].visible flips, via the real toggle rect.
             let mut app = CalculatorApp::seeded(); // Graph2d, 4 visible funcs
             app.set_mode(Mode::Graph2d);
             let mut st = ui::State::new();
             let mut app = wide(app); // docked panel
-            assert!(app.model.funcs[0].visible, "vis dot: starts visible");
-            let dot = app.g2.vis_center(0).expect("row 0 visibility dot laid out");
+            assert!(app.model.funcs[0].visible, "vis toggle: starts visible");
+            let dot = app
+                .g2
+                .panel
+                .vis_center(0)
+                .expect("row 0 visibility toggle laid out");
             tap(&mut app, &mut st, dot);
             assert!(
                 !app.model.funcs[0].visible,
-                "tapping the dot must hide the function"
+                "tapping the toggle must hide the function"
             );
             tap(&mut app, &mut st, dot);
             assert!(app.model.funcs[0].visible, "tapping again must show it");
@@ -3181,10 +3302,12 @@ mod tests {
                 f64::midpoint(delete.y0, delete.y1),
             );
             app.settle();
+            // Removing a formula asks first; the person confirms.
+            assert!(app.confirm_asked().is_some(), "the host asks first");
             let after = app.state().funcs;
             assert_eq!(after.len(), before.len() - 1, "one row removed");
             assert!(
-                after.iter().all(|(id, _)| *id != before[0].0),
+                after.ids().all(|id| Some(id) != before.ids().next()),
                 "the clicked stable row is tombstoned rather than a neighbouring index"
             );
         }

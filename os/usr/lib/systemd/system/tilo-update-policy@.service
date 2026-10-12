@@ -14,7 +14,10 @@ PrivateIPC=yes
 ProtectHome=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/tilo /etc/systemd/system/bootc-fetch-apply-updates.timer.d
-InaccessiblePaths=/var/lib/tilo/device-private /var/lib/tilo/secureboot /var/lib/tilo/image-trust /var/lib/tilo/rollback
+# "-": a key directory that does not exist yet has nothing to hide, and without
+# the prefix systemd refuses to start the unit at all on a machine that has not
+# created every one of them.
+InaccessiblePaths=-/var/lib/tilo/device-private -/var/lib/tilo/secureboot -/var/lib/tilo/image-trust -/var/lib/tilo/rollback
 ProtectProc=invisible
 ProcSubset=pid
 ProtectKernelTunables=yes

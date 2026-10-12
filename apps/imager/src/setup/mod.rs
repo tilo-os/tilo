@@ -5,6 +5,7 @@ mod desktop_continuation;
 pub mod desktop_download;
 pub mod desktop_flow;
 pub mod desktop_install;
+mod desktop_journey;
 pub mod desktop_probe;
 pub mod desktop_worker;
 mod destination_security;
@@ -18,6 +19,7 @@ pub mod internal_download;
 mod internal_download_flow;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 mod internal_install_flow;
+mod journey_navigation;
 pub mod known_folders;
 pub mod migration;
 mod migration_durability;
@@ -34,23 +36,7 @@ mod migration_worker;
 pub mod model;
 mod nofollow;
 pub mod staging;
-mod strings;
-#[cfg(all(test, target_os = "linux"))]
+pub(crate) mod strings;
+#[cfg(test)]
 mod test_support;
 pub mod view;
-
-pub use view::app_root;
-
-use ui::widget::Column;
-
-/// A padding-free, content-sized column: one section of a page.
-pub(crate) fn stack() -> Column {
-    Column::new().with_no_padding().with_intrinsic_height()
-}
-
-/// A page body: its header, then each section a `GROUP` apart.
-pub(crate) fn page(header: Column) -> Column {
-    stack()
-        .with_gap(crate::rhythm::px::GROUP)
-        .push(Box::new(header))
-}

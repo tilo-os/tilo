@@ -1,29 +1,28 @@
 //! Current policy copied from the admitted room, within explicit limits.
-use super::{
-    CapOverride, Error, GovernedIdentity, PeerLimits, Policy, Principal, Scope, Subject, key_text,
-};
+use super::{Error, GovernedIdentity, PeerLimits, Policy, Role, key_text};
 use crate::resources::json::{self, JsonLimits};
 use crate::room::{
     policy::{self, Destination},
     read::{ReadError, RoomRead},
 };
+use std::collections::BTreeMap;
+use tilo_action_policy::Grant;
 
 pub(super) struct NativePolicy {
     owner: Option<String>,
-    caps: Vec<CapOverride>,
+    members: BTreeMap<String, Role>,
+    grants: Vec<Grant>,
     identity: GovernedIdentity,
-}
-impl NativePolicy {
-    pub(super) fn caps_mut(&mut self) -> &mut Vec<CapOverride> {
-        &mut self.caps
-    }
 }
 impl Policy for NativePolicy {
     fn owner(&self) -> Option<&str> {
         self.owner.as_deref()
     }
-    fn caps(&self) -> &[CapOverride] {
-        &self.caps
+    fn members(&self) -> &BTreeMap<String, Role> {
+        &self.members
+    }
+    fn grants(&self) -> &[Grant] {
+        &self.grants
     }
     fn identity(&self) -> &GovernedIdentity {
         &self.identity
@@ -42,54 +41,11 @@ impl Output {
         self.pay(value.len())?;
         Ok(value.to_owned())
     }
-    fn principal(&mut self, value: &Principal) -> Result<Principal, Error> {
-        Ok(match value {
-            Principal::Person(s) => Principal::Person(self.text(s)?),
-            Principal::App(s) => Principal::App(self.text(s)?),
-            Principal::Agent(s) => Principal::Agent(self.text(s)?),
-            Principal::Token(s) => Principal::Token(self.text(s)?),
-            Principal::Room(s) => Principal::Room(self.text(s)?),
-        })
-    }
-    fn capability(&mut self, value: &CapOverride) -> Result<CapOverride, Error> {
-        let subject = match &value.subject {
-            Subject::Role(role) => Subject::Role(*role),
-            Subject::User(key) => Subject::User(*key),
-            Subject::Principal(p) => Subject::Principal(self.principal(p)?),
-        };
-        let scope = match &value.scope {
-            Scope::Workspace => Scope::Workspace,
-            Scope::ResourceType(kind) => Scope::ResourceType(*kind),
-            Scope::ResourceInstance(id) => Scope::ResourceInstance(*id),
-            Scope::App(s) => Scope::App(self.text(s)?),
-            Scope::FsPath(s) => Scope::FsPath(self.text(s)?),
-            Scope::Device(s) => Scope::Device(self.text(s)?),
-            Scope::NetHost(s) => Scope::NetHost(self.text(s)?),
-            Scope::Action { app, action } => Scope::Action {
-                app: self.text(app)?,
-                action: self.text(action)?,
-            },
-            Scope::Room(s) => Scope::Room(self.text(s)?),
-            Scope::FsRecord(s) => Scope::FsRecord(self.text(s)?),
-        };
-        Ok(CapOverride {
-            subject,
-            scope,
-            effect: value.effect,
-            verb: value.verb,
-            id: self.text(&value.id)?,
-            expiry: value.expiry,
-            granted_by: value
-                .granted_by
-                .as_ref()
-                .map(|p| self.principal(p))
-                .transpose()?,
-        })
-    }
 }
 struct Collect<'a> {
     owner: Option<String>,
-    caps: Vec<CapOverride>,
+    members: BTreeMap<String, Role>,
+    grants: Vec<Grant>,
     identity: Option<GovernedIdentity>,
     key: &'a str,
     limits: JsonLimits,
@@ -101,14 +57,25 @@ impl Destination for Collect<'_> {
         self.owner = Some(self.output.text(value)?);
         Ok(())
     }
-    fn capability(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        let parsed: CapOverride = match json::decode(bytes, self.limits) {
+    fn grant(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let parsed: Grant = match json::decode(bytes, self.limits) {
             Ok(value) => value,
             Err(crate::resources::PeerResourceError::Malformed) => return Ok(()),
             Err(error) => return Err(Error::Decode(error)),
         };
-        let cap = self.output.capability(&parsed)?;
-        self.caps.push(cap);
+        // The decoded grant holds at most what its encoding spelt out.
+        self.output.pay(bytes.len())?;
+        self.grants.push(parsed);
+        Ok(())
+    }
+    fn member(&mut self, key: &str, bytes: &[u8]) -> Result<(), Error> {
+        let role: Role = match json::decode(bytes, self.limits) {
+            Ok(value) => value,
+            Err(crate::resources::PeerResourceError::Malformed) => return Ok(()),
+            Err(error) => return Err(Error::Decode(error)),
+        };
+        let key = self.output.text(key)?;
+        self.members.insert(key, role);
         Ok(())
     }
     fn identity(&mut self, key: &str, bytes: &[u8]) -> Result<(), Error> {
@@ -139,8 +106,11 @@ pub(super) fn collect<R: RoomRead>(
         fn identity(&mut self, _: &str, _: &[u8]) -> Result<(), Error> {
             Ok(())
         }
-        fn capability(&mut self, _: &[u8]) -> Result<(), Error> {
+        fn grant(&mut self, _: &[u8]) -> Result<(), Error> {
             self.0 = self.0.checked_add(1).ok_or(Error::Capacity)?;
+            Ok(())
+        }
+        fn member(&mut self, _: &str, _: &[u8]) -> Result<(), Error> {
             Ok(())
         }
     }
@@ -152,17 +122,19 @@ pub(super) fn collect<R: RoomRead>(
     output.pay(
         count
             .0
-            .checked_mul(size_of::<CapOverride>())
+            .checked_mul(size_of::<Grant>())
             .ok_or(Error::Capacity)?,
     )?;
-    let mut caps = Vec::new();
-    caps.try_reserve_exact(count.0)
+    let mut grants = Vec::new();
+    grants
+        .try_reserve_exact(count.0)
         .map_err(|_| Error::Capacity)?;
     let key = key_text(source);
     let key = key.as_str();
     let mut collect = Collect {
         owner: None,
-        caps,
+        members: BTreeMap::new(),
+        grants,
         identity: None,
         key,
         limits: JsonLimits {
@@ -175,7 +147,8 @@ pub(super) fn collect<R: RoomRead>(
     let identity = collect.identity.ok_or(Error::Absent)?;
     Ok(NativePolicy {
         owner: collect.owner,
-        caps: collect.caps,
+        members: collect.members,
+        grants: collect.grants,
         identity,
     })
 }

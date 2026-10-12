@@ -3,6 +3,30 @@
 set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 fail=0
+
+# This whole-tree audit needs the real staged manifest and assets, including
+# policy introduced after the branch point. It already recognizes exact blobs
+# inherited from either merge parent; the diff-only index below is not a tree.
+python3 "$root/tools/policy/check_source_content.py" --staged || fail=1
+
+# Merging main into a branch stages everything main changed since the branch
+# point, thousands of files that main's own checks already passed. The checks
+# below read the staged change through the index, so they run against a copy
+# of it in which every file staged exactly as the merged-in side has it is
+# back at HEAD: what is left is what the merge resolution itself changed.
+if merge_head=$(git rev-parse -q --verify MERGE_HEAD); then
+  merge_index=$(mktemp)
+  trap 'rm -f "$merge_index"' EXIT
+  cp "$(git rev-parse --git-path index)" "$merge_index"
+  differs_from_merged=$(git diff --cached --name-only "$merge_head")
+  taken_from_merged=$(git diff --cached --name-only HEAD \
+    | grep -vxF -f <(printf '%s\n' "$differs_from_merged") || true)
+  if [ -n "$taken_from_merged" ]; then
+    printf '%s\n' "$taken_from_merged" \
+      | GIT_INDEX_FILE="$merge_index" git reset -q HEAD --pathspec-from-file=- --
+  fi
+  export GIT_INDEX_FILE="$merge_index"
+fi
 note() { printf '  %s\n' "$*" >&2; }
 
 # Every crate on disk must be a workspace member.
@@ -11,6 +35,7 @@ python3 "$root/tools/policy/check_app_text_contract.py"
 python3 "$root/tools/policy/check_shell_copy_contract.py"
 python3 "$root/tools/policy/check_ui_host_inputs_contract.py"
 python3 "$root/tools/policy/check_ui_clock_contract.py"
+python3 "$root/tools/policy/check_settings_writes.py" || fail=1
 python3 "$root/tools/policy/check_integration_test_modules.py" || fail=1
 python3 "$root/tools/policy/check_too_many_arguments.py" || fail=1
 

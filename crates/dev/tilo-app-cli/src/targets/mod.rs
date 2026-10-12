@@ -415,6 +415,81 @@ pub fn build(start: &Path, request: &TargetRequest) -> Result<BuildOutcome> {
     build_project(&project, request)
 }
 
+/// Assemble a macOS bundle from existing inputs, without compiling, signing,
+/// executing, or notarizing them. The caller validates the supplied executable
+/// architecture, linkage and eventual signatures before distribution.
+///
+/// # Errors
+///
+/// Refuses failed platform/capability checks, missing inputs, unsafe bundle
+/// names, and existing output directories. Uses the normal SDK assembler.
+pub fn assemble_macos(
+    start: &Path,
+    binary: &Path,
+    runtime_host: &Path,
+    output: &Path,
+) -> Result<PathBuf> {
+    let project = Project::load(start)?;
+    for note in check_target(&project, Target::Macos, false)? {
+        eprintln!("{note}");
+    }
+    assemble_macos_project(&project, binary, runtime_host, output)
+}
+
+fn assemble_macos_project(
+    project: &Project,
+    binary: &Path,
+    runtime_host: &Path,
+    output: &Path,
+) -> Result<PathBuf> {
+    // Assembly follows the app catalog's declared entrypoint. A Cargo package
+    // may have a differently named binary without setting `default-run`.
+    let mut project = project.clone();
+    project.bin = project
+        .manifest
+        .entrypoint
+        .as_ref()
+        .context("manifest has no entrypoint to assemble")?
+        .bin
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .context("manifest entrypoint has no executable filename")?
+        .to_owned();
+    if project.bin.eq_ignore_ascii_case(macos::RUNTIME_HOST) {
+        bail!("app executable collides with reserved macOS runtime helper name");
+    }
+    for name in [project.display_name(), project.bin.clone()] {
+        if name.is_empty()
+            || matches!(name.as_str(), "." | "..")
+            || name.contains(['/', '\\', '\0'])
+        {
+            bail!("invalid macOS bundle/executable name: {name:?}");
+        }
+    }
+    for input in [binary, runtime_host] {
+        if !std::fs::symlink_metadata(input)?.file_type().is_file() {
+            bail!("bundle input must be a regular file: {}", input.display());
+        }
+    }
+    if output.try_exists()? || std::fs::symlink_metadata(output).is_ok() {
+        bail!("output already exists: {}", output.display());
+    }
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let work = tempfile::Builder::new()
+        .prefix(".macos-assemble-")
+        .tempdir_in(parent)?;
+    let app = macos::assemble(&project, binary, runtime_host, work.path())?;
+    let name = app
+        .file_name()
+        .context("assembled bundle has no filename")?
+        .to_owned();
+    std::fs::rename(work.path(), output).context("publishing unsigned bundle directory")?;
+    Ok(output.join(name))
+}
+
 fn build_project(project: &Project, request: &TargetRequest) -> Result<BuildOutcome> {
     for note in check_target(project, request.target, request.allow_planned)? {
         eprintln!("{note}");
@@ -515,6 +590,7 @@ pub fn package(start: &Path, request: &TargetPackageRequest) -> Result<PathBuf> 
             let outcome = crate::package_app(
                 start,
                 &crate::PackageRequest {
+                    sdk: None,
                     output: request.output.clone(),
                     identity: request.identity.clone(),
                     profile: None,

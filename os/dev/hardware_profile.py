@@ -14,7 +14,7 @@ DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
-OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args"}
+OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan"}
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
 DEFAULT_TARGET_IMGREF = "registry.tilo.so/tilo/tilo:latest"
@@ -31,8 +31,9 @@ def validate_target_imgref(value, *, root=None):
         if isinstance(value, str) and re.fullmatch(
             r"registry\.tilo\.so/tilo/tilo-vm(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
         ):
-            # Current tilo-vm images intentionally admit unsigned development
-            # updates. Both immutable flavour and the repository's actual
+            # Ordinary tilo-vm images admit unsigned development updates;
+            # opt-in signed boards tighten that scope to the existing OS key.
+            # Both immutable flavour and the repository's actual
             # policy must agree; a live medium or environment variable alone
             # cannot enable this origin for a production target.
             flavour = trusted_path(root, Path("usr/lib/tilo/image-flavour"), regular=True)
@@ -43,8 +44,12 @@ def validate_target_imgref(value, *, root=None):
                 raise ValueError("development container policy is too large")
             admission = json.loads(policy.read_bytes()).get("transports", {}).get("docker", {}).get(
                 "registry.tilo.so/tilo/tilo-vm")
-            if admission != [{"type": "insecureAcceptAnything"}]:
+            signed = [{"type": "sigstoreSigned", "keyPath": "/usr/share/tilo/cosign.pub",
+                       "signedIdentity": {"type": "matchRepository"}}]
+            if admission not in ([{"type": "insecureAcceptAnything"}], signed):
                 raise ValueError("tilo-vm update origin requires its development repository policy")
+            if admission == signed:
+                trusted_path(root, Path("usr/share/tilo/cosign.pub"), regular=True)
             return value
     # Board images carry private firmware and follow the forge's private
     # repository; every other image follows the public one. Both require
@@ -268,6 +273,12 @@ def validate_definition(data):
         seen_modules.add(name)
     if type(data.get("always_on", False)) is not bool:
         raise ValueError("hardware definition always_on must be a boolean")
+    if "wifi_wake_on_wlan" in data:
+        # This is a reviewed hardware safety policy, not a generic wake editor.
+        if (type(data["wifi_wake_on_wlan"]) is not int or data["wifi_wake_on_wlan"] != 0
+                or data["id"] != "lenovo-83ed" or data["architecture"] != "aarch64"
+                or data["devicetree"] != "qcom/x1e80100-lenovo-yoga-slim7x.dtb"):
+            raise ValueError("Wi-Fi wake policy requires the Lenovo 83ED definition and disabled WoWLAN")
     kernel_args = data.get("kernel_args", [])
     if not isinstance(kernel_args, list) or len(kernel_args) > 16:
         raise ValueError("hardware definition kernel arguments must be a bounded list")

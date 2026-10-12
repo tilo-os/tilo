@@ -55,12 +55,11 @@ same target-side authorization path.
 
 ## Multiple servers
 
-`mesh::place` filters offline, saturated, uncertified/ineligible, wrong-workspace
-and wrong-app servers, then uses stable weighted rendezvous placement. The same
-request stays on the same server while it remains healthy; different clients,
-workspaces and apps distribute naturally; requesting multiple replicas yields
-distinct hosts. Capacity, latency and operator priority are bounded routing
-signals rather than authorization.
+Hosts are chosen by configuration, not ranked: a relay serves the workspaces
+bound in its `relay.toml`, and a client reaches the home peers it registered.
+There is no placement function choosing among candidate servers yet; one should
+arrive together with a producer of live load and latency advertisements, not
+ahead of it.
 
 The first workloads are workspace replication, content residency, inbound
 collaboration/chat relay and remote-control relay. Sandboxed compute uses a
@@ -81,16 +80,29 @@ digest that the requester cannot retrieve.
   runtimes consume the resolved resource set.
 - Reachability discovery produces `ServerAdvertisement` values only after the
   peer's device certificate and same-identity/workspace relationship verify.
-- The remote-control client first tries the target directly, then requests a
-  `RemoteControl` placement and tunnels the existing encrypted session through
-  the selected relay.
-- The compute worker consumes `Compute` placements, executes only verified tapp
-  catalogue entrypoints, and retains exact requester/worker/workspace binding,
-  bounded diagnostics, cancellation and monotonic result attribution.
+- Remote control needs an exact-target route, which today means a direct path.
+  A workspace relay fans out to every member, so it is reported as the reason
+  control is unavailable and never carries input. Relayed exact-target control
+  is future work.
+- The requester names the compute worker. `admit_compute_job` checks that
+  worker's `ServerAdvertisement` (service, workspace, app, accelerator,
+  capacity, energy saver and `PowerAvailability::is_critically_constrained`).
+  The worker executes only verified tapp catalogue entrypoints, and retains
+  exact requester/worker/workspace binding, bounded diagnostics, cancellation
+  and monotonic result attribution.
 
 No new wire message was added to `tilo-relay/1`: adding an enum variant to the
 postcard protocol would make old peers reject the stream. Compute uses its own
 versioned ALPN so old relay peers keep their byte-compatible v1 stream.
+
+Device administration follows the same rule. `can_administer_devices` is a
+certificate capability like `foreign`: a certificate that grants it signs under
+its own preimage tag (`tilo-devcert-v3`) and encodes its capabilities behind a
+marker byte older verifiers refuse. Every certificate that does not grant it
+keeps its byte-identical encoding and signature, so no existing peer sees a
+change; only a machine enrolled for administration is refused by builds that
+predate it. Admin traffic travels on its own versioned ALPN,
+`tilo-device-admin/1` (docs/device-reach.md), never inside an existing stream.
 
 ## Personal device fabric
 
@@ -175,6 +187,24 @@ authorization.
   new viewer gets is a keyframe, held if it overtakes the stream start. Copy and paste ride the universal clipboard. The
   app keeps its normal lifecycle on the host, and its encoder stops with the
   last viewer.
+- **Staying awake and waking up.** An action from one of the person's own
+  devices (`actions invoke --device`) counts as use: it renews a 10-minute
+  suspend-only lease in the target session's inhibitor registry, so the
+  screen still blanks and locks and the lease lapses once the requests stop.
+  Each device's presence carries its wake routes (each interface's MAC as
+  the network sees it, Ethernet or Wi-Fi, whether a magic packet wakes it,
+  and the IPv4 subnet it was last seen on). Only an interface whose
+  magic-packet wake is actually enabled wakes a device; a Wi-Fi chip may
+  list WoWLAN while its machine does not wake from it, so the image enables
+  it only where that is verified. A device
+  without one cannot be woken over the network, and `device.wake` says so
+  instead of sending anything. The typed `device.wake` action
+  (provider `continuity.devices`, argument `device`: a label or device id)
+  picks a device that is awake on the target's last subnet, this one first.
+  That device sends the magic packet to UDP port 9 and probes the target
+  until it answers, then reports back. Without such a device the action
+  fails at once and names the subnet (`no awake device on 10.0.0.0/24`).
+  Waking is device administration and needs no optional continuity switch.
 - **Notifications** project only the app-authorized redacted or full payload.
   Dismiss and action replies return to the exact originating device instead of
   turning a mirrored notification into ambient remote-control authority.

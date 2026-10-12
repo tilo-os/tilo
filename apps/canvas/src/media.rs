@@ -2,6 +2,7 @@
 //! and the presets saved in this artwork, which travel with it.
 
 use std::collections::BTreeMap;
+use ui::num::f32_of_f64;
 
 use serde::{Deserialize, Serialize};
 use tilo_wet_media::{Engines, Pigment, Preset, Texture};
@@ -31,7 +32,7 @@ fn one() -> f64 {
 /// A medium: one of the built-in engines with its parameters, a suggested
 /// ground and a palette. Saving one makes it part of the artwork, shared
 /// with everyone who opens it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MediumSpec {
     /// Lowercase id, letters, digits and `-`.
     pub id: String,
@@ -50,14 +51,6 @@ pub struct MediumSpec {
     pub ground: Option<String>,
     #[serde(default)]
     pub palette: Vec<PigmentSpec>,
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "medium parameters are small bounded values"
-)]
-fn narrow(value: f64) -> f32 {
-    value as f32
 }
 
 impl MediumSpec {
@@ -95,7 +88,7 @@ impl MediumSpec {
             params: self
                 .params
                 .iter()
-                .map(|(id, value)| (id.clone(), narrow(*value)))
+                .map(|(id, value)| (id.clone(), f32_of_f64(*value)))
                 .collect(),
             ground: self.ground.as_deref().and_then(Texture::parse),
             palette: self.pigments(),
@@ -108,8 +101,8 @@ impl MediumSpec {
             .map(|pigment| Pigment {
                 name: pigment.name.clone(),
                 colour: pigment.colour.clone(),
-                granulation: narrow(pigment.granulation),
-                strength: narrow(pigment.strength),
+                granulation: f32_of_f64(pigment.granulation),
+                strength: f32_of_f64(pigment.strength),
             })
             .collect()
     }

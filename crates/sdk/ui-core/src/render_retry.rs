@@ -3,21 +3,18 @@
 use super::FrameOutcome;
 #[cfg(feature = "native")]
 use crate::time::Duration;
+#[cfg(feature = "native")]
 use crate::time::Instant;
 
 #[cfg(feature = "native")]
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 #[derive(Default)]
-#[cfg_attr(
-    not(feature = "native"),
-    allow(
-        dead_code,
-        reason = "some fields are read only by the native event-loop runner"
-    )
-)]
 pub(crate) struct RenderRetryState {
+    #[cfg(feature = "native")]
     deadline: Option<Instant>,
+    #[cfg(feature = "native")]
     occlusions: u8,
+    #[cfg(feature = "native")]
     probe: bool,
 }
 impl RenderRetryState {

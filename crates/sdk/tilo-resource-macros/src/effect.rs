@@ -7,12 +7,96 @@ use syn::{Data, DeriveInput, Fields};
 
 use crate::{doc_lines, humanize, krate, param_type, snake_case};
 
+/// A field's `#[param(…)]`: its description, after `secret,` when the
+/// argument is a secret (an invite, a password) the host keeps out of logs,
+/// history and confirmations, and then `choices = EXPR` when the values it
+/// takes are a fixed list (any expression yielding strings, such as a
+/// constant table). `place,` marks a place inside the resource
+/// (`at: Option<Place>`): the effect acts there instead of at the invoker's
+/// caret; `place = "field"` names the collection whose items it takes.
+#[derive(Default)]
+struct Param {
+    /// What the argument is beyond a value, by its leading flag.
+    flag: Flag,
+    /// The collection whose items the place names (`place = "blocks"`).
+    place_in: Option<String>,
+    description: Option<String>,
+    choices: Option<syn::Expr>,
+}
+
+/// A parameter's leading flag.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Flag {
+    #[default]
+    None,
+    /// A secret the host keeps out of logs, history and confirmations.
+    Secret,
+    /// Content another action produced, carried as its hash.
+    Content,
+    /// A place inside the resource.
+    Place,
+    /// A documented struct whose fields are the effect's arguments (the
+    /// effect's only field).
+    Flatten,
+}
+
+impl syn::parse::Parse for Param {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let mut param = Self::default();
+        if input.peek(syn::Ident) && !input.peek2(syn::Token![=]) {
+            let flag: syn::Ident = input.parse()?;
+            if flag == "flatten" {
+                param.flag = Flag::Flatten;
+            } else if flag == "secret" {
+                param.flag = Flag::Secret;
+            } else if flag == "place" {
+                param.flag = Flag::Place;
+            } else if flag == "content" {
+                param.flag = Flag::Content;
+            } else {
+                return Err(syn::Error::new(
+                    flag.span(),
+                    "expected `secret`, `content`, `place` or `flatten`",
+                ));
+            }
+            if input.is_empty() {
+                return Ok(param);
+            }
+            input.parse::<syn::Token![,]>()?;
+        }
+        if input.peek(syn::LitStr) {
+            param.description = Some(input.parse::<syn::LitStr>()?.value());
+            if input.is_empty() {
+                return Ok(param);
+            }
+            input.parse::<syn::Token![,]>()?;
+        }
+        let key: syn::Ident = input.parse()?;
+        input.parse::<syn::Token![=]>()?;
+        if key == "place" {
+            param.flag = Flag::Place;
+            param.place_in = Some(input.parse::<syn::LitStr>()?.value());
+            return Ok(param);
+        }
+        if key != "choices" {
+            return Err(syn::Error::new(
+                key.span(),
+                "expected `choices = ...` or `place = \"field\"`",
+            ));
+        }
+        param.choices = Some(input.parse()?);
+        Ok(param)
+    }
+}
+
 struct EnumOptions {
     operation: String,
+    device_only: bool,
 }
 
 fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
     let mut operation = None;
+    let mut device_only = false;
     for attr in input
         .attrs
         .iter()
@@ -22,8 +106,11 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
             if meta.path.is_ident("operation") {
                 operation = Some(meta.value()?.parse::<syn::LitStr>()?.value());
                 Ok(())
+            } else if meta.path.is_ident("device_only") {
+                device_only = true;
+                Ok(())
             } else {
-                Err(meta.error("expected `operation = \"...\"`"))
+                Err(meta.error("expected `operation = \"...\"` or `device_only`"))
             }
         })?;
     }
@@ -33,7 +120,10 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
             "name the effects' operation type: `#[effect(operation = \"app.effects\")]`",
         )
     })?;
-    Ok(EnumOptions { operation })
+    Ok(EnumOptions {
+        operation,
+        device_only,
+    })
 }
 
 #[derive(Default)]
@@ -49,9 +139,22 @@ struct VariantOptions {
     job: bool,
     cancellable: bool,
     returns: bool,
+    content: bool,
     destructive: bool,
     privileged: bool,
-    permission: Option<String>,
+    sensitive: bool,
+    /// `device_only` (or `device_only = true`) marks this effect device-only;
+    /// `device_only = false` exempts it from a vocabulary marked so.
+    device_only: Option<bool>,
+    risk: Option<syn::Path>,
+    programmatic: bool,
+    untrusted: bool,
+    participant: bool,
+    edit: bool,
+    kind: Option<String>,
+    /// The collection field whose items the effect is offered on, its first
+    /// field bound to the item's id.
+    item: Option<String>,
 }
 
 fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
@@ -60,8 +163,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("label") {
                 options.label = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-            } else if meta.path.is_ident("permission") {
-                options.permission = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+            } else if meta.path.is_ident("kind") {
+                options.kind = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else if meta.path.is_ident("view") {
                 options.view = true;
             } else if meta.path.is_ident("row") {
@@ -74,14 +177,38 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.cancellable = true;
             } else if meta.path.is_ident("returns") {
                 options.returns = true;
+            } else if meta.path.is_ident("content") {
+                options.content = true;
             } else if meta.path.is_ident("destructive") {
                 options.destructive = true;
             } else if meta.path.is_ident("privileged") {
                 options.privileged = true;
+            } else if meta.path.is_ident("sensitive") {
+                options.sensitive = true;
+            } else if meta.path.is_ident("device_only") {
+                options.device_only = Some(if meta.input.peek(syn::Token![=]) {
+                    meta.value()?.parse::<syn::LitBool>()?.value
+                } else {
+                    true
+                });
+            } else if meta.path.is_ident("risk") {
+                options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
+            } else if meta.path.is_ident("programmatic") {
+                options.programmatic = true;
+            } else if meta.path.is_ident("untrusted") {
+                options.untrusted = true;
+            } else if meta.path.is_ident("participant") {
+                options.participant = true;
+            } else if meta.path.is_ident("edit") {
+                options.edit = true;
+            } else if meta.path.is_ident("item") {
+                options.item = Some(meta.value()?.parse::<syn::Ident>()?.to_string());
             } else {
                 return Err(meta.error(
-                    "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, \
-                     `destructive`, `privileged`, `idempotent` or `permission`",
+                    "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
+                     `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
+                     `risk`, `programmatic`, `untrusted`, `participant`, `edit`, `item = field` \
+                     or `kind`",
                 ));
             }
             Ok(())
@@ -115,7 +242,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             "an effect vocabulary names at least one effect",
         ));
     }
-    let operation = enum_options(input)?.operation;
+    let EnumOptions {
+        operation,
+        device_only: all_device_only,
+    } = enum_options(input)?;
     let any_arguments = data
         .variants
         .iter()
@@ -144,26 +274,30 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             .collect::<Vec<_>>()
             .join(" ");
         if options.view
-            && (options.job || options.cancellable || options.destructive || options.privileged)
+            && (options.job
+                || options.cancellable
+                || options.destructive
+                || options.privileged
+                || options.sensitive)
         {
             return Err(syn::Error::new(
                 variant.span(),
                 "a `view` effect only changes what its caller sees: it answers at once and \
-                 asks no confirmation (drop `job`, `cancellable`, `destructive` and `privileged`)",
+                 asks no confirmation (drop `job`, `cancellable`, `destructive`, `privileged` and `sensitive`)",
             ));
         }
-        let permission = match options.permission.as_deref() {
+        let action_kind = match options.kind.as_deref() {
+            // An edit at the invoker's caret is an undoable change of the
+            // record, whatever else it is.
+            None if options.edit => quote!(Undoable),
             None if options.view => quote!(Read),
-            None | Some("write") => quote!(Write),
-            Some("none") => quote!(None),
+            None | Some("outside") => quote!(Outside),
             Some("read") => quote!(Read),
-            Some("comment") => quote!(Comment),
-            Some("invite") => quote!(Invite),
-            Some("admin") => quote!(Admin),
+            Some("undoable") => quote!(Undoable),
             Some(other) => {
                 return Err(syn::Error::new(
                     variant.span(),
-                    format!("unknown permission `{other}`"),
+                    format!("unknown kind `{other}`: `read`, `undoable` or `outside`"),
                 ));
             }
         };
@@ -176,15 +310,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     let field_ident = field.ident.clone().ok_or_else(|| {
                         syn::Error::new(field.span(), "named field without a name")
                     })?;
-                    let mut described = None;
+                    let mut param = Param::default();
                     for attr in field
                         .attrs
                         .iter()
                         .filter(|attr| attr.path().is_ident("param"))
                     {
-                        described = Some(attr.parse_args::<syn::LitStr>()?.value());
+                        param = attr.parse_args::<Param>()?;
                     }
-                    fields.push((field_ident, field.ty.clone(), described));
+                    fields.push((field_ident, field.ty.clone(), param));
                 }
             }
             Fields::Unnamed(_) => {
@@ -195,55 +329,149 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         }
 
+        let flattened = fields
+            .iter()
+            .any(|(_, _, described)| described.flag == Flag::Flatten);
+        if flattened && fields.len() != 1 {
+            return Err(syn::Error::new(
+                variant.span(),
+                "a `#[param(flatten)]` is the effect's only field: its fields are the arguments",
+            ));
+        }
         let params = fields.iter().map(|(field, ty, described)| {
+            if described.flag == Flag::Flatten {
+                return quote!(#krate::__private::flat_params(
+                    &<#ty as #krate::JsonSchema>::json_schema()
+                ));
+            }
             let param = field.to_string();
-            let description = described.clone().unwrap_or_else(|| humanize(&param));
-            let (param_ty, optional) = param_type(ty);
-            if optional {
+            let description = described
+                .description
+                .clone()
+                .unwrap_or_else(|| humanize(&param));
+            let (param_ty, optional) = param_type(ty, false);
+            let param_ty = if described.flag == Flag::Secret {
+                quote!(#krate::__private::ParamType::Secret)
+            } else {
+                param_ty
+            };
+            let declared = if optional {
                 quote!(#krate::__private::ActionParam::optional_owned(#param, #param_ty, #description))
             } else {
                 quote!(#krate::__private::ActionParam::required_owned(#param, #param_ty, #description))
-            }
+            };
+            let declared = match &described.choices {
+                Some(choices) => quote!(#declared.with_choices(#choices)),
+                None => declared,
+            };
+            let declared = if described.flag == Flag::Content {
+                quote!(#declared.as_content())
+            } else {
+                declared
+            };
+            let declared = match (&described.place_in, described.flag == Flag::Place) {
+                (Some(field), _) => quote!(#declared.as_place_in(#field)),
+                (None, true) => quote!(#declared.as_place()),
+                (None, false) => declared,
+            };
+            quote!(::std::vec![#declared])
         });
         let answers = if options.job || options.cancellable {
             let cancellable = options.cancellable;
-            quote!(#krate::effect::Answers::Later { cancellable: #cancellable })
+            let returns = options.returns;
+            quote!(#krate::effect::Answers::Later { cancellable: #cancellable, returns: #returns })
+        } else if options.content {
+            quote!(#krate::effect::Answers::Content)
         } else if options.returns {
             quote!(#krate::effect::Answers::Value)
         } else {
             quote!(#krate::effect::Answers::Nothing)
         };
-        let risk = match (options.destructive, options.privileged) {
-            (true, true) => {
+        let risk = match (options.destructive, options.privileged, options.sensitive) {
+            (true, false, false) => quote!(Destructive),
+            (false, true, false) => quote!(Privileged),
+            (false, false, true) => quote!(Sensitive),
+            (false, false, false) if options.view => quote!(None),
+            (false, false, false) => quote!(Low),
+            _ => {
                 return Err(syn::Error::new(
                     variant.span(),
-                    "an effect is `destructive` or `privileged`, not both",
+                    "an effect is one of `destructive`, `privileged` or `sensitive`",
                 ));
             }
-            (true, false) => quote!(Destructive),
-            (false, true) => quote!(Privileged),
-            (false, false) if options.view => quote!(None),
-            (false, false) => quote!(Low),
         };
         let idempotent = options.idempotent;
+        let device_only = options.device_only.unwrap_or(all_device_only);
+        let risk_of = if let Some(classify) = &options.risk {
+            quote! {
+                ::std::option::Option::Some(
+                    (|args: &#krate::__private::ActionArgs| -> #krate::__private::RiskLevel {
+                        match <Self as #krate::Effect>::decode(#id, &args.to_json()) {
+                            ::std::result::Result::Ok(effect) => #classify(&effect),
+                            ::std::result::Result::Err(_) => #krate::__private::RiskLevel::Destructive,
+                        }
+                    }) as fn(&#krate::__private::ActionArgs) -> #krate::__private::RiskLevel,
+                )
+            }
+        } else {
+            quote!(::std::option::Option::None)
+        };
         let row = options.row;
-        let kind = if options.view {
+        let programmatic = options.programmatic;
+        let untrusted = options.untrusted;
+        if options.participant && !options.view && !options.edit {
+            return Err(syn::Error::new(
+                variant.span(),
+                "`participant` declares a view of the invoking participant: add `view`",
+            ));
+        }
+        let participant = options.participant;
+        let edits = options.edit;
+        if options.item.is_some() && fields.is_empty() {
+            return Err(syn::Error::new(
+                variant.span(),
+                "an effect offered on items binds its first field to the item: give it one",
+            ));
+        }
+        let item = options.item.as_ref().map_or_else(
+            || quote!(::core::option::Option::None),
+            |field| quote!(::core::option::Option::Some(#field)),
+        );
+        let kind = if options.view || options.edit {
             quote!(View)
         } else {
             quote!(Effect)
         };
+        let params: Vec<Tokens> = params.collect();
+        let params_fn = if params.is_empty() {
+            quote!(#krate::effect::no_params)
+        } else {
+            quote!(|| {
+                let mut params: ::std::vec::Vec<#krate::__private::ActionParam> =
+                    ::std::vec::Vec::new();
+                #(params.extend(#params);)*
+                params
+            })
+        };
         decls.push(quote! {
-            #krate::effect::EffectDecl {
+            #krate::effect::EffectRow {
                 id: #id,
                 label: #label,
                 description: #description,
-                params: ::std::vec![#(#params),*],
+                params: #params_fn,
                 kind: #krate::__private::OperationKind::#kind,
                 row: #row,
                 answers: #answers,
                 risk: #krate::__private::RiskLevel::#risk,
                 idempotent: #idempotent,
-                permission: #krate::__private::PermissionRequirement::#permission,
+                action_kind: #krate::__private::ActionKind::#action_kind,
+                device_only: #device_only,
+                risk_of: #risk_of,
+                programmatic: #programmatic,
+                untrusted: #untrusted,
+                participant: #participant,
+                edits: #edits,
+                item: #item,
             }
         });
 
@@ -260,16 +488,36 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(Self::#ident { .. })
         };
         ids.push(quote!(#ignore => #id,));
+        let (encode, build) = if let Some(field) = field_idents.first().filter(|_| flattened) {
+            (
+                quote! {
+                    if let ::core::result::Result::Ok(#krate::__private::serde_json::Value::Object(fields)) =
+                        #krate::__private::serde_json::to_value(#field)
+                    {
+                        // An absent option is left out, as an argument not given.
+                        arguments.extend(fields.into_iter().filter(|(_, value)| !value.is_null()));
+                    }
+                },
+                quote!(Self::#ident {
+                    #field: #krate::__private::serde_json::from_value(
+                        #krate::__private::serde_json::Value::Object(::core::clone::Clone::clone(arguments)),
+                    )
+                    .map_err(|error| ::std::string::ToString::to_string(&error))?,
+                }),
+            )
+        } else if matches!(variant.fields, Fields::Unit) {
+            (quote!(), quote!(Self::#ident))
+        } else {
+            (
+                quote!(#(#krate::effect::put(&mut arguments, #field_names, #field_idents);)*),
+                quote!(Self::#ident { #(#field_idents: #krate::effect::argument(arguments, #field_names)?,)* }),
+            )
+        };
         encodes.push(quote! {
             #pattern => {
-                #(#krate::effect::put(&mut arguments, #field_names, #field_idents);)*
+                #encode
             }
         });
-        let build = if matches!(variant.fields, Fields::Unit) {
-            quote!(Self::#ident)
-        } else {
-            quote!(Self::#ident { #(#field_idents: #krate::effect::argument(arguments, #field_names)?,)* })
-        };
         decodes.push(quote!(#id => ::core::result::Result::Ok(#build),));
 
         let const_ident = format_ident!("{}", snake_case(&ident.to_string()).to_uppercase());
@@ -297,7 +545,11 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             const OPERATION: &'static str = #operation;
 
             fn declarations() -> ::std::vec::Vec<#krate::effect::EffectDecl> {
-                ::std::vec![#(#decls),*]
+                #krate::effect::EffectDecl::of_rows(Self::__EFFECT_ROWS)
+            }
+
+            fn declaration(id: &str) -> ::core::option::Option<#krate::effect::EffectDecl> {
+                #krate::effect::EffectDecl::find_row(Self::__EFFECT_ROWS, id)
             }
 
             fn id(&self) -> &'static str {
@@ -329,6 +581,11 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         #[allow(dead_code, reason = "a control binds the effects it offers, not necessarily all")]
         impl #name {
             #(#consts)*
+
+            /// Every effect's declaration as a constant, read by one
+            /// function for every vocabulary.
+            #[doc(hidden)]
+            pub const __EFFECT_ROWS: &'static [#krate::effect::EffectRow] = &[#(#decls),*];
         }
     })
 }

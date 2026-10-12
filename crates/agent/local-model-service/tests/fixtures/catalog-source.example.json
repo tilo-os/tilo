@@ -42,6 +42,28 @@
       "required_memory_mib": 1024,
       "required_accelerator_mib": 0,
       "context_window": 4096
+    },
+    {
+      "id": "example/tiny-subject",
+      "label": "Example subject selection — fixture only",
+      "description": "Non-production in-process fixture; contains no usable ONNX graph.",
+      "revision": "1ca4078133443e49e81b02b730c32f9f0d3cb7baa913dc969aa49b019f9b6673",
+      "artifact": {
+        "file": "example-subject.onnx",
+        "url": "https://artifacts.example.invalid/tilo/tiny-subject/1ca4078133443e49e81b02b730c32f9f0d3cb7baa913dc969aa49b019f9b6673/model.onnx",
+        "sha256": "1ca4078133443e49e81b02b730c32f9f0d3cb7baa913dc969aa49b019f9b6673",
+        "size_bytes": 34
+      },
+      "artifact_format": "onnx_file",
+      "license_id": "Apache-2.0",
+      "license_url": "https://artifacts.example.invalid/tilo/tiny-subject/1ca4078133443e49e81b02b730c32f9f0d3cb7baa913dc969aa49b019f9b6673/LICENSE",
+      "requires_acceptance": true,
+      "installed_size_bytes": 34,
+      "allowed_runtimes": [],
+      "required_memory_mib": 512,
+      "required_accelerator_mib": 0,
+      "context_window": 0,
+      "segmentation": true
     }
   ]
 }

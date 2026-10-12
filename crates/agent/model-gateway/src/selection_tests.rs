@@ -36,6 +36,9 @@ fn save_case_config(case: &str) -> ProviderProtocol {
     profile.id = "test-provider".into();
     profile.endpoint = std::env::var("SELECTION_TEST_ENDPOINT").unwrap();
     profile.models = vec![agent_provider_config::ModelDescriptor::new("test-model")];
+    profile.credential = Some(agent_provider_config::SecretReference::provider_api_key(
+        &profile.id,
+    ));
     if case == "oversized-model" {
         profile.models[0].id = "x".repeat(257);
     } else if case == "control-model" {
@@ -166,10 +169,7 @@ fn run_case(test: &str, case: &str) -> Outcome {
         child_selection(&case);
         return Outcome::Child;
     }
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let nonce = tilo_clock::try_unix_now_ns().unwrap();
     let temp = TemporaryConfig(std::env::temp_dir().join(format!(
         "tilo-selection-{test}-{case}-{}-{nonce}",
         std::process::id()
