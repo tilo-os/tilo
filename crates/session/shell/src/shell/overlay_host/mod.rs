@@ -3949,6 +3949,15 @@ impl ShellOverlayHost {
         started
     }
 
+    /// Keep OS identification labels in the current shared display order.
+    pub(crate) fn number_identified_displays(
+        &mut self,
+        layout: &settings_store::person_displays::Layout,
+    ) {
+        self.display_identify
+            .number_by_shared_order(&self.outputs, layout);
+    }
+
     /// Ask the person to keep or revert display transaction `transaction`,
     /// which a layout tool applied. Settings and the Super+P sheet ask in
     /// their own UI; this is for changes from anywhere else.

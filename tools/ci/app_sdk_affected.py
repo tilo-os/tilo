@@ -10,6 +10,7 @@ closure (the shell, OS services, tools) skip the lanes.
 
 Prints `affected=true|false` and, with --github-output, appends it there.
 --lane linux audits unrelated app Rust source before omitting that native lane.
+--lane both emits both decisions from one observed source and metadata snapshot.
 """
 
 from __future__ import annotations
@@ -68,7 +69,8 @@ AUDITED_UNIT_MODULES = {
     "crates/session/shell/src/shell/frame_retained_tests.rs": (
         "crates/session/shell/src/shell/frame.rs",
         "crates/session/shell/Cargo.toml",
-        "b8927848596f1e71b64363e5f52f58958eff5377e99a5a73ac4a8c6b5ad4404b",
+        # Re-audited after adding the shared fs-protocol dependency.
+        "9718617b42874a28204ca0f73fa13303efaf40dc28b7970374c2553749fe1742",
     ),
     "crates/sdk/ui-core/src/app/bound_component_tests.rs": (
         "crates/sdk/ui-core/src/app/host.rs",
@@ -303,17 +305,22 @@ def main() -> int:
     parser.add_argument("--base", help="base commit/ref (defaults to HEAD^)")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--github-output", type=Path)
-    parser.add_argument("--lane", choices=("all", "linux"), default="all")
+    parser.add_argument("--lane", choices=("all", "linux", "both"), default="all")
     args = parser.parse_args()
     root = Path.cwd()
     base = comparison_merge_base(root, args.base, args.head)
-    hit, why = affected(root, changed_files(root, args.base, args.head), cargo_metadata(root),
-                        base, args.head, args.lane)
-    output = "linux_affected" if args.lane == "linux" else "affected"
-    print(f"{output}={'true' if hit else 'false'}" + (f"  # {why}" if why else ""))
+    changed = changed_files(root, args.base, args.head)
+    metadata = cargo_metadata(root)
+    lanes = ("all", "linux") if args.lane == "both" else (args.lane,)
+    decisions = []
+    for lane in lanes:
+        hit, why = affected(root, changed, metadata, base, args.head, lane)
+        output = "linux_affected" if lane == "linux" else "affected"
+        decisions.append(f"{output}={'true' if hit else 'false'}")
+        print(decisions[-1] + (f"  # {why}" if why else ""))
     if args.github_output:
         with args.github_output.open("a") as out:
-            out.write(f"{output}={'true' if hit else 'false'}\n")
+            out.write("\n".join(decisions) + "\n")
     return 0
 
 

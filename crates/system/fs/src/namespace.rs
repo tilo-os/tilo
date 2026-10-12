@@ -2940,12 +2940,11 @@ impl Namespace {
     pub fn export_document(
         &self,
         ino: u64,
-        registry: &tilo_doc_codecs::Registry,
         content: &dyn tilo_content::ContentSource,
     ) -> Option<Vec<u8>> {
         let id = self.ino_to_id.get(&ino)?.clone();
         let codec = str_at(&self.doc, &self.node(&id)?, "codec")?;
-        let provider = registry.provider_for_ext(&codec)?;
+        let provider = tilo_doc_codecs::provider_for_ext(&codec)?;
         let root = self.document_root(&id)?;
         let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
         provider
@@ -2965,7 +2964,6 @@ impl Namespace {
     pub fn import_document(
         &mut self,
         ino: u64,
-        registry: &tilo_doc_codecs::Registry,
         bytes: &[u8],
         mtime: u64,
         content: &tilo_content::ContentStore,
@@ -2979,7 +2977,7 @@ impl Namespace {
         let Some(codec) = str_at(&self.doc, &node, "codec") else {
             return false;
         };
-        let Some(provider) = registry.provider_for_ext(&codec) else {
+        let Some(provider) = tilo_doc_codecs::provider_for_ext(&codec) else {
             return false;
         };
         // Parse into a throwaway document first — a malformed input must never destroy existing content.
@@ -4573,15 +4571,14 @@ mod tests {
     fn documents_import_export_and_merge_semantically() {
         // Phase `document_import_export_roundtrips`.
         {
-            let reg = tilo_doc_codecs::builtin_registry();
             let mut ns = Namespace::new("a").unwrap();
             let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
             assert_eq!(ns.document_codec(ino).as_deref(), Some("md"));
 
             let md = b"# Title\n\nHello world\n";
-            assert!(ns.import_document(ino, &reg, md, 2, &tilo_content::ContentStore::memory()));
+            assert!(ns.import_document(ino, md, 2, &tilo_content::ContentStore::memory()));
             let out = ns
-                .export_document(ino, &reg, &tilo_content::NoContent)
+                .export_document(ino, &tilo_content::NoContent)
                 .expect("export");
             let s = String::from_utf8_lossy(&out);
             assert!(
@@ -4591,34 +4588,27 @@ mod tests {
         }
         // Phase `failed_import_preserves_existing_document`.
         {
-            let reg = tilo_doc_codecs::builtin_registry();
             let mut ns = Namespace::new("a").unwrap();
             let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
             assert!(ns.import_document(
                 ino,
-                &reg,
                 b"# Keep\n\nimportant\n",
                 2,
                 &tilo_content::ContentStore::memory()
             ));
-            let before = ns
-                .export_document(ino, &reg, &tilo_content::NoContent)
-                .unwrap();
+            let before = ns.export_document(ino, &tilo_content::NoContent).unwrap();
 
             // invalid UTF-8 is rejected by the markdown codec
             assert!(
                 !ns.import_document(
                     ino,
-                    &reg,
                     &[0xff, 0xfe, 0x00],
                     3,
                     &tilo_content::ContentStore::memory()
                 ),
                 "malformed import must be rejected"
             );
-            let after = ns
-                .export_document(ino, &reg, &tilo_content::NoContent)
-                .unwrap();
+            let after = ns.export_document(ino, &tilo_content::NoContent).unwrap();
             assert_eq!(
                 before, after,
                 "existing document must survive a rejected import"
