@@ -429,6 +429,7 @@ suites = [
   "scripts/vm-acceptance/test_app_cohort.py",
   "scripts/vm-acceptance/test_store_chooser.py",
   "scripts/vm-acceptance/test_runtime_backing.py",
+  "scripts/vm-acceptance/test_component_replacement.py",
   "scripts/vm-acceptance/test_lock_guard.py",
   "scripts/vm-acceptance/test_dialog_guard.py",
   "scripts/vm-acceptance/test_device_fidelity.py",

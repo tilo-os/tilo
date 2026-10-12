@@ -323,6 +323,7 @@ members = [
     "crates/system/desktop-policy",
     "crates/system/content",
     "crates/system/durable-store",
+    "crates/system/endpoint-reachability",
     "crates/system/fs",
     "crates/system/fs-content",
     "crates/system/fs-protocol",

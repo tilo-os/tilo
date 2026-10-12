@@ -14252,7 +14252,6 @@ dependencies = [
  "iroh-base",
  "iroh-gossip",
  "iroh-mdns-address-lookup",
- "iroh-relay",
  "launcher",
  "legacy-agent-protocol",
  "libc",
@@ -14330,6 +14329,7 @@ dependencies = [
  "tilo-dialogs",
  "tilo-doc",
  "tilo-doc-codecs",
+ "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-identity-ceremony",
  "tilo-identity-host",
@@ -16788,6 +16788,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-endpoint-reachability"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "iroh-relay",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-environment"
 version = "0.1.0"
 dependencies = [
@@ -16934,6 +16946,7 @@ dependencies = [
  "tilo-content",
  "tilo-doc",
  "tilo-doc-codecs",
+ "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-nm",
  "tilo-power-mgmt",

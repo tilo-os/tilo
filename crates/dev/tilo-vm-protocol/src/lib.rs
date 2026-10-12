@@ -858,6 +858,10 @@ pub struct SlotShowResult {
     pub slot: SlotInfo,
     /// Every file and symlink, grouped by component, sorted by path.
     pub files: Vec<SlotFile>,
+    /// Import provenance of the selected layers, keyed by component. Missing
+    /// metadata stays missing; callers must not infer a source from the request.
+    #[serde(default)]
+    pub provenance: std::collections::BTreeMap<String, Provenance>,
 }
 
 /// One file a layer puts into the slot's view of the system.
