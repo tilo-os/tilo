@@ -168,7 +168,10 @@ impl CollaboratorsModel<'_> {
 }
 
 /// Floor for a roster row: three caption lines plus a margin.
-const ROW_MIN_H: f64 = 56.0;
+const ROW_MIN_H: f64 = 44.0;
+
+/// Narrowest the quiet follow control reserves at a row's trailing edge.
+const FOLLOW_MIN_W: f64 = 56.0;
 
 struct RowFrame<'a> {
     row: &'a RosterRow,
@@ -1103,7 +1106,7 @@ impl CollaboratorsOverlay {
         let height = self.follow_height.max(MIN_TARGET);
         let top = y + (self.row_h() - height) / 2.0;
         Rect::new(
-            panel.x1 - 12.0 - self.follow_width.max(76.0),
+            panel.x1 - 12.0 - self.follow_width.max(FOLLOW_MIN_W),
             top,
             panel.x1 - 12.0,
             top + height,
@@ -1767,17 +1770,18 @@ impl CollaboratorsOverlay {
             self.mode_height
         };
         self.status_block_height =
-            2.0 + self.status_height + 4.0 + sharing_height + f64::from(theme.tokens.spacing.s3);
-        self.follow_height = ButtonFace::height(ControlSize::Large, theme);
-        self.row_height = (self.follow_height + 12.0).max(ROW_MIN_H);
+            2.0 + self.status_height + 4.0 + sharing_height + f64::from(theme.tokens.spacing.s2);
+        self.follow_height = ButtonFace::height(ControlSize::Regular, theme);
+        self.row_height = (self.follow_height + 8.0).max(ROW_MIN_H);
         self.follow_width = ["people-panel-follow", "people-panel-stop-following"]
             .into_iter()
             .map(|key| {
                 ButtonFace::new(Rect::ZERO, &crate::i18n::t(key))
-                    .control_size(ControlSize::Large)
+                    .role(ui::widget::ButtonRole::Plain)
+                    .control_size(ControlSize::Regular)
                     .intrinsic_width(text, theme)
             })
-            .fold(76.0, f64::max);
+            .fold(FOLLOW_MIN_W, f64::max);
     }
 
     fn paint_status_field(
@@ -1899,6 +1903,16 @@ impl CollaboratorsOverlay {
                 &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 avatar,
             );
+        if !model.own_initial.is_alphabetic() {
+            // An identity with no letter to show (a bare key) would leave a
+            // blank disc; a person glyph says who it is instead.
+            Icon::User.draw(
+                scene,
+                transform,
+                avatar.inflate(-6.0, -6.0),
+                colors.surfaces.base,
+            );
+        }
         let spark = vello::kurbo::Circle::new(Point::new(avatar.x1 - 2.0, avatar.y1 - 2.0), 3.5);
         scene.stroke(
             &vello::kurbo::Stroke::new(2.0),
@@ -2181,7 +2195,7 @@ impl CollaboratorsOverlay {
         let label_x1 = if row.is_agent {
             self.panel.x1 - 142.0
         } else if row.followable {
-            self.panel.x1 - self.follow_width.max(76.0) - 20.0
+            self.panel.x1 - self.follow_width.max(FOLLOW_MIN_W) - 20.0
         } else {
             self.panel.x1 - 12.0
         };
@@ -2196,7 +2210,12 @@ impl CollaboratorsOverlay {
         } else {
             row.role.as_deref()
         };
-        let subtitle = if row.invited {
+        // Two lines at most, so a row stays one compact height: a person's own
+        // status, when set, is the second line; otherwise what they are doing.
+        let status_line = row.status.as_ref();
+        let subtitle = if status_line.is_some() && !row.invited {
+            None
+        } else if row.invited {
             Some(crate::i18n::t("people-panel-invited-tag"))
         } else if followed {
             row.activity.as_ref().map_or_else(
@@ -2217,9 +2236,8 @@ impl CollaboratorsOverlay {
         } else {
             None
         };
-        let lines = 1_usize
-            .saturating_add(usize::from(subtitle.is_some()))
-            .saturating_add(usize::from(row.status.is_some()));
+        let lines =
+            1_usize.saturating_add(usize::from(subtitle.is_some() || status_line.is_some()));
         let block_h = line_h * row_count_as_f64(lines);
         let top = row_y + (self.row_h() - block_h) / 2.0;
         let right = label_x1;
@@ -2272,7 +2290,7 @@ impl CollaboratorsOverlay {
         }
         let mut next_line = top + line_h;
         let detail_x1 = if row.followable {
-            self.panel.x1 - self.follow_width.max(76.0) - 20.0
+            self.panel.x1 - self.follow_width.max(FOLLOW_MIN_W) - 20.0
         } else {
             self.panel.x1 - 12.0
         };
@@ -2335,7 +2353,8 @@ impl CollaboratorsOverlay {
                 "people-panel-follow"
             });
             let face = ButtonFace::new(action, &label)
-                .control_size(ui::widget::ControlSize::Large)
+                .role(ui::widget::ButtonRole::Plain)
+                .control_size(ui::widget::ControlSize::Regular)
                 .pressed(
                     self.targets
                         .interaction(&format!("follow:{}", row.id))
