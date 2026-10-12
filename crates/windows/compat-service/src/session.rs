@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{IoSlice, IoSliceMut, Read, Write};
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -418,11 +418,32 @@ struct PeerCredentials {
 }
 
 fn peer_credentials(stream: &UnixStream) -> Result<PeerCredentials, SessionError> {
-    let credentials = rustix::net::sockopt::socket_peercred(stream)
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
         .map_err(|_| SessionError::UnauthenticatedPeer)?;
+    // Not rustix's `socket_peercred`: its `UCred` holds a non-zero `Pid`, and the
+    // kernel reports pid 0 for a peer outside this PID namespace.
+    // SAFETY: both pointers name initialized writable storage of `length`
+    // bytes and `stream` owns a valid Unix-domain socket descriptor.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(credentials).cast(),
+            std::ptr::addr_of_mut!(length),
+        )
+    };
+    if result != 0 || usize::try_from(length).ok() != Some(std::mem::size_of::<libc::ucred>()) {
+        return Err(SessionError::UnauthenticatedPeer);
+    }
     Ok(PeerCredentials {
-        pid: credentials.pid.as_raw_pid(),
-        uid: credentials.uid.as_raw(),
+        pid: credentials.pid,
+        uid: credentials.uid,
     })
 }
 
