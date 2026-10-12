@@ -291,7 +291,7 @@ impl ResourceSurface<Workspace, crate::actions::TypstEffect> for TypstApp {
                 std::iter::once(resource.clone()).chain(resource.children)
             })
             .find(|resource| resource.id.as_str() == id)
-            .map(crate::actions::live_row)
+            .map(ui::framework::LiveRow::from_resource)
     }
 }
 
