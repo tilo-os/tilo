@@ -13655,7 +13655,7 @@ mod tests {
 
     /// Automatic brightness is off by default, so on almost every desktop its
     /// worker has nothing to do: it waits for a settings change instead of
-    /// waking every 2 s (TIL-690 measured 0.5 wakeups/s on an idle desktop).
+    /// waking every 2 s (#3983 measured 0.5 wakeups/s on an idle desktop).
     #[test]
     fn auto_brightness_worker_sleeps_while_the_setting_is_off() {
         let source = std::sync::Arc::new(settings_store::HostDocument::new(
@@ -16025,7 +16025,6 @@ mod tests {
                 );
             attach_directory_fixture(&mut fixture.frame_builder, &directory);
             let (wake, woken) = loop_wake(&fixture.event_loop);
-            let _installed = crate::shell::search::invocation_wake::install(wake);
             let (mut conn, mut writer, mut reader) = control_client();
 
             let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
@@ -16051,6 +16050,12 @@ mod tests {
                 .dispatch(Some(Duration::ZERO), &mut fixture.state)
                 .expect("dispatch");
             woken.set(false);
+            // Install the loop's wake only now. The listings above start the
+            // local index workers, and a finished build wakes whichever loop
+            // was installed when it started; one landing after the clear
+            // above would read as the admission waking the loop early. The
+            // admission ticket takes this wake when the invocation makes it.
+            let _installed = crate::shell::search::invocation_wake::install(wake);
 
             let invoke = serde_json::json!({
                 "op": "actions_invoke",
