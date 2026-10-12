@@ -17,7 +17,7 @@ description = "Host services a Tilo UI process borrows from whatever hosts it."
 
 [features]
 # Thread-local chooser and URI backends a test selects for scoped requests.
-test-support = ["tilo-dialogs/test-support"]
+test-support = ["tilo-dialogs/test-support", "tilo-clock/test-support"]
 # The native desktop services (`native::services`): each platform crate's
 # system backend, speech, and the backends below. Without it the crate is the
 # host vocabulary only, and a host installs its own `host::HostServices`.
@@ -37,6 +37,8 @@ mpris = ["native", "dep:zbus", "dep:tilo-media"]
 notifications = ["native"]
 
 [dependencies]
+# The authenticated host updates the app process's portable network hints.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false }
 # Bounded reads of the host-selected read-only policy projection.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 hex.workspace = true

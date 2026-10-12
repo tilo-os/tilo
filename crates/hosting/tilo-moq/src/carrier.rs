@@ -253,13 +253,40 @@ pub async fn present(
 /// An admitted native `MoQ` session. Dropping it closes the session.
 pub struct Connected {
     pub session: moq_net::Session,
+    connection: quinn::Connection,
     task: tokio::task::JoinHandle<()>,
+}
+
+/// Content-free cumulative counters of one carrier's QUIC connection: what it
+/// costs on the wire (UDP payload bytes and datagrams) and the packet loss it
+/// measured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WireStats {
+    pub tx_bytes: u64,
+    pub tx_datagrams: u64,
+    pub rx_bytes: u64,
+    pub rx_datagrams: u64,
+    pub sent_packets: u64,
+    pub lost_packets: u64,
 }
 
 impl Connected {
     /// Resolves when the session closes, including after a revocation.
     pub async fn closed(&self) -> moq_net::Error {
         self.session.closed().await
+    }
+
+    /// This carrier's wire counters so far.
+    pub fn wire(&self) -> WireStats {
+        let stats = self.connection.stats();
+        WireStats {
+            tx_bytes: stats.udp_tx.bytes,
+            tx_datagrams: stats.udp_tx.datagrams,
+            rx_bytes: stats.udp_rx.bytes,
+            rx_datagrams: stats.udp_rx.datagrams,
+            sent_packets: stats.path.sent_packets,
+            lost_packets: stats.path.lost_packets,
+        }
     }
 }
 
@@ -306,6 +333,7 @@ pub async fn start(
     .map_err(|_| AdmissionError::Unavailable)?
     .map_err(|_| AdmissionError::Unavailable)?;
     let watched = session.clone();
+    let connection = (*transport).clone();
     let task = tokio::spawn(async move {
         let run = moq_net::time::run(driver);
         tokio::pin!(run);
@@ -319,7 +347,11 @@ pub async fn start(
         }
         transport.close(0, b"");
     });
-    Ok(Connected { session, task })
+    Ok(Connected {
+        session,
+        connection,
+        task,
+    })
 }
 
 /// Which server certificates a native client accepts.

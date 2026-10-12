@@ -577,13 +577,13 @@ fn windows_leaf_supported(name: &str) -> bool {
 
 #[cfg(any(windows, test))]
 #[derive(Debug, PartialEq, Eq)]
-struct WindowsDirectoryPath {
-    root: [u16; 3],
-    names: Vec<Vec<u16>>,
+pub(in crate::setup) struct WindowsDirectoryPath {
+    pub(in crate::setup) root: [u16; 3],
+    pub(in crate::setup) names: Vec<Vec<u16>>,
 }
 
 #[cfg(any(windows, test))]
-fn windows_directory_leaf_supported(name: &[u16]) -> bool {
+pub(in crate::setup) fn windows_directory_leaf_supported(name: &[u16]) -> bool {
     if name.is_empty()
         || name.len() > 255
         || matches!(name.last(), Some(0x20 | 0x2e))
@@ -619,7 +619,7 @@ fn windows_directory_leaf_supported(name: &[u16]) -> bool {
 }
 
 #[cfg(any(windows, test))]
-fn windows_directory_path(
+pub(in crate::setup) fn windows_directory_path(
     raw: impl IntoIterator<Item = u16>,
 ) -> Result<WindowsDirectoryPath, String> {
     // Validate raw units before Path::components can normalize aliases. One

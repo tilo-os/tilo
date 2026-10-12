@@ -206,14 +206,20 @@ class AppCollectionPublicationTests(unittest.TestCase):
 class DesktopPayloadPublicationTests(unittest.TestCase):
     def test_only_an_unpublishable_branch_dispatch_uses_the_cache(self):
         workflow_steps = steps(DESKTOP_WORKFLOW.read_text())
-        for name in ("Build and install-test unsigned candidate userspaces",
-                     "Build, install-test and sign protected desktop release userspaces"):
+        for name in ("Build and install-test unsigned candidate userspaces",):
             with self.subTest(step=name):
                 build = workflow_steps[name]
                 self.assertIn(
                     "TILO_ENABLE_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && "
                     "github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') "
                     "&& '1' || '0' }}", build)
+        # One unchanged cache predicate now covers both tag and candidate builds.
+        # Signing has a separate job and cannot start a second compilation graph.
+        build_job = DESKTOP_WORKFLOW.read_text().split("  package:\n", 1)[1].split("  sign-rpm:\n", 1)[0]
+        sign_job = DESKTOP_WORKFLOW.read_text().split("  sign-rpm:\n", 1)[1].split("  host-session-e2e:\n", 1)[0]
+        self.assertNotIn("secrets.TILO_RPM_SIGNING", build_job)
+        self.assertNotIn("run-package-job.sh", sign_job)
+        self.assertNotIn("TILO_ENABLE_REMOTE_CACHE", sign_job)
         job = (ROOT / "dist/ci/run-package-job.sh").read_text()
         disabled = job.split("if [[ ${TILO_ENABLE_REMOTE_CACHE:-0} == 1 ]]; then", 1)[1]
         disabled = disabled.split("    else\n", 1)[1].split("    fi\n", 1)[0]

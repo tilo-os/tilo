@@ -261,11 +261,6 @@ impl Core {
         }
     }
 
-    /// Whether the strip's shared scrollbar is mid-drag (for pointer capture).
-    pub fn hourly_scrollbar_dragging(&self) -> bool {
-        self.hourly_bar.is_dragging()
-    }
-
     fn hourly_metrics(&self) -> ScrollMetrics {
         ScrollMetrics::new(
             self.hourly_content_w,

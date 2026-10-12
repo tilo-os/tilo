@@ -14,11 +14,11 @@
 )]
 
 use std::cell::RefCell;
+use ui::num::usize_of_f64;
 
 use ui::TextRenderer;
 use ui::vello::kurbo::{Affine, Point};
 
-use crate::actions::CanvasAction;
 use crate::model::{Artwork, Matte};
 use crate::region::{Coverage, Op, Region};
 use crate::render::{Options, Renderer};
@@ -160,7 +160,7 @@ pub(crate) fn prepare_in(
     ) * Affine::translate((-view.x0, -view.y0));
     let at = select.at.map(|[x, y]| {
         let cell = to_cells * Point::new(x, y);
-        (index(cell.x), index(cell.y))
+        (usize_of_f64(cell.x), usize_of_f64(cell.y))
     });
     let current = if subject {
         None
@@ -360,15 +360,6 @@ fn short(revision: &str) -> &str {
     revision.get(..12).unwrap_or(revision)
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "checked to lie inside the picture before the cast"
-)]
-fn index(value: f64) -> usize {
-    value.floor().max(0.0) as usize
-}
-
 /// `using` as authored: masking (or clearing) by a refined edge, each
 /// picture on the layer it masks has the old background's colour taken out
 /// of its edge first, so the cut-out keeps no halo of it. The cleaned
@@ -377,9 +368,9 @@ fn index(value: f64) -> usize {
 ///
 /// # Errors
 /// Returns why a picture could not be read or cleaned.
-pub fn clean(using: UseSelection) -> Result<CanvasAction, String> {
+pub fn clean(using: &mut UseSelection) -> Result<(), String> {
     if !matches!(using.what.as_str(), "mask" | "clear") || using.defringe == Some(false) {
-        return Ok(CanvasAction::UseSelection(using));
+        return Ok(());
     }
     let pictures = crate::author::with_sight(|_, _, art| {
         let Some(matte) = art
@@ -410,13 +401,10 @@ pub fn clean(using: UseSelection) -> Result<CanvasAction, String> {
     })
     // Without a window there is nothing to clean with; the mask is still made.
     .unwrap_or_default();
-    if pictures.is_empty() {
-        return Ok(CanvasAction::UseSelection(using));
+    if !pictures.is_empty() {
+        using.cleaned = Some(pictures);
     }
-    Ok(CanvasAction::UseSelection(UseSelection {
-        cleaned: Some(pictures),
-        ..using
-    }))
+    Ok(())
 }
 
 /// A matte picture's coverage.

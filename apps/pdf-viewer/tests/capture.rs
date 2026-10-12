@@ -4,10 +4,9 @@
 use std::time::Duration;
 use tilo_content::ContentStore;
 use ui::framework::testing::TestApp;
-use ui::tilo_resource::Invoke;
 
 use pdf_viewer::PdfViewerShell;
-use pdf_viewer::actions::PdfViewerAction;
+use pdf_viewer::markup::{ImportedPage, PagePlanEntry};
 
 fn require_raster_worker(path: &std::path::Path) {
     use pdf_viewer::source::{RasterEvent, RasterHandle};
@@ -46,7 +45,7 @@ fn capture_waits_for_production_visual_work() {
     );
     let opened = std::fs::read(&path).expect("opened bytes");
     assert_eq!(
-        app.state().source.map(|source| source.hash),
+        app.state().pinned_source().map(|source| source.hash),
         Some(tilo_content::hash_bytes(&opened)),
         "the record pins the bytes its markup is made against"
     );
@@ -67,24 +66,21 @@ fn capture_waits_for_production_visual_work() {
         !content.has(&hash),
         "the imported payload must be absent before exercising hydration"
     );
-    app.invoke(
-        Invoke::apply(&PdfViewerAction::ImportPages {
-            after_id: Some("source-1".into()),
-            pages: vec![pdf_viewer::doc::PagePlanEntry {
-                id: "late-import".into(),
-                source_page: 1,
-                imported: Some(pdf_viewer::doc::ImportedPage {
-                    hash: hash.clone(),
-                    kind: "pdf".into(),
-                    page: 1,
-                    width_milli: 612_000,
-                    height_milli: 792_000,
-                }),
-                rotation: 0,
-            }],
-        })
-        .expect("an import action"),
-    )
+    app.invoke(pdf_viewer::actions::import_pages_action(
+        Some("source-1"),
+        vec![PagePlanEntry {
+            id: "late-import".into(),
+            source_page: 1,
+            imported: Some(ImportedPage {
+                hash: hash.clone(),
+                kind: "pdf".into(),
+                page: 1,
+                width_milli: 612_000,
+                height_milli: 792_000,
+            }),
+            rotation: 0,
+        }],
+    ))
     .expect("the owner imports pages");
     app.harness().relayout();
     assert!(

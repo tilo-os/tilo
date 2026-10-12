@@ -125,8 +125,21 @@ fn receive(origin: Arc<Origin>, path: &'static str, got: Log) -> tokio::task::Jo
             .await
             .unwrap();
         while let Ok(Some(datagram)) = track.recv_datagram().await {
-            let sequence = VoiceObject::decode(&datagram.payload).unwrap().sequence;
-            got.lock().unwrap().push((sequence, Instant::now()));
+            // The relay adds earlier objects to a datagram while it measures
+            // loss on this downlink (a loaded runner can show some on
+            // loopback): log each object once, oldest first, as a receiver
+            // plays it.
+            for object in tilo_moq::voice::bundle_objects(&datagram.payload)
+                .unwrap()
+                .into_iter()
+                .rev()
+            {
+                let sequence = VoiceObject::decode(object).unwrap().sequence;
+                let mut got = got.lock().unwrap();
+                if got.iter().all(|(seen, _)| *seen != sequence) {
+                    got.push((sequence, Instant::now()));
+                }
+            }
         }
     })
 }

@@ -17,6 +17,8 @@
 //! the download continues in the background and the result arrives as a
 //! notification.
 
+mod semantic;
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -27,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
@@ -38,7 +41,7 @@ use ui::widget::{
     ProgressBar, Row, Scrollable, Section, Spacer, Spinner, Text, TextInput, Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -592,6 +595,7 @@ impl PressedActions {
 )]
 pub struct OnboardingView {
     flow: Onboarding,
+    semantic: Rc<RefCell<semantic::Snapshot>>,
     context: OnboardingContext,
     /// Existing metadata is authoritative when its keyring item is
     /// unavailable or its collaboration chain cannot be verified. Recovery
@@ -618,6 +622,10 @@ pub struct OnboardingView {
     /// `false` shows the post-mint backup step; `true` shows the concise
     /// desktop hand-off. Persisted separately so a crash cannot skip backup.
     identity_ready_page: bool,
+    /// This device joined the identity from another one and holds only its
+    /// public record: the root key stays on the approving device, so the
+    /// ready screen recommends no backup of this one.
+    joined_member: bool,
     /// Settings can reopen the proven backup ceremony for an existing
     /// identity. That is a short modal task, not a second first-login flow.
     portable_backup_only: bool,
@@ -676,6 +684,8 @@ pub struct OnboardingView {
     codec_status: CodecPackStatus,
     /// The install started from this page, until its unit returns.
     codec_running: Option<Receiver<Result<(), String>>>,
+    /// Terminal result of the actual setup worker, used by semantic receipts.
+    codec_worker_succeeded: Option<bool>,
     /// A refusal from systemd or polkit (the helper's own errors arrive in
     /// its status).
     codec_error: Option<String>,
@@ -867,6 +877,7 @@ impl OnboardingView {
     ) -> Self {
         Self {
             flow: Onboarding::new(),
+            semantic: Rc::default(),
             context,
             recovery_only: false,
             minter,
@@ -879,6 +890,7 @@ impl OnboardingView {
             backup_copy_form_open: false,
             backup_skip_acknowledged: false,
             identity_ready_page: false,
+            joined_member: false,
             portable_backup_only: false,
             progress_error: None,
             tour_page: None,
@@ -912,11 +924,21 @@ impl OnboardingView {
             codec_page: false,
             codec_status: CodecPackStatus::default(),
             codec_running: None,
+            codec_worker_succeeded: None,
             codec_error: None,
             codec_changed: Arc::new(AtomicBool::new(false)),
             codec_watching: false,
             synced_at: Instant::now(),
         }
+    }
+
+    pub(crate) fn semantic_provider(&self) -> Rc<dyn crate::shell::search::SearchProvider> {
+        self.publish_semantic_state();
+        Rc::new(semantic::Provider::new(self))
+    }
+
+    fn publish_semantic_state(&self) {
+        *self.semantic.borrow_mut() = semantic::Snapshot::from_view(self);
     }
 
     /// Take `action` as though its button had been clicked. Review renderers
@@ -1110,6 +1132,7 @@ impl OnboardingView {
         match spawned {
             Ok(_) => {
                 self.codec_error = None;
+                self.codec_worker_succeeded = None;
                 self.codec_running = Some(rx);
             }
             Err(error) => {
@@ -1131,12 +1154,14 @@ impl OnboardingView {
         if let Some(events) = self.codec_running.as_ref() {
             match events.try_recv() {
                 Ok(result) => {
+                    self.codec_worker_succeeded = Some(result.is_ok());
                     self.codec_error = result.err();
                     self.codec_running = None;
                     changed = true;
                 }
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => {
+                    self.codec_worker_succeeded = Some(false);
                     self.codec_running = None;
                     changed = true;
                 }
@@ -1157,6 +1182,7 @@ impl OnboardingView {
         if let Some(events) = self.codec_running.as_ref()
             && let Ok(result) = events.recv()
         {
+            self.codec_worker_succeeded = Some(result.is_ok());
             self.codec_error = result.err();
             self.codec_running = None;
             self.codec_changed.store(true, Ordering::Release);
@@ -1214,6 +1240,7 @@ impl OnboardingView {
         self.backup_copy_form_open = false;
         self.backup_skip_acknowledged = false;
         self.identity_ready_page = false;
+        self.joined_member = false;
         self.portable_backup_only = true;
         self.progress_error = None;
         self.tour_page = None;
@@ -1246,6 +1273,7 @@ impl OnboardingView {
             .unwrap_or_else(|| identity_dir.join("primary.json"));
         match crate::onboarding::existing_identity_at(&identity_path) {
             Ok(identity) => {
+                self.joined_member = crate::onboarding::holds_no_identity_secret(&identity_path);
                 self.flow.resume_created(identity);
                 self.identity_ready_page = matches!(
                     stage,
@@ -1364,6 +1392,7 @@ impl OnboardingView {
         self.backup_was_verified = false;
         self.backup_copy_form_open = false;
         self.identity_ready_page = false;
+        self.joined_member = false;
         self.portable_backup_only = false;
         self.tour_page = None;
         self.tour_only = false;
@@ -2352,7 +2381,7 @@ impl OnboardingView {
         let path = TextInput::from_state(&self.connect_path)
             .with_id("onboarding.connect.path.field")
             .with_accessible_name(t("onboarding-connect-file"))
-            .with_placeholder(&t("onboarding-connect-file-placeholder"));
+            .with_placeholder(t("onboarding-connect-file-placeholder"));
         let passphrase = secret_input(
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,
@@ -2538,17 +2567,15 @@ impl OnboardingView {
                 vec![paragraph(&t("onboarding-done-next-body"), theme)],
             )))
             .push(Box::new(Section::titled(
-                if self.backup_was_verified {
-                    t("onboarding-done-backup-verified")
-                } else {
-                    t("onboarding-done-backup-recommended")
-                },
+                t(done_backup_title_key(
+                    self.joined_member,
+                    self.backup_was_verified,
+                )),
                 vec![paragraph_with_id(
-                    &if self.backup_was_verified {
-                        t("onboarding-done-backup-verified-body")
-                    } else {
-                        t("onboarding-done-backup-recommended-body")
-                    },
+                    &t(done_backup_body_key(
+                        self.joined_member,
+                        self.backup_was_verified,
+                    )),
                     theme,
                     "onboarding.done.backup-guidance",
                 )],
@@ -2694,6 +2721,29 @@ impl OnboardingView {
             .with_icon(ui::icons::Icon::ArrowRight)
             .role(ui::widget::ButtonRole::Primary);
         footer_actions(vec![Box::new(tour), Box::new(enter)])
+    }
+}
+
+/// The ready screen's backup heading. A device that joined from another one
+/// holds no root key, so nothing on it needs a backup.
+fn done_backup_title_key(joined_member: bool, backup_verified: bool) -> &'static str {
+    if joined_member {
+        "onboarding-done-joined-key-elsewhere"
+    } else if backup_verified {
+        "onboarding-done-backup-verified"
+    } else {
+        "onboarding-done-backup-recommended"
+    }
+}
+
+/// The ready screen's backup guidance under [`done_backup_title_key`].
+fn done_backup_body_key(joined_member: bool, backup_verified: bool) -> &'static str {
+    if joined_member {
+        "onboarding-done-joined-key-elsewhere-body"
+    } else if backup_verified {
+        "onboarding-done-backup-verified-body"
+    } else {
+        "onboarding-done-backup-recommended-body"
     }
 }
 
@@ -2979,23 +3029,7 @@ impl OnboardingView {
             // nothing — the edge does the separating (§9.3) — so the former
             // by-name high-contrast guard is not needed. Ground is
             // `panel_ground`, edge the derived Panel border.
-            let radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
-            ui::chrome::shell::panel_shadow(scene, transform, panel, radius, theme, 1.0);
-            let shape = RoundedRect::from_rect(panel, radius);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                ui::chrome::shell::panel_ground(theme),
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::chrome::shell::panel_border(theme),
-                None,
-                &shape,
-            );
+            ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         }
 
         let mut local = Scene::new();
@@ -3047,6 +3081,12 @@ impl OnboardingView {
 
 impl Drop for OnboardingView {
     fn drop(&mut self) {
+        let mut snapshot = self.semantic.borrow_mut();
+        snapshot.phase = if self.finished { "finished" } else { "closed" };
+        snapshot.failed = !self.finished;
+        snapshot.operations.clear();
+        snapshot.revision = snapshot.revision.wrapping_add(1);
+        drop(snapshot);
         self.nearby = None;
         clear_secret(&self.connect_passphrase);
         clear_secret(&self.backup_passphrase);
@@ -3256,8 +3296,15 @@ impl Widget for OnboardingView {
                 self.nearby = None;
                 self.nearby_code = None;
                 self.flow.complete_connected(identity);
-                self.identity_ready_page = false;
-                let _ = self.persist_progress(PersistedStage::IdentityReady);
+                // A joined device holds the identity's public record and a
+                // member certificate; its root key stays on the device that
+                // approved the join. There is nothing here to back up, and
+                // losing this device loses no identity, so first use ends on
+                // the ready screen instead of the backup step. The journal
+                // records the hand-off first, so a restart resumes there.
+                self.identity_ready_page = self.persist_progress(PersistedStage::ReadyToEnter);
+                self.joined_member = true;
+                self.codec_page = self.identity_ready_page && self.codec_step_offered;
                 self.error = None;
                 self.nearby_status = Some(t("onboarding-nearby-connected"));
                 self.invalidation.structure();
@@ -3578,6 +3625,7 @@ impl Widget for OnboardingView {
             self.invalidation.both();
             self.transition_started = Instant::now();
         }
+        self.publish_semantic_state();
     }
 
     fn build_layout(
@@ -3687,19 +3735,11 @@ impl Widget for OnboardingView {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
             && let Some(&cn) = children.first()
@@ -3978,7 +4018,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
-    use ui::widget::identity_flow::{IdentityRecord, SerializableIdentity};
+    use tilo_identity_ceremony::{IdentityRecord, SerializableIdentity};
     use winit::event::Modifiers;
 
     fn view() -> (OnboardingView, Arc<AtomicUsize>) {
@@ -4133,6 +4173,106 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_joined_identity_ends_first_use_on_the_ready_screen() {
+        // A device that joined from a nearby one holds a public record and a
+        // member certificate; the root key never leaves the approving device.
+        // Its first use ends where the person can enter the desktop, not on a
+        // backup step warning that losing this device loses the identity.
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let identity_dir = dir.path().join("identity");
+        std::fs::create_dir(&identity_dir).expect("identity dir");
+        std::fs::set_permissions(&identity_dir, std::fs::Permissions::from_mode(0o700))
+            .expect("private identity dir");
+        let record = identity_dir.join("identity-joined.json");
+        std::fs::write(
+            &record,
+            runtime_identity::public_member_record("Member", [1, 2, 3], [7; 32]).expect("record"),
+        )
+        .expect("write record");
+        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))
+            .expect("private record");
+        let status = identity_dir.join(".nearby-enrollment-status.json");
+        let complete = serde_json::json!({
+            "state": "complete",
+            "verification_code": "123456",
+            "identity": hex::encode([7; 32]),
+            "record_path": record,
+        });
+        let mut helper = Command::new("sh");
+        helper
+            .args(["-c", r#"printf '%s' "$2" > "$1"; exec sleep 30"#, "helper"])
+            .arg(&status)
+            .arg(complete.to_string());
+        let (mut view, _) = view();
+        view.identity_dir = Some(identity_dir.clone());
+        view.flow.begin_existing();
+        view.flow.choose_nearby();
+        view.nearby = Some(
+            crate::onboarding_nearby::NearbyPairing::spawn(
+                helper,
+                &identity_dir,
+                &status,
+                Duration::from_secs(600),
+            )
+            .expect("spawn helper"),
+        );
+        view.nearby_status_path = Some(status);
+        let doc = AutoCommit::new();
+        let deadline = tilo_test_env::hang_deadline();
+        while view.nearby.is_some() {
+            assert!(Instant::now() < deadline, "the join never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+            view.sync(&doc, &automerge::ROOT);
+        }
+
+        assert_eq!(view.flow.screen(), Screen::Done);
+        assert_eq!(view.error(), None);
+        assert_eq!(
+            load_progress(&identity_dir).expect("load progress"),
+            Some(PersistedStage::ReadyToEnter),
+            "a restart resumes at the ready screen"
+        );
+        let composition = view.build_composition(&Theme::dark(), PANEL_MAX_HEIGHT);
+        let mut names = Vec::new();
+        accessible_names(&*composition, &mut names);
+        assert!(
+            names.contains(&t("onboarding-done-title")),
+            "the joined device ends on the ready screen: {names:?}"
+        );
+        assert!(
+            accessibility_for_id(&*composition, "onboarding.backup.skip-acknowledged.box")
+                .is_none(),
+            "a joined device is not asked to back up an identity it does not hold"
+        );
+        let joined_guidance = |names: &[String]| {
+            assert!(
+                names.contains(&t("onboarding-done-joined-key-elsewhere"))
+                    && names.contains(&t("onboarding-done-joined-key-elsewhere-body")),
+                "the ready screen says the key stays on the approving device: {names:?}"
+            );
+            assert!(
+                !names.contains(&t("onboarding-done-backup-recommended")),
+                "a joined device is not told a backup is still recommended: {names:?}"
+            );
+        };
+        joined_guidance(&names);
+
+        // A restart resumes on the same ready screen, knowing the device
+        // joined from its identity record alone.
+        runtime_identity::set_active_identity(&identity_dir, "identity-joined")
+            .expect("select the joined identity");
+        let (mut resumed, _) = self::view();
+        resumed.identity_dir = Some(identity_dir);
+        resumed.restore_pending_progress_from_disk();
+        assert_eq!(resumed.flow.screen(), Screen::Done);
+        let composition = resumed.build_composition(&Theme::dark(), PANEL_MAX_HEIGHT);
+        let mut names = Vec::new();
+        accessible_names(&*composition, &mut names);
+        joined_guidance(&names);
+    }
+
     fn process_group_has_live_member(pgid: i32) -> bool {
         std::fs::read_dir("/proc").is_ok_and(|entries| {
             entries.flatten().any(|entry| {
@@ -4165,70 +4305,37 @@ mod tests {
     }
 
     fn escape_event() -> WindowEvent {
-        use winit::event::KeyEvent;
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-
         // winit keeps the platform field private. These inert placeholders
         // match the toolkit and greeter keyboard-event tests.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(NamedKey::Escape);
-        event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        event.location = KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(
+            Key::Named(NamedKey::Escape),
+            None,
+            ElementState::Pressed,
+        );
         WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         }
     }
 
     fn dispatch_escape(view: &mut OnboardingView, document: &mut AutoCommit) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy
-            .new_leaf(taffy::Style::default())
-            .expect("event target");
-        let mut handled = false;
-        let mut focus_target = None;
-        view.handle_event(
-            &escape_event(),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: ui::widget::Edits::lend(document),
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .doc(document)
+            .send(view, &escape_event())
+            .handled
     }
 
     fn pointer_event(position: Point) -> WindowEvent {
         WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(position.x, position.y),
         }
     }
 
-    fn primary_press_event() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_press;
 
-    fn primary_release_event() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: winit::event::MouseButton::Left,
-        }
-    }
+    use ui::synthetic_input::mouse_release;
 
     fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
         if let Some(name) = widget.accessibility().and_then(|node| node.name) {
@@ -4240,13 +4347,7 @@ mod tests {
     }
 
     fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<ui::a11y::AccessNode> {
-        if widget.test_id() == Some(id) {
-            return widget.accessibility();
-        }
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| accessibility_for_id(child, id))
+        ui::widget::find_test_id(widget, id)?.accessibility()
     }
 
     fn write_fixture_identity(directory: &std::path::Path) {
@@ -6362,11 +6463,11 @@ mod tests {
                 )
                 .expect("host acknowledgement layout");
             view.apply_layout(&taffy, node, Point::ZERO);
-            let row = node_map
-                .values()
-                .find_map(|&pointer| unsafe {
+            let (row_node, row) = node_map
+                .iter()
+                .find_map(|(&node, &pointer)| unsafe {
                     ((*pointer).test_id() == Some("onboarding.understood.row"))
-                        .then(|| (*pointer).get_rect())
+                        .then(|| (node, (*pointer).get_rect()))
                 })
                 .expect("labelled acknowledgement row");
             let label_point = Point::new(row.x1 - 8.0, row.center().y);
@@ -6376,7 +6477,7 @@ mod tests {
             );
 
             let mut focus = None;
-            for event in [pointer_event(label_point), primary_press_event()] {
+            for event in [pointer_event(label_point), mouse_press()] {
                 let mut handled = false;
                 view.handle_event(
                     &event,
@@ -6391,7 +6492,19 @@ mod tests {
                         taffy: &taffy,
                     },
                 );
-                assert!(handled, "the labelled checkbox row must handle {event:?}");
+                if matches!(event, WindowEvent::CursorMoved { .. }) {
+                    assert!(
+                        !handled,
+                        "hover movement must remain available to sibling controls"
+                    );
+                } else {
+                    assert!(handled, "the labelled checkbox row must handle {event:?}");
+                    assert_eq!(
+                        focus,
+                        Some(row_node),
+                        "the label press must focus the acknowledgement checkbox"
+                    );
+                }
             }
             view.settle(
                 &mut ui::widget::Edits::lend(&mut document),
@@ -6455,8 +6568,8 @@ mod tests {
             let mut focus = None;
             for event in [
                 pointer_event(button.center()),
-                primary_press_event(),
-                primary_release_event(),
+                mouse_press(),
+                mouse_release(),
             ] {
                 let mut handled = false;
                 view.handle_event(
@@ -6472,7 +6585,12 @@ mod tests {
                         taffy: &taffy,
                     },
                 );
-                if !matches!(event, WindowEvent::CursorMoved { .. }) {
+                if matches!(event, WindowEvent::CursorMoved { .. }) {
+                    assert!(
+                        !handled,
+                        "hover movement must remain available to sibling controls"
+                    );
+                } else {
                     assert!(
                         handled,
                         "the backup continuation button must handle {event:?}"

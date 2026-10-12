@@ -11,25 +11,11 @@
 //! detection and disable-while-typing turned on alongside it to buy back what libinput was cautious about; the setting remains the user's to flip.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Duration;
 
 use settings_store::hardware::{InputDeviceKind, TouchpadClickMethod, TouchpadScrollMethod};
 
-/// Settings section these values live in.
-pub const SECTION: &str = "input";
-
-/// Settings section of [`AccessibilityInputSettings`].
-pub const ACCESSIBILITY_SECTION: &str = "accessibility";
-
-pub const NATURAL_SCROLL_KEY: &str = "natural_scroll";
-pub const TAP_TO_CLICK_KEY: &str = "tap_to_click";
-pub const POINTER_SPEED_KEY: &str = "pointer_speed";
-pub const KEY_REPEAT_KEY: &str = "key_repeat";
-/// Exact host-imported delay; a Tilo slider choice clears this pair.
-pub const KEY_REPEAT_DELAY_MS_KEY: &str = "key_repeat_delay_ms";
-/// Exact host-imported rate. Zero means repeat is disabled.
-pub const KEY_REPEAT_RATE_HZ_KEY: &str = "key_repeat_rate_hz";
+pub use settings_store::hardware::INPUT_SECTION as SECTION;
 
 /// Fully validated per-user XKB keymap request. The strings are ready for
 /// libxkbcommon's rules API: one comma-separated variant slot per layout,
@@ -90,9 +76,7 @@ impl KeyboardSettings {
     }
 
     pub fn load() -> Self {
-        let config = settings_store::hardware::RichInputConfig::from_section(
-            &settings_store::load_section(SECTION),
-        );
+        let config = settings_store::hardware::RichInputConfig::load();
         Self::from_config(&settings_store::keyboard_sources::current(&config))
     }
 
@@ -143,102 +127,6 @@ impl KeyboardSettings {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "accessibility toggles: each is an independent, named setting from a settings pane, not a state machine"
-)]
-pub struct AccessibilityInputSettings {
-    pub sticky_keys: bool,
-    pub slow_keys: bool,
-    /// Ignore a second press of the same key shortly after its release.
-    pub bounce_keys: bool,
-    /// The bounce-keys window in milliseconds.
-    pub bounce_keys_delay_ms: u32,
-    /// Flash the visual alert whenever bounce keys swallows a press.
-    pub bounce_keys_alert: bool,
-    /// The numeric keypad drives the pointer.
-    pub mouse_keys: bool,
-    pub large_cursor: bool,
-    pub cursor_size: u32,
-}
-
-impl Default for AccessibilityInputSettings {
-    fn default() -> Self {
-        Self {
-            sticky_keys: false,
-            slow_keys: false,
-            bounce_keys: false,
-            bounce_keys_delay_ms: settings_store::hardware::BOUNCE_KEYS_DEFAULT_DELAY_MS,
-            bounce_keys_alert: false,
-            mouse_keys: false,
-            large_cursor: false,
-            cursor_size: 24,
-        }
-    }
-}
-
-/// `accessibility` key the Shift+Alt+Num Lock chord flips.
-pub const MOUSE_KEYS_KEY: &str = settings_store::hardware::MOUSE_KEYS.name();
-
-impl AccessibilityInputSettings {
-    pub fn load() -> Self {
-        Self::from_section(&settings_store::load_section(ACCESSIBILITY_SECTION))
-    }
-
-    /// Parse the `accessibility` section; every field falls back to its
-    /// default on its own.
-    pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
-        let d = Self::default();
-        let bool_at = |key: &str, fallback: bool| {
-            section
-                .get(key)
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(fallback)
-        };
-        Self {
-            sticky_keys: bool_at("sticky_keys", d.sticky_keys),
-            slow_keys: bool_at("slow_keys", d.slow_keys),
-            bounce_keys: bool_at("bounce_keys", d.bounce_keys),
-            bounce_keys_delay_ms: section
-                .get("bounce_keys_delay_ms")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(d.bounce_keys_delay_ms)
-                .clamp(
-                    settings_store::hardware::BOUNCE_KEYS_MIN_DELAY_MS,
-                    settings_store::hardware::BOUNCE_KEYS_MAX_DELAY_MS,
-                ),
-            bounce_keys_alert: bool_at("bounce_keys_alert", d.bounce_keys_alert),
-            mouse_keys: bool_at(MOUSE_KEYS_KEY, d.mouse_keys),
-            large_cursor: bool_at("large_cursor", d.large_cursor),
-            cursor_size: section
-                .get("cursor_size")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|v| u32::try_from(v).ok())
-                .unwrap_or(d.cursor_size)
-                .clamp(24, 64),
-        }
-    }
-
-    /// The bounce-keys window, or zero when bounce keys is off.
-    pub fn bounce_window(self) -> Duration {
-        if self.bounce_keys {
-            Duration::from_millis(u64::from(self.bounce_keys_delay_ms))
-        } else {
-            Duration::ZERO
-        }
-    }
-
-    pub fn effective_cursor_size(self) -> u32 {
-        if self.large_cursor {
-            self.cursor_size.clamp(24, 64)
-        } else {
-            24
-        }
-    }
-}
-
 /// Slowest auto-repeat the `key_repeat` slider can select, in keys per second — below this, holding a key feels broken rather than slow.
 pub const REPEAT_RATE_MIN: u32 = settings_store::hardware::KEY_REPEAT_SLIDER_MIN_HZ;
 /// Fastest auto-repeat the slider can select, in keys per second.
@@ -256,13 +144,10 @@ pub const REPEAT_DELAY_MIN_MS: u32 = 200;
     reason = "persisted input toggles: each is an independent, named setting mirroring the Settings pane, not a state machine"
 )]
 pub struct InputSettings {
-    /// Legacy scrolling preference used when the device-specific fields are
-    /// absent in an older settings document.
-    pub natural_scroll: bool,
     /// Content-follows-finger scrolling for touchpads.
-    pub touchpad_natural_scroll: Option<bool>,
+    pub touchpad_natural_scroll: bool,
     /// Content-follows-finger scrolling for mice and trackballs.
-    pub mouse_natural_scroll: Option<bool>,
+    pub mouse_natural_scroll: bool,
     /// Tap the touchpad to click. **On** by default — see the module docs.
     pub tap_to_click: bool,
     /// Pointer acceleration, `0.0` (slowest) … `1.0` (fastest), `0.5` being libinput's neutral profile.
@@ -298,11 +183,8 @@ pub struct InputSettings {
 impl Default for InputSettings {
     fn default() -> Self {
         Self {
-            natural_scroll: false,
-            touchpad_natural_scroll: Some(
-                settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
-            ),
-            mouse_natural_scroll: Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL),
+            touchpad_natural_scroll: settings_store::hardware::DEFAULT_TOUCHPAD_NATURAL_SCROLL,
+            mouse_natural_scroll: settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL,
             tap_to_click: true,
             pointer_speed: 0.5,
             touchpad_pointer_speed: None,
@@ -328,70 +210,39 @@ impl Default for InputSettings {
 
 impl InputSettings {
     /// Parse the `input` section of a settings document. Every field falls back to its default
-    /// independently, so a document that only sets `tap_to_click` leaves the rest alone, and a wrong-typed value is treated as absent rather than discarding the whole section.
+    /// independently (see [`RichInputConfig::from_section`]); the slider values are then clamped
+    /// into range and the exact repeat pair bounded to what a keyboard can sensibly do.
+    ///
+    /// [`RichInputConfig::from_section`]: settings_store::hardware::RichInputConfig::from_section
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {
         let d = Self::default();
-        let legacy_natural_scroll = section
-            .get(NATURAL_SCROLL_KEY)
-            .and_then(serde_json::Value::as_bool);
+        let config = settings_store::hardware::RichInputConfig::from_section(section);
+        let unit = |value: f64| value.clamp(0.0, 1.0);
         let bool_at = |k: &str, fallback: bool| {
             section
                 .get(k)
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(fallback)
         };
-        let unit_at = |k: &str, fallback: f64| {
-            section
-                .get(k)
-                .and_then(serde_json::Value::as_f64)
-                .filter(|v| v.is_finite())
-                .map_or(fallback, |v| v.clamp(0.0, 1.0))
-        };
         Self {
-            natural_scroll: legacy_natural_scroll.unwrap_or(d.natural_scroll),
-            touchpad_natural_scroll: section
-                .get("touchpad_natural_scroll")
-                .and_then(serde_json::Value::as_bool)
-                .or(legacy_natural_scroll)
-                .or(d.touchpad_natural_scroll),
-            mouse_natural_scroll: section
-                .get("mouse_natural_scroll")
-                .and_then(serde_json::Value::as_bool)
-                .or(legacy_natural_scroll)
-                .or(d.mouse_natural_scroll),
-            tap_to_click: bool_at(TAP_TO_CLICK_KEY, d.tap_to_click),
-            pointer_speed: unit_at(POINTER_SPEED_KEY, d.pointer_speed),
-            touchpad_pointer_speed: section
-                .get("touchpad_pointer_speed")
-                .and_then(serde_json::Value::as_f64)
-                .filter(|value| value.is_finite())
-                .map(|value| value.clamp(0.0, 1.0)),
-            mouse_pointer_speed: section
-                .get("mouse_pointer_speed")
-                .and_then(serde_json::Value::as_f64)
-                .filter(|value| value.is_finite())
-                .map(|value| value.clamp(0.0, 1.0)),
-            key_repeat: unit_at(KEY_REPEAT_KEY, d.key_repeat),
-            key_repeat_delay_ms: section
-                .get(KEY_REPEAT_DELAY_MS_KEY)
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok())
+            touchpad_natural_scroll: config.touchpad_natural_scroll,
+            mouse_natural_scroll: config.mouse_natural_scroll,
+            tap_to_click: config.tap_to_click,
+            pointer_speed: unit(config.pointer_speed),
+            touchpad_pointer_speed: config.touchpad_pointer_speed.map(unit),
+            mouse_pointer_speed: config.mouse_pointer_speed.map(unit),
+            key_repeat: unit(config.key_repeat),
+            key_repeat_delay_ms: config
+                .key_repeat_delay_ms
                 .filter(|value| (1..=5_000).contains(value)),
-            key_repeat_rate_hz: section
-                .get(KEY_REPEAT_RATE_HZ_KEY)
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok())
-                .filter(|value| *value <= 1_000),
-            tap_drag: bool_at("tap_drag", d.tap_drag),
-            tap_drag_lock: bool_at("tap_drag_lock", d.tap_drag_lock),
-            disable_while_typing: bool_at("disable_while_typing", d.disable_while_typing),
-            middle_emulation: bool_at("middle_emulation", d.middle_emulation),
-            left_handed: bool_at("left_handed", d.left_handed),
-            flat_acceleration: section
-                .get("accel_profile")
-                .and_then(serde_json::Value::as_str)
-                == Some("flat"),
-            touchpad_gestures: bool_at("touchpad_gestures", d.touchpad_gestures),
+            key_repeat_rate_hz: config.key_repeat_rate_hz.filter(|value| *value <= 1_000),
+            tap_drag: config.tap_drag,
+            tap_drag_lock: config.tap_drag_lock,
+            disable_while_typing: config.disable_while_typing,
+            middle_emulation: config.middle_emulation,
+            left_handed: config.left_handed,
+            flat_acceleration: config.accel_profile == settings_store::hardware::AccelProfile::Flat,
+            touchpad_gestures: config.touchpad_gestures,
             touchpad_enabled: bool_at(
                 settings_store::hardware::TOUCHPAD_ENABLED_KEY,
                 d.touchpad_enabled,
@@ -400,18 +251,9 @@ impl InputSettings {
                 settings_store::hardware::TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY,
                 d.touchpad_disabled_on_external_mouse,
             ),
-            touchpad_click_method: section
-                .get("touchpad_click_method")
-                .and_then(|value| serde_json::from_value(value.clone()).ok())
-                .unwrap_or(d.touchpad_click_method),
-            touchpad_scroll_method: section
-                .get("touchpad_scroll_method")
-                .and_then(|value| serde_json::from_value(value.clone()).ok())
-                .unwrap_or(d.touchpad_scroll_method),
-            scroll_speed: section
-                .get(settings_store::hardware::SCROLL_SPEED_KEY)
-                .and_then(serde_json::Value::as_f64)
-                .map_or(d.scroll_speed, settings_store::hardware::clamp_scroll_speed),
+            touchpad_click_method: config.touchpad_click_method,
+            touchpad_scroll_method: config.touchpad_scroll_method,
+            scroll_speed: config.scroll_speed,
         }
     }
 
@@ -439,13 +281,11 @@ impl InputSettings {
         (speed.clamp(0.0, 1.0) * 2.0) - 1.0
     }
 
-    /// Resolve the per-device preference, falling back to the legacy global
-    /// toggle for settings documents written before the split.
     pub fn natural_scroll_for(&self, touchpad: bool) -> bool {
         if touchpad {
-            self.touchpad_natural_scroll.unwrap_or(self.natural_scroll)
+            self.touchpad_natural_scroll
         } else {
-            self.mouse_natural_scroll.unwrap_or(self.natural_scroll)
+            self.mouse_natural_scroll
         }
     }
 
@@ -479,102 +319,9 @@ impl InputSettings {
     }
 }
 
-/// How often the settings file is stat'ed for changes.
-///
-/// The fallback behind the settings file watch (`settings_store::watch`,
-/// which wakes the loop and calls [`SettingsWatch::check_now`]): a write that
-/// lands while that watch is unavailable is still noticed within this
-/// interval, for one `stat` of a page-cached file.
-pub const SETTINGS_POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Notices when the settings file changes, and which of its top-level
-/// sections did, so a preference just flipped in Settings takes effect
-/// without restarting the session — and a write to one section (a theme, a
-/// notification toggle) never pays for the work another needs (a display
-/// re-probe, an input device reconfiguration).
-pub struct SettingsWatch {
-    path: Option<PathBuf>,
-    /// Modification time as of the last check. `None` before the first check, and while the file doesn't exist.
-    last: Option<SystemTime>,
-    /// Whether a check has happened at all — distinguishes "no file yet" from "not looked yet", so the file appearing for the first time counts as a change rather than the baseline.
-    primed: bool,
-    /// Each section's fingerprint as of the last read.
-    sections: settings_store::SectionDigest,
-    next_check: Option<Instant>,
-    interval: Duration,
-}
-
-impl Default for SettingsWatch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SettingsWatch {
-    /// Watch the real settings file.
-    pub fn new() -> Self {
-        Self::at(settings_store::settings_path())
-    }
-
-    /// Watch an explicit path — how the tests drive it without touching the user's real configuration.
-    pub fn at(path: Option<PathBuf>) -> Self {
-        Self {
-            path,
-            last: None,
-            primed: false,
-            sections: settings_store::SectionDigest::default(),
-            next_check: None,
-            interval: SETTINGS_POLL_INTERVAL,
-        }
-    }
-
-    /// Use a different poll interval; tests set it to zero so they don't wait out a real second.
-    #[must_use]
-    pub fn with_interval(mut self, interval: Duration) -> Self {
-        self.interval = interval;
-        self
-    }
-
-    /// The top-level sections that changed since the last look. Empty means
-    /// there is nothing to re-apply: the check was rate-limited
-    /// ([`Self::with_interval`]; calls in between are free), the file's mtime
-    /// did not move, or it moved without any section changing. The document
-    /// is read only when the mtime moved.
-    pub fn changed_sections(&mut self, now: Instant) -> BTreeSet<String> {
-        if let Some(next) = self.next_check
-            && now < next
-        {
-            return BTreeSet::new();
-        }
-        // `checked_add` sidesteps a theoretical `Instant` overflow (would
-        // need centuries of uptime); falling back to "now" just makes the
-        // next call re-check immediately instead of panicking.
-        self.next_check = Some(now.checked_add(self.interval).unwrap_or(now));
-        let Some(path) = self.path.as_ref() else {
-            return BTreeSet::new();
-        };
-        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        let first_look = !self.primed;
-        self.primed = true;
-        if mtime == self.last && !first_look {
-            return BTreeSet::new();
-        }
-        self.last = mtime;
-        let sections = settings_store::SectionDigest::of(&settings_store::load_at(path));
-        let changed = sections.changed_since(&self.sections);
-        self.sections = sections;
-        // The first look establishes the baseline rather than reporting a change — otherwise every session start would re-apply settings already applied at construction.
-        if first_look { BTreeSet::new() } else { changed }
-    }
-
-    /// Let the next [`Self::changed_sections`] look regardless of the rate limit — for when a file-change notification says there is something to see.
-    pub fn check_now(&mut self) {
-        self.next_check = None;
-    }
-}
-
 /// What one settings write asks the compositor to re-apply, decided by the
-/// top-level sections it changed ([`SettingsWatch::changed_sections`]).
+/// top-level sections it changed
+/// ([`settings_store::live::SectionFollower::changed_sections`]).
 /// Sections the compositor does not consume (`notifications`, `audio`,
 /// `region`, `quick_settings`, …) ask for nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -600,13 +347,13 @@ impl SettingsChange {
     /// (`input`), accessibility filters and cursor size (`accessibility`),
     /// and the shortcut chords tablet buttons press (`shortcuts`).
     pub fn input_devices(&self) -> bool {
-        self.touches(&[SECTION, ACCESSIBILITY_SECTION, "shortcuts"])
+        self.touches(&[SECTION, tilo_accessibility_settings::SECTION, "shortcuts"])
     }
 
     /// The seat and Xwayland keymaps and the input-method owner: keyboard
     /// sources (`input`) and the on-screen keyboard (`accessibility`).
     pub fn keyboard(&self) -> bool {
-        self.touches(&[SECTION, ACCESSIBILITY_SECTION])
+        self.touches(&[SECTION, tilo_accessibility_settings::SECTION])
     }
 
     /// The display arrangement, scale, modes and the pending display
@@ -633,7 +380,10 @@ impl SettingsChange {
     /// The theme: `appearance`, and the contrast and text-size layers in
     /// `accessibility`. The only change that wakes every window to repaint.
     pub fn appearance(&self) -> bool {
-        self.touches(&[settings_store::day_schedule::SECTION, ACCESSIBILITY_SECTION])
+        self.touches(&[
+            settings_store::day_schedule::SECTION,
+            tilo_accessibility_settings::SECTION,
+        ])
     }
 
     /// Idle blank, lock and suspend timeouts.
@@ -862,8 +612,8 @@ pub fn reconfigure_all<D: ConfigurableDevice>(settings: &InputSettings, devices:
 )]
 mod tests {
     use super::*;
-    // Only the tests build a `Path`; the module itself deals in `PathBuf`.
-    use std::path::Path;
+    use settings_store::live::{LiveSettings, SectionFollower};
+    use std::path::{Path, PathBuf};
 
     use serde_json::json;
 
@@ -876,17 +626,6 @@ mod tests {
 
     #[test]
     fn input_settings_defaults_persistence_and_fallbacks() {
-        // Phase `accessibility_cursor_size_is_capability_safe`.
-        {
-            let normal = AccessibilityInputSettings::default();
-            assert_eq!(normal.effective_cursor_size(), 24);
-            let large = AccessibilityInputSettings {
-                large_cursor: true,
-                cursor_size: 48,
-                ..normal
-            };
-            assert_eq!(large.effective_cursor_size(), 48);
-        }
         // Phase `tap_to_click_defaults_on_for_a_laptop`.
         // The headline default: libinput says off, but that's the wrong answer on a laptop, and an empty settings file is exactly the state a fresh install is in.
         assert!(InputSettings::default().tap_to_click);
@@ -894,9 +633,8 @@ mod tests {
         // Phase `the_other_defaults_match_what_the_settings_pane_starts_from`.
         {
             let d = InputSettings::default();
-            assert!(!d.natural_scroll);
-            assert_eq!(d.touchpad_natural_scroll, Some(true));
-            assert_eq!(d.mouse_natural_scroll, Some(false));
+            assert!(d.touchpad_natural_scroll);
+            assert!(!d.mouse_natural_scroll);
             assert_eq!(d.pointer_speed, 0.5);
             assert_eq!(d.key_repeat, 0.5);
         }
@@ -908,23 +646,15 @@ mod tests {
             assert_eq!(plan_for(&settings, &touchpad()).natural_scroll, Some(true));
             assert_eq!(plan_for(&settings, &mouse()).natural_scroll, Some(false));
         }
-        // Phase `legacy_global_scroll_preference_still_applies_to_both_device_classes`.
-        {
-            let settings = InputSettings::from_section(&section(json!({
-                "natural_scroll": false,
-            })));
-            assert!(!settings.natural_scroll_for(true));
-            assert!(!settings.natural_scroll_for(false));
-        }
         // Phase `persisted_values_are_read_back`.
         {
             let s = InputSettings::from_section(&section(json!({
-                "natural_scroll": true,
+                "mouse_natural_scroll": true,
                 "tap_to_click": false,
                 "pointer_speed": 0.9,
                 "key_repeat": 0.25,
             })));
-            assert!(s.natural_scroll);
+            assert!(s.mouse_natural_scroll);
             assert!(!s.tap_to_click, "an explicit off must beat the default on");
             assert_eq!(s.pointer_speed, 0.9);
             assert_eq!(s.key_repeat, 0.25);
@@ -935,7 +665,7 @@ mod tests {
             let s = InputSettings::from_section(&section(json!({ "pointer_speed": 0.1 })));
             assert_eq!(s.pointer_speed, 0.1);
             assert!(s.tap_to_click);
-            assert!(!s.natural_scroll);
+            assert!(!s.mouse_natural_scroll);
             assert_eq!(s.key_repeat, 0.5);
         }
         // Phase `wrong_types_and_out_of_range_values_are_survivable`.
@@ -1166,29 +896,17 @@ mod tests {
             assert_eq!(plan.disable_while_typing, None);
             assert_eq!(plan.middle_emulation, None);
         }
-        // Phase `legacy_global_natural_scroll_reaches_every_device_when_device_overrides_are_absent`.
-        {
-            let s = InputSettings {
-                natural_scroll: true,
-                touchpad_natural_scroll: None,
-                mouse_natural_scroll: None,
-                ..Default::default()
-            };
-            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
-            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(true));
-            // …and none that doesn't.
-            assert_eq!(plan_for(&s, &keyboard()).natural_scroll, None);
-        }
         // Phase `mouse_and_touchpad_can_keep_independent_scroll_directions`.
         {
             let s = InputSettings {
-                natural_scroll: false,
-                touchpad_natural_scroll: Some(true),
-                mouse_natural_scroll: Some(false),
+                touchpad_natural_scroll: false,
+                mouse_natural_scroll: true,
                 ..Default::default()
             };
-            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(true));
-            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(false));
+            assert_eq!(plan_for(&s, &touchpad()).natural_scroll, Some(false));
+            assert_eq!(plan_for(&s, &mouse()).natural_scroll, Some(true));
+            // …and none on a device that cannot scroll.
+            assert_eq!(plan_for(&s, &keyboard()).natural_scroll, None);
         }
         // Phase `pointer_speed_reaches_devices_with_acceleration`.
         {
@@ -1215,7 +933,7 @@ mod tests {
             // Re-applying after a settings change must produce the same plan a freshly-plugged device would get — otherwise a re-plug silently changes behaviour.
             let s = InputSettings {
                 tap_to_click: false,
-                natural_scroll: true,
+                mouse_natural_scroll: true,
                 pointer_speed: 0.75,
                 key_repeat: 0.2,
                 ..Default::default()
@@ -1502,192 +1220,147 @@ mod tests {
         assert_eq!(devices[1].applied, [plan_for(&s, &mouse())]);
     }
 
-    // accessibility keyboard filters
-
-    #[test]
-    fn bounce_keys_window_defaults_to_300ms_and_is_off_until_enabled() {
-        let d = AccessibilityInputSettings::default();
-        assert_eq!(d.bounce_window(), Duration::ZERO);
-        let on = AccessibilityInputSettings::from_section(&section(json!({
-            "bounce_keys": true,
-        })));
-        assert_eq!(on.bounce_window(), Duration::from_millis(300));
-        let clamped = AccessibilityInputSettings::from_section(&section(json!({
-            "bounce_keys": true,
-            "bounce_keys_delay_ms": 60_000,
-            "mouse_keys": true,
-        })));
-        assert_eq!(clamped.bounce_window(), Duration::from_millis(1_000));
-        assert!(clamped.mouse_keys);
-        assert!(!clamped.sticky_keys);
-    }
-    // settings watch
+    // settings follower
 
     fn scratch(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("tilo-input-watch-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         dir.join("settings.json")
-    }
-
-    fn watch(path: &Path) -> SettingsWatch {
-        SettingsWatch::at(Some(path.to_path_buf())).with_interval(Duration::ZERO)
     }
 
     fn sections(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
-    /// Move the mtime explicitly: a same-second rewrite can keep the old
-    /// mtime on filesystems with coarse timestamps, and the watch's contract
-    /// starts at "the mtime moved".
-    fn bump_mtime(path: &Path, seconds: u64) {
-        let f = std::fs::File::options()
-            .write(true)
-            .open(path)
-            .expect("open for times");
-        let moved = std::time::SystemTime::now()
-            .checked_add(Duration::from_secs(seconds))
-            .expect("a near-future mtime");
-        f.set_modified(moved).expect("set mtime");
+    fn write(path: &Path, section: &str, value: serde_json::Value) {
+        let serde_json::Value::Object(values) = value else {
+            panic!("a section is an object");
+        };
+        settings_store::update_section_at(path, section, values).expect("write settings");
+    }
+
+    /// Run `change` and wait until the live document has taken it in.
+    fn changed(live: &LiveSettings, change: impl FnOnce()) {
+        let seen = live.generation();
+        change();
+        let snapshot = live.wait_for_change(seen, tilo_test_env::hang_bound());
+        assert_ne!(
+            snapshot.generation, seen,
+            "the change must reach the live document"
+        );
+    }
+
+    /// Long enough for every notification of a write and one stamp poll.
+    fn settle() {
+        std::thread::sleep(
+            settings_store::live::POLL_INTERVAL.saturating_add(Duration::from_millis(300)),
+        );
     }
 
     #[test]
-    fn settings_watch_reports_each_real_change_once_and_rate_limits() {
+    fn settings_follower_reports_each_real_change_once() {
         // Phase `the_first_look_is_a_baseline_not_a_change`.
         {
             // Otherwise every session start re-applies settings already applied while constructing the backend.
             let path = scratch("baseline");
-            std::fs::write(&path, r#"{"input":{"tap_to_click":true}}"#).expect("write");
-            let mut w = watch(&path);
-            assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
-            let _ = std::fs::remove_file(&path);
+            write(&path, "input", json!({"tap_to_click": true}));
+            let live = LiveSettings::start_at(path, || {});
+            let mut follower = SectionFollower::new(&live);
+            assert_eq!(follower.changed_sections(&live), sections(&[]));
         }
         // Phase `a_write_is_noticed_once`.
         {
             let path = scratch("write");
-            std::fs::write(&path, r#"{"input":{"tap_to_click":true}}"#).expect("write");
-            let mut w = watch(&path);
-            assert_eq!(
-                w.changed_sections(Instant::now()),
-                sections(&[]),
-                "baseline"
-            );
+            write(&path, "input", json!({"tap_to_click": true}));
+            let live = LiveSettings::start_at(path.clone(), || {});
+            let mut follower = SectionFollower::new(&live);
+            assert_eq!(follower.changed_sections(&live), sections(&[]), "baseline");
 
-            std::fs::write(&path, r#"{"input":{"tap_to_click":false}}"#).expect("rewrite");
-            bump_mtime(&path, 2);
-
+            changed(&live, || {
+                write(&path, "input", json!({"tap_to_click": false}));
+            });
             assert_eq!(
-                w.changed_sections(Instant::now()),
+                follower.changed_sections(&live),
                 sections(&["input"]),
                 "the rewrite must be noticed"
             );
+            settle();
             assert_eq!(
-                w.changed_sections(Instant::now()),
+                follower.changed_sections(&live),
                 sections(&[]),
                 "and only once — re-applying every tick would fight the user"
             );
-            let _ = std::fs::remove_file(&path);
         }
         // Phase `the_file_appearing_for_the_first_time_counts_as_a_change`.
         {
             // A fresh install has no settings.json until the user opens Settings; the first write is exactly when the compositor has to start honouring it.
             let path = scratch("appear");
-            let _ = std::fs::remove_file(&path);
-            let mut w = watch(&path);
+            let live = LiveSettings::start_at(path.clone(), || {});
+            let mut follower = SectionFollower::new(&live);
             assert_eq!(
-                w.changed_sections(Instant::now()),
+                follower.changed_sections(&live),
                 sections(&[]),
                 "baseline: no file"
             );
-            std::fs::write(&path, r#"{"input":{"tap_to_click":false}}"#).expect("write");
-            assert_eq!(w.changed_sections(Instant::now()), sections(&["input"]));
-            let _ = std::fs::remove_file(&path);
+            changed(&live, || {
+                write(&path, "input", json!({"tap_to_click": false}));
+            });
+            assert_eq!(follower.changed_sections(&live), sections(&["input"]));
         }
-        // Phase `checks_are_rate_limited`.
+        // Phase `a_removal_is_a_change`.
         {
-            // The loop runs at the display's cadence; stat'ing 144 times a second for a rarely-edited file is waste.
-            let path = scratch("ratelimit");
-            std::fs::write(&path, r#"{"power":{"auto_suspend":false}}"#).expect("write");
-            let mut w =
-                SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_secs(3600));
-            let now = Instant::now();
-            assert_eq!(w.changed_sections(now), sections(&[]), "baseline");
-            std::fs::remove_file(&path).expect("remove");
+            let path = scratch("removal");
+            write(&path, "power", json!({"auto_suspend": false}));
+            let live = LiveSettings::start_at(path.clone(), || {});
+            let mut follower = SectionFollower::new(&live);
+            assert_eq!(follower.changed_sections(&live), sections(&[]), "baseline");
+            changed(&live, || std::fs::remove_file(&path).expect("remove"));
             assert_eq!(
-                w.changed_sections(now),
-                sections(&[]),
-                "a second call inside the interval must not even look"
-            );
-            // Phase `a_notified_write_is_seen_inside_the_interval`.
-            // An idle compositor wakes only for the notification; waiting out the interval would drop the write until unrelated input arrived.
-            w.check_now();
-            assert_eq!(
-                w.changed_sections(now),
+                follower.changed_sections(&live),
                 sections(&["power"]),
-                "the removal must be seen on demand"
+                "the removal must be seen"
             );
-            assert_eq!(
-                w.changed_sections(now),
-                sections(&[]),
-                "and the rate limit resumes after the forced look"
-            );
-        }
-        // Phase `a_watch_with_no_settings_path_never_reports_a_change`.
-        {
-            // No config directory at all — a container with no HOME. The compositor must not spin on it.
-            let mut w = SettingsWatch::at(None).with_interval(Duration::ZERO);
-            assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
-            assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
+            assert_eq!(follower.changed_sections(&live), sections(&[]));
         }
     }
 
     #[test]
-    fn settings_watch_reports_changed_sections() {
+    fn settings_follower_reports_changed_sections() {
         // Writers go through the shared merge-and-replace path, which
-        // rewrites the whole document: the mtime alone cannot say whether a
-        // theme or the display arrangement changed.
+        // rewrites the whole document: knowing that the file changed cannot
+        // say whether a theme or the display arrangement changed.
         let path = scratch("sections");
-        let _ = std::fs::remove_file(&path);
-        let mut values = serde_json::Map::new();
-        values.insert("tap_to_click".into(), json!(true));
-        settings_store::update_section_at(&path, "input", values).expect("seed input");
-        let mut values = serde_json::Map::new();
-        values.insert("do_not_disturb".into(), json!(false));
-        settings_store::update_section_at(&path, "notifications", values).expect("seed dnd");
-        let mut w = watch(&path);
-        assert_eq!(
-            w.changed_sections(Instant::now()),
-            sections(&[]),
-            "baseline"
-        );
+        write(&path, "input", json!({"tap_to_click": true}));
+        write(&path, "notifications", json!({"do_not_disturb": false}));
+        let live = LiveSettings::start_at(path.clone(), || {});
+        let mut follower = SectionFollower::new(&live);
+        assert_eq!(follower.changed_sections(&live), sections(&[]), "baseline");
 
-        let mut values = serde_json::Map::new();
-        values.insert("theme".into(), json!("light"));
-        settings_store::update_section_at(&path, "appearance", values).expect("theme");
-        bump_mtime(&path, 2);
+        changed(&live, || {
+            write(&path, "appearance", json!({"theme": "light"}));
+        });
         assert_eq!(
-            w.changed_sections(Instant::now()),
+            follower.changed_sections(&live),
             sections(&["appearance"]),
             "a theme write names only its own section"
         );
 
-        let mut values = serde_json::Map::new();
-        values.insert("do_not_disturb".into(), json!(true));
-        settings_store::update_section_at(&path, "notifications", values).expect("dnd");
-        bump_mtime(&path, 4);
+        changed(&live, || {
+            write(&path, "notifications", json!({"do_not_disturb": true}));
+        });
         assert_eq!(
-            w.changed_sections(Instant::now()),
+            follower.changed_sections(&live),
             sections(&["notifications"])
         );
 
-        // A rewrite that moves the mtime but no value is nothing to do.
-        let mut values = serde_json::Map::new();
-        values.insert("do_not_disturb".into(), json!(true));
-        settings_store::update_section_at(&path, "notifications", values).expect("same dnd");
-        bump_mtime(&path, 6);
-        assert_eq!(w.changed_sections(Instant::now()), sections(&[]));
-        let _ = std::fs::remove_file(&path);
+        // A rewrite that changes no value is nothing to do.
+        let generation = live.generation();
+        write(&path, "notifications", json!({"do_not_disturb": true}));
+        settle();
+        assert_eq!(live.generation(), generation);
+        assert_eq!(follower.changed_sections(&live), sections(&[]));
     }
 
     #[test]

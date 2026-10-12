@@ -3,13 +3,13 @@
 //! These bound the outer serialization only. Automerge bytes carried inside a
 //! message are admitted separately, through `tilo_automerge_isolate`.
 
+mod guard;
 mod join;
 pub use join::BoundedJoinResponse;
 pub(crate) mod json;
-/// Budgeted decoding of closed DTOs, shared with the hosts that admit them.
-pub use json::guard as dto_guard;
 pub(crate) mod native;
 pub(crate) mod outer;
+pub(crate) use outer::decode;
 
 /// Refusal limits for one decoded outer message.
 #[derive(Clone, Copy, Debug)]
@@ -43,28 +43,6 @@ impl BoundedPeerMessage {
     pub fn message(&self) -> &crate::NeighbourMsg {
         &self.message
     }
-}
-
-fn outer_limits(limits: OuterLimits) -> outer::Limits {
-    outer::Limits {
-        allocation: limits.allocation_bytes,
-        collection_entries: limits.collection_entries,
-    }
-}
-
-fn outer_error(error: outer::Error) -> PeerResourceError {
-    match error {
-        outer::Error::Capacity => PeerResourceError::Capacity,
-        outer::Error::Invalid => PeerResourceError::Malformed,
-    }
-}
-
-/// Decode one complete value of a closed wire schema within `limits`.
-pub(crate) fn decode<'de, T: outer::Schema<'de>>(
-    bytes: &'de [u8],
-    limits: OuterLimits,
-) -> Result<T, PeerResourceError> {
-    outer::decode(bytes, outer_limits(limits)).map_err(outer_error)
 }
 
 #[cfg(test)]

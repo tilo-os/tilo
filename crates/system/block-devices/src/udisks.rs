@@ -81,25 +81,6 @@ mod client {
             )
         }
 
-        /// `Block.IdUsage`: `filesystem`, `crypto`, `raid`, `other` or empty.
-        ///
-        /// # Errors
-        ///
-        /// Returns an error when the property cannot be read.
-        pub fn id_usage(&self, device: &str) -> zbus::Result<String> {
-            self.block(device)?.get_property("IdUsage")
-        }
-
-        /// `Filesystem.MountPoints`: NUL-terminated host paths.
-        ///
-        /// # Errors
-        ///
-        /// Returns an error when the device has no filesystem interface or
-        /// the property cannot be read.
-        pub fn mount_points(&self, device: &str) -> zbus::Result<Vec<Vec<u8>>> {
-            self.filesystem(device)?.get_property("MountPoints")
-        }
-
         /// `Filesystem.Mount`; returns where `UDisks2` mounted it.
         ///
         /// # Errors

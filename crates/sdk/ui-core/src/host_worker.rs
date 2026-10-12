@@ -6,7 +6,6 @@ use crate::{
     collaboration::CollaborationManager,
     launch::LaunchError,
     permissions::PermissionContext,
-    portable_storage::{PendingWrite, PortableStorage},
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -273,30 +272,5 @@ pub fn retain_setup_error(error: LaunchError, reports: &mut Vec<ComponentCloseRe
             teardown_error: None,
         });
         retain_setup_error(*source, reports);
-    }
-}
-
-/// `committed` must come from the host's actual durable owner, in the same
-/// namespace as `write`. Enqueue, a signed envelope or a network ACK is not
-/// committed state. Cache revision checks still protect later pending writes.
-pub fn acknowledge_document(
-    cache: &PortableStorage,
-    write: &PendingWrite,
-    committed: &[u8],
-    publication_permitted: bool,
-) -> Result<bool, String> {
-    let mut document = crate::automerge::AutoCommit::load(committed).map_err(|e| e.to_string())?;
-    let mut pending =
-        crate::automerge::AutoCommit::load(&write.value.bytes).map_err(|e| e.to_string())?;
-    let heads = pending.get_heads();
-    if heads
-        .iter()
-        .all(|head| document.get_change_by_hash(head).is_some())
-        && publication_permitted
-    {
-        cache.acknowledge(write, Ok(()))?;
-        Ok(true)
-    } else {
-        Ok(false)
     }
 }

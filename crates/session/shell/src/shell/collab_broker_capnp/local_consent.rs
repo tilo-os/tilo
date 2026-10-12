@@ -52,7 +52,8 @@ impl LocalSessionPermit {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub(super) struct LiveLocalSession {
     pub(super) epoch: Uuid,
     pub(super) generation: u64,
@@ -88,7 +89,8 @@ impl LocalSessionAuthority {
         }
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
+    #[cfg(unix)]
     pub(super) fn active_session(&self) -> Option<LiveLocalSession> {
         let state = self.state.lock().ok()?;
         (state.liveness == LocalSessionLiveness::Active).then_some(LiveLocalSession {

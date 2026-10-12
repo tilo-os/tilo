@@ -22,8 +22,6 @@ EXPECTED_COPIES = (
     "COPY os/components.toml /build/os/components.toml",
     "COPY os/scripts/install-components.py os/scripts/verify-elf-hardening.sh "
     "os/scripts/cargo-freshness.sh /build/os/scripts/",
-    "COPY os/usr/share/tilo/installer-locales.txt "
-    "/build/os/usr/share/tilo/installer-locales.txt",
     "COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env",
     "COPY tools/policy/app_portability_rules.toml "
     "/build/tools/policy/app_portability_rules.toml",
@@ -32,6 +30,7 @@ EXPECTED_COPIES = (
     "COPY tools/protocols/airdrop_sender.py /build/tools/protocols/airdrop_sender.py",
     "COPY tools/test-assets-build.rs /build/tools/test-assets-build.rs",
     "COPY tools/test-assets.py /build/tools/test-assets.py",
+    "COPY tools/ci/measure.sh /build/tools/ci/measure.sh",
 )
 
 

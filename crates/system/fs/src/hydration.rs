@@ -78,6 +78,9 @@ pub struct Hydrator {
     blob_connections:
         AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
+    /// Woken by the first peer: a device that knows a peer may be dialled
+    /// by it (TIL-774).
+    reachability: crate::reachability::Reachability,
 }
 
 /// Chunk entries held by the manifest cache: roughly 40 bytes each, so
@@ -128,7 +131,17 @@ impl Hydrator {
             blob_bytes: std::sync::atomic::AtomicU64::new(0),
             blob_connections: AsyncMutex::new(HashMap::new()),
             runtime_handle: tokio::runtime::Handle::current(),
+            reachability: crate::reachability::Reachability::default(),
         }
+    }
+
+    /// Wake `reachability` when the first peer is added: every peer the
+    /// daemon learns of — persisted, from a ticket, met over gossip or
+    /// authenticated in a session — passes through [`Self::add_peer`].
+    #[must_use]
+    pub fn with_reachability(mut self, reachability: crate::reachability::Reachability) -> Self {
+        self.reachability = reachability;
+        self
     }
 
     /// Whether a fetch of blob `hash` is in flight right now.
@@ -197,6 +210,7 @@ impl Hydrator {
 
     /// Register a peer we can hydrate blobs from. Idempotent per endpoint id.
     pub fn add_peer(&self, addr: EndpointAddr) {
+        self.reachability.wake("a content peer is known");
         let mut peers = self
             .peers
             .write()
@@ -335,33 +349,6 @@ impl Hydrator {
             }
         }
         result
-    }
-
-    /// Revalidate that a peer still serves this exact, content-addressed blob.
-    /// The bytes are discarded; this is the last online check before local GC.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the connection fails, the peer doesn't serve the blob, or the check times out.
-    pub async fn verify_remote_copy(&self, hash: Hash, peer: EndpointAddr) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(20), async {
-            let conn = self.blob_connection(&peer).await?;
-            let mut result = iroh_blobs::get::request::get_blob(conn, hash);
-            while let Some(item) = result.next().await {
-                match item {
-                    iroh_blobs::get::request::GetBlobItem::Done(_) => {
-                        return Ok::<_, anyhow::Error>(());
-                    }
-                    iroh_blobs::get::request::GetBlobItem::Error(error) => {
-                        return Err(anyhow!(error));
-                    }
-                    iroh_blobs::get::request::GetBlobItem::Item(_) => {}
-                }
-            }
-            Err(anyhow!("remote durability stream ended early"))
-        })
-        .await
-        .map_err(|_| anyhow!("remote durability check timed out"))?
     }
 
     /// # Errors

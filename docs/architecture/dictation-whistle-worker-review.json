@@ -1,0 +1,146 @@
+{
+  "schema": 1,
+  "purpose": "Default-off compiled worker admission qualification; no activation",
+  "adapter": {
+    "files": {
+      "whistle_v8_worker.cpp": {
+        "bytes": 5511,
+        "sha256": "3bf3e622d275b86b5cd19dd905da51cc56af25e9c37da8beb00928945978b5c8"
+      },
+      "whistle_v8_worker.js": {
+        "bytes": 5829,
+        "sha256": "017d5201ef6afc393f26a5388086ccabb376cd54eb9c67c7202daa464ffe4c65"
+      },
+      "whistle_v8_worker.inc": {
+        "bytes": 5873,
+        "sha256": "fa4f5a2e908e67b1245f94fd11b580e9321b08ebe159d1764f4c4cab4821a66c"
+      },
+      "worker-bridge.so": {
+        "bytes": 40344,
+        "sha256": "4ef92a34333b5504a81863df16d811bfd1cda702b7ea8b923fe183d1ead2d070"
+      },
+      "worker": {
+        "bytes": 9884096,
+        "sha256": "699cf0fd91e01731c08a843b2389789df31ae916e97f358d144a14895b7a8c9a"
+      }
+    },
+    "compile_seconds": 0.8596483589935815,
+    "command": [
+      "g++",
+      "-std=c++20",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-fPIC",
+      "-shared",
+      "-isystem",
+      "${BUILD_ROOT}/target/dictation-whistle-v8-public-20261008-9868/headers",
+      "${BUILD_ROOT}/target/dictation-whistle-worker-public-20261009-7bd8/whistle_v8_worker.cpp",
+      "${BUILD_ROOT}/target/dictation-whistle-worker-public-20261009-7bd8/libnode.so.127",
+      "-Wl,-rpath-link,${BUILD_ROOT}/target/dictation-whistle-worker-public-20261009-7bd8",
+      "-pthread",
+      "-o",
+      "${BUILD_ROOT}/target/dictation-whistle-worker-public-20261009-7bd8/worker-bridge.so"
+    ],
+    "rust_sources": {
+      "crates/agent/local-model-service/examples/whistle_v8_worker_review.rs": "8f3f9d90fa71982e7c271585a0b071c2775315a9d8ad4399ea6da18a12f06346",
+      "crates/agent/local-model-service/examples/whistle_v8_worker_review/bridge.rs": "706552d4f09ce97a80bfe3ac53b49ff1f68b97c85a9145e10e6251573c2ae6f6",
+      "crates/agent/local-model-service/examples/whistle_v8_worker_review/custody.rs": "233fc100460442b3c9e687da4a167b700fe53a79fba4b8da11829a5a7e1582b7"
+    }
+  },
+  "actual_production_policy": {
+    "prepare": "core dumps off, dumpable off, parent-death SIGKILL, close ambient descriptors, AS 1 GiB",
+    "landlock": "fully enforced filesystem empty, network deny all",
+    "seccomp": "clone3 compatibility plus parser_program, default baseline W^X unchanged"
+  },
+  "public_fixture": {
+    "case": "fr_fr-0",
+    "fixture_sha256": "f76c0a92ca39d2533aa105ac5794b08f004e15a3ff5ba32f4ba4995f45cd22fd",
+    "fixture_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+    "submitted_pcm_sha256": "b51c375f229dcadd9cc3bd85551afa0ee1b26a26d2831af4f718da248820454e",
+    "submitted_seconds": 10.2
+  },
+  "confined_attempt": {
+    "exit": 251,
+    "guarded": null,
+    "memory_peak": {
+      "VmPeak": 188396,
+      "VmSize": 188396,
+      "VmHWM": 71656,
+      "VmRSS": 71656,
+      "Threads": 1
+    },
+    "cpu_seconds": 0.060000000000000005,
+    "wall_seconds": 0.0765261409978848,
+    "scope_before": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 0
+    },
+    "scope_after": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 0
+    },
+    "scope_peak_bytes": 61620224
+  },
+  "reply_count": 0,
+  "trace": {
+    "exit": 251,
+    "memory_peak": {
+      "VmPeak": 188396,
+      "VmSize": 188396,
+      "VmHWM": 71828,
+      "VmRSS": 71828,
+      "Threads": 1
+    },
+    "refused_mapping": "pkey_mprotect(..., 8192, PROT_READ|PROT_WRITE|PROT_EXEC, 1) = -1 EPERM",
+    "fatal": "Commit wasm code space"
+  },
+  "raw_receipts": {
+    "confined-fr-scope.log": "2dcea68a60107657bdb708cefdc59677edbd859aa7857200bc612ce3d2d4992b",
+    "confined-fr-r2-scope.log": "5cb85375db692ff98d6d588167eeb9bd117f874dd375fc3abce48650ade49244",
+    "confined-fr-final-scope.log": "2ebbe5f3205711050c0371d346c59246c7ec362d057c624c419b739d18017d91",
+    "confined-trace-scope.log": "2d78dd71ef11190d1b3aaa4f4e41344e3de4c6d5d18692465bbd7eeff03ed130",
+    "confined-trace-result.json": "cedf19a268992bf472794fd8a852c47ae49c4dddba817827024bd57e6e56c8ec"
+  },
+  "services": {
+    "tilo-dictation-whistle-worker-confined-fr-7bd8-20261009.service": "inactive",
+    "tilo-dictation-whistle-worker-confined-fr-r2-7bd8-20261009.service": "inactive",
+    "tilo-dictation-whistle-worker-confined-trace-7bd8-20261009.service": "inactive",
+    "tilo-dictation-whistle-worker-confined-fr-final-7bd8-20261009.service": "inactive"
+  },
+  "decision": "Rejected by unchanged production W^X before readiness. No decoded audio, native insertion or microphone qualification established. Runtime needs compatible code-page implementation, not a larger memory budget or full OS image.",
+  "checks": {
+    "focused_custody_tests": "2 passed, 0 skipped",
+    "strict_model_service_all_target_clippy_with_review_feature": "passed, 8.20 seconds",
+    "final_no_default_feature_example_build": "passed, 0.87 seconds",
+    "scope_harness_ruff_syntax": "passed",
+    "javascript_syntax": "passed",
+    "worker_qualification": "failed before readiness; zero replies",
+    "shell_tests_compile": "passed, 1 minute 13 seconds"
+  },
+  "execution_environment_normalization": {
+    "description": "Portable view of the original committed receipt. Only execution-environment tokens in strings are normalized; measurements, transcripts, artifact hashes, outcome values and failure kinds retain their original values. Original bytes remain in the cited Git blob.",
+    "original_commit": "a7306895e056155ca8e221b37031af23ff0f82f0",
+    "original_git_blob": "af29f47396f0b835609ba8480cfd6de5917685be",
+    "original_sha256": "2364fd3d032630501ad72ea81236ab0ce1bb6c883ba4e4fccd09465833db5dc7",
+    "original_path": "docs/architecture/dictation-whistle-worker-review.json",
+    "normalized_string_fields": [
+      "$.adapter.command[9]",
+      "$.adapter.command[10]",
+      "$.adapter.command[11]",
+      "$.adapter.command[12]",
+      "$.adapter.command[15]"
+    ]
+  }
+}

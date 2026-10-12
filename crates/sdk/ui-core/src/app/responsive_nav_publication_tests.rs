@@ -196,11 +196,8 @@ fn responsive_nav_publication_tracks_layout_model_and_revocation() {
             .is_some_and(|actions| !actions.is_empty()),
         "replacing the navigation tree must not withdraw the native publication"
     );
-    *owner.permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "probe-author"),
-        vec![],
-    )
-    .at_unix_time(100);
+    *owner.permissions.borrow_mut() =
+        crate::permissions::PermissionContext::stranger("probe-author").at_unix_time(100);
     app.publish_action_surface();
     assert!(
         app.actions

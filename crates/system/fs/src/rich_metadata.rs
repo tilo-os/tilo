@@ -3,7 +3,7 @@
 //! This module only sees bytes already present for a local write/preview. It
 //! never opens a path or asks the hydrator for remote content.
 
-use collab_types::{FilePropertiesV1, files::FILE_PROPERTIES_VERSION};
+use fs_protocol::{FilePropertiesV1, files::FILE_PROPERTIES_VERSION};
 
 pub const MAX_METADATA_SCAN_BYTES: usize = 16 * 1024 * 1024;
 

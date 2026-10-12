@@ -33,7 +33,7 @@ pub struct UnsavedEntry {
     pub schema_version: u16,
     /// Stable key: the record id when the node has one, else `ino-<n>`.
     pub key: String,
-    pub record_id: Option<collab_types::FileRecordId>,
+    pub record_id: Option<fs_protocol::FileRecordId>,
     /// Workspace path when the bytes were staged (diagnostic and fallback
     /// location for recovery when the record is gone).
     pub path: Option<String>,
@@ -221,7 +221,7 @@ impl UnsavedEntry {
     #[must_use]
     pub fn describe(
         key: String,
-        record_id: Option<collab_types::FileRecordId>,
+        record_id: Option<fs_protocol::FileRecordId>,
         path: Option<String>,
         base_hash: Option<iroh_blobs::Hash>,
         bytes: &[u8],
@@ -249,7 +249,7 @@ impl UnsavedEntry {
     /// Returns an error when the file cannot be read.
     pub fn describe_file(
         key: String,
-        record_id: Option<collab_types::FileRecordId>,
+        record_id: Option<fs_protocol::FileRecordId>,
         path: Option<String>,
         base_hash: Option<iroh_blobs::Hash>,
         file: &Path,

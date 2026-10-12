@@ -67,7 +67,7 @@ async fn receive(
                     assert_eq!(transfer_id, manifest.id);
                     assert_eq!(request_id, manifest.request_id);
                     assert!(offset >= CHECKPOINT_BYTES);
-                    assert!(bytes.len() <= PERSONAL_MEDIA_CHUNK_BYTES);
+                    assert!(bytes.len() <= PERSONAL_TRANSFER_CHUNK_BYTES);
                     store.append(transfer_id, offset, &bytes).unwrap();
                 }
                 PersonalNearbyTransferFrame::Finish {
@@ -103,7 +103,7 @@ async fn nearby_two_peers_resume_reopened_spools_after_fresh_receiver_consent() 
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("report.bin");
     let checkpoint = usize::try_from(CHECKPOINT_BYTES).unwrap();
-    let bytes = vec![0x67; checkpoint + PERSONAL_MEDIA_CHUNK_BYTES + 17];
+    let bytes = vec![0x67; checkpoint + PERSONAL_TRANSFER_CHUNK_BYTES + 17];
     std::fs::write(&source, &bytes).unwrap();
     let sender_spool = root.path().join("sender");
     let mut outgoing = NearbyTransferStore::open(sender_spool.clone(), 10).unwrap();

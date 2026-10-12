@@ -5,11 +5,10 @@
 //! signature, but private shares stay in the host session. `TILO_USER_IDENTITY`
 //! remains a compatibility path for non-sandboxed development only.
 //!
-//! The on-disk file is the JSON emitted by the identity-flow's
-//! `IdentityRecord::to_json_bytes` (see `crates/sdk/ui-core/src/widget/identity_flow`). This
-//! crate keeps a minimal local copy of the schema (`ondisk::IdentityRecord`)
-//! rather than depending on `ui`, which is heavy and depends on this SDK
-//! layer transitively — a dep the other way would form a cycle. Both sides
+//! The on-disk file is the JSON emitted by
+//! `tilo_identity_ceremony::IdentityRecord::to_json_bytes`. This crate keeps
+//! a minimal local copy of the schema (`ondisk::IdentityRecord`) rather than
+//! depending on the ceremony crate. Both sides
 //! bump the version tag together on a breaking schema change.
 //!
 //! In 1-of-1 (single-device) mode this crate signs locally via
@@ -33,11 +32,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -229,7 +224,7 @@ fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> 
 /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set to an
 /// absolute path.
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
-    if let Some(config) = xdg_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
+    if let Some(config) = tilo_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
         return Ok(config.join("tilo").join("identity"));
     }
     Err(io::Error::new(
@@ -754,7 +749,7 @@ pub fn remove_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
 }
 
 /// Wire-format types the loader deserialises from disk, mirroring
-/// `ui::widget::identity_flow::IdentityRecord`; unknown fields are ignored.
+/// `tilo_identity_ceremony::IdentityRecord`; unknown fields are ignored.
 mod ondisk {
     use std::fmt;
 
@@ -1423,16 +1418,17 @@ pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
 
 fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvailable> {
     let identity = shared_service_connection(fd)?;
+    let metadata = identity.metadata();
     Ok(SigningIdentity {
-        display_name: identity.display_name().to_owned(),
-        avatar_color: identity.avatar_color(),
-        group_public_key: identity.group_public_key(),
-        signing_public_key: identity.signing_public_key(),
-        device_certificate: identity.device_certificate().map(<[u8]>::to_vec),
-        threshold: identity.threshold(),
-        total_shares: identity.total_shares(),
-        share_index: identity.share_index(),
-        single_device: identity.is_single_device(),
+        display_name: metadata.display_name().to_owned(),
+        avatar_color: metadata.avatar_color(),
+        group_public_key: metadata.group_public_key(),
+        signing_public_key: metadata.signing_public_key(),
+        device_certificate: metadata.device_certificate().map(<[u8]>::to_vec),
+        threshold: metadata.threshold(),
+        total_shares: metadata.total_shares(),
+        share_index: metadata.share_index(),
+        single_device: metadata.is_single_device(),
         source: SigningSource::ActionBroker(identity),
     })
 }
@@ -1565,38 +1561,6 @@ pub fn load_metadata_from_path(path: &std::path::Path) -> Result<IdentityMetadat
         total_shares: identity.total_shares,
         share_index: identity.share_index,
     })
-}
-
-/// Load a secured record through an explicitly installed hardware provider.
-/// The metadata backend id must match; this prevents silently downgrading a
-/// TPM-labelled identity to a software key.
-///
-/// # Errors
-///
-/// Returns [`NotAvailable::ConnectionFailed`] if the file can't be read or
-/// is malformed, the record has no secret reference, the reference names a
-/// different provider than `provider`, or the secret can't be loaded.
-pub fn load_from_path_with_provider(
-    path: &std::path::Path,
-    provider: &dyn SecretProvider,
-) -> Result<SigningIdentity, NotAvailable> {
-    let bytes =
-        read_record_bytes(path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
-    let record = parse_record(&bytes)?;
-    let reference = record
-        .secret_ref
-        .as_ref()
-        .ok_or_else(|| LoadFailure::SecuredRecordNeedsProvider.into_not_available())?;
-    if reference.backend != provider.backend_id() {
-        return Err(NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "identity record uses a different secret provider",
-        )));
-    }
-    let secret = provider
-        .load(&reference.locator)
-        .map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
-    identity_from_record(record, Some(secret.as_slice()))
 }
 
 /// Same as [`load`] but parses from an in-memory byte slice.

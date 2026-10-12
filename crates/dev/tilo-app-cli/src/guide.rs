@@ -9,15 +9,21 @@ pub enum Topic {
     Actions,
     #[value(alias = "undo", alias = "history", alias = "sync")]
     Collaborate,
+    #[value(alias = "roles", alias = "access")]
+    Permissions,
+    #[value(alias = "http", alias = "fetch", alias = "metered", alias = "offline")]
+    Network,
     Verify,
     Publish,
 }
 
 impl Topic {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 7] = [
         Self::Start,
         Self::Actions,
         Self::Collaborate,
+        Self::Permissions,
+        Self::Network,
         Self::Verify,
         Self::Publish,
     ];
@@ -27,6 +33,8 @@ impl Topic {
             Self::Start => "start",
             Self::Actions => "actions",
             Self::Collaborate => "collaborate",
+            Self::Permissions => "permissions",
+            Self::Network => "network",
             Self::Verify => "verify",
             Self::Publish => "publish",
         }
@@ -37,6 +45,8 @@ impl Topic {
             Self::Start => "Create an app and reload it",
             Self::Actions => "Resources, controls and agent actions",
             Self::Collaborate => "Collaboration, history, undo and device sync",
+            Self::Permissions => "Live roles, permission-aware views and refused actions",
+            Self::Network => "Portable HTTP, network hints and external effects",
             Self::Verify => "Diagnose, test and inspect the production view",
             Self::Publish => "Signing, registration, reusable CI and publication",
         }
@@ -51,6 +61,8 @@ impl Topic {
             Self::Start => include_str!("../../../../docs/developers/tasks/start.md"),
             Self::Actions => include_str!("../../../../docs/developers/tasks/actions.md"),
             Self::Collaborate => include_str!("../../../../docs/developers/tasks/collaborate.md"),
+            Self::Permissions => include_str!("../../../../docs/developers/tasks/permissions.md"),
+            Self::Network => include_str!("../../../../docs/developers/tasks/network.md"),
             Self::Verify => include_str!("../../../../docs/developers/tasks/verify.md"),
             Self::Publish => include_str!("../../../../docs/developers/tasks/publish.md"),
         }

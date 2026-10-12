@@ -11,12 +11,15 @@
 //
 // A render pass rather than a compute pass: the scanout target is an
 // imported dma-buf with colour-attachment usage only. One triangle covers the
-// target; each fragment reads the source pixel under it.
+// target; each fragment reads the source pixel it shows, turned by the
+// output's orientation (`oriented_source_pixel`, output_orientation.wgsl,
+// concatenated in front of this file by `OUTPUT_ENCODE_SHADER_SOURCE`).
 
 struct EncodeParams {
     // Luminance SDR white (sRGB 1.0) maps to; 203 is the BT.2408 reference.
     sdr_white_nits: f32,
-    _pad0: f32,
+    // `shell::render::orientation::shader_code` of the output's transform.
+    orientation: u32,
     _pad1: f32,
     _pad2: f32,
 };
@@ -67,7 +70,8 @@ fn pq_inverse_eotf(nits: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    let px = vec2<i32>(in.position.xy);
+    let surface = vec2<i32>(textureDimensions(sdr_input));
+    let px = oriented_source_pixel(vec2<i32>(in.position.xy), surface, params.orientation);
     let src = textureLoad(sdr_input, px, 0);
     let linear = vec3<f32>(srgb_eotf(src.r), srgb_eotf(src.g), srgb_eotf(src.b));
     let nits = bt709_to_bt2020(linear) * params.sdr_white_nits;
