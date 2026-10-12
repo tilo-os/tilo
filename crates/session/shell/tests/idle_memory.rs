@@ -161,8 +161,7 @@ fn print_report(report: &serde_json::Value) {
 
 #[test]
 fn an_idle_empty_desktop_stays_within_its_memory_budget() {
-    let started = Instant::now();
-    let desktop = Desktop::start_with(&shell::shell::state::WorkspaceTree::bootstrap_default());
+    let desktop = Desktop::start_with(shell::shell::state::WorkspaceTree::bootstrap_default());
     // A person looks at their desktop: frames are rasterised, as on DRM.
     let watched = desktop.control(&serde_json::json!({"op": "watch", "watching": true}));
     assert!(watched.get("err").is_none(), "watch refused: {watched}");
