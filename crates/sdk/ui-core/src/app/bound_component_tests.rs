@@ -3021,3 +3021,95 @@ fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
         "the retained tree is the tree a fresh refresh builds"
     );
 }
+
+#[test]
+fn broker_text_slot_keeps_the_advertised_primary_parameter_through_model_resolution() {
+    use tilo_actions::remote::{InvokeArgument, RemoteActionFrame, RemoteActionMessage};
+    let address = tilo_actions::ActionAddress::new("bound:text-door", "replace-text");
+    let resource = tilo_actions::Resource::new(&address.resource, "document", "Document")
+        .with_action(tilo_actions::ActionSpec::typed(
+            &address.action,
+            "Replace text",
+            "complete document text",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            vec![tilo_actions::ActionParam::required(
+                "text",
+                tilo_actions::ParamType::Text,
+                "complete document text",
+            )],
+            |args| {
+                assert_eq!(args.text("text"), Some("replacement"));
+                tilo_actions::EncodedAction::encode("bound.apply", &FollowUp).unwrap()
+            },
+        ));
+    let resources = [resource];
+    let typed = serde_json::json!({"text": "replacement"});
+    for arguments in [None, typed.as_object()] {
+        let mut next = Some(1);
+        let mut request = None;
+        App::dispatch_broker_request(
+            &mut next,
+            true,
+            &address,
+            arguments,
+            arguments.is_none().then_some("replacement"),
+            None,
+            |_, sent| request = Some(sent),
+        )
+        .unwrap();
+        // Cross the real broker wire representation before resolving the
+        // delivered model input, rather than calling the palette encoder alone.
+        let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(request.unwrap()));
+        let RemoteActionMessage::Invoke(request) =
+            RemoteActionFrame::decode(&frame.encode().unwrap())
+                .unwrap()
+                .message
+        else {
+            panic!("broker invocation changed its message kind");
+        };
+        assert_eq!(
+            matches!(request.argument, InvokeArgument::Text(_)),
+            arguments.is_none()
+        );
+        let slot = request.argument.to_slot();
+        let (typed, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+            &resources,
+            &address,
+            slot.as_deref(),
+            None,
+            true,
+        )
+        .unwrap();
+        let encoded = crate::bound_dispatch::encode_resource_action(
+            &resources,
+            &address,
+            typed.as_ref(),
+            slot.as_deref(),
+        )
+        .unwrap();
+        let registry =
+            tilo_actions::ActionRegistry::with(|r| r.register::<FollowUp>("bound.apply"));
+        let mut document = automerge::AutoCommit::new();
+        registry
+            .decode(&encoded)
+            .unwrap()
+            .apply(&mut document)
+            .unwrap();
+        assert_eq!(
+            document
+                .get(ROOT, "follow-up")
+                .unwrap()
+                .unwrap()
+                .0
+                .as_bool(),
+            Some(true)
+        );
+    }
+    // A caller-authored JSON object is still checked against the advertised
+    // schema. The transport must never rename or forgive an unknown key.
+    let invalid = serde_json::json!({"value": "replacement"});
+    assert!(matches!(
+        tilo_actions::door::encode_json(&resources, &address, invalid.as_object().unwrap()),
+        Err(tilo_actions::DoorError::InvalidArguments(_))
+    ));
+}
