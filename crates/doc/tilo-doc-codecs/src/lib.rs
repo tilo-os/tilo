@@ -163,6 +163,16 @@ pub const SHEET_EXTENSIONS: &[&str] = &["xlsx", "ods"];
 /// compiles (a file manager asks this without linking any of them).
 pub const DOCUMENT_EXTENSIONS: &[&str] = &["md", "markdown", "odt", "docx", "rtf", "html", "htm"];
 
+/// The extension and media type an office package stores picture `bytes`
+/// under: PNG, JPEG and GIF as themselves, anything else as a binary part.
+pub(crate) fn office_image_part(bytes: &[u8]) -> (&'static str, &'static str) {
+    tilo_content::image_format(bytes)
+        .filter(|format| matches!(format.extension, "png" | "jpg" | "gif"))
+        .map_or(("bin", "application/octet-stream"), |format| {
+            (format.extension, format.mime)
+        })
+}
+
 /// The provider this build compiles for `ext` (case-insensitive), if any.
 pub fn provider_for_ext(ext: &str) -> Option<&'static dyn FormatProvider> {
     match ext.to_ascii_lowercase().as_str() {
