@@ -496,7 +496,7 @@ pub struct CapsuleCommandPlan {
 }
 
 impl CapsuleCommandPlan {
-    pub(crate) fn directory_fds(&self) -> [std::os::fd::RawFd; 2] {
+    pub(crate) fn directory_fds(&self) -> [std::os::fd::BorrowedFd<'_>; 2] {
         self.launch_paths.directory_fds()
     }
 }

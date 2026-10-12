@@ -33,6 +33,8 @@ struct ActivityObservation {
     desktop: tilo_desktop_model::DesktopTree,
     doc: automerge::AutoCommit,
     native_rooms: BTreeSet<super::state::RoomId>,
+    /// The verified agents of every room on this desktop, read with it.
+    roster_agents: Vec<ui::history_source::RosterAgent>,
 }
 
 impl ActivityObservation {
@@ -49,8 +51,55 @@ impl ActivityObservation {
                 .filter(|workspace| tree.requires_native_owner(workspace.room))
                 .map(|workspace| workspace.room)
                 .collect(),
+            roster_agents: verified_agents_since(&mut tree),
         }
     }
+}
+
+/// A room's verified agents and the room document's heads they were read at.
+type ReadAgents = (
+    Vec<automerge::ChangeHash>,
+    Vec<ui::history_source::RosterAgent>,
+);
+
+thread_local! {
+    /// Each room's verified agents as last read.
+    static VERIFIED_AGENTS: std::cell::RefCell<HashMap<super::state::RoomId, ReadAgents>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Every room's verified agents ([`WorkspaceTree::verified_agents`]), read
+/// again only for a room whose document moved since: Activity refreshes on
+/// a workspace switch, and its governance seldom changes.
+fn verified_agents_since(tree: &mut WorkspaceTree) -> Vec<ui::history_source::RosterAgent> {
+    let rooms = tree
+        .desktop
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.room)
+        .collect::<BTreeSet<_>>();
+    VERIFIED_AGENTS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.retain(|room, _| rooms.contains(room));
+        let mut agents = Vec::new();
+        for room in rooms {
+            let heads = tree
+                .room_docs
+                .get_mut(&room)
+                .map(automerge::AutoCommit::get_heads)
+                .unwrap_or_default();
+            let current = match cache.get(&room) {
+                Some((read_at, known)) if *read_at == heads => known.clone(),
+                _ => {
+                    let read = tree.verified_agents(room);
+                    cache.insert(room, (heads, read.clone()));
+                    read
+                }
+            };
+            agents.extend(current);
+        }
+        agents
+    })
 }
 
 impl std::ops::Deref for ActivityObservation {
@@ -76,6 +125,9 @@ impl ActivityTree for ActivityObservation {
     fn resync_activity_cache(&mut self) -> Result<(), String> {
         tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
         Ok(())
+    }
+    fn roster_agents(&self) -> Vec<ui::history_source::RosterAgent> {
+        self.roster_agents.clone()
     }
     fn native_manual_tasks(&self, workspace: WorkspaceId) -> bool {
         self.room_of(workspace)
@@ -694,6 +746,20 @@ impl ActivityTree for WorkspaceTree {
     }
     fn commit_activity_change(&mut self) {
         self.commit_room_change();
+    }
+    /// Every room's agents whose delegation its governance verified for
+    /// exactly their device ([`WorkspaceTree::verified_agents`]).
+    fn roster_agents(&self) -> Vec<ui::history_source::RosterAgent> {
+        let rooms = self
+            .desktop
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.room)
+            .collect::<BTreeSet<_>>();
+        rooms
+            .into_iter()
+            .flat_map(|room| self.verified_agents(room))
+            .collect()
     }
     fn resync_activity_cache(&mut self) -> Result<(), String> {
         self.resync_cache_from_doc();

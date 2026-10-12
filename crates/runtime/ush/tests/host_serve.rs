@@ -10,7 +10,7 @@
 )]
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -69,7 +69,7 @@ fn ask(
     socket: &Path,
     app: Option<&str>,
     requested_by: &str,
-) -> (ServeResponse, Option<i32>, UnixStream) {
+) -> (ServeResponse, Option<OwnedFd>, UnixStream) {
     let stream = UnixStream::connect(socket).unwrap();
     if let Some(app) = app {
         (&stream).write_all(&encode_handoff(app).unwrap()).unwrap();
@@ -82,7 +82,7 @@ fn ask(
     let mut line = serde_json::to_vec(&request).unwrap();
     line.push(b'\n');
     (&stream).write_all(&line).unwrap();
-    let (payload, fd) = recv_with_fd(stream.as_raw_fd()).unwrap();
+    let (payload, fd) = recv_with_fd(&stream).unwrap();
     let response = serde_json::from_slice(String::from_utf8_lossy(&payload).trim().as_bytes())
         .unwrap_or_else(|e| panic!("bad reply {payload:?}: {e}"));
     (response, fd, stream)
@@ -202,7 +202,7 @@ fn the_host_shell_is_terminal_only_owner_only_and_asked_for_once() {
         "{response:?}"
     );
     let fd = fd.expect("a pty arrives with the session");
-    let mut master = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+    let mut master = std::fs::File::from(fd);
     master.write_all(b"echo host-$((6*7))\n").unwrap();
     let seen = read_until(&master, "host-42", Duration::from_secs(20));
     assert!(

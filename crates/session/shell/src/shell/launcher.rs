@@ -162,7 +162,7 @@ static WINDOWS_COMPAT_ENTRY_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(target_os = "linux")]
-pub(super) fn proc_stat(pid: u32) -> Option<(u32, u64)> {
+pub(crate) fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm is parenthesised and may contain spaces/parentheses; the final ')'
     // is the only safe place from which to index the remaining fields.
@@ -175,7 +175,7 @@ pub(super) fn proc_stat(pid: u32) -> Option<(u32, u64)> {
 // Linux process ancestry is the authority for sandbox launch attribution.
 // Other hosts must not infer equivalent authority from numeric PIDs.
 #[cfg(not(target_os = "linux"))]
-pub(super) fn proc_stat(_pid: u32) -> Option<(u32, u64)> {
+pub(crate) fn proc_stat(_pid: u32) -> Option<(u32, u64)> {
     None
 }
 
@@ -4523,8 +4523,13 @@ pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
 
 /// An accepted toplevel's kernel peer, after ordinary workspace admission.
 /// A client-announced application id cannot produce a startup receipt.
-pub(crate) fn record_startup_window(pid: u32) {
-    LaunchSession::current().startup.adopted(pid);
+pub(crate) fn record_startup_window(
+    pid: u32,
+    adoption: Option<tilo_action_broker::services::LaunchAdoption>,
+) {
+    LaunchSession::current()
+        .startup
+        .adopted_window(pid, adoption);
 }
 
 /// Live unconfined launches a close of an unmatched toolkit window may stop.

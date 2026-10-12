@@ -1139,7 +1139,7 @@ mod saving_record_wake_tests {
         binding
             .records
             .with(&id, |doc| {
-                automerge::transaction::Transactable::put(doc, automerge::ROOT, "til-696", 1_u64)
+                automerge::transaction::Transactable::put(doc, automerge::ROOT, "unsaved", 1_u64)
                     .unwrap();
             })
             .unwrap();

@@ -1091,3 +1091,153 @@ async fn observed_control(
     )
     .unwrap()
 }
+
+/// Re-ask for the child `invocation` and let the broker hold the answer for
+/// up to `wait_ms` until it moves past `seen`.
+async fn observe_held(
+    channel: &channel_handle::Client,
+    run: &runtime_collab::TaskRunEnvelope,
+    invocation: uuid::Uuid,
+    wait_ms: u32,
+    seen: tilo_actions::remote::UpdateMark,
+) -> Result<(u64, tilo_actions::InvocationUpdate), capnp::Error> {
+    let mut request = channel.invoke_task_action_request();
+    let mut p = request.get();
+    p.set_run_id(run.run_id);
+    p.set_lease(&run.lease);
+    p.set_peer_id(200);
+    p.set_resource("notes:release");
+    p.set_action("append");
+    p.set_invocation(invocation.to_string());
+    p.set_wait_ms(wait_ms);
+    p.set_seen_json(serde_json::to_string(&seen).unwrap());
+    let response = request.send().promise.await?;
+    let value = response.get()?;
+    Ok((
+        value.get_id(),
+        serde_json::from_str(value.get_update_json()?.to_str().unwrap()).unwrap(),
+    ))
+}
+
+/// A held re-ask of a running native child is answered when the child
+/// settles, with its outcome, and not before; it starts nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_native_reask_is_answered_when_the_child_settles() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            report(&agent, &run, runtime_collab::TaskRunUpdate::Accepted)
+                .await
+                .unwrap();
+            let (target, stream) = notes_target(&f).await;
+            grant_notes(&f);
+            let id = uuid::Uuid::from_u128(4242);
+            let (wire, accepted) = invoke(&agent, &run, id).await.unwrap();
+            assert!(matches!(
+                accepted,
+                tilo_actions::InvocationUpdate::Accepted { .. }
+            ));
+            stream.read_request().send().promise.await.unwrap();
+            let held = tokio::task::spawn_local({
+                let agent = agent.clone();
+                let run = run.clone();
+                async move {
+                    observe_held(
+                        &agent,
+                        &run,
+                        id,
+                        5000,
+                        tilo_actions::remote::UpdateMark::Accepted,
+                    )
+                    .await
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            assert!(!held.is_finished(), "held while the child runs");
+            let terminal = tilo_actions::InvocationUpdate::Succeeded {
+                invocation: tilo_actions::InvocationId(id),
+                output: tilo_actions::ActionOutput::default(),
+            };
+            let mut update = target.update_invocation_request();
+            update.get().set_id(wire);
+            update
+                .get()
+                .set_update_json(serde_json::to_string(&terminal).unwrap());
+            update.send().promise.await.unwrap();
+            let answered = tokio::time::timeout(Duration::from_secs(1), held)
+                .await
+                .expect("answered once the child settled, not at the end of the hold")
+                .unwrap()
+                .unwrap();
+            assert_eq!(answered, (wire, terminal));
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(30),
+                    stream.read_request().send().promise
+                )
+                .await
+                .is_err(),
+                "a re-ask never delivers a second effect"
+            );
+            drop(f);
+        })
+        .await;
+}
+
+/// Cancelling the run from Task Center ends a held re-ask promptly: the
+/// broker samples the run while it holds and cancels its children.
+#[tokio::test(flavor = "current_thread")]
+async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            report(&agent, &run, runtime_collab::TaskRunUpdate::Accepted)
+                .await
+                .unwrap();
+            let (_target, stream) = notes_target(&f).await;
+            grant_notes(&f);
+            let id = uuid::Uuid::from_u128(4343);
+            invoke(&agent, &run, id).await.unwrap();
+            stream.read_request().send().promise.await.unwrap();
+            let held = tokio::task::spawn_local({
+                let agent = agent.clone();
+                let run = run.clone();
+                async move {
+                    observe_held(
+                        &agent,
+                        &run,
+                        id,
+                        5000,
+                        tilo_actions::remote::UpdateMark::Accepted,
+                    )
+                    .await
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            assert!(!held.is_finished(), "held while the child runs");
+            f.person_command(WorkspaceTaskCommand::CancelForRun {
+                task_id: f.task.clone(),
+                run_epoch: 1,
+                after_revision: 0,
+            })
+            .unwrap();
+            let _answer = tokio::time::timeout(Duration::from_secs(1), held)
+                .await
+                .expect("a cancelled run ends the hold, not the hold's end")
+                .unwrap();
+            assert!(
+                invoke(&agent, &run, uuid::Uuid::from_u128(4344))
+                    .await
+                    .is_err(),
+                "nothing new starts in a cancelled run"
+            );
+            drop(f);
+        })
+        .await;
+}

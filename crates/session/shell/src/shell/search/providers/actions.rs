@@ -25,6 +25,49 @@ mod native_identity;
 
 use crate::shell::shared_display_actions;
 
+const WORKSPACE_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
+    "name",
+    ParamType::Text,
+    "1 to 120 characters without control characters. Omit to use the localized default name.",
+)];
+
+fn workspace_create_context(
+    state: &ChromeState,
+) -> Result<
+    (
+        crate::shell::state::WorkspaceId,
+        crate::shell::state::RoomId,
+        String,
+    ),
+    ActionError,
+> {
+    let tree = state.tree();
+    let workspace = tree
+        .desktop
+        .active_workspace()
+        .ok_or_else(|| ActionError::Refused("there is no active workspace context".into()))?;
+    let context = (
+        workspace.id,
+        workspace.room,
+        state.local_user_for_room(&workspace.room),
+    );
+    drop(tree);
+    Ok(context)
+}
+
+fn create_workspace(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+    let default_name = t("search-action-workspace-create-default-name");
+    let supplied = args.text("name").unwrap_or(&default_name);
+    let name = supplied.trim();
+    if name.is_empty() || name.chars().count() > 120 || supplied.chars().any(char::is_control) {
+        return Err(ActionError::Refused(t(
+            "search-action-workspace-create-invalid-name",
+        )));
+    }
+    state.add_workspace(name);
+    Ok(())
+}
+
 /// What `record.bring` must be told.
 const RECORD_BRING_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -147,6 +190,14 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+fn workspace_create_contract() -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        kind: tilo_actions::ActionKind::Undoable,
+        retry: tilo_actions::RetryPolicy::AtMostOnce,
+        ..tilo_actions::ActionContract::default()
+    }
+}
+
 fn alarm_action_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
         kind: tilo_actions::ActionKind::Undoable,
@@ -219,6 +270,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.reversible = true;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
+        "workspace.create" => contract = workspace_create_contract(),
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Privileged;
@@ -296,7 +348,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
             tilo_actions::OperationKind::View
         }
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
-        "record.bring" | "peer.invite.named" | "agent.invite" => {
+        "record.bring" | "peer.invite.named" | "agent.invite" | "workspace.create" => {
             tilo_actions::OperationKind::Document
         }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
@@ -2073,6 +2125,13 @@ impl Action {
             "search-action-strip-focus-next-subtitle",
             |st, _| request_window_shortcut(st, ShortcutAction::NextStrip),
         ),
+        Action {
+            id: "workspace.create",
+            label: "search-action-workspace-create",
+            subtitle: "search-action-workspace-create-subtitle",
+            params: WORKSPACE_CREATE_PARAMS,
+            apply: create_workspace,
+        },
         chrome(
             "workspace.previous",
             "search-action-workspace-previous",
@@ -3525,6 +3584,8 @@ impl ActionsProvider {
                     (on_open, Some(begin))
                 } else {
                     let action_id = action.id;
+                    let creation_context = (action_id == "workspace.create")
+                        .then(|| workspace_create_context(ctx.chrome).ok());
                     let on_open = Rc::new(
                         move |_doc: &mut ui::widget::Edits<'_>,
                               _root: &automerge::ObjId,
@@ -3535,6 +3596,14 @@ impl ActionsProvider {
                                 return Err(ActionError::Refused(format!(
                                     "current workspace authority no longer permits {action_id}"
                                 )));
+                            }
+                            if let Some(expected) = &creation_context
+                                && workspace_create_context(&st).ok().as_ref() != expected.as_ref()
+                            {
+                                return Err(ActionError::Refused(
+                                    "workspace creation context changed; resolve the action again"
+                                        .into(),
+                                ));
                             }
                             let outcome = apply(&mut st, args);
                             // Repaint only on success; a refusal changed nothing.

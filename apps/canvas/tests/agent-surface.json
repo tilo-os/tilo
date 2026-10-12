@@ -2993,6 +2993,96 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "restore-reviewed",
+    "resource_kind": "canvas.artwork",
+    "label": "Restore reviewed items",
+    "description": "Restore precisely the reviewed paths as a new undoable change, only if the live causal frontier still matches. Empty selection never restores everything.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "review",
+        "ty": "object",
+        "required": true,
+        "description": "The review object from review-restore",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "target_heads",
+            "live_heads",
+            "paths"
+          ],
+          "properties": {
+            "schema": {
+              "type": "integer",
+              "const": 1
+            },
+            "target_heads": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{64}$"
+              }
+            },
+            "live_heads": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{64}$"
+              }
+            },
+            "paths": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 256,
+              "items": {
+                "type": "string",
+                "maxLength": 1024
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "review-restore",
+    "resource_kind": "canvas.artwork",
+    "label": "Review restoration",
+    "description": "Review exact-item restoration without writing. Returns pinned target and live heads; copy review into restore-reviewed. Any later edit requires a new review.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "version",
+        "ty": "text",
+        "required": true,
+        "description": "A change id, causal frontier, or checkpoint"
+      },
+      {
+        "name": "paths",
+        "ty": "array",
+        "required": true,
+        "description": "Exact differing paths from diff; a root selects its entire value",
+        "schema": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "maxLength": 1024
+          }
+        }
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "save-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Save artwork",

@@ -6649,7 +6649,18 @@ mod tests {
 
             let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
             // Already-elapsed timestamp: ready-to-prune on the very next tick.
-            row.groups[0].set_closing_at_for_tests(earlier(crate::time::now(), 400));
+            row.groups[0].set_closing_at_for_tests(
+                crate::time::now()
+                    .checked_sub(
+                        Theme::dark()
+                            .tokens
+                            .motion
+                            .durations
+                            .base()
+                            .saturating_add(std::time::Duration::from_millis(40)),
+                    )
+                    .expect("representable close deadline"),
+            );
             assert_eq!(row.groups.len(), 2, "precondition: two groups before prune");
 
             let event = WindowEvent::CursorMoved {

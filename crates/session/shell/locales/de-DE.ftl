@@ -2066,6 +2066,10 @@ global-search-rename-workspace = Arbeitsbereich umbenennen
 global-search-switch-workspace = Arbeitsbereich wechseln …
 global-search-open-settings = Einstellungen öffnen
 global-search-open-file = Datei öffnen
+search-action-workspace-create = Arbeitsbereich erstellen
+search-action-workspace-create-subtitle = Einen neuen leeren Arbeitsbereich erstellen und dorthin wechseln
+search-action-workspace-create-default-name = Unbenannt
+search-action-workspace-create-invalid-name = Gib einen Namen mit 1 bis 120 Zeichen ohne Steuerzeichen ein.
 
 # Kurzbefehl-Schritte, die vor der Ausführung fragen, und Tastaturübernahme
 shortcut-step-confirm-detail = „{ $shortcut }“ möchte „{ $action }“ für { $resource } ausführen.

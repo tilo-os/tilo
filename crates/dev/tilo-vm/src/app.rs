@@ -53,6 +53,7 @@ mod forwarded_port_tests;
 mod kernel;
 mod reach;
 mod scenario;
+mod userspace;
 
 #[derive(Debug, Clone, Copy)]
 struct ForeignRect {
@@ -1332,24 +1333,16 @@ impl App {
             VmCommand::Add(args) => self.vm_add(&args),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
             VmCommand::Wake { name } => self.vm_wake(name.as_deref()),
+            VmCommand::NetworkWake {
+                name,
+                profile,
+                enabled,
+            } => self.vm_network_wake(name.as_deref(), &profile, enabled),
             VmCommand::Awake { name, hold, off } => self.vm_awake(name.as_deref(), hold, off),
             VmCommand::EnrolAdmin { via, cert, label } => {
                 self.vm_enrol_admin(via.as_deref(), cert.as_deref(), label)
             }
-            VmCommand::Restart { name } => {
-                let vm = self.resolve_vm(name.as_deref())?;
-                if !Self::adapter(&vm)?.powers_on() {
-                    return self.vm_reboot(&vm);
-                }
-                let stopped = self.vm_stop(name.as_deref(), false)?;
-                if stopped.data.get("down") == Some(&json!(false)) {
-                    return Ok(stopped);
-                }
-                let mut started = self.vm_start(name.as_deref())?;
-                started.text = format!("{}\n{}", stopped.text, started.text);
-                insert(&mut started.data, "stop", stopped.data);
-                Ok(started)
-            }
+            VmCommand::Restart { name } => self.vm_restart(name.as_deref()),
             VmCommand::Stop { name, force } => self.vm_stop(name.as_deref(), force),
             VmCommand::Rm { name, force } => self.vm_rm(&name, force),
             VmCommand::Upgrade(args) => self.vm_upgrade(&args),
@@ -1415,6 +1408,21 @@ impl App {
                 ))
             }
         }
+    }
+
+    fn vm_restart(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
+        let vm = self.resolve_vm(name)?;
+        if !Self::adapter(&vm)?.powers_on() {
+            return self.vm_reboot(&vm);
+        }
+        let stopped = self.vm_stop(name, false)?;
+        if stopped.data.get("down") == Some(&json!(false)) {
+            return Ok(stopped);
+        }
+        let mut started = self.vm_start(name)?;
+        started.text = format!("{}\n{}", stopped.text, started.text);
+        insert(&mut started.data, "stop", stopped.data);
+        Ok(started)
     }
 
     /// Shut down under the guest's VM lock, so no swap, gc or upgrade is cut
@@ -4085,10 +4093,10 @@ impl App {
         let slot = self.slot_name(slot)?;
         self.receipt.set("slot", &slot);
         self.receipt.set("component", &component);
-        if let Some(profile) = profile {
-            check_profile(profile, &component, from)?;
-            self.receipt.set("profile", profile);
+        if component == "userspace" {
+            return self.swap_userspace(&slot, from, builder, profile);
         }
+        self.record_swap_profile(profile, &component, from)?;
         if let Some(app) = component.strip_prefix("app:") {
             return self.swap_app(&slot, app, from, builder);
         }
@@ -4195,6 +4203,19 @@ impl App {
             "tilo-vm logs",
             "tilo-vm rollback",
         ]))
+    }
+
+    fn record_swap_profile(
+        &mut self,
+        profile: Option<&str>,
+        component: &str,
+        from: &str,
+    ) -> Result<(), CliError> {
+        if let Some(profile) = profile {
+            check_profile(profile, component, from)?;
+            self.receipt.set("profile", profile);
+        }
+        Ok(())
     }
 
     fn cohort_inputs(
@@ -8382,6 +8403,7 @@ mod tests {
             seat: None,
             outputs: Vec::new(),
             parity: None,
+            session_identity: None,
         }
     }
 
