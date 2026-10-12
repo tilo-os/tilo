@@ -1,4 +1,4 @@
-//! What one commit costs and what survives a crash (TIL-732): the barriers a
+//! What one commit costs and what survives a crash: the barriers a
 //! delta commit issues, the sequence reservation across a restart, and a
 //! writer killed in the middle of committing.
 #![allow(
@@ -314,7 +314,7 @@ fn cost_per_edit(stored: u32, count: u32) -> (u64, u64) {
 }
 
 /// Reports what an edit costs the committing thread as the document's
-/// retained history grows (TIL-742). Timing is never asserted; the listing
+/// retained history grows. Timing is never asserted; the listing
 /// it grew with is.
 #[test]
 fn delta_commit_cpu_per_stored_records() {
