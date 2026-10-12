@@ -190,6 +190,29 @@ pub struct CatalogueRow {
 }
 
 impl CatalogueRow {
+    /// A top-level row offering `action` on the resource it addresses.
+    #[must_use]
+    pub fn for_action(
+        provider: impl Into<String>,
+        app_id: impl Into<String>,
+        action: ActionDescriptor,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            app_id: app_id.into(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: action.address.resource.clone(),
+                kind: action.resource_kind.clone(),
+                label: action.resource_label.clone(),
+                presentation: None,
+            },
+            action: Some(action),
+            has_children: false,
+            visibility: None,
+        }
+    }
+
     /// The target that invokes this row's action.
     #[must_use]
     pub fn target(&self) -> Option<RemoteActionTarget> {
