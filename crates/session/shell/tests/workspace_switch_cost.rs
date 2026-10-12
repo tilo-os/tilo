@@ -4,10 +4,11 @@
 //! The production compositor runs headless with a signed-in person's desktop:
 //! a Notes notebook restored from the saved session and a Terminal opened
 //! through the desktop's own action, both framework apps the compositor hosts,
-//! and a second, empty workspace. Super+Page Down goes to the empty workspace
-//! and Super+Page Up comes back, twice, as vm-acceptance W16 does once. The
-//! frame loop's own trace (`TILO_FRAME_TRACE`) gives each tick's thread CPU
-//! and its phases; the gate is the costliest tick of either switch back.
+//! and a second, empty workspace. After a first, untimed visit, Super+Page Down
+//! goes to the empty workspace and Super+Page Up comes back, twice, as
+//! vm-acceptance W16 does once. The frame loop's own trace
+//! (`TILO_FRAME_TRACE`) gives each tick's thread CPU and its phases; the gate
+//! is the costliest tick of either timed switch back.
 //!
 //! Coming back used to build the workspace again from nothing: both apps were
 //! mounted afresh (their records opened, their first sync and update) and every
@@ -27,11 +28,9 @@ use crate::idle_wakeups::{Desktop, notes_desktop};
 /// Measured on CI's shared x86-64 runner (headless, llvmpipe, debug build).
 /// Rebuilding the workspace, as every switch back did before its content was
 /// kept: 90–108 ms in each switch back (scene 78–97 ms). Putting the kept
-/// content back: 19 ms; 40–46 ms in a tick that also runs both apps' first
-/// frames for wakes they took while hidden (each app's own frame, 11–15 ms,
-/// which it would have run on screen too). The budget sits between the two:
-/// above the second with room for a loaded runner, far below the first.
-const SWITCH_BACK_TICK_CPU_BUDGET_MS: f64 = 60.0;
+/// content back: 19 ms, and no tick of the window over 27 ms. The budget
+/// leaves room for a loaded runner and sits far below a rebuild.
+const SWITCH_BACK_TICK_CPU_BUDGET_MS: f64 = 45.0;
 
 /// The frame loop writes its trace a tick at least this long after the last
 /// write, so a window is on disk once two ticks this far apart have run.
@@ -261,8 +260,14 @@ fn switching_back_to_a_workspace_with_apps_stays_within_its_cpu_budget() {
         })
         .unwrap_or_else(|| panic!("the desktop has no second workspace: {tree}"));
 
-    // Twice there and back: the first visit to the empty workspace builds it,
-    // the second comes back to it too.
+    // A first visit to the other workspace, untimed, as W16 runs after W10
+    // made and visited it: it builds the empty workspace, and both apps here
+    // took wakes while hidden whose frames (their own, 11–15 ms each in this
+    // build) the first switch back then ran in its tick. Then twice there and
+    // back, timed.
+    switch(&desktop, &trace, "PageDown", &elsewhere);
+    switch(&desktop, &trace, "PageUp", &home);
+    wait_for_quiet_apps(&desktop, &trace);
     let mut rounds = Vec::new();
     for _ in 0..2 {
         let there = switch(&desktop, &trace, "PageDown", &elsewhere);
