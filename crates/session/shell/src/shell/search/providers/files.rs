@@ -28,7 +28,7 @@ use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
-use tilo_search::{Document, FieldWeight, MatchTier, Matching, Page, SearchIndex, Signals};
+use tilo_search::{Document, FieldWeight, MatchTier, Matching, SearchIndex, Signals};
 
 /// Skip these paths anywhere in the tree — they explode the index without
 /// adding user-visible files. A pattern with a `/` matches that many
@@ -566,66 +566,27 @@ impl FilesProvider {
         };
         let revision = index.generation.to_string();
         let needle = ctx.needle.to_lowercase();
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor.token.split_once('\u{1f}') {
-                Some((cursor_needle, offset)) if cursor_needle == needle => match offset.parse() {
-                    Ok(offset) => offset,
-                    Err(_) => return SearchPage::stale(revision),
-                },
-                _ => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
         let needle_len = needle.len();
-        let found = index.index.search_scored(
-            &needle,
-            Page {
-                offset,
-                limit: budget.max_work,
-            },
-            move |signals| name_score(needle_len, signals),
-        );
-        let mut bytes = 0usize;
-        let mut results = Vec::new();
-        let mut consumed = 0usize;
-        let mut stopped_for_budget = false;
-        for hit in &found.hits {
-            let Some(entry) = index.entry(hit.key) else {
-                consumed = consumed.saturating_add(1);
-                continue;
-            };
-            if (entry.is_dir && !want_folder) || (!entry.is_dir && !want_file) {
-                consumed = consumed.saturating_add(1);
-                continue;
-            }
-            // Budget what the palette receives, including both labels and
-            // the opaque path id, before cloning any row into the UI.
-            let row_bytes = entry
-                .path
-                .display()
-                .to_string()
-                .len()
-                .saturating_add(entry.display.len())
-                .saturating_add(file_title(&entry.path).len())
-                .saturating_add(96);
-            if results.len() >= budget.max_results
-                || bytes.saturating_add(row_bytes) > budget.max_bytes
-            {
-                stopped_for_budget = true;
-                break;
-            }
-            bytes = bytes.saturating_add(row_bytes);
-            consumed = consumed.saturating_add(1);
-            results.push(make_result(entry, hit.score, None));
-        }
-        drop(index);
-        let exhausted = !stopped_for_budget && !found.more;
-        let next = offset.saturating_add(consumed);
-        SearchPage::continuing(
+        crate::shell::search::index_page(
             revision,
-            results,
-            (!exhausted).then(|| format!("{needle}\u{1f}{next}")),
+            cursor,
+            &needle,
+            budget,
+            |page| {
+                index.index.search_scored(
+                    &needle,
+                    tilo_search::Page {
+                        limit: budget.max_work,
+                        ..page
+                    },
+                    move |signals| name_score(needle_len, signals),
+                )
+            },
+            |hit| {
+                let entry = index.entry(hit.key)?;
+                let wanted = if entry.is_dir { want_folder } else { want_file };
+                wanted.then(|| make_result(entry, hit.score, None))
+            },
         )
     }
 }
@@ -1417,6 +1378,7 @@ fn display_path(home: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_search::Page;
 
     thread_local! {
         /// Whole-index builds ([`NameIndex::from_entries`]).
@@ -2737,6 +2699,49 @@ mod tests {
     /// linear scan would still exceed it by far; the 100k case itself is
     /// covered by the shared search provider tests in `ui`.
     const LARGE_CORPUS: usize = 4_000;
+
+    #[test]
+    fn filtered_name_pages_consume_hits_and_respect_the_result_budget() {
+        let provider = provider_with_index(vec![
+            ("~/a-needle", true),
+            ("~/b-needle", true),
+            ("~/c-needle", true),
+            ("~/d-needle", true),
+            ("~/e-needle", true),
+        ]);
+        let chrome = empty_chrome();
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let budget = SearchBudget {
+            max_results: 1,
+            max_bytes: 8_192,
+            max_work: 5,
+        };
+        let filtered = provider.query_page(
+            ctx_for("needle", &[ResourceKind::File], &state, &doc),
+            None,
+            budget,
+        );
+        assert!(filtered.results.is_empty());
+        assert!(
+            filtered.exhausted,
+            "all five declined hits must be consumed"
+        );
+
+        let mut cursor = None;
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..5 {
+            let page = provider.query_page(
+                ctx_for("needle", &[ResourceKind::Folder], &state, &doc),
+                cursor.as_ref(),
+                budget,
+            );
+            assert_eq!(page.results.len(), 1);
+            assert!(ids.insert(page.results[0].id.clone()), "a hit was repeated");
+            cursor = page.next_cursor;
+        }
+        assert!(cursor.is_none(), "the last emitted hit exhausts the page");
+    }
 
     #[test]
     #[allow(

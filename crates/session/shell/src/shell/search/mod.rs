@@ -69,7 +69,9 @@ pub(crate) fn index_page(
                 .len()
                 .saturating_add(row.title.len())
                 .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
-            if bytes.saturating_add(row_bytes) > budget.max_bytes {
+            if results.len() >= budget.max_results
+                || bytes.saturating_add(row_bytes) > budget.max_bytes
+            {
                 break;
             }
             bytes = bytes.saturating_add(row_bytes);
