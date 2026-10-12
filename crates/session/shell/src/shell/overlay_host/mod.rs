@@ -18599,7 +18599,7 @@ impl Widget for ShellOverlayHost {
         // each helper (in the other `impl ShellOverlayHost` block) for
         // what it covers.
         let flags = self.overlay_flags();
-        self.draw_desktop_layer(scene, transform, text_renderer, theme, presence);
+        self.draw_desktop_below_bar(scene, transform, text_renderer, theme, presence);
         // Detached app surfaces are presented by the shell after the window
         // layer, but before shell chrome. The app still paints the live
         // content and owns its controls; only presentation ownership changes.
@@ -18622,6 +18622,11 @@ impl Widget for ShellOverlayHost {
             }
         }
         self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
+        // The top bar goes over all of that, as the retained sections
+        // compose it: their workspace section holds everything above.
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.draw_bar(scene, transform, text_renderer, theme, presence);
+        }
         self.draw_dropdowns_and_sheets(scene, transform, text_renderer, theme, presence, flags);
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
@@ -20514,7 +20519,20 @@ impl ShellOverlayHost {
     /// sidebar wheel, the permission prompt bar, the toast stack and the
     /// visual-alert edge. First of four passes split out of `draw`, which
     /// was one 372-line function.
-    fn draw_desktop_layer(
+    /// The desktop below the top bar: backdrop, windows and the extras over
+    /// them. The caller draws the bar ([`DesktopSurface::draw_bar`]) after
+    /// the floating surfaces and the overview, matching the order
+    /// [`Self::draw_scene_sections`] records: there all of this lands in
+    /// the workspace section, which composes under the top bar's. Drawing
+    /// the bar first and these over it is not only a different z-order
+    /// where they overlap: a clipped layer here (the docked wheel's group
+    /// clip starts at the bar's bottom edge) rounds what is under it to
+    /// eight bits in the tiles its edge crosses, and the bar's antialiased
+    /// edges in those tiles then blend over rounded instead of exact
+    /// colour.
+    ///
+    /// [`DesktopSurface::draw_bar`]: tilo_desktop::composition::DesktopSurface::draw_bar
+    fn draw_desktop_below_bar(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -20522,12 +20540,14 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Match the compositor's retained section order in the dense oracle:
-        // app content cannot cover OS-owned anchored chrome that extends
-        // below the reserved top-bar band.
-        // The shared surface draws backdrop, workspace, then top bar.
-        self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+        match self.desktop_surface_mut() {
+            Some(surface) => {
+                surface.draw_below_bar(scene, transform, text_renderer, theme, presence);
+            }
+            None => self
+                .content
+                .draw(scene, transform, text_renderer, theme, presence),
+        }
         self.draw_desktop_extras(scene, transform, text_renderer, theme, presence);
     }
 
