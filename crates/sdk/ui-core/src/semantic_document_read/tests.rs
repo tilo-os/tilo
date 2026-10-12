@@ -9,17 +9,10 @@ use tilo_actions::{ActionContract, ExecutionMode, OperationKind, ResultSpec};
 fn schema() -> &'static serde_json::Value {
     static VALUE: OnceLock<serde_json::Value> = OnceLock::new();
     VALUE.get_or_init(|| {
-        serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
-            "version":{"type":"integer","enum":[1]},
-            "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
-                "roomId":{"type":["string","null"]},"appId":{"type":"string"},"recordId":{"type":"string"}
-            }},
-            "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
-                "heads":{"type":"array","items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
-            }},
-            "content":{"type":"object","required":["text"],"properties":{"text":{"type":"string"}},"additionalProperties":false},
-            "nextCursor":{"type":["string","null"]}
-        }})
+        result_schema(
+            serde_json::json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}},"additionalProperties":false}),
+            true,
+        )
     })
 }
 fn project(
