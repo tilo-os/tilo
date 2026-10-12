@@ -348,17 +348,18 @@ impl RenderContext {
         &mut self,
         compatible_surface: Option<&Surface<'_>>,
     ) -> Option<wgpu::Adapter> {
-        if self.fallback.is_some() && self.devices.is_empty() && !adapter_named_by_env() {
-            if let Ok(adapter) = wgpu::util::initialize_adapter_from_env_or_default(
+        if self.fallback.is_some()
+            && self.devices.is_empty()
+            && !adapter_named_by_env()
+            && let Ok(adapter) = wgpu::util::initialize_adapter_from_env_or_default(
                 &self.instance,
                 compatible_surface,
             )
             .await
-            {
-                // It offers an adapter, so it stays.
-                self.fallback = None;
-                return Some(adapter);
-            }
+        {
+            // It offers an adapter, so it stays.
+            self.fallback = None;
+            return Some(adapter);
         }
         self.settle_backends().await;
         wgpu::util::initialize_adapter_from_env_or_default(&self.instance, compatible_surface)

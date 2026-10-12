@@ -3220,20 +3220,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         };
         #[cfg(not(target_os = "linux"))]
         let early: Option<Arc<Window>> = None;
-        let window = match early {
-            Some(window) => window,
-            None => {
-                let window_attributes = primary_window_attributes(title, icon.clone(), &app_id);
-                // `resumed` is a winit `ApplicationHandler` callback returning `()`,
-                // so a `create_window` failure (compositor gone) has nowhere to
-                // propagate to; there is no window to run without it either way.
-                #[allow(
-                    clippy::unwrap_used,
-                    reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
-                )]
-                Arc::new(event_loop.create_window(window_attributes).unwrap())
-            }
-        };
+        let window = early.unwrap_or_else(|| {
+            let window_attributes = primary_window_attributes(title, icon.clone(), &app_id);
+            // `resumed` is a winit `ApplicationHandler` callback returning `()`,
+            // so a `create_window` failure (compositor gone) has nowhere to
+            // propagate to; there is no window to run without it either way.
+            #[allow(
+                clippy::unwrap_used,
+                reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
+            )]
+            Arc::new(event_loop.create_window(window_attributes).unwrap())
+        });
         #[cfg(target_os = "macos")]
         {
             use winit::platform::macos::ActiveEventLoopExtMacOS;
@@ -4194,10 +4191,7 @@ impl App {
             .and_then(RendererPreparation::take_event_loop);
         #[cfg(not(target_os = "linux"))]
         let early: Option<EventLoop<UserEvent>> = None;
-        let event_loop = match early {
-            Some(event_loop) => event_loop,
-            None => event_loop_builder.build().unwrap(),
-        };
+        let event_loop = early.unwrap_or_else(|| event_loop_builder.build().unwrap());
         tilo_host_search::forward_to_runtime();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
