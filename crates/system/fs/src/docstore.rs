@@ -283,11 +283,10 @@ mod tests {
         // Phase `commits_versions_as_change_history_and_diffs`.
         // Import real `.docx` bytes as v0, edit as v1, then checkout + diff — proves reconstruction from content-addressed history.
         {
-            let reg = tilo_doc_codecs::builtin_registry();
             let docx = super::super::tests::sample_docx();
 
             let mut doc = tilo_doc::Document::new();
-            reg.provider_for_ext("docx")
+            tilo_doc_codecs::provider_for_ext("docx")
                 .unwrap()
                 .import(
                     &docx,
@@ -371,10 +370,9 @@ mod tests {
         // Phase `checked_out_version_exports_back_to_docx`.
         // A version can be exported back to a valid `.docx` that carries the edit.
         {
-            let reg = tilo_doc_codecs::builtin_registry();
             let docx = super::super::tests::sample_docx();
             let mut doc = tilo_doc::Document::new();
-            reg.provider_for_ext("docx")
+            tilo_doc_codecs::provider_for_ext("docx")
                 .unwrap()
                 .import(
                     &docx,
@@ -397,13 +395,12 @@ mod tests {
             ds.commit_document(&mut doc, "bob").await.unwrap();
 
             let back = ds.checkout_document(1).await.unwrap();
-            let out = reg
-                .provider_for_ext("docx")
+            let out = tilo_doc_codecs::provider_for_ext("docx")
                 .unwrap()
                 .export(back.as_ref(), &tilo_content::NoContent)
                 .unwrap();
             let mut reopened = tilo_doc::Document::new();
-            reg.provider_for_ext("docx")
+            tilo_doc_codecs::provider_for_ext("docx")
                 .unwrap()
                 .import(
                     &out,
@@ -497,10 +494,9 @@ mod tests {
     /// Two peers co-edit the same file, merge, and converge; committing reuses the seed history (common prefix dedups) on both sides.
     #[tokio::test]
     async fn two_replicas_of_a_file_coedit_and_converge_incrementally() {
-        let reg = tilo_doc_codecs::builtin_registry();
         let docx = super::super::tests::sample_docx();
         let mut base = tilo_doc::Document::new();
-        reg.provider_for_ext("docx")
+        tilo_doc_codecs::provider_for_ext("docx")
             .unwrap()
             .import(
                 &docx,
