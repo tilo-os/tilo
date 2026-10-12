@@ -881,7 +881,7 @@ mod tests {
         let fs = Rc::new(FsStore::with_debounce(&root, Duration::ZERO));
         let store: Rc<dyn DurableStore> = fs.clone();
         let opener = std::thread::current().id();
-        let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key.clone()).unwrap());
+        let owner = Rc::new(DocOwner::acquire(Rc::clone(&store), key).unwrap());
         let loaded = owner.load().unwrap().expect("stored document");
         let mut doc = owner.accept(loaded).unwrap();
         let writer = DocWriter::try_start(&owner).unwrap();
@@ -903,11 +903,10 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
-        let faults = fs.faults();
+        let sync_threads = fs.faults().sync_threads.clone();
         assert!(
-            !faults.sync_threads.is_empty() && !faults.sync_threads.contains(&opener),
-            "the sync belongs to the store's thread: {:?}",
-            faults.sync_threads
+            !sync_threads.is_empty() && !sync_threads.contains(&opener),
+            "the sync belongs to the store's thread: {sync_threads:?}"
         );
     }
 

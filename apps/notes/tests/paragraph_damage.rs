@@ -194,37 +194,39 @@ fn assert_sparse_pixels(before: &Scene, after: &Scene, damage: &[Rect], backgrou
     // recordings of one unchanged scene already differ by one unit at a few
     // edge pixels (rendering `before` twice does), so a one-unit difference is
     // raster noise and anything more is a stale or missing region.
-    let inside = |pixel: usize| {
-        let (x, y) = ((pixel % 1200) as f64, (pixel / 1200) as f64);
+    let inside = |column: usize, row: usize| {
+        let (x, y) = (
+            f64::from(u32::try_from(column).unwrap()),
+            f64::from(u32::try_from(row).unwrap()),
+        );
         damage
             .iter()
             .any(|rect| x >= rect.x0 && x < rect.x1 && y >= rect.y0 && y < rect.y1)
     };
-    let mut noise = 0;
-    for pixel in 0..expected.len() / 4 {
-        let at = pixel * 4..pixel * 4 + 4;
-        if !inside(pixel) {
+    let mut noise = 0_usize;
+    let pixels = retained_pixels
+        .chunks_exact(4)
+        .zip(old_pixels.chunks_exact(4))
+        .zip(expected.chunks_exact(4));
+    for (pixel, ((retained, old), want)) in pixels.enumerate() {
+        let (column, row) = (pixel % 1200, pixel / 1200);
+        if !inside(column, row) {
             assert_eq!(
-                retained_pixels[at.clone()],
-                old_pixels[at.clone()],
-                "the sparse render left pixel ({}, {}) outside the damage as it was",
-                pixel % 1200,
-                pixel / 1200
+                retained, old,
+                "the sparse render left pixel ({column}, {row}) outside the damage as it was"
             );
         }
-        let delta = retained_pixels[at.clone()]
+        let delta = retained
             .iter()
-            .zip(&expected[at])
+            .zip(want)
             .map(|(a, b)| a.abs_diff(*b))
             .max()
             .unwrap_or(0);
         assert!(
             delta <= 1,
-            "retained pixel ({}, {}) differs from the full GPU oracle by {delta}",
-            pixel % 1200,
-            pixel / 1200
+            "retained pixel ({column}, {row}) differs from the full GPU oracle by {delta}"
         );
-        noise += usize::from(delta != 0);
+        noise = noise.saturating_add(usize::from(delta != 0));
     }
     assert!(
         noise <= 16,
