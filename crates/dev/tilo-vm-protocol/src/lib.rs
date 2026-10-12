@@ -164,6 +164,8 @@ pub enum Request {
     BootConfirm(BootConfirm),
     #[serde(rename = "awake")]
     Awake(Awake),
+    #[serde(rename = "network.wake")]
+    NetworkWake(NetworkWake),
     #[serde(rename = "device.unlock.enrol")]
     DeviceUnlockEnrol(disk_unlock::DeviceUnlockEnrol),
     #[serde(rename = "device.actions")]
@@ -200,6 +202,7 @@ impl Request {
             Self::AppInstall(_) => "app.install",
             Self::BootConfirm(_) => "boot.confirm",
             Self::Awake(_) => "awake",
+            Self::NetworkWake(_) => "network.wake",
         }
     }
 }
@@ -248,6 +251,7 @@ call! {
     AppInstall => AppInstallResult,
     BootConfirm => BootConfirmResult,
     Awake => AwakeLease,
+    NetworkWake => NetworkWakeStatus,
     DeviceUnlockEnrol => DeviceUnlockEnrolResult,
     DeviceActions => serde_json::Value,
 }
@@ -452,6 +456,25 @@ pub struct BootConfirm {
 /// Change the keep-awake lease beyond what every request does by itself
 /// (hold the machine awake until [`AWAKE_IDLE_SECONDS`] after it), or with
 /// neither field set just report it.
+/// Inspect or configure one saved `NetworkManager` profile's magic-packet wake.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkWake {
+    pub profile: String,
+    pub enabled: Option<bool>,
+}
+
+/// Configuration observations do not certify physical resume.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkWakeStatus {
+    pub profile: String,
+    pub interface: Option<String>,
+    pub configured: bool,
+    pub supported: Option<bool>,
+    pub applied: Option<bool>,
+    pub problem: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Awake {
     /// Hold it awake this many seconds from now instead.
@@ -1358,6 +1381,23 @@ mod tests {
             assert!(text.contains(r#""target":{"kind":"app","dir":"notes","slot":"a"}"#));
             assert_eq!(serde_json::from_str::<BuildJob>(&text).unwrap(), job);
         }
+    }
+
+    #[test]
+    fn network_wake_is_a_typed_non_shell_admin_request() {
+        let request = Request::NetworkWake(NetworkWake {
+            profile: "11111111-1111-4111-8111-111111111111".into(),
+            enabled: Some(true),
+        });
+        assert_eq!(request.method(), "network.wake");
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Request>(wire.clone()).unwrap(),
+            request
+        );
+        let mut injected = wire;
+        injected["params"]["command"] = serde_json::json!("unrelated-tool");
+        assert!(serde_json::from_value::<Request>(injected).is_err());
     }
 
     /// Slot names fit user names and base info reads what the dev image writes.
