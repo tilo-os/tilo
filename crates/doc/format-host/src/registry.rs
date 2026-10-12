@@ -121,11 +121,6 @@ impl Registry {
         Ok(Self { providers, limits })
     }
 
-    /// Lookup a provider by its package id (the client-facing handle).
-    pub fn by_package(&self, id: &str) -> Option<&ProviderEntry> {
-        self.providers.iter().find(|p| p.package == id)
-    }
-
     /// Highest-tier provider claiming a MIME type, with ties broken by file
     /// order (which is also the priority resolution policy documented in the
     /// host's open-questions section).

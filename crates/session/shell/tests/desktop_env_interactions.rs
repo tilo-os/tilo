@@ -27,12 +27,13 @@ use shell::shell::state::{
     WorkspaceId, WorkspaceTree,
 };
 use shell::shell::topbar_chrome::{TOPBAR_HEIGHT_PX, TopBarChrome};
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{Modifiers, MouseScrollDelta, WindowEvent};
+
+use crate::support::host::{self, Layout, lay_out};
 
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
@@ -105,16 +106,6 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
     (tree, strip_id, group_ids.to_vec())
 }
 
-struct Layout {
-    taffy: TaffyTree<()>,
-    #[allow(
-        dead_code,
-        reason = "The fixture retains the root layout node even when a test inspects only its child."
-    )]
-    root_node: NodeId,
-    child_node: NodeId,
-}
-
 /// Usable strip width at the fixture's viewport (window minus the
 /// wheel-disc slot + gutter). Group widths are fractions of this, so a
 /// pixel expectation only means anything alongside it; read off the live
@@ -135,46 +126,7 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
         f64::from(W),
         f64::from(H),
     )]);
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root_node = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let mut tr = ui::text_render::TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root_node,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    host.apply_layout(&taffy, child, Point::ORIGIN);
-    Layout {
-        taffy,
-        root_node,
-        child_node: child,
-    }
+    lay_out(host, W, H)
 }
 
 fn laid_out_topbar_height(chrome: Chrome) -> f64 {
@@ -204,23 +156,7 @@ fn dispatch_with_modifiers(
     event: &WindowEvent,
     modifiers: Modifiers,
 ) {
-    let mut doc = automerge::AutoCommit::new();
-    let doc_root = automerge::ROOT.clone();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &doc_root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: layout.child_node,
-            taffy: &layout.taffy,
-        },
-    );
+    host::dispatch(host, &layout.taffy, layout.child_node, modifiers, event);
 }
 
 fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
@@ -278,51 +214,19 @@ fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: Stri
 }
 
 fn cursor(host: &mut ShellOverlayHost, layout: &Layout, p: Point) {
-    dispatch(
-        host,
-        layout,
-        &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(p.x, p.y),
-        },
-    );
+    dispatch(host, layout, &ui::synthetic_input::cursor_moved(p.x, p.y));
 }
 
 fn press(host: &mut ShellOverlayHost, layout: &Layout) {
-    dispatch(
-        host,
-        layout,
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-    );
+    dispatch(host, layout, &ui::synthetic_input::mouse_press());
 }
 
 fn release(host: &mut ShellOverlayHost, layout: &Layout) {
-    dispatch(
-        host,
-        layout,
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-    );
+    dispatch(host, layout, &ui::synthetic_input::mouse_release());
 }
 
 fn press_with_modifiers(host: &mut ShellOverlayHost, layout: &Layout, modifiers: Modifiers) {
-    dispatch_with_modifiers(
-        host,
-        layout,
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        modifiers,
-    );
+    dispatch_with_modifiers(host, layout, &ui::synthetic_input::mouse_press(), modifiers);
 }
 
 // 1. Horizontal window-group resize
@@ -1436,7 +1340,7 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
             &mut host,
             &layout,
             &WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
                 delta: MouseScrollDelta::LineDelta(0.0, -3.0),
                 phase: winit::event::TouchPhase::Moved,
             },

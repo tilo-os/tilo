@@ -48,10 +48,9 @@ impl Daemon {
             .unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let stdin = child.stdin.take().unwrap();
-        Self {
-            child,
-            client: Client::new(stdout, stdin),
-        }
+        let mut client = Client::new(stdout, stdin);
+        client.enable_binary_uploads();
+        Self { child, client }
     }
 }
 
@@ -859,5 +858,53 @@ fn verified_layer_cache_refuses_corruption_and_missing_entries() {
             .client
             .call(tilo_vm_protocol::LayerVerify { hash })
             .is_ok()
+    );
+}
+
+#[test]
+fn binary_upload_cancellation_cleans_partial_files_and_keeps_rpc_aligned() {
+    struct Failing(std::io::Cursor<Vec<u8>>);
+    impl std::io::Read for Failing {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.position() == self.0.get_ref().len() as u64 {
+                return Err(std::io::Error::other("source cancelled"));
+            }
+            std::io::Read::read(&mut self.0, output)
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(dir.path());
+    daemon.client.hello("binary-fixture").unwrap();
+    assert!(matches!(
+        daemon
+            .client
+            .upload(Failing(std::io::Cursor::new(vec![31; 2 << 20]))),
+        Err(ClientError::Io(_))
+    ));
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("uploads"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert!(daemon.client.call(LayerList {}).unwrap().is_empty());
+    let bytes = tarball("usr/bin/binary-probe", &vec![57; (2 << 20) + 33]);
+    let hash = import(&mut daemon.client, "binary-probe", &bytes);
+    assert_eq!(daemon.client.call(LayerList {}).unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("uploads"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        std::fs::read(
+            dir.path()
+                .join("layers")
+                .join(hash)
+                .join("usr/bin/binary-probe")
+        )
+        .unwrap(),
+        vec![57; (2 << 20) + 33]
     );
 }

@@ -164,12 +164,6 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
     }
 
     #[must_use]
-    pub fn with_timeouts(mut self, timeouts: Timeouts) -> Self {
-        self.timeouts = timeouts;
-        self
-    }
-
-    #[must_use]
     pub fn with_bwrap(mut self, bwrap: PathBuf) -> Self {
         self.sandbox.bwrap = Some(bwrap);
         self

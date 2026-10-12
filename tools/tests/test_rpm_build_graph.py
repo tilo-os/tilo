@@ -11,6 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SUPPORT = {
+    "tilo-fs",
     "launcher",
     "tilo-unlock-helper",
     "tilo-app-package-cli",
@@ -66,6 +67,9 @@ class RpmBuildGraphTest(unittest.TestCase):
         }
         expected = {
             "imager",
+            "fs",
+            "tilo-relay-admin",
+            "tilo-enroll",
             "tilo-relay-environment",
             "tilo-relay-offers",
             "tilo-legacy",

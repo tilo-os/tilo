@@ -123,7 +123,7 @@ impl App {
             .map_err(|error| error.to_string())
     }
 
-    #[allow(dead_code, reason = "used by feature-gated collaboration paths")]
+    #[cfg(test)]
     pub(super) fn apply_primary_document(
         &mut self,
         mutation: collab_types::DocumentMutation,

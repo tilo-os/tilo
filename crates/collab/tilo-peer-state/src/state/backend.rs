@@ -1,10 +1,9 @@
 //! One private peer representation; storage qualification cannot be copied.
 use super::{
-    AcceptedCheckpoint, Actor, ArtifactKind, AutoCommit, BTreeMap, CachedDocument, CapDecision,
-    CapOverride, ChannelState, DeviceCert, DurableV4, DurableV5, DurableV6, Ed25519PublicKey,
-    ExactAdmissions, GovernedIdentity, NeighbourMsg, Principal, RedemptionReceipt, ResourceRef,
-    RevocationList, Role, Route, Scope, StatePeer, Subject, SystemTime, VecDeque, Verb,
-    VerifiedCertificate, decide_capability, err, now_ns, now_secs, room,
+    AcceptedCheckpoint, AutoCommit, BTreeMap, CachedDocument, ChannelState, DeviceCert, DurableV4,
+    DurableV5, DurableV6, Ed25519PublicKey, ExactAdmissions, GovernedIdentity, NeighbourMsg,
+    RedemptionReceipt, RevocationList, Role, Route, StatePeer, SystemTime, VecDeque,
+    VerifiedCertificate, err, now_ns, room,
 };
 use crate::resources::native::NativeDocument;
 pub(super) mod access;
@@ -45,7 +44,7 @@ impl sealed::Sealed for LegacyNative {}
 impl sealed::Sealed for BoundedNative {}
 impl Storage for LegacyNative {
     type Room = CachedDocument;
-    type Document = AutoCommit;
+    type Document = CachedDocument;
     type Checkpoint = AcceptedCheckpoint;
     type Retention = ();
     type CertificateRoster = BTreeMap<[u8; 32], VerifiedCertificate>;

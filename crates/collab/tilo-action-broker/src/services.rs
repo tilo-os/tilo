@@ -1,4 +1,7 @@
 //! Explicit host services. These are process-owned capabilities, never wire flags.
+mod task_execution;
+pub use task_execution::{NativeTaskActionRequirement, NativeTaskBinding, WorkspaceTaskExecution};
+
 use std::sync::Arc;
 use tilo_desktop_model::{DesktopTree, RoomId, Workspace, WorkspaceTaskStatus};
 
@@ -21,7 +24,7 @@ pub trait LocalPersonServices: Send + Sync {
 pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub use crate::collab_broker_capnp::{
-    AudioOutputFuture, AudioOutputServices, CertifiedPersonContext, DocumentBytes,
+    AudioOutputFuture, AudioOutputServices, CertifiedPersonContext, DocumentBytes, HeldRevision,
     NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, NativeMediaFuture,
     NativeMediaRequestContext, NativeMediaServices,
 };
@@ -51,17 +54,117 @@ pub trait NativeResourceViews: Send + Sync {
     ) -> NativeResourceViewFuture;
 }
 
-/// Reads a fresh immutable projection from the host's committed authority.
+/// Reads the host's committed authority in place.
 /// Mutations go back to that host; this interface owns no replica or persistence.
+///
+/// Policy questions borrow the committed tree rather than copying it: a copy
+/// carries every workspace's strips, tasks and effect-receipt history, and in
+/// the compositor it is taken under the tree lock the render loop writes
+/// through. One admission asks once and decides every check on that one view.
 pub trait WorkspaceAuthority: Send + Sync {
-    /// A fresh immutable projection of the committed workspace tree.
+    /// Run `read` once against the committed workspace tree, borrowed.
+    ///
+    /// `read` must be short: it must not block, await or serialize, because
+    /// a host may hold its tree lock while it runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the committed authority cannot be read; `read`
+    /// is then not called.
+    fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String>;
+
+    /// Run `read` once against the committed workspace of exactly `room`
+    /// (`None` when this host has no such workspace). Same rules as
+    /// [`Self::with_tree`]; a host whose rooms are not one tree overrides it
+    /// to look up only the requested room.
     ///
     /// # Errors
     ///
     /// Returns a message when the committed authority cannot be read.
-    fn snapshot(&self) -> Result<DesktopTree, String>;
+    fn with_room(
+        &self,
+        room: &str,
+        read: &mut dyn FnMut(Option<&Workspace>),
+    ) -> Result<(), String> {
+        self.with_tree(&mut |tree| read(room_in(tree, room)))
+    }
+
+    /// An owned copy of the committed workspace tree, for the few callers
+    /// that must keep one past the read. Never on an admission path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the committed authority cannot be read.
+    fn snapshot(&self) -> Result<DesktopTree, String> {
+        let mut copy = None;
+        self.with_tree(&mut |tree| copy = Some(tree.clone()))?;
+        copy.ok_or_else(|| UNANSWERED.to_owned())
+    }
+
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
         None
+    }
+
+    /// Whether every write to what the broker's membership and context
+    /// checks read on this host is announced through
+    /// [`tilo_identity_host::policy_change`]: this tree, the device fleet and
+    /// identity registry behind the installed certificate authority, and the
+    /// owner's task store. The broker then re-checks on those announcements
+    /// and at the next capability or certificate expiry. `false` (the
+    /// default) keeps the one-second re-check: a host that does not announce
+    /// a revocation must not have it go unenforced.
+    fn announces_policy_changes(&self) -> bool {
+        false
+    }
+}
+
+const UNANSWERED: &str = "workspace authority did not answer";
+
+/// The workspace of exactly `room` in `tree`.
+#[must_use]
+pub fn room_in<'a>(tree: &'a DesktopTree, room: &str) -> Option<&'a Workspace> {
+    tree.workspaces
+        .iter()
+        .find(|workspace| workspace.room.to_string() == room)
+}
+
+impl dyn WorkspaceAuthority {
+    /// One policy sample of the whole tree: `decide` runs once on the
+    /// borrowed committed tree and its answer is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the committed authority cannot be read.
+    pub fn decide_in_tree<R>(&self, decide: impl FnOnce(&DesktopTree) -> R) -> Result<R, String> {
+        let mut decide = Some(decide);
+        let mut answer = None;
+        self.with_tree(&mut |tree| {
+            if let Some(decide) = decide.take() {
+                answer = Some(decide(tree));
+            }
+        })?;
+        answer.ok_or_else(|| UNANSWERED.to_owned())
+    }
+
+    /// One policy sample of one room: `decide` runs once on the borrowed
+    /// committed workspace of exactly `room` and its answer is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the committed authority cannot be read.
+    pub fn decide_in_room<R>(
+        &self,
+        room: &str,
+        decide: impl FnOnce(Option<&Workspace>) -> R,
+    ) -> Result<R, String> {
+        let mut decide = Some(decide);
+        let mut answer = None;
+        self.with_room(room, &mut |workspace| {
+            if let Some(decide) = decide.take() {
+                answer = Some(decide(workspace));
+            }
+        })?;
+        answer.ok_or_else(|| UNANSWERED.to_owned())
     }
 }
 /// Legacy native projection only; success is not an aggregate durability receipt.
@@ -170,6 +273,18 @@ pub trait DocumentImports: Send + Sync {
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
     ) -> DesktopCommandFuture;
+}
+
+/// Where the view of a launched app opens: next to where the actor that
+/// needs it already is, so the person and every actor keep their place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LaunchPlace {
+    /// Where the person on this device is looking: their own invocation,
+    /// from the palette, a chord or a click.
+    Focus,
+    /// Beside the view of `app_id` the actor works in, on whichever strip
+    /// holds it, which need not be the one the person is looking at.
+    Beside { app_id: String },
 }
 
 #[derive(Clone)]
@@ -346,12 +461,19 @@ pub trait LauncherServices: Send + Sync {
     /// neither challenge bytes nor credentials, document or application output.
     fn observe_executing_binding(&self, _observation: u64, _phase: ExecutingBindingPhase) {}
     fn applications(&self) -> Vec<LaunchableApplication>;
-    /// Launches `app` into `workspace`.
+    /// Launches `app` into `workspace`, its view of `record` (else the
+    /// record it opens by default) opening at `place`.
     ///
     /// # Errors
     ///
     /// Returns a message when the host cannot launch the application.
-    fn launch(&self, app: &str, workspace: &Workspace) -> Result<(), String>;
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &Workspace,
+        record: Option<&str>,
+        place: &LaunchPlace,
+    ) -> Result<(), String>;
     /// Launch an exact installed package, or an ordinary host application,
     /// and observe its real startup in the authenticated workspace.
     ///
@@ -387,10 +509,10 @@ pub trait LauncherServices: Send + Sync {
         }
         self.begin_launch(app, package_root, workspace, author)
     }
-    /// Launch `app` into `workspace`, opening the content-addressed bytes
-    /// `content` names read-only, read through the calling application's own
-    /// scope. An empty hash is a plain launch. A host that cannot stage
-    /// content refuses one.
+    /// Launch `app` into `workspace` at `place`, opening the
+    /// content-addressed bytes `content` names read-only, read through the
+    /// calling application's own scope. An empty hash is a plain launch. A
+    /// host that cannot stage content refuses one.
     ///
     /// # Errors
     ///
@@ -400,9 +522,10 @@ pub trait LauncherServices: Send + Sync {
         app: &str,
         workspace: &Workspace,
         content: LaunchContent<'_>,
+        place: &LaunchPlace,
     ) -> Result<(), String> {
         if content.hash.is_empty() {
-            self.launch(app, workspace)
+            self.launch(app, workspace, None, place)
         } else {
             Err("opening launch content is unsupported on this host".into())
         }
@@ -821,8 +944,7 @@ pub struct FileClipboardContext {
     pub(crate) workspace: String,
     pub(crate) owner: String,
     pub(crate) history_compensation: bool,
-    pub(crate) check:
-        Arc<dyn Fn(tilo_actions::PermissionRequirement) -> Result<(), String> + Send + Sync>,
+    pub(crate) check: Arc<dyn Fn(tilo_actions::ActionKind) -> Result<(), String> + Send + Sync>,
 }
 impl FileClipboardContext {
     pub fn window(&self) -> &str {
@@ -833,9 +955,9 @@ impl FileClipboardContext {
     /// # Errors
     /// Refuses retired authority or unavailable peer descriptors.
     pub fn duplicate_selected(&self, descriptor: u32) -> Result<std::fs::File, String> {
-        self.authorize(tilo_actions::PermissionRequirement::Read)?;
+        self.authorize(tilo_actions::ActionKind::Read)?;
         let file = (self.duplicate)(descriptor)?;
-        self.authorize(tilo_actions::PermissionRequirement::Read)?;
+        self.authorize(tilo_actions::ActionKind::Read)?;
         Ok(file)
     }
     pub fn peer(&self) -> u64 {
@@ -856,7 +978,7 @@ impl FileClipboardContext {
     ///
     /// # Errors
     /// Refuses retired, revoked, expired or insufficient authority.
-    pub fn authorize(&self, permission: tilo_actions::PermissionRequirement) -> Result<(), String> {
+    pub fn authorize(&self, permission: tilo_actions::ActionKind) -> Result<(), String> {
         (self.check)(permission)
     }
 }
@@ -876,22 +998,21 @@ pub trait FileClipboardServices: Send + Sync {
 /// recorded. The broker decides whether to ask and builds the grant; the
 /// host owns the workspace records it lands in.
 pub trait AppActionGrants: Send + Sync {
-    /// Whether this machine governs `room` and `person` may administer it,
+    /// Whether this machine governs `room` and `person` may grant in it,
     /// so a grant they give can be recorded here.
     fn may_grant(&self, room: &str, person: &str) -> bool;
-    /// Record `capability` in `request.room` as granted by
-    /// `request.person`, and note `answer` in the workspace's history.
-    /// The recorded capability's id, or `None` when it could not be
-    /// recorded.
+    /// Record `grant` in `request.room` as given by `request.person`, and
+    /// note `answer` in the workspace's history. The recorded grant's id, or
+    /// `None` when it could not be recorded.
     fn record(
         &self,
         request: &crate::app_actions::AppActionConsentRequest,
-        capability: collab_types::caps::CapOverride,
+        grant: tilo_action_policy::Grant,
         answer: crate::app_actions::AppActionConsent,
     ) -> Option<String>;
-    /// Remove the grant `capability` from `room`: a grant given once, now
-    /// that its call was decided.
-    fn revoke(&self, room: &str, capability: &str);
+    /// Remove the grant `grant` from `room`: a grant given once, now that
+    /// its call was decided.
+    fn revoke(&self, room: &str, grant: &str);
 }
 /// Identity of an exact private Settings worker, derived by the broker.
 #[derive(Clone, Debug)]
@@ -920,6 +1041,8 @@ pub trait DisplayControlServices: Send + Sync {
 
 #[derive(Clone, Default)]
 pub struct HostServices {
+    /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
+    pub approved_checks: Option<Arc<dyn crate::collab_broker_capnp::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the native host
     /// can carry it over its current authenticated room connection.
     pub resource_views: Option<Arc<dyn NativeResourceViews>>,
@@ -928,6 +1051,7 @@ pub struct HostServices {
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     pub desktop_commands: Option<Arc<dyn DesktopCommands>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
+    pub task_execution: Option<Arc<dyn WorkspaceTaskExecution>>,
     /// Documents proposed into the room and the owner's answers. Without it
     /// nothing can be proposed.
     pub document_imports: Option<Arc<dyn DocumentImports>>,
@@ -969,4 +1093,8 @@ pub struct HostServices {
     /// record's route (`offerBlob`, `wantBlob`, `subscribeBlobs`). Without
     /// it apps' content stays in their own process.
     pub record_content: Option<Arc<crate::record_content::RouteContent>>,
+    /// This device's channel encryption service, which tells each route's
+    /// endpoint when its channel keys changed (`channelKeysChanged`).
+    /// Without it endpoints ask the identity service on a timer.
+    pub channel_keys: Option<crate::channel_encryption::ChannelKeyProvider>,
 }

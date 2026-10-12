@@ -46,7 +46,7 @@ impl Request {
     ///
     /// # Errors
     ///
-    /// Returns `String` if the request cannot be sent or its reply is rejected.
+    /// Identifies the expired gate or failed owner turn without exposing source data.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the runtime guard is held so the refresh request and its checkpoint request observe one roster"
@@ -62,17 +62,25 @@ impl Request {
             .subscribers
             .get(&self.source.peer.device_public_key)
             .is_some_and(|current| current.tx.same_channel(&self.source.tx));
-        if std::time::Instant::now() >= self.deadline
-            || !subscribed
-            || !self.source.authorized(&workspace)
-            || self.source.session_live.is_none()
-        {
-            return Err("checkpoint refresh source is no longer current".into());
+        if std::time::Instant::now() >= self.deadline {
+            return Err("checkpoint refresh deadline elapsed".into());
+        }
+        if !subscribed {
+            return Err("checkpoint refresh subscription is no longer current".into());
+        }
+        if !self.source.authorized(&workspace) {
+            return Err("checkpoint refresh source authorization ended".into());
+        }
+        if self.source.session_live.is_none() {
+            return Err("checkpoint refresh has no live session evidence".into());
         }
         // No await while the current subscription gate and native turn are held.
         let result = turn(self.workspace_id, &self.source.peer.cert)?;
-        if !self.source.alive() || !self.source.cert(&self.source.peer) {
+        if !self.source.alive() {
             return Err("checkpoint refresh session ended during owner turn".into());
+        }
+        if !self.source.admits(&workspace, &self.source.peer) {
+            return Err("checkpoint refresh authorization changed during owner turn".into());
         }
         workspace.request_checkpoint(&self.source.peer.device_public_key);
         Ok(result)

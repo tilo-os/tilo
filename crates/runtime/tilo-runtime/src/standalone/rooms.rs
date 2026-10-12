@@ -15,11 +15,41 @@ pub(super) struct Rooms {
 impl WorkspaceAuthority for Rooms {
     /// The profile's own workspaces, then each joined room as its
     /// governance describes it. Joined rooms are never written to the
-    /// profile's workspace file.
-    fn snapshot(&self) -> Result<DesktopTree, String> {
+    /// profile's workspace file, so a profile that joined any room reads
+    /// a merged copy; one that joined none borrows its own tree.
+    fn with_tree(&self, read: &mut dyn FnMut(&DesktopTree)) -> Result<(), String> {
+        if self.joined.is_empty() {
+            return self.profile.with_tree(read);
+        }
         let mut tree = self.profile.snapshot()?;
         tree.workspaces.extend(self.joined.workspaces());
-        Ok(tree)
+        read(&tree);
+        Ok(())
+    }
+
+    /// The profile's own room first, as in the merged tree; otherwise only
+    /// the requested joined room is built.
+    fn with_room(
+        &self,
+        room: &str,
+        read: &mut dyn FnMut(Option<&Workspace>),
+    ) -> Result<(), String> {
+        let mut read = Some(read);
+        self.profile.with_room(room, &mut |workspace| {
+            if workspace.is_some()
+                && let Some(read) = read.take()
+            {
+                read(workspace);
+            }
+        })?;
+        let Some(read) = read else {
+            return Ok(());
+        };
+        let joined = RoomId::parse(room)
+            .and_then(|id| self.joined.workspace(id))
+            .filter(|workspace| workspace.room.to_string() == room);
+        read(joined.as_ref());
+        Ok(())
     }
 
     fn legacy_journal_root(&self) -> Option<std::path::PathBuf> {
@@ -34,13 +64,7 @@ impl WorkspaceMembership for Rooms {
             found = true;
             read(workspace);
         });
-        if !found
-            && let Some(workspace) = self
-                .joined
-                .workspaces()
-                .into_iter()
-                .find(|workspace| &workspace.room == room)
-        {
+        if !found && let Some(workspace) = self.joined.workspace(*room) {
             read(&workspace);
         }
     }

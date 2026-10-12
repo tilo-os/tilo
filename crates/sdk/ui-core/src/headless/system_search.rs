@@ -288,14 +288,7 @@ impl FrameHarness {
             return Err("Search query is too long".into());
         }
         if self.system_search.overlay.is_none() {
-            // SAFETY: the harness exclusively owns these live maps and tree.
-            self.system_search.saved_focus = unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused,
-                    &self.node_map,
-                    &self.bindings,
-                )
-            };
+            self.system_search.saved_focus = self.capture_focus_identity();
         }
         let mut palette = CommandPalette::new();
         palette.set_modal(true);
@@ -316,15 +309,6 @@ impl FrameHarness {
         self.refresh_system_search();
         self.relayout();
         Ok(())
-    }
-    pub fn toggle_global_search_all(&mut self) -> Result<(), String> {
-        if self.system_search.overlay.is_some() {
-            self.close_system_search();
-            self.relayout();
-            Ok(())
-        } else {
-            self.open_global_search_all("")
-        }
     }
     pub fn take_global_search_intent(&mut self) -> Option<GlobalSearchIntent> {
         self.system_search.pending.take()
@@ -523,7 +507,7 @@ impl FrameHarness {
                             && binding.permissions.borrow().check(
                                 &crate::permissions::PermissionScope::app(
                                     &binding.app_id,
-                                    crate::permissions::Verb::Read,
+                                    crate::permissions::ActionKind::Read,
                                 ),
                             );
                     };
@@ -539,7 +523,7 @@ impl FrameHarness {
                         snapshots
                             .iter()
                             .filter(|snapshot| snapshot.binding.same_component(&binding))
-                            .flat_map(|snapshot| &snapshot.resources)
+                            .flat_map(|snapshot| snapshot.resources().iter())
                             .find(|resource| {
                                 tilo_actions::door::resolve(
                                     std::slice::from_ref(resource),

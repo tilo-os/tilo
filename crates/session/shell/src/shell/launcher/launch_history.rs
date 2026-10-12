@@ -87,10 +87,7 @@ pub(crate) struct History {
 }
 
 pub(crate) fn epoch_ns() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
+    u128::from(tilo_clock::unix_now_ns())
 }
 
 impl History {

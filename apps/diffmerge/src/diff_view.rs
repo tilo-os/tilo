@@ -508,15 +508,7 @@ impl Widget for DiffView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.place(Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        ));
+        self.place(ui::widget::layout_rect(taffy, node, origin));
     }
 
     fn draw(
@@ -858,7 +850,7 @@ impl DiffView {
             let band = self.gap_band(col, *gap, first);
             let label = ctx.text.elide_to_width_style(
                 &gap_label(side, *gap),
-                pane::to_f32(band.width()),
+                ui::num::f32_of_f64(band.width()),
                 &style,
             );
             ctx.text_role_in_band(
@@ -972,7 +964,7 @@ impl DiffView {
             let caption = theme.text(TextRole::Caption);
             let shown = ctx.text.elide_to_width_style(
                 &file,
-                pane::to_f32((band.width() - 2.0 * inset).max(0.0)),
+                ui::num::f32_of_f64((band.width() - 2.0 * inset).max(0.0)),
                 &caption,
             );
             ctx.text_role_in_band(

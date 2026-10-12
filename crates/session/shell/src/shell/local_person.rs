@@ -1,12 +1,11 @@
 //! The native palette/control caller, derived from protected host identity.
 //! No agent transport or app request can enter this process-owned capability.
-use super::state::{RoomId, WorkspaceTree};
-use std::sync::Weak;
+use super::state::{RoomId, WeakWorkspaceTreeHandle};
 use tilo_action_broker::services::LocalPersonServices;
 use tilo_user_identity::DeviceCert;
 
 pub(crate) struct NativeLocalPerson {
-    pub tree: Weak<parking_lot::RwLock<WorkspaceTree>>,
+    pub tree: WeakWorkspaceTreeHandle,
 }
 
 fn current_certificate(room: &str, person: &str) -> Result<DeviceCert, String> {
@@ -63,7 +62,7 @@ mod tests {
     use super::*;
 
     fn native_host(
-        tree: &std::sync::Arc<parking_lot::RwLock<WorkspaceTree>>,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
         room: RoomId,
     ) -> (
         super::super::remote_actions::BrokerActionHost,
@@ -81,7 +80,7 @@ mod tests {
                         super::super::broker_services::NativeCertificates::default(),
                     )),
                     local_person: Some(std::sync::Arc::new(NativeLocalPerson {
-                        tree: std::sync::Arc::downgrade(tree),
+                        tree: tree.downgrade(),
                     })),
                     ..Default::default()
                 },
@@ -95,13 +94,13 @@ mod tests {
                     room.to_string(),
                 ),
                 actions: [
-                    ("inspect", tilo_actions::PermissionRequirement::Read),
-                    ("edit", tilo_actions::PermissionRequirement::Write),
-                    ("apply", tilo_actions::PermissionRequirement::Admin),
+                    ("inspect", tilo_actions::ActionKind::Read),
+                    ("edit", tilo_actions::ActionKind::Undoable),
+                    ("apply", tilo_actions::ActionKind::Outside),
                 ]
                 .into_iter()
                 .map(
-                    |(id, permission)| crate::shell::collab_broker_capnp::PublishedAction {
+                    |(id, kind)| crate::shell::collab_broker_capnp::PublishedAction {
                         resource: "settings.display".into(),
                         semantic_identity: None,
                         action: id.into(),
@@ -112,7 +111,7 @@ mod tests {
                         operation_kind: tilo_actions::OperationKind::View,
                         params: vec![],
                         contract: tilo_actions::ActionContract {
-                            permission,
+                            kind,
                             ..tilo_actions::ActionContract::view()
                         },
                         input: crate::shell::collab_broker_capnp::PublishedInput::None,
@@ -154,6 +153,7 @@ mod tests {
             context: None,
             confirmation: None,
             revision: None,
+            wait_ms: None,
         }
     }
 
@@ -178,7 +178,7 @@ mod tests {
         let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
             certificate.user_public_key,
         );
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         let room = tree.desktop.workspaces[0].room;
         tree.desktop.workspaces[0].set_owner(&person);
         tree.persist_path = Some(directory.path().join("state.json"));
@@ -186,7 +186,7 @@ mod tests {
         let owner = super::super::native_workspace_owner::open(tree.clone()).unwrap();
         super::super::launcher::action_authority::Export::of(&tree.read()).publish();
         let service = NativeLocalPerson {
-            tree: std::sync::Arc::downgrade(&tree),
+            tree: tree.downgrade(),
         };
         assert_eq!(
             service.certificate(&room.to_string(), &person).unwrap(),
@@ -206,14 +206,9 @@ mod tests {
         continuation.on_behalf_of = Some(tilo_actions::InvocationId::new());
         assert!(invoke(&caller, continuation).is_err());
         {
-            use collab_types::caps::{CapOverride, Principal, Subject, Verb};
             let mut current = tree.write();
             current.desktop.workspaces[0].set_owner("another-owner");
-            current.desktop.workspaces[0].grant_capability(CapOverride::membership(
-                Subject::Principal(Principal::Person(person.clone())),
-                room.to_string(),
-                Verb::Read,
-            ));
+            current.desktop.workspaces[0].admit(person.clone(), tilo_action_policy::Role::Viewer);
         }
         super::super::launcher::action_authority::Export::of(&tree.read()).publish();
         assert!(
@@ -221,14 +216,7 @@ mod tests {
             "native identity does not elevate a Viewer"
         );
         assert!(invoke(&caller, request("apply")).is_err());
-        {
-            use collab_types::caps::{CapOverride, Principal, Subject, Verb};
-            tree.write().desktop.workspaces[0].grant_capability(CapOverride::membership(
-                Subject::Principal(Principal::Person(person.clone())),
-                room.to_string(),
-                Verb::Write,
-            ));
-        }
+        tree.write().desktop.workspaces[0].admit(person.clone(), tilo_action_policy::Role::Editor);
         super::super::launcher::action_authority::Export::of(&tree.read()).publish();
         assert!(
             invoke(&caller, request("edit")).is_ok(),
@@ -247,12 +235,12 @@ mod tests {
                 .certificate(&RoomId::new().to_string(), &person)
                 .is_err()
         );
-        tree.write().desktop.workspaces[0].owner = None;
+        tree.write().desktop.workspaces[0].policy.owner = None;
         assert!(
             service.certificate(&room.to_string(), &person).is_err(),
             "unpublished policy changes revoke the captured native origin"
         );
-        tree.write().desktop.workspaces[0].owner = Some(person.clone());
+        tree.write().desktop.workspaces[0].set_owner(person.clone());
         super::super::launcher::action_authority::Export::of(&tree.read()).publish();
         assert!(service.certificate(&room.to_string(), &person).is_ok());
         drop(owner);

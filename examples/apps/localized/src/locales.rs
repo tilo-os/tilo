@@ -3,16 +3,23 @@
 // tilo-app:locale=de-DE
 // tilo-app:locale=en-US
 
-const CATALOG_0: &str = include_str!("../locales/de-DE.ftl");
-const CATALOG_1: &str = include_str!("../locales/en-US.ftl");
+ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);
 
-pub const IDS: &[&str] = &["de-DE", "en-US"];
-
-pub fn install() {
-    if let Err(error) = ui::i18n::I18nManager::install_system(
-        "en-US",
-        &[("de-DE", CATALOG_0), ("en-US", CATALOG_1)],
-    ) {
-        eprintln!("localization catalog: {error}");
-    }
+/// One constant per message of locales/en-US.ftl, for labels and placeholders.
+pub mod keys {
+    use ui::i18n::LabelKey;
+    pub const LOCALIZED_ADD: LabelKey = LabelKey::new("localized-add");
+    pub const LOCALIZED_ADD_BOOK: LabelKey = LabelKey::new("localized-add-book");
+    pub const LOCALIZED_BOOKS: LabelKey = LabelKey::new("localized-books");
+    pub const LOCALIZED_GREETING: LabelKey = LabelKey::new("localized-greeting");
+    pub const LOCALIZED_GREETING_ANONYMOUS: LabelKey =
+        LabelKey::new("localized-greeting-anonymous");
+    pub const LOCALIZED_HINT: LabelKey = LabelKey::new("localized-hint");
+    pub const LOCALIZED_READER_LABEL: LabelKey = LabelKey::new("localized-reader-label");
+    pub const LOCALIZED_READER_PLACEHOLDER: LabelKey =
+        LabelKey::new("localized-reader-placeholder");
+    pub const LOCALIZED_REMOVE: LabelKey = LabelKey::new("localized-remove");
+    pub const LOCALIZED_REMOVE_BOOK: LabelKey = LabelKey::new("localized-remove-book");
+    pub const LOCALIZED_SHELF_READER: LabelKey = LabelKey::new("localized-shelf-reader");
+    pub const LOCALIZED_TITLE: LabelKey = LabelKey::new("localized-title");
 }

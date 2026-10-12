@@ -8,6 +8,8 @@
 //! both `entry.name` and `entry.space_name` so typing a space prefix
 //! narrows the list.
 
+use crate::num::f32_of_f64;
+use crate::num::f64_of_usize;
 use crate::search::ListIndex;
 use crate::time::SystemTime;
 use std::collections::HashMap;
@@ -998,25 +1000,6 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
-/// Widens a row/entry count to `f64` for layout math. Goes through `u32`
-/// (exactly representable in `f64`) with a saturating fallback rather than
-/// an `as` cast, so it's lossless for any realistic list length.
-fn rows_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
-/// Narrows a layout dimension to `f32` for taffy. The only call site is
-/// this sheet's overall height, always many orders of magnitude below
-/// `f32::MAX`, so the truncation the lint warns about can't actually
-/// occur.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "sheet layout height in this widget never approaches f32::MAX"
-)]
-fn px(v: f64) -> f32 {
-    v as f32
-}
-
 impl Widget for ChannelBrowser {
     fn build_layout(
         &mut self,
@@ -1027,33 +1010,26 @@ impl Widget for ChannelBrowser {
         // The host typically positions the sheet inside an overlay
         // container that hands it a final rect via apply_layout; this
         // returns a sensible standalone default.
-        let rows = rows_to_f64(self.visible.len().max(1));
+        let rows = f64_of_usize(self.visible.len().max(1));
         let height = PADDING * 4.0
             + INPUT_HEIGHT
             + FILTER_STRIP_HEIGHT
             + (rows * ROW_HEIGHT).min(10.0 * ROW_HEIGHT)
             + FOOTER_HEIGHT
             + SPACE_HEADER_HEIGHT;
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::length(640.0),
-                height: Dimension::length(px(height)),
+                height: Dimension::length(f32_of_f64(height)),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
         let prev = self.rect;
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         if prev != self.rect {
             self.dirty = true;
         }
@@ -1262,12 +1238,12 @@ impl Widget for ChannelBrowser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::time::Duration;
-    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::Modifiers;
-    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
+    use winit::keyboard::SmolStr;
 
     #[test]
     fn channel_browser_presentation_and_accessibility() {
@@ -1519,56 +1495,20 @@ mod tests {
     }
 
     fn key_press(logical_key: Key) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            logical_key,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn dispatch(b: &mut ChannelBrowser, event: &WindowEvent, mods: Modifiers) {
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        b.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: crate::widget::Edits::lend(&mut doc),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &tree,
-            },
-        );
+        Dispatch::new().modifiers(mods).send(b, event);
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
+    use crate::synthetic_input::cursor_moved;
 
-    fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
 
     #[test]
     fn query_editing_filters_with_ime_caret_and_fuzzy_matches() {

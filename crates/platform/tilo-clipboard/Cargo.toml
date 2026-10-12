@@ -15,6 +15,7 @@ path = "src/lib.rs"
 [dependencies]
 # Attaching to the runner's display, on every target so the call compiles
 # everywhere; only a Wayland display attaches.
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 raw-window-handle = "0.6"
 tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }

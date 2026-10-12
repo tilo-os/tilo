@@ -51,7 +51,8 @@
 //! HTTP 401, 421 (`LOGIN_TOKEN_EXPIRED`), 450 (re-authentication required)
 //! and 423 (missing PCS grant) all mean the web session is no longer
 //! accepted: the credential is reported rejected and the call fails with
-//! [`Error::Unauthorized`], so custody renews it. 429 and 503 with `Retry-After` are
+//! [`Error::Unauthorized`], so custody renews it. Every other status reads
+//! as for any provider ([`cloud_source::http::classify`]): 429 and 503 are
 //! [`Error::RateLimited`].
 
 #![allow(
@@ -59,7 +60,6 @@
     reason = "fallible methods return cloud_source::Error, documented there"
 )]
 
-use std::io::Read;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime};
@@ -230,24 +230,12 @@ impl ICloudDrive {
     /// credential source.
     fn status_error(&self, status: StatusCode, headers: &HeaderMap) -> Error {
         match status.as_u16() {
+            // Apple rejects a session with 421, 423 or 450 as well as 401.
             401 | 421 | 423 | 450 => {
-                self.inner.credentials.rejected();
-                Error::Unauthorized
+                cloud_source::http::unauthorized(self.inner.credentials.as_ref())
             }
-            403 => Error::Forbidden,
-            404 | 410 => Error::NotFound,
-            412 => Error::Conflict { current: None },
-            429 => Error::RateLimited {
-                retry_after: http::retry_after(headers),
-            },
-            503 => match http::retry_after(headers) {
-                Some(retry_after) => Error::RateLimited {
-                    retry_after: Some(retry_after),
-                },
-                None => Error::Status(503),
-            },
-            507 => Error::InsufficientStorage,
-            other => Error::Status(other),
+            status => cloud_source::http::classify(status, http::retry_after(headers))
+                .unwrap_or(Error::Status(status)),
         }
     }
 
@@ -571,11 +559,9 @@ fn is_icloud_host(url: &Url) -> bool {
 }
 
 fn read_json<T: DeserializeOwned>(response: Response) -> Result<T> {
-    http::read_json(response).map_err(|error| match error {
-        http::BodyError::TooLarge => Error::TooLarge,
-        http::BodyError::Read => Error::Offline,
-        http::BodyError::Json => Error::InvalidResponse("json"),
-    })
+    let declared = response.content_length();
+    let bytes = cloud_source::http::read_bounded(response, declared, http::MAX_JSON_BYTES)?;
+    serde_json::from_slice(&bytes).map_err(|_| Error::InvalidResponse("json"))
 }
 
 /// `base` + `/path`, keeping `base`'s own path.
@@ -585,44 +571,6 @@ fn join(base: &Url, path: &str) -> Url {
     url.set_path(&format!("{prefix}/{}", path.trim_start_matches('/')));
     url.set_query(None);
     url
-}
-
-/// Errors when a body ends before its declared length, so a cut-off
-/// download never passes for a short file.
-struct Exact<R> {
-    inner: R,
-    remaining: u64,
-}
-
-impl<R: Read> Read for Exact<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.remaining == 0 {
-            return Ok(0);
-        }
-        let limit = usize::try_from(self.remaining)
-            .unwrap_or(usize::MAX)
-            .min(buf.len());
-        let read = self.inner.read(buf.get_mut(..limit).unwrap_or_default())?;
-        if read == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "the download ended early",
-            ));
-        }
-        self.remaining = self.remaining.saturating_sub(read as u64);
-        Ok(read)
-    }
-}
-
-/// `bytes a-b/total` of a `Content-Range`.
-fn content_range(headers: &HeaderMap) -> Option<(Range<u64>, Option<u64>)> {
-    let value = http::header(headers, "content-range")?;
-    let spec = value.trim().strip_prefix("bytes ")?;
-    let (span, total) = spec.split_once('/')?;
-    let (start, end) = span.split_once('-')?;
-    let start: u64 = start.trim().parse().ok()?;
-    let end: u64 = end.trim().parse().ok()?;
-    Some((start..end.saturating_add(1), total.trim().parse().ok()))
 }
 
 impl CloudSource for ICloudDrive {
@@ -697,30 +645,17 @@ impl CloudSource for ICloudDrive {
         }
         let url = self.download_url(id)?;
         let response = self.content_get(url, &wanted)?;
-        let partial = response.status() == StatusCode::PARTIAL_CONTENT;
-        let served = content_range(response.headers());
-        let mut body: Box<dyn Read + Send> = Box::new(response);
-        if partial {
-            let (got, _) = served.ok_or(Error::InvalidResponse("content-range"))?;
-            if got.start != wanted.start || got.end < wanted.end {
-                return Err(Error::InvalidResponse("content-range"));
-            }
-        } else if wanted.start > 0 {
-            // The whole body came back: skip to the range.
-            let skipped = std::io::copy(&mut (&mut body).take(wanted.start), &mut std::io::sink())?;
-            if skipped != wanted.start {
-                return Err(Error::InvalidResponse("short body"));
-            }
-        }
-        let len = wanted.end.saturating_sub(wanted.start);
+        let served = cloud_source::http::Served {
+            partial: response.status() == StatusCode::PARTIAL_CONTENT,
+            content_range: http::header(response.headers(), "content-range")
+                .and_then(cloud_source::http::parse_content_range),
+            declared: response.content_length(),
+        };
+        let download = cloud_source::http::ranged_body(Box::new(response), Some(wanted), served)?;
         Ok(Download {
-            body: Box::new(Exact {
-                inner: body.take(len),
-                remaining: len,
-            }),
-            range: wanted,
             total: Some(size),
             revision: item.revision,
+            ..download
         })
     }
 
@@ -853,13 +788,6 @@ mod tests {
     }
 
     #[test]
-    fn content_ranges_parse() {
-        let mut headers = HeaderMap::new();
-        headers.insert("content-range", "bytes 10-19/100".parse().unwrap());
-        assert_eq!(content_range(&headers), Some((10..20, Some(100))));
-    }
-
-    #[test]
     fn only_icloud_hosts_get_cookies() {
         assert!(is_icloud_host(
             &Url::parse("https://p1-docws.icloud.com/x").unwrap()
@@ -870,15 +798,5 @@ mod tests {
         assert!(!is_icloud_host(
             &Url::parse("https://icloud.com.evil.example/").unwrap()
         ));
-    }
-
-    #[test]
-    fn short_bodies_are_errors() {
-        let mut exact = Exact {
-            inner: std::io::Cursor::new(vec![1_u8; 5]),
-            remaining: 10,
-        };
-        let mut out = Vec::new();
-        assert!(exact.read_to_end(&mut out).is_err());
     }
 }

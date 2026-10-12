@@ -6,15 +6,15 @@
 //! repeats the subject check before making an entry discoverable locally.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use collab_types::{
-    Ed25519PublicKey, FileInviteSubject, FileInviteV1, Signature, VerifyError, canonical_bytes,
-    sign_event, verify_event,
+    Ed25519PublicKey, Signature, VerifyError, canonical_bytes, sign_event, verify_event,
 };
+use fs_protocol::{FileInviteSubject, FileInviteV1};
 use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointAddr;
@@ -149,17 +149,20 @@ impl NamedShareEnvelopeV1 {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+/// The owner-only JSON file the inbox and the outbox each persist their entries to.
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct InboxDocumentV1 {
+struct EntriesDocumentV1<E> {
     schema_version: u16,
-    entries: Vec<NamedShareEnvelopeV1>,
+    entries: E,
 }
 
 pub struct NamedShareInbox {
     path: PathBuf,
     local_person: Ed25519PublicKey,
     entries: Mutex<BTreeMap<Uuid, NamedShareEnvelopeV1>>,
+    /// Rung when an envelope is accepted ([`Self::arrival`]).
+    arrivals: tokio::sync::Notify,
 }
 
 /// One crash-safe delivery job. A job is complete after one currently
@@ -176,16 +179,11 @@ pub struct NamedShareOutboxEntryV1 {
     pub last_attempt_at_ms: Option<u64>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OutboxDocumentV1 {
-    schema_version: u16,
-    entries: Vec<NamedShareOutboxEntryV1>,
-}
-
 pub struct NamedShareOutbox {
     path: PathBuf,
     entries: Mutex<BTreeMap<Uuid, NamedShareOutboxEntryV1>>,
+    /// Rung when a delivery is enqueued ([`Self::arrival`]).
+    arrivals: tokio::sync::Notify,
 }
 
 impl NamedShareOutbox {
@@ -196,41 +194,19 @@ impl NamedShareOutbox {
     /// Returns an error when state cannot be read, validated, or persisted.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, NamedShareInboxError> {
         let path = path.into();
-        let entries = match std::fs::metadata(&path) {
-            Ok(metadata) => {
-                validate_owner_only(&metadata)?;
-                if metadata.len() > MAX_NAMED_SHARE_INBOX_FILE_BYTES {
-                    return Err(NamedShareInboxError::StateTooLarge);
-                }
-                let document: OutboxDocumentV1 = serde_json::from_slice(&std::fs::read(&path)?)
-                    .map_err(|_| NamedShareInboxError::MalformedState)?;
-                if document.schema_version != NAMED_SHARE_INBOX_VERSION {
-                    return Err(NamedShareInboxError::UnsupportedVersion);
-                }
-                if document.entries.len() > MAX_NAMED_SHARE_INBOX_ENTRIES {
-                    return Err(NamedShareInboxError::CapacityReached);
-                }
-                let mut entries = BTreeMap::new();
-                for entry in document.entries {
-                    validate_devices(&entry.recipient_devices)?;
-                    validate_persisted_envelope(&entry.envelope)?;
-                    if entries.insert(entry.envelope.invite.id, entry).is_some() {
-                        return Err(NamedShareInboxError::GrantCollision);
-                    }
-                }
-                entries
+        let mut entries = BTreeMap::new();
+        for entry in load_entries::<NamedShareOutboxEntryV1>(&path)? {
+            validate_devices(&entry.recipient_devices)?;
+            validate_persisted_envelope(&entry.envelope)?;
+            if entries.insert(entry.envelope.invite.id, entry).is_some() {
+                return Err(NamedShareInboxError::GrantCollision);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(error) => return Err(error.into()),
-        };
-        let outbox = Self {
+        }
+        Ok(Self {
             path,
             entries: Mutex::new(entries),
-        };
-        if !outbox.path.exists() {
-            outbox.persist(&BTreeMap::new())?;
-        }
-        Ok(outbox)
+            arrivals: tokio::sync::Notify::new(),
+        })
     }
 
     /// Durably enqueue an envelope for a bounded set of certified devices.
@@ -280,9 +256,17 @@ impl NamedShareOutbox {
                 last_attempt_at_ms: None,
             },
         );
-        self.persist(&next)?;
+        persist_entries(&self.path, &next)?;
         *current = next;
+        self.arrivals.notify_one();
         Ok(true)
+    }
+
+    /// Resolves once a delivery has been enqueued since the last time this
+    /// resolved (or since the outbox opened). The delivery loop waits on it
+    /// instead of polling an empty outbox (TIL-750).
+    pub async fn arrival(&self) {
+        self.arrivals.notified().await;
     }
 
     /// Return non-expired deliveries that have not yet succeeded.
@@ -342,7 +326,7 @@ impl NamedShareOutbox {
         if delivered_to.is_some() {
             entry.delivered_to = delivered_to;
         }
-        self.persist(&next)?;
+        persist_entries(&self.path, &next)?;
         *current = next;
         Ok(())
     }
@@ -375,32 +359,9 @@ impl NamedShareOutbox {
         }
         let mut next = current.clone();
         next.remove(&grant_id);
-        self.persist(&next)?;
+        persist_entries(&self.path, &next)?;
         *current = next;
         Ok(true)
-    }
-
-    fn persist(
-        &self,
-        entries: &BTreeMap<Uuid, NamedShareOutboxEntryV1>,
-    ) -> Result<(), NamedShareInboxError> {
-        let bytes = serde_json::to_vec(&OutboxDocumentV1 {
-            schema_version: NAMED_SHARE_INBOX_VERSION,
-            entries: entries.values().cloned().collect(),
-        })
-        .map_err(|_| NamedShareInboxError::MalformedState)?;
-        if bytes.len() as u64 > MAX_NAMED_SHARE_INBOX_FILE_BYTES {
-            return Err(NamedShareInboxError::StateTooLarge);
-        }
-        if let Some(parent) = self
-            .path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(parent)?;
-        }
-        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
-        Ok(())
     }
 }
 
@@ -716,26 +677,27 @@ impl NamedShareInbox {
         now_ms: u64,
     ) -> Result<Self, NamedShareInboxError> {
         let path = path.into();
-        let entries = match std::fs::metadata(&path) {
-            Ok(metadata) => {
-                validate_owner_only(&metadata)?;
-                if metadata.len() > MAX_NAMED_SHARE_INBOX_FILE_BYTES {
-                    return Err(NamedShareInboxError::StateTooLarge);
-                }
-                decode(&std::fs::read(&path)?, local_person, now_ms)?
+        let mut entries = BTreeMap::new();
+        for entry in load_entries::<NamedShareEnvelopeV1>(&path)? {
+            // Expired entries are omitted on restart; they never become discoverable again.
+            if entry
+                .invite
+                .expires_at_ms
+                .is_some_and(|deadline| now_ms >= deadline)
+            {
+                continue;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(error) => return Err(error.into()),
-        };
-        let inbox = Self {
+            entry.validate_for_at(local_person, now_ms)?;
+            if entries.insert(entry.invite.id, entry).is_some() {
+                return Err(NamedShareInboxError::GrantCollision);
+            }
+        }
+        Ok(Self {
             path,
             local_person,
             entries: Mutex::new(entries),
-        };
-        if !inbox.path.exists() {
-            inbox.persist(&BTreeMap::new())?;
-        }
-        Ok(inbox)
+            arrivals: tokio::sync::Notify::new(),
+        })
     }
 
     /// Validate and durably accept an envelope addressed to this inbox.
@@ -770,9 +732,17 @@ impl NamedShareInbox {
         }
         let mut next = current.clone();
         next.insert(envelope.invite.id, envelope);
-        self.persist(&next)?;
+        persist_entries(&self.path, &next)?;
         *current = next;
+        self.arrivals.notify_one();
         Ok(true)
+    }
+
+    /// Resolves once an envelope has been accepted since the last time this
+    /// resolved (or since the inbox opened), so the recipient service mounts
+    /// it at once instead of on its next pass (TIL-750).
+    pub async fn arrival(&self) {
+        self.arrivals.notified().await;
     }
 
     /// Return envelopes that remain valid at `now_ms`.
@@ -787,60 +757,52 @@ impl NamedShareInbox {
             .cloned()
             .collect()
     }
-
-    fn persist(
-        &self,
-        entries: &BTreeMap<Uuid, NamedShareEnvelopeV1>,
-    ) -> Result<(), NamedShareInboxError> {
-        let bytes = serde_json::to_vec(&InboxDocumentV1 {
-            schema_version: NAMED_SHARE_INBOX_VERSION,
-            entries: entries.values().cloned().collect(),
-        })
-        .map_err(|_| NamedShareInboxError::MalformedState)?;
-        if bytes.len() as u64 > MAX_NAMED_SHARE_INBOX_FILE_BYTES {
-            return Err(NamedShareInboxError::StateTooLarge);
-        }
-        if let Some(parent) = self
-            .path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(parent)?;
-        }
-        tilo_files::native::atomic::write_with_mode(&self.path, &bytes, 0o600)?;
-        Ok(())
-    }
 }
 
-fn decode(
-    bytes: &[u8],
-    person: Ed25519PublicKey,
-    now_ms: u64,
-) -> Result<BTreeMap<Uuid, NamedShareEnvelopeV1>, NamedShareInboxError> {
-    let document: InboxDocumentV1 =
-        serde_json::from_slice(bytes).map_err(|_| NamedShareInboxError::MalformedState)?;
+/// Read the entries of an owner-only state file, creating it empty when missing.
+fn load_entries<T: serde::de::DeserializeOwned + Serialize>(
+    path: &Path,
+) -> Result<Vec<T>, NamedShareInboxError> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            persist_entries::<T>(path, &BTreeMap::new())?;
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    validate_owner_only(&metadata)?;
+    if metadata.len() > MAX_NAMED_SHARE_INBOX_FILE_BYTES {
+        return Err(NamedShareInboxError::StateTooLarge);
+    }
+    let document: EntriesDocumentV1<Vec<T>> = serde_json::from_slice(&std::fs::read(path)?)
+        .map_err(|_| NamedShareInboxError::MalformedState)?;
     if document.schema_version != NAMED_SHARE_INBOX_VERSION {
         return Err(NamedShareInboxError::UnsupportedVersion);
     }
     if document.entries.len() > MAX_NAMED_SHARE_INBOX_ENTRIES {
         return Err(NamedShareInboxError::CapacityReached);
     }
-    let mut entries = BTreeMap::new();
-    for entry in document.entries {
-        // Expired entries are omitted on restart; they never become discoverable again.
-        if entry
-            .invite
-            .expires_at_ms
-            .is_some_and(|deadline| now_ms >= deadline)
-        {
-            continue;
-        }
-        entry.validate_for_at(person, now_ms)?;
-        if entries.insert(entry.invite.id, entry).is_some() {
-            return Err(NamedShareInboxError::GrantCollision);
-        }
+    Ok(document.entries)
+}
+
+fn persist_entries<T: Serialize>(
+    path: &Path,
+    entries: &BTreeMap<Uuid, T>,
+) -> Result<(), NamedShareInboxError> {
+    let bytes = serde_json::to_vec(&EntriesDocumentV1 {
+        schema_version: NAMED_SHARE_INBOX_VERSION,
+        entries: entries.values().collect::<Vec<_>>(),
+    })
+    .map_err(|_| NamedShareInboxError::MalformedState)?;
+    if bytes.len() as u64 > MAX_NAMED_SHARE_INBOX_FILE_BYTES {
+        return Err(NamedShareInboxError::StateTooLarge);
     }
-    Ok(entries)
+    if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -889,7 +851,7 @@ pub enum NamedShareInboxError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{FileInviteSpec, FilePermission, mint_file_invite};
+    use fs_protocol::{FileInviteSpec, FilePermission, mint_file_invite};
     use iroh::address_lookup::memory::MemoryLookup;
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
@@ -958,7 +920,7 @@ mod tests {
         let invite = mint_file_invite(
             FileInviteSpec {
                 workspace_id: Uuid::from_u128(1),
-                record_id: collab_types::FileRecordId(Uuid::from_u128(id_seed)),
+                record_id: fs_protocol::FileRecordId(Uuid::from_u128(id_seed)),
                 subject: FileInviteSubject::Person(person),
                 permission: FilePermission::View,
                 expires_at_ms: Some(NOW + 100),
@@ -1115,7 +1077,7 @@ mod tests {
         let invite = mint_file_invite(
             FileInviteSpec {
                 workspace_id: Uuid::new_v4(),
-                record_id: collab_types::FileRecordId::new(),
+                record_id: fs_protocol::FileRecordId::new(),
                 subject: FileInviteSubject::Person(person),
                 permission: FilePermission::View,
                 expires_at_ms: Some(unix_now_ms() + 60_000),

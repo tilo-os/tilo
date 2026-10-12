@@ -1,10 +1,10 @@
 //! A viewer-local reading page using the toolkit's painted scroll region.
-use super::center::f64_to_f32_lossy;
 use super::history::source_label;
 use super::{CenterLayout, Notification};
 use crate::i18n::t;
 use ui::TextRole;
 use ui::a11y::{AccessNode, AccessState, Role};
+use ui::num::f32_of_f64;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, ScrollRegion};
@@ -158,7 +158,7 @@ impl NotificationReader {
         let mut title_h = 0.0;
         let mut source_h = 0.0;
         for _ in 0..2 {
-            let width = f64_to_f32_lossy((self.region.content_rect().width() - 2.0 * gap).max(1.0));
+            let width = f32_of_f64((self.region.content_rect().width() - 2.0 * gap).max(1.0));
             title_h = f64::from(
                 text.measure_style(&notification.title, Some(width), &title_style)
                     .1,
@@ -168,7 +168,7 @@ impl NotificationReader {
             self.region
                 .set_content_size(viewport.width(), title_h + source_h + body_h + 4.0 * gap);
         }
-        let width = f64_to_f32_lossy((self.region.content_rect().width() - 2.0 * gap).max(1.0));
+        let width = f32_of_f64((self.region.content_rect().width() - 2.0 * gap).max(1.0));
         if !self.back_focused {
             ui::widget::paint_focus_ring(
                 scene,

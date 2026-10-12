@@ -1,0 +1,91 @@
+{
+ "schema": 1,
+ "tool": "tools/perf/image_size.py --update-from OLD --update-only",
+ "before": {
+  "source": "docs/benchmarks/os-image-size-2026-10-10-rechunk.json",
+  "docs_only_bytes": 215088007,
+  "one_app_bytes": 215178773
+ },
+ "updates": [
+  {
+   "label": "round-1-docs-only",
+   "change": "docs-only commit",
+   "layout": "one app identity; build-signatures layer",
+   "from_run": 94378,
+   "run": 94379,
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:433ed91fb07e6e5becbbf12449e8c631c74e6d5c405a9b272ba53ed3a4d006d7",
+   "manifest_digest": "sha256:433ed91fb07e6e5becbbf12449e8c631c74e6d5c405a9b272ba53ed3a4d006d7",
+   "architecture": "x86_64",
+   "revision": "be9db2882245d09910c6c3a3b4dec97fbd8c2986",
+   "update": {
+    "from": "registry.tilo.so/tilo/tilo-ci@sha256:6d6c10a24e697bb40bf7e08cb001825d398a144b4f99c42b68e750746ce72c56",
+    "from_revision": "f7d207df50ed376758bfda20ec45516c9ac5720c",
+    "layers": 146,
+    "new_layers": 3,
+    "bytes": 40817567,
+    "compressed": 4255947394,
+    "share": 0.0096
+   }
+  },
+  {
+   "label": "round-1-one-app",
+   "change": "apps/calculator HISTORY_CAP 64 -> 65",
+   "layout": "one app identity; build-signatures layer",
+   "from_run": 94379,
+   "run": 94380,
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:9afbe7c1d87764c508616bdfe296ad8cf159333f5af56300b43927f3b39c25e6",
+   "manifest_digest": "sha256:9afbe7c1d87764c508616bdfe296ad8cf159333f5af56300b43927f3b39c25e6",
+   "architecture": "x86_64",
+   "revision": "9d89a67763d8dc62ced7de21b4b99a88d1c73b22",
+   "update": {
+    "from": "registry.tilo.so/tilo/tilo-ci@sha256:433ed91fb07e6e5becbbf12449e8c631c74e6d5c405a9b272ba53ed3a4d006d7",
+    "from_revision": "be9db2882245d09910c6c3a3b4dec97fbd8c2986",
+    "layers": 146,
+    "new_layers": 5,
+    "bytes": 116641392,
+    "compressed": 4255947592,
+    "share": 0.0274
+   }
+  },
+  {
+   "label": "round-2-docs-only",
+   "change": "docs-only commit",
+   "layout": "plus app-store tree, app-store-index and /etc/.updated layers",
+   "from_run": 94780,
+   "run": 94781,
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:71205e0237408507525c32be4a1c52b68a6725c4fbe56119919229a4856f56b2",
+   "manifest_digest": "sha256:71205e0237408507525c32be4a1c52b68a6725c4fbe56119919229a4856f56b2",
+   "architecture": "x86_64",
+   "revision": "22e29bdbe963e08517d435bbea7f2857a1744de8",
+   "update": {
+    "from": "registry.tilo.so/tilo/tilo-ci@sha256:9f5b7bfababf4213a2fe552f87fd5778a2266bad57ecf1c1b2a39e07ef470244",
+    "from_revision": "60b38df2d7159d532a49dbc59e3a6dcb96ea3237",
+    "layers": 179,
+    "new_layers": 2,
+    "bytes": 264448,
+    "compressed": 4255926121,
+    "share": 0.0001
+   }
+  },
+  {
+   "label": "round-2-one-app",
+   "change": "apps/calculator HISTORY_CAP 64 -> 65",
+   "layout": "plus app-store tree, app-store-index and /etc/.updated layers",
+   "from_run": 94781,
+   "run": 94782,
+   "image": "registry.tilo.so/tilo/tilo-ci@sha256:1d3b73de1c7da815249d66be9fb60dd7d356515b551da4f4c55fe8a99932795f",
+   "manifest_digest": "sha256:1d3b73de1c7da815249d66be9fb60dd7d356515b551da4f4c55fe8a99932795f",
+   "architecture": "x86_64",
+   "revision": "1734abfa562b37d9639755b102251e8b3e50c9dc",
+   "update": {
+    "from": "registry.tilo.so/tilo/tilo-ci@sha256:71205e0237408507525c32be4a1c52b68a6725c4fbe56119919229a4856f56b2",
+    "from_revision": "22e29bdbe963e08517d435bbea7f2857a1744de8",
+    "layers": 179,
+    "new_layers": 6,
+    "bytes": 33330775,
+    "compressed": 4255925987,
+    "share": 0.0078
+   }
+  }
+ ]
+}

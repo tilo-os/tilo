@@ -607,9 +607,15 @@ fn persist_admitted(
         .cloned()
         .ok_or_else(|| std::io::Error::other("invalid display request"))?;
     let stored = match source {
-        Some(source) => source.update_section_report("display_transaction", values),
-        None => settings_store::update_section("display_transaction", values)
-            .map(|()| ConditionalUpdate::Stored),
+        Some(source) => source.update_section_report(
+            settings_store::hardware::DISPLAY_TRANSACTION_SECTION,
+            values,
+        ),
+        None => settings_store::update_section(
+            settings_store::hardware::DISPLAY_TRANSACTION_SECTION,
+            values,
+        )
+        .map(|()| ConditionalUpdate::Stored),
     }?;
     match stored {
         ConditionalUpdate::Stored => {}

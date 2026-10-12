@@ -5,7 +5,7 @@ use tilo_ui::headless::FrameHarness;
 use tilo_ui::state::State;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::display_arrangement::{
-    ArrangedDisplay, DisplayArrangement, placement::Placement,
+    ArrangedDisplay, DisplayArrangement, SharedDisplayState, placement::Placement,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,6 +22,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let screens = vec![
             ArrangedDisplay {
                 movement_group: None,
+                shared: Some(SharedDisplayState {
+                    device: "fixture-laptop".into(),
+                    output: "panel".into(),
+                    online: true,
+                    included: true,
+                }),
                 connector: "fixture-laptop/eDP-1".into(),
                 label: "Laptop · eDP-1".into(),
                 number: 1,
@@ -31,12 +37,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             ArrangedDisplay {
                 movement_group: None,
+                shared: Some(SharedDisplayState {
+                    device: "fixture-desktop".into(),
+                    output: "desk".into(),
+                    online: true,
+                    included: true,
+                }),
                 connector: "fixture-desktop/eDP-1".into(),
                 label: "Desktop · eDP-1".into(),
                 number: 2,
                 placement: Placement::new(960, 0, 1280, 720),
                 primary: false,
                 movable: true,
+            },
+            ArrangedDisplay {
+                connector: "fixture-pi/HDMI-A-1".into(),
+                movement_group: Some("fixture-pi".into()),
+                shared: Some(SharedDisplayState {
+                    device: "fixture-pi".into(),
+                    output: "desk".into(),
+                    online: true,
+                    included: false,
+                }),
+                label: "Orange Pi · HDMI-A-1".into(),
+                number: 3,
+                placement: Placement::new(2240, 0, 960, 540),
+                primary: false,
+                movable: true,
+            },
+            ArrangedDisplay {
+                connector: "fixture-tv/HDMI-A-1".into(),
+                movement_group: Some("fixture-tv".into()),
+                shared: Some(SharedDisplayState {
+                    device: "fixture-tv".into(),
+                    output: "tv".into(),
+                    online: false,
+                    included: true,
+                }),
+                label: "Living room TV · HDMI-A-1".into(),
+                number: 4,
+                placement: Placement::new(3200, 0, 1280, 720),
+                primary: false,
+                movable: false,
             },
         ];
         let canvas = DisplayArrangement::new(screens, Vec::new(), tilo_ui::LocalState::new(None));

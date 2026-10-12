@@ -700,9 +700,9 @@ impl Netfilter {
         if rc != 0 {
             return Err(io::Error::last_os_error());
         }
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(1, |d| d.subsec_nanos());
+        // The sub-second nanoseconds always fit a u32.
+        let seed = tilo_clock::try_unix_now_ns()
+            .map_or(1, |ns| u32::try_from(ns % 1_000_000_000).unwrap_or(1));
         Ok(Self {
             sock,
             seq: seed,

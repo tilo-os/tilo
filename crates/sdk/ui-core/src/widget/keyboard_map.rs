@@ -600,7 +600,7 @@ impl Widget for KeyboardMap {
         _theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
@@ -609,19 +609,11 @@ impl Widget for KeyboardMap {
                 self.model_size.width / self.model_size.height.max(1.0),
             )),
             ..Style::default()
-        });
-        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, nodes, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.dirty = true;
     }
     fn draw(
@@ -953,20 +945,7 @@ impl crate::widget::Decorator for KeyboardMapSelection {
 }
 
 impl crate::widget::controls::ActionControls for KeyboardMapSelection {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action
-            .as_mut()
-            .and_then(crate::widget::ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         self.action
             .as_ref()
@@ -978,14 +957,6 @@ impl crate::widget::controls::ActionControls for KeyboardMapSelection {
                     .collect()
             })
             .unwrap_or_default()
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
     }
 }
 

@@ -230,11 +230,14 @@ fn store_answer(
     values: serde_json::Map<String, serde_json::Value>,
 ) -> std::io::Result<()> {
     use settings_store::ConditionalUpdate;
+    use settings_store::hardware::DISPLAY_TRANSACTION_SECTION;
     let receipt = match source {
-        Some(source) => source.compare_update_section("display_transaction", expected, values),
+        Some(source) => {
+            source.compare_update_section(DISPLAY_TRANSACTION_SECTION, expected, values)
+        }
         None => settings_store::compare_update_section_at(
             file.ok_or_else(|| std::io::Error::other("display storage is unavailable"))?,
-            "display_transaction",
+            DISPLAY_TRANSACTION_SECTION,
             expected,
             values,
         ),
@@ -267,7 +270,7 @@ fn store_trust(
         ),
     };
     let mut tools: TrustedDisplayTools = document
-        .get("display_tools")
+        .get(TrustedDisplayTools::SECTION)
         .and_then(|value| serde_json::from_value(value.clone()).ok())
         .unwrap_or_default();
     if !tools.insert(tool) {
@@ -279,11 +282,11 @@ fn store_trust(
         .cloned()
         .ok_or_else(|| std::io::Error::other("invalid trusted display tools"))?;
     let receipt = if let Some(source) = source {
-        source.update_section_report("display_tools", values)?
+        source.update_section_report(TrustedDisplayTools::SECTION, values)?
     } else {
         settings_store::update_section_at(
             file.ok_or_else(|| std::io::Error::other("display storage is unavailable"))?,
-            "display_tools",
+            TrustedDisplayTools::SECTION,
             values,
         )?;
         ConditionalUpdate::Stored

@@ -37,5 +37,6 @@
     "adsp_dtbs.elf": "qcom/x1e80100/LENOVO/83ED/adsp_dtbs.elf",
     "qccdsp8380.mbn": "qcom/x1e80100/LENOVO/83ED/qccdsp8380.mbn",
     "cdsp_dtbs.elf": "qcom/x1e80100/LENOVO/83ED/cdsp_dtbs.elf"
-  }
+  },
+  "wifi_wake_on_wlan": 0
 }

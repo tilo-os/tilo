@@ -1250,3 +1250,42 @@ mod tests {
         }
     }
 }
+
+/// The queue a view's controls write what they ask for to, and its app
+/// applies in one ordered place after the event: a click, a key and an
+/// accessibility action all become the same intent. Clones share the queue.
+pub struct Intents<T>(std::rc::Rc<std::cell::RefCell<Vec<T>>>);
+
+impl<T> Clone for Intents<T> {
+    fn clone(&self) -> Self {
+        Self(std::rc::Rc::clone(&self.0))
+    }
+}
+
+impl<T> Default for Intents<T> {
+    fn default() -> Self {
+        Self(std::rc::Rc::default())
+    }
+}
+
+impl<T> Intents<T> {
+    /// Queue `intent`.
+    pub fn push(&self, intent: T) {
+        self.0.borrow_mut().push(intent);
+    }
+
+    /// Everything queued, oldest first, leaving the queue empty.
+    #[must_use]
+    pub fn take(&self) -> Vec<T> {
+        std::mem::take(&mut *self.0.borrow_mut())
+    }
+}
+
+impl<T: Clone + 'static> Intents<T> {
+    /// A callback that queues `intent` each time it runs, for a control's
+    /// `on_view` / `on_effect`.
+    pub fn sender(&self, intent: T) -> impl FnMut() + 'static {
+        let intents = self.clone();
+        move || intents.push(intent.clone())
+    }
+}

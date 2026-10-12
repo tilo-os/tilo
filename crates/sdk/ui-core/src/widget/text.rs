@@ -358,14 +358,6 @@ impl Text {
         self
     }
 
-    /// Force a remeasure/repaint after mutating engine state through a shared
-    /// owner whose revision cannot be observed automatically.
-    pub fn invalidate_layout_engine(&mut self) {
-        self.dirty = true;
-        self.layout_dirty = true;
-        self.prepared_input = None;
-    }
-
     fn observe_engine_revision(&mut self) {
         let Some(engine) = self.layout_engine.as_deref() else {
             return;
@@ -870,7 +862,7 @@ impl Widget for Text {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.observe_theme(theme);
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             display: self.flow_display(),
             size: Size {
                 width: taffy::Dimension::auto(),
@@ -881,14 +873,18 @@ impl Widget for Text {
             flex_shrink: 1.0,
             flex_grow: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// A bound text that has nothing to say leaves its container's flow,
     /// so its container skips the gap it would have taken.
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let display = self.flow_display();
         match taffy.style(node) {
             Ok(style) if style.display != display => {
@@ -956,13 +952,7 @@ impl Widget for Text {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = vello::kurbo::Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         // Without this, scrolling a 1000-widget tree would invalidate every
         // cache every frame and the per-widget cache goes net-negative.
         // Exact equality is the point — this is change detection for the
@@ -984,7 +974,7 @@ impl Widget for Text {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         self.observe_theme(theme);
         self.observe_i18n_revision();
@@ -1067,6 +1057,7 @@ impl Widget for Text {
             &self.cached,
             Some(transform.pre_translate(vello::kurbo::Vec2::new(dx, dy))),
         );
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -1136,52 +1127,11 @@ impl Widget for Text {
         }
         Some(node)
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
 }
 
 impl crate::presence::capability::PublishesPresence for Text {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 
@@ -1922,7 +1872,7 @@ mod tests {
                 let root = Column::new()
                     .push(Box::new(Text::new("title")))
                     .push(Box::new(Button::new("localized-action", "action")));
-                let mut driver = crate::headless::Driver::new_with_controlled_inputs(
+                let mut driver = crate::headless::FrameHarness::new_with_controlled_inputs(
                     crate::State::new(),
                     Box::new(root),
                     (700, 300),
