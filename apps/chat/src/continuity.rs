@@ -6,7 +6,6 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use crate::app::ChatApp;
-use crate::doc::ChatDoc;
 use crate::model::ChannelKind;
 
 pub const CHAT_CONTINUATION_SCHEMA: u16 = 1;
@@ -117,11 +116,14 @@ impl ChatApp {
             return false;
         };
         if !continuation.valid()
-            || !ChatDoc::list_channels(doc).iter().any(|channel| {
-                channel.id == continuation.channel_id
-                    && channel.workspace == continuation.workspace_id
-                    && channel.kind == ChannelKind::Voice
-            })
+            || !crate::projection::read(doc)
+                .channel_rows()
+                .iter()
+                .any(|channel| {
+                    channel.id == continuation.channel_id
+                        && channel.workspace == continuation.workspace_id
+                        && channel.kind == ChannelKind::Voice
+                })
         {
             return false;
         }
@@ -251,7 +253,7 @@ mod tests {
     fn app_and_doc() -> (ChatApp, AutoCommit) {
         let mut app = ChatApp::new_ephemeral();
         let mut doc = AutoCommit::new();
-        crate::doc::ChatDoc::seed_if_empty(&mut doc);
+        crate::demo::seed(&mut doc).unwrap();
         Widget::sync(&mut app, &doc, &ROOT);
         (app, doc)
     }

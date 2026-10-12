@@ -616,13 +616,12 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
             let presence = PresenceCtx::empty();
             presence.viewport.set(Some(viewport));
             let mut scene = Scene::new();
-            widget.draw_with_presence(
+            widget.draw(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
                 &Theme::dark(),
                 &presence,
-                &crate::permissions::PermissionContext::permissive(),
             );
             assert!(
                 !scene.encoding().draw_tags.is_empty(),
@@ -777,13 +776,12 @@ fn nested_negative_overflow(horizontal: bool) {
     let presence = PresenceCtx::empty();
     presence.viewport.set(Some(viewport));
     let mut scene = Scene::new();
-    outer.draw_with_presence(
+    outer.draw(
         &mut scene,
         Affine::IDENTITY,
         &mut text,
         &Theme::dark(),
         &presence,
-        &crate::permissions::PermissionContext::permissive(),
     );
     assert!(
         !scene.encoding().draw_tags.is_empty(),

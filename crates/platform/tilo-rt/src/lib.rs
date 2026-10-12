@@ -36,7 +36,7 @@
 //! tasks run on the page thread from its microtask queue, [`cpu()`] work runs
 //! there as an app task, [`io`] refuses, [`spawn_thread`] fails, and nothing
 //! may block. [`availability`] answers which [`Feature`]s the running target
-//! has; [`CAPABILITIES`] lists them for every target.
+//! has, and each feature's `targets` for every target.
 
 #[cfg(not(target_family = "wasm"))]
 mod app;
@@ -58,7 +58,7 @@ use std::cell::Cell;
 use std::future::Future;
 
 pub use app::{AppRuntime, app, try_app};
-pub use caps::{Availability, CAPABILITIES, Feature, availability};
+pub use caps::{Availability, Feature, availability};
 pub use cpu::{CpuTask, cpu, cpu_pool};
 #[cfg(not(target_family = "wasm"))]
 pub use daemon::{Daemon, daemon};

@@ -307,6 +307,82 @@ This gives three deployments without three protocols:
   falls back to `/4`, then `/3`, on `no_application_protocol`. A host writes
   `UnsignedDelta` only to `/5` sessions; older ones get the full envelope they
   know.
+- Presence (TIL-710): the host coalesces, paces and batches the presence it
+  forwards, per receiving connection (`tilo_relay::presence_mailbox`).
+  Latest-state presence — a pointer, a caret, a selection, the range being
+  typed — has a slot (`NeighbourMsg::presence_slot`, which the host reads
+  from the message, decoding only the two variants that can have one); a
+  newer message in the same slot from the same author replaces one still
+  pending, so a busy connection gets where things are, never a backlog, and
+  never loses the last caret to a full queue. Rates: a moving pointer at most
+  every 50 ms (20 Hz) per slot, which receivers' glide (`POINTER_EASE_MAX`)
+  draws as smoothly as the shell's 30 Hz; carets, selections and typing on
+  every change, after a 5 ms batching window; unslotted presence (heartbeats,
+  `SyncReq`, arrivals) never coalesced, in order, and never overtaking
+  presence posted before it. Deltas never wait for presence. Every presence
+  still travels the state lane it always did, so a client's presence keeps
+  its order. `tilo-relay/6` (`ALPN_PRESENCE_BATCH_V1`) is `/5` on which the
+  host writes each flush as one `EnvelopeV2::PresenceBatch` per room, every
+  item coded against what that
+  session last received in the same slot (kept prefix and suffix, changed
+  bytes between): a pointer move costs a few dozen bytes instead of ~236. The
+  session reader expands a batch into ordinary `Envelope::Presence` values.
+  Clients dial `/6` first and fall back to `/5`; older sessions get the same
+  coalesced presence, one frame each. A slot can only supersede the same
+  authenticated author's presence, and the host forwards the bytes unchanged.
+- Coded deltas (TIL-755): `tilo-relay/7` (`ALPN_CODED_DELTA_V1`) is `/6` on
+  which the host writes each live zero-signature delta of at most 4 KiB as an
+  `EnvelopeV2::CodedDelta`: ranges copied from the last delta that session
+  received from the same author on the same route (the delta's leading kind
+  and channel bytes) in the same room, and the bytes in between. Two
+  keystrokes of one author repeat their keys, channel, app, cluster and record
+  ids, Automerge actor and signed-op ids, so a keystroke costs the recipient
+  less than half the ~481 B compact frame. The session reader rebuilds the
+  `UnsignedDelta` byte for byte and returns the same `Envelope::Delta`;
+  signatures inside it verify as before, and the host decodes nothing new.
+  Both halves keep at most 64 slots of at most 4 KiB per session. Deltas are
+  never delayed for it. Clients dial `/7` first and fall back to `/6`; older
+  sessions, replays and positions get the frames they always did.
+- Packets, not frames (TIL-776): a 27 B presence batch costs about 35 B of
+  QUIC packet on top, so the host writes whatever goes to one connection
+  together in one write where it can. A live delta's write carries its
+  position and every presence that may go early: carets, selections, typing
+  and events at any time (their 5 ms window exists only to share a frame),
+  and a pointer once 25 ms have passed since it last went (never later than
+  its 20 Hz pace, never more often than twice it). A batch that falls due
+  takes the same company. A keystroke's `Typing` and `Caret` reach the host
+  while its delta is still being committed; while a delta of the same author
+  is unpublished, they are held, up to 20 ms, and leave in the delta's write,
+  so a member receives the character and the caret after it in one packet.
+  The delta never waits, and the frames are the same on every protocol.
+- Client pointer pacing: the shell and the toolkit publish a moving pointer
+  at about 30 Hz, and the host forwards one at 20 Hz, so the client's session
+  writer (`tilo_relay_session::client`, `pointer_pacing`) writes each pointer
+  slot at most every 50 ms (`coedit::POINTER_GAP`, which is also the host's
+  pace): a move after a pause at once, a move inside the gap held and
+  replaced by newer ones, and the latest written when the gap ends, so the
+  resting position always arrives. A held move that has gone stale by then
+  waits up to 15 ms for the producer's next move, when that is due sooner
+  than the staleness it saves, and the fresher move goes in its place; a
+  30 Hz cursor so reaches peers a few milliseconds old rather than half a
+  producer period. Anything but a delta or another
+  latest-state presence takes the held pointers ahead of it in the same
+  write, so an app's `Left` never overtakes its last pointer. A move the host
+  would only have coalesced away no longer costs an upstream packet or the
+  acknowledgement it draws. The writer paces whatever session it serves,
+  whoever the author is; the frames are unchanged. The host counts its own
+  gap from when the previous move was due rather than from when its writer
+  got to it, and a pointer does not wait the 5 ms batching window for
+  company, so moves that already arrive a gap apart are forwarded as they
+  arrive and a late write never adds to the next move's wait. The direct
+  (gossip) path paces the same way with the same `PointerPacer`, slot
+  classification (`pointer_pacing::slot_pacing`) and gap: the shell's network
+  actor hands every pointer move to the room's hosts at once (their writers
+  pace it) and holds it for gossip, broadcasting a slot at most every 50 ms,
+  the resting position always, carets and typing past a held move, and any
+  other message only after it. A peer-to-peer drag so costs each neighbour
+  20 packets a second instead of 30, and the acknowledgements they draw;
+  the actor arms no timer while nothing is held.
 - Remote actions (v1): versioned JSON `RemoteActionFrame`s (`tilo_actions::remote`).
   A caller follows an invocation with one waiting request at a time —
   `wait_ms` on `Invoke`, or on `Observe` with the `seen` update — which the

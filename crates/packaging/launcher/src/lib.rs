@@ -50,6 +50,8 @@ pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod landlock_shim;
 #[cfg(target_os = "linux")]
+pub mod lease;
+#[cfg(target_os = "linux")]
 pub mod loader_preflight;
 pub mod managed;
 pub mod manifest;

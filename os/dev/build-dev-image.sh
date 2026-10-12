@@ -41,6 +41,9 @@
 #   TILO_DEV_DISK     0 builds the container only (default 1)
 #   TILO_OUTPUT       disk output root (default os/output/dev)
 #   TILO_BUILD_ARGS   extra `podman build` flags, e.g. --no-cache
+#   TILO_DEV_COMPILER_CACHE  off (default) or shared: pass the existing runner
+#                     Actions cache as ephemeral secrets; never a new credential
+#   TILO_DEV_RUST_LTO thin or off; unset preserves Containerfile.dev default thin
 #   TILO_CARGO_FRESHNESS  content (default here): the dev binaries' compile keeps
 #                     its target cache and rebuilds only changed crates
 #                     (os/scripts/cargo-freshness.sh); clean: CI's clean compile
@@ -175,6 +178,24 @@ base_digest="$(podman image inspect --format '{{.Digest}}' "$base" 2>/dev/null |
 base_created="$(tilo_image_source_time "$base")"
 
 read -r -a _extra_build_args <<< "${TILO_BUILD_ARGS:-}"
+# The caller opts in to the same repository-scoped compiler cache used by CI.
+# Values travel as ephemeral Podman secrets, never build arguments or labels.
+_dev_cache_args=()
+case "${TILO_DEV_COMPILER_CACHE:-off}" in
+  off) ;;
+  shared)
+    [ -n "${ACTIONS_CACHE_URL:-}" ] && [ -n "${ACTIONS_RUNTIME_TOKEN:-}" ] \
+      || die "shared dev compiler cache requires both runner cache variables"
+    _dev_cache_args+=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
+                     --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
+    ;;
+  *) die "TILO_DEV_COMPILER_CACHE must be off or shared" ;;
+esac
+_dev_profile_args=()
+if [ -n "${TILO_DEV_RUST_LTO:-}" ]; then
+  case "$TILO_DEV_RUST_LTO" in thin|off) ;; *) die "TILO_DEV_RUST_LTO must be thin or off" ;; esac
+  _dev_profile_args+=(--build-arg "TILO_DEV_RUST_LTO=$TILO_DEV_RUST_LTO")
+fi
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
   SOURCE_DATE_EPOCH="$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || true)"
 fi
@@ -215,6 +236,7 @@ podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev"
   --build-arg "TILO_CARGO_FRESHNESS=${TILO_CARGO_FRESHNESS:-content}" \
   --build-arg "TILO_CARGO_BUILD_JOBS=${TILO_DEV_CARGO_BUILD_JOBS:-$(cargo_build_jobs 4)}" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+  "${_dev_cache_args[@]}" "${_dev_profile_args[@]}" \
   "${_extra_build_args[@]}" \
   --tag "$dev_image" \
   "$TILO_REPO"

@@ -11,8 +11,6 @@
 //! - [`model`]    — pure data: rolling histories, process rows, formatting.
 //! - [`sampler`]  — live `sysinfo` readings folded into the model.
 //! - [`tree`]     — pure parent→child process tree + subtree-sum roll-ups.
-//! - [`doc`]      — the shared table layout (sort, tree mode) stored in
-//!   Automerge.
 //! - [`prefs`]    — the person's cadence and kernel-thread preferences (a
 //!   personal settings section, outside Automerge and collaborative
 //!   history) and the window's sampling switch.
@@ -43,7 +41,6 @@
 )]
 
 pub mod app;
-pub mod doc;
 pub mod model;
 pub mod prefs;
 pub mod resource;
@@ -52,4 +49,4 @@ pub mod tree;
 pub mod view;
 
 pub use app::MonitorApp;
-pub use resource::{Monitor, MonitorEffect, MonitorShell};
+pub use resource::{LOCALES, Monitor, MonitorEffect, MonitorShell};

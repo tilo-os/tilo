@@ -54,6 +54,7 @@ pub mod cloud_types {
     pub const MOUNT_CONFIG_KEY: &str = "mount";
 }
 
+pub mod email;
 pub mod handoff;
 pub use handoff::{
     CommandRefresher, CredentialRefresher, HandoffCredential, HandoffCredentialSource,

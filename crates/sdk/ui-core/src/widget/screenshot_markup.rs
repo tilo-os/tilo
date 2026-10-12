@@ -228,10 +228,6 @@ impl ScreenshotMarkup {
         &self.strokes
     }
 
-    pub fn active_tool(&self) -> MarkupTool {
-        self.tool
-    }
-
     pub fn take_commands(&mut self) -> Vec<ScreenshotMarkupCommand> {
         std::mem::take(&mut self.pending)
     }

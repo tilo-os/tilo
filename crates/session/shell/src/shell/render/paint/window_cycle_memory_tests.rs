@@ -60,9 +60,14 @@ fn paint(bridge: &mut VelloDrmBridge, wallpaper: &ImageData, window: Option<&Ima
 
 /// Queue one shm commit of `id` and wait for the capture worker to publish it.
 fn commit(id: SurfaceId, value: u8) {
+    commit_sized(id, value, WINDOW);
+}
+
+/// [`commit`] of a `size` window.
+fn commit_sized(id: SurfaceId, value: u8, size: (u32, u32)) {
     let before = store().frame_seq(id);
-    let pixels = [value, value, 0x40, 0xFF].repeat((WINDOW.0 * WINDOW.1) as usize);
-    let frame = OwnedShmFrame::argb8888(pixels, WINDOW.0 as usize, WINDOW.1 as usize);
+    let pixels = [value, value, 0x40, 0xFF].repeat((size.0 * size.1) as usize);
+    let frame = OwnedShmFrame::argb8888(pixels, size.0 as usize, size.1 as usize);
     let generation = store()
         .prepare_shm_capture(id, frame)
         .expect("the shm worker runs");
@@ -182,4 +187,327 @@ fn window_cycle_memory_returns_to_the_bare_desktop() {
         );
         assert_eq!(store().frame_seq(id), 0, "surface {id:#x} is tracked again");
     }
+}
+
+/// Set in the child process [`closed_windows_heap_goes_back_to_the_kernel`]
+/// runs its cycles in.
+const HEAP_TRIM_CHILD: &str = "TILO_HEAP_TRIM_TEST_CHILD";
+
+/// What closed windows freed goes back to the kernel (TIL-705). glibc kept it
+/// before: 61–75 MiB free in its arenas stayed in the compositor's anonymous
+/// RSS. Closing a window asks the heap trimmer to return it; once the
+/// trimmer has served the closes, a further `malloc_trim` has nothing left
+/// to give back.
+///
+/// The cycles run in a child process of their own, so no test beside this
+/// one allocates or frees while its RSS is read.
+#[test]
+fn closed_windows_heap_goes_back_to_the_kernel() {
+    if std::env::var_os(HEAP_TRIM_CHILD).is_none() {
+        let name = format!(
+            "{}::closed_windows_heap_goes_back_to_the_kernel",
+            module_path!()
+                .split_once("::")
+                .map_or(module_path!(), |(_, path)| path)
+        );
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([name.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env(HEAP_TRIM_CHILD, "1")
+            .output()
+            .expect("the child test runs");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "the isolated run failed ({:?}):\n{stdout}\n{stderr}",
+            output.status
+        );
+        eprint!("{stderr}");
+        return;
+    }
+    let mut bridge = VelloDrmBridge::new(DESKTOP.0, DESKTOP.1)
+        .expect("the memory gate requires a real wgpu adapter");
+    let wallpaper = image(DESKTOP.0, DESKTOP.1, 0x30);
+    for _ in 0..IDLE_PAINTS {
+        paint(&mut bridge, &wallpaper, None);
+    }
+    let trims_before = crate::shell::heap_trim::trims_completed();
+    for cycle in 0..3 {
+        let id: SurfaceId = 0x0705_0000 + cycle;
+        store().forget(id);
+        for frame in 0..COMMITS {
+            commit(id, frame.wrapping_mul(23));
+            let (window, _) = store().frame_image(id).expect("a published frame draws");
+            paint(&mut bridge, &wallpaper, Some(&window));
+        }
+        store().forget(id);
+        for _ in 0..IDLE_PAINTS {
+            paint(&mut bridge, &wallpaper, None);
+        }
+    }
+    assert!(
+        crate::shell::heap_trim::settle(Duration::from_secs(30)),
+        "the heap trimmer never served the closes"
+    );
+    let trims = crate::shell::heap_trim::trims_completed() - trims_before;
+    assert!(trims >= 1, "closing three windows asked for no heap trim");
+    let before = rss_anon_kib();
+    // SAFETY: malloc_trim only releases memory the allocator holds free.
+    unsafe { libc::malloc_trim(0) };
+    let left_kib = before.saturating_sub(rss_anon_kib());
+    let (arena, mmapped, in_use, free) = malloc_kib();
+    eprintln!(
+        "after {trims} trim(s): rss_anon_kib {before} arena_kib {arena} mmapped_kib {mmapped} \
+         in_use_kib {in_use} free_kib {free}; a further trim returned {left_kib} KiB"
+    );
+    assert!(
+        before > 0 && left_kib <= 2048,
+        "{left_kib} KiB the closed windows freed were still resident after the heap trimmer ran"
+    );
+}
+
+/// A desktop and window large enough that a window's frames grow the image
+/// atlas well past the bare desktop's.
+const LARGE_DESKTOP: (u32, u32) = (1280, 800);
+const LARGE_WINDOW: (u32, u32) = (1200, 760);
+/// Device memory a closed window may leave allocated, in MiB: an empty
+/// 4 MiB suballocation block the allocator keeps per memory type.
+const DEVICE_SLACK_MIB: u64 = 8;
+/// Frames a desktop draws after a close before it goes idle.
+const CLOSE_PAINTS: u32 = 8;
+
+/// What closed windows' textures touched goes back to the kernel (TIL-731).
+/// On lavapipe, the software rasteriser the dev VM and CI render with,
+/// device memory lives in one memfd that never shrinks: four apps opened
+/// and closed left about 305 MiB allocated to it and mapped by nobody, and
+/// an image atlas grown to 8192 pixels stayed that size because an idle
+/// desktop draws too few frames to shrink it. Now the atlas comes down
+/// within the few frames a close draws, and the trim the close asks for
+/// punches the freed ranges out, so the device holds what the bare desktop
+/// held.
+///
+/// The figure is this device's own memfd, so tests beside this one do not
+/// move it. A GPU keeps no freed memory in a memfd; there the test checks
+/// only that the adapter is not lavapipe.
+#[test]
+fn closed_windows_device_memory_goes_back_to_the_kernel() {
+    let mut bridge = VelloDrmBridge::new(LARGE_DESKTOP.0, LARGE_DESKTOP.1)
+        .expect("the memory gate requires a real wgpu adapter");
+    let device = bridge.target.device.clone();
+    let wallpaper = image(LARGE_DESKTOP.0, LARGE_DESKTOP.1, 0x30);
+    for _ in 0..IDLE_PAINTS {
+        paint(&mut bridge, &wallpaper, None);
+    }
+    if crate::shell::render::software_gpu_memory::device_allocated_bytes(&device).is_none() {
+        let info = bridge.adapter_info().expect("the bridge's adapter");
+        assert_ne!(
+            info.driver, "llvmpipe",
+            "lavapipe without its memfd: Mesa changed how it backs device memory"
+        );
+        eprintln!("{} keeps no freed device memory in a memfd", info.name);
+        return;
+    }
+    // Only the trimmer releases anything below: the bridge registered its
+    // device with it, or the windows' memory stays.
+    let allocated_mib = || {
+        crate::shell::render::software_gpu_memory::device_allocated_bytes(&device)
+            .expect("still lavapipe")
+            >> 20
+    };
+    let trimmed = |what: &str| {
+        crate::shell::heap_trim::request();
+        assert!(
+            crate::shell::heap_trim::settle(Duration::from_secs(30)),
+            "the trimmer never served {what}"
+        );
+    };
+    trimmed("the bare desktop");
+    let bare = allocated_mib();
+    let bare_atlas = bridge.image_cache_stats().atlas_side;
+    let mut peak = bare;
+    let mut after_close = Vec::new();
+    // Trims are at least ten seconds apart, so few cycles.
+    for cycle in 0..3 {
+        let id: SurfaceId = 0x0731_0000 + cycle;
+        store().forget(id);
+        let mut open_atlas = 0;
+        for frame in 0..COMMITS {
+            commit_sized(id, frame.wrapping_mul(23), LARGE_WINDOW);
+            let (window, _) = store().frame_image(id).expect("a published frame draws");
+            paint(&mut bridge, &wallpaper, Some(&window));
+            bridge.after_paint();
+            open_atlas = open_atlas.max(bridge.image_cache_stats().atlas_side);
+        }
+        peak = peak.max(allocated_mib());
+        // The close asks for the trim; the desktop then draws only the few
+        // frames of a close before it goes idle.
+        store().forget(id);
+        for _ in 0..CLOSE_PAINTS {
+            paint(&mut bridge, &wallpaper, None);
+            bridge.after_paint();
+        }
+        let closed = allocated_mib();
+        let closed_atlas = bridge.image_cache_stats().atlas_side;
+        assert!(
+            crate::shell::heap_trim::settle(Duration::from_secs(30)),
+            "the trimmer never served the close"
+        );
+        let after = allocated_mib();
+        eprintln!(
+            "cycle {cycle}: device memfd {bare} MiB bare, {peak} MiB peak, {closed} MiB \
+             once closed, {after} MiB after the trim; atlas {bare_atlas} bare, {open_atlas} \
+             open, {closed_atlas} closed"
+        );
+        assert!(
+            open_atlas > bare_atlas,
+            "the window never grew the atlas, so its shrink proves nothing"
+        );
+        assert_eq!(
+            closed_atlas, bare_atlas,
+            "cycle {cycle}: {CLOSE_PAINTS} frames after the close the atlas had not come down"
+        );
+        after_close.push(after);
+    }
+    assert!(
+        peak >= bare + 16,
+        "the windows touched only {} MiB of device memory, too little to tell a release from none",
+        peak - bare
+    );
+    for (cycle, after) in after_close.into_iter().enumerate() {
+        assert!(
+            after <= bare + DEVICE_SLACK_MIB,
+            "cycle {cycle}: {after} MiB of device memory stayed allocated after the window \
+             closed and the trimmer ran; the bare desktop holds {bare} MiB"
+        );
+    }
+}
+
+/// Long zigzags across the desktop: about 150k path segments, past what the
+/// viewport's floors reserve (164k, with growth reserving twice what a frame
+/// used), so the renderer's bump reservation grows for them and one shrink
+/// brings it back to the floors. A window with dense vector content stands
+/// in for it.
+fn busy_paths(scene: &mut Scene) {
+    use vello::kurbo::BezPath;
+    use vello::peniko::{Color, Fill};
+    for band in 0..2_u32 {
+        let top = 40.0 + f64::from(band) * 360.0;
+        let mut path = BezPath::new();
+        path.move_to((40.0, top));
+        for i in 0..1000_u32 {
+            let x = if i % 2 == 0 { 1240.0 } else { 40.0 };
+            path.line_to((x, top + f64::from(i) * 0.3));
+        }
+        path.close_path();
+        scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &path);
+    }
+}
+
+/// Paint the desktop with `window` and the busy paths over it, or bare, as
+/// the DRM presenter does (`after_paint` included); the pixels it drew.
+fn paint_scene(
+    bridge: &mut VelloDrmBridge,
+    wallpaper: &ImageData,
+    window: Option<&ImageData>,
+) -> Vec<u8> {
+    let mut scene = Scene::new();
+    scene.draw_image(wallpaper, Affine::IDENTITY);
+    if let Some(window) = window {
+        scene.draw_image(window, Affine::translate((20.0, 10.0)));
+        busy_paths(&mut scene);
+    }
+    let pixels = bridge.paint(&scene).expect("the desktop paints").to_vec();
+    bridge.after_paint();
+    pixels
+}
+
+/// The renderer's scratch comes back after a busy window closes. Vello sizes
+/// its bump buffers from the busiest frame it drew and pools every buffer it
+/// allocated; four apps opened and closed left the compositor's reservation
+/// at 36 MiB against the bare desktop's 28, and its pool at 68 MiB. Now the
+/// few frames a close draws bring both back to the bare desktop's, the
+/// pixels stay the same, and the window opened again draws its first frame
+/// in one render: a shrink leaves room for the scene that grew it.
+#[test]
+fn closed_windows_renderer_scratch_comes_back() {
+    let mut bridge = VelloDrmBridge::new(LARGE_DESKTOP.0, LARGE_DESKTOP.1)
+        .expect("the memory gate requires a real wgpu adapter");
+    let wallpaper = image(LARGE_DESKTOP.0, LARGE_DESKTOP.1, 0x30);
+    let mut bare_pixels = Vec::new();
+    for _ in 0..IDLE_PAINTS {
+        bare_pixels = paint_scene(&mut bridge, &wallpaper, None);
+    }
+    let bare = bridge.renderer_memory_stats();
+
+    let id: SurfaceId = 0x0806_0000;
+    store().forget(id);
+    commit_sized(id, 0x5A, LARGE_WINDOW);
+    let (window, _) = store().frame_image(id).expect("a published frame draws");
+    let started = Instant::now();
+    let open_pixels = paint_scene(&mut bridge, &wallpaper, Some(&window));
+    let first_open = (started.elapsed(), bridge.last_render_attempts());
+    for _ in 1..COMMITS {
+        paint_scene(&mut bridge, &wallpaper, Some(&window));
+    }
+    let open = bridge.renderer_memory_stats();
+    assert!(
+        open.bump_budget_bytes > bare.bump_budget_bytes,
+        "the busy window never grew the bump reservation ({} bytes), so its shrink proves nothing",
+        bare.bump_budget_bytes
+    );
+
+    store().forget(id);
+    let mut closed_pixels = Vec::new();
+    for _ in 0..CLOSE_PAINTS {
+        closed_pixels = paint_scene(&mut bridge, &wallpaper, None);
+    }
+    let closed = bridge.renderer_memory_stats();
+    eprintln!(
+        "bump reservation {} KiB bare, {} KiB open, {} KiB closed; pool {} KiB bare, {} KiB \
+         open, {} KiB closed",
+        bare.bump_budget_bytes >> 10,
+        open.bump_budget_bytes >> 10,
+        closed.bump_budget_bytes >> 10,
+        bare.pooled_buffer_bytes >> 10,
+        open.pooled_buffer_bytes >> 10,
+        closed.pooled_buffer_bytes >> 10,
+    );
+    // Within an eighth: a smaller shrink is not worth reallocating for.
+    assert!(
+        closed.bump_budget_bytes <= bare.bump_budget_bytes + bare.bump_budget_bytes / 8,
+        "{CLOSE_PAINTS} frames after the close the bump reservation had not come back"
+    );
+    assert!(
+        closed.pooled_buffer_bytes <= bare.pooled_buffer_bytes,
+        "{CLOSE_PAINTS} frames after the close the pool held {} KiB, the bare desktop {} KiB",
+        closed.pooled_buffer_bytes >> 10,
+        bare.pooled_buffer_bytes >> 10
+    );
+    assert!(
+        closed_pixels == bare_pixels,
+        "the bare desktop draws alike after the close"
+    );
+
+    // The same window again: its first frame fits what the shrink left.
+    let id: SurfaceId = 0x0806_0001;
+    store().forget(id);
+    commit_sized(id, 0x5A, LARGE_WINDOW);
+    let (window, _) = store().frame_image(id).expect("a published frame draws");
+    let started = Instant::now();
+    let reopen_pixels = paint_scene(&mut bridge, &wallpaper, Some(&window));
+    let reopen = (started.elapsed(), bridge.last_render_attempts());
+    store().forget(id);
+    eprintln!(
+        "first frame: {:?} in {} render(s) when the window first opened, {:?} in {} when it \
+         opened again",
+        first_open.0, first_open.1, reopen.0, reopen.1
+    );
+    assert_eq!(
+        reopen.1, 1,
+        "the reopened window's first frame overflowed and rendered again"
+    );
+    assert!(
+        reopen_pixels == open_pixels,
+        "and draws as it did when first opened"
+    );
 }

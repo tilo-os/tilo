@@ -133,12 +133,8 @@ impl Widget for PtyRoot {
     ) -> NodeId {
         taffy.new_leaf(taffy::Style::default()).unwrap()
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
     fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
         panic!("hidden PTY progress must not paint");
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn name(&self) -> &'static str {
         "native-pty"
@@ -309,13 +305,7 @@ struct IdleCounts {
     wake: crate::WakeHandle,
 }
 impl Widget for IdleCounts {
-    crate::testing::inert_widget_methods!(
-        unregistered_leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "idle-counts"
-    );
+    crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "idle-counts");
     fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         self.updates.set(self.updates.get() + 1);
         if self.wake_during_update.replace(false) {

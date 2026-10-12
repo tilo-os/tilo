@@ -101,14 +101,16 @@ grep -Fq 'scope=kernel-{0},mode=min,ignore-error=true' "$workflows/build-kernel.
 
 # A cache manifest naming a blob the registry lost fails a build only when the
 # layer's content is needed. The OS build treats exactly that as a cache miss:
-# rebuild without cache-from, rewrite every cache tag, consume either digest.
+# rebuild without cache-from, rewrite every cache tag, consume either digest
+# (or the rechunked image's, TIL-747, which is made from either).
 uncached=$(awk '/- name: Build the Tilo image without the damaged layer cache/,/# Dev VMs must not wait/' "$os")
 [ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the build toolchain/,/- name: Recognize a missing registry cache blob/' "$os"))" = 5 ] \
   && grep -Fq 'run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"' "$os" \
   && ! grep -Fq 'cache-from:' <<<"$uncached" \
   && [ "$(grep -c 'ignore-error=true' <<<"$uncached")" = 1 ] \
   && ! grep -Fq "'\${{ steps.build.outputs.digest }}'" "$os" \
-  && grep -Fq "'\${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'" "$os" \
+  && grep -Fq "'\${{ steps.rechunk.outputs.digest || steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'" "$os" \
+  && grep -Fq "BUILD_DIGEST: \${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}" <(awk '/- name: Rechunk the image$/,/- name: Publish the dev-trust integration image/' "$os") \
   && ok 'a missing registry cache blob degrades the OS build to an uncached rebuild' \
   || bad 'a lost registry cache blob can still fail the OS build'
 
@@ -452,6 +454,8 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && awk '{sub(/\r$/, "")} /^  qualify-collection:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  publish:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
   && ! awk '{sub(/\r$/, "")} /^  publish:/{publish=1} publish && /^    steps:/{steps=1} publish && steps' "$apps" | grep -F 'secrets.REGISTRY_TOKEN' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  recover-publication-97894:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  recover-publication-97894:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
   && ok 'app collections serialize channel updates and remain durable across workflows' \
   || bad 'app releases can cancel a required channel update or cannot be consumed later'
 

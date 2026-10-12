@@ -158,26 +158,6 @@ impl Dictionary {
         )
     }
 
-    /// Like [`builtin`](Self::builtin), but also load any persisted user words
-    /// from the user-config file (`$XDG_CONFIG_HOME/tilo/userdict.txt`, falling
-    /// back to `~/.config/tilo/userdict.txt`). Missing / unreadable file is a
-    /// silent no-op, so this is safe to call in headless tests and sandboxes.
-    pub fn with_user_dict() -> Self {
-        let mut d = Self::builtin();
-        d.load_user_dict();
-        d
-    }
-
-    /// Load only the person's added words, without rebuilding the embedded
-    /// 75k-word English dictionary. This is useful when the built-in checker is
-    /// already process-shared and a caller only needs the personal-vocabulary
-    /// overlay.
-    pub fn user_dict_overlay() -> Self {
-        let mut d = Self::default();
-        d.load_user_dict();
-        d
-    }
-
     /// Load any persisted user words from the user-config file into this
     /// dictionary's runtime user set. Best-effort: a missing / unreadable file
     /// is a silent no-op. Lets a caller that already holds a built-in dictionary

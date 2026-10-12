@@ -18,7 +18,6 @@ tilo_automerge_isolate::test_worker!();
 
 use collab_types::DocumentMutation;
 use common::{Body as _, catalogue};
-use tilo_actions::door::ActionAddress;
 use tilo_agent_participant::worker::{ProbeReport, probe_confinement};
 use tilo_agent_participant::{ConfinedReplica, Replica, Seed};
 
@@ -42,16 +41,14 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
 }
 
 fn edit(text: &str) -> serde_json::Map<String, serde_json::Value> {
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("text".into(), text.into());
-    arguments
+    common::scratchpad_body(text).1
 }
 
 #[test]
 fn a_confined_record_is_edited_in_its_worker_and_converges_with_a_page() {
     let catalogue = catalogue();
     let app = "so.tilo.scratchpad";
-    let note = ActionAddress::new("scratchpad.note", "edit");
+    let note = common::scratchpad_body("").0;
     let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
     let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
         panic!("a new record is published whole");
@@ -139,7 +136,7 @@ fn bytes_that_are_not_automerge_never_reach_the_worker() {
 #[test]
 fn a_dead_worker_is_replaced_from_what_the_host_holds() {
     let catalogue = catalogue();
-    let note = ActionAddress::new("scratchpad.note", "edit");
+    let note = common::scratchpad_body("").0;
     let agent = ConfinedReplica::open(
         &catalogue,
         "so.tilo.scratchpad",

@@ -165,7 +165,7 @@ pub struct ServerProof {
     /// Exact transcript proposed by the host.
     pub transcript: Transcript,
     /// Host signature over the server-role digest of the complete transcript.
-    #[serde(with = "signature_bytes")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 impl ServerProof {
@@ -193,7 +193,7 @@ pub struct ClientProof {
     /// Identifies the one server challenge this proof answers.
     pub session_id: [u8; 16],
     /// Device signature over the device-role digest of the full transcript.
-    #[serde(with = "signature_bytes")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 impl ClientProof {
@@ -723,22 +723,6 @@ fn validate_origin(origin: &str) -> Result<(), AuthError> {
         return Err(AuthError::InvalidBinding);
     }
     Ok(())
-}
-
-mod signature_bytes {
-    use serde::{Deserialize, Deserializer, Serializer};
-    pub fn serialize<S: Serializer>(
-        signature: &[u8; 64],
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bytes(signature)
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 64], D::Error> {
-        let bytes = <&[u8]>::deserialize(deserializer)?;
-        bytes
-            .try_into()
-            .map_err(|_| serde::de::Error::custom("delivery signature must contain 64 bytes"))
-    }
 }
 
 #[cfg(test)]

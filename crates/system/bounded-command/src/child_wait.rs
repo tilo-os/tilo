@@ -282,21 +282,8 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn context_switches() -> u64 {
-        std::fs::read_to_string("/proc/thread-self/status")
-            .unwrap()
-            .lines()
-            .filter(|line| {
-                line.starts_with("voluntary_ctxt_switches:")
-                    || line.starts_with("nonvoluntary_ctxt_switches:")
-            })
-            .map(|line| {
-                line.split_whitespace()
-                    .last()
-                    .unwrap()
-                    .parse::<u64>()
-                    .unwrap()
-            })
-            .sum()
+        let tid = tilo_test_env::idle::current_thread_id().unwrap();
+        tilo_test_env::idle::context_switches(&tid.to_string())
     }
 
     #[test]

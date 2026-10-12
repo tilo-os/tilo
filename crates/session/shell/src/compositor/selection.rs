@@ -1278,12 +1278,13 @@ impl State {
             };
             let generation =
                 begin_client_selection(&self.selection.store, pull.target, Some(mimes.clone()));
-            // Each request is a non-blocking calloop transfer.  Pull all
-            // bounded offered formats (text, PNG/JPEG, and future formats),
-            // not only a hand-picked text alias.
+            // Each request is a non-blocking calloop transfer. Pull all
+            // bounded offered formats, except GTK's clipboard-manager
+            // operation SAVE_TARGETS. It has no data payload; requesting it
+            // leaves GTK 3's selection queue waiting and stalls later copies.
             for mime in mimes
                 .into_iter()
-                .filter(|mime| valid_mime(mime))
+                .filter(|mime| valid_mime(mime) && mime != "SAVE_TARGETS")
                 .take(MAX_SELECTION_MIMES)
             {
                 let (read_fd, write_fd) = match selection_pipe() {

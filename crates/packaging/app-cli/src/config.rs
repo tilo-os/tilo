@@ -43,15 +43,18 @@ pub enum ConfigError {
 /// config file; this is only used to seed the default `registries.toml`.
 pub const DEFAULT_REGISTRY_BASE_URL: &str = "https://apps.tilo.so";
 
+/// Names the official registry owner key file instead of the image's.
+pub const OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV: &str = "TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH";
+
 /// Pinned Tilo-main owner identity. Installed images can rotate the public trust
 /// input without rebuilding app packages. A missing/placeholder value disables
 /// the default registry rather than substituting a developer key or TOFU.
 ///
-/// `TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH` names another key file in a
-/// developer build only (see [`crate::dev_env`]).
+/// [`OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV`] names another key file in a
+/// developer build only (see [`package_store::dev_env`]).
 pub fn official_owner_pubkey() -> Option<String> {
-    let path = official_owner_key_path_from(crate::dev_env::dev_override(
-        crate::dev_env::OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
+    let path = official_owner_key_path_from(package_store::dev_env::dev_override(
+        OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
     ));
     let value = fs::read_to_string(path).ok()?;
     let value = value.trim().to_ascii_lowercase();
@@ -338,7 +341,7 @@ mod tests {
     fn the_official_registry_key_and_pin_follow_the_build_and_exact_match() {
         // Phase `a_release_build_reads_the_images_official_owner_key`.
         {
-            use crate::dev_env::{OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV, dev_override_from};
+            use package_store::dev_env::dev_override_from;
             let gated = dev_override_from(
                 false,
                 OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,

@@ -29,7 +29,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
+use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
 use launcher::run::{RunOptions, run_with_captured};
 use tilo_test_env::ScopedEnv;
 
@@ -53,8 +53,8 @@ const SESSION_PRIVATE: &[(&str, &str)] = &[
     ("TILO_IDENTITY_BROKER_FD", "42"),
 ];
 
-fn manifest() -> MinimalManifest {
-    MinimalManifest {
+fn manifest() -> ManifestView {
+    ManifestView {
         package_id: PACKAGE.to_string(),
         name: None,
         localized_names: BTreeMap::default(),
@@ -245,6 +245,17 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
             "LD_PRELOAD".to_string(),
             "GLIBC_TUNABLES".to_string(),
         ];
+        // The loader pin, set beside the read-only bind of the manifests it
+        // names: a GPU's for a launch with a render node, lavapipe's for one
+        // without when the session pinned it (CI's environment does).
+        allowed.extend(
+            [
+                launcher::gpu::VK_DRIVER_FILES_ENV,
+                launcher::gpu::VK_ICD_FILENAMES_ENV,
+                launcher::gpu::EGL_VENDOR_ENV,
+            ]
+            .map(str::to_string),
+        );
         allowed.extend(
             launcher::sandbox::INHERITED_ENV
                 .iter()

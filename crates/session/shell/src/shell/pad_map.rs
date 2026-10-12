@@ -8,11 +8,12 @@
 //! lists them. Like the OSD it takes no input and never takes focus.
 
 use settings_store::hardware::{PadDialAction, ShortcutAction};
+use ui::num::f32_of_f64;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::InputHint;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 use crate::shell::i18n::{t, t_args};
@@ -232,9 +233,9 @@ impl PadMap {
             center.x + width / 2.0,
             center.y + height / 2.0,
         );
-        draw_card(scene, transform, card, theme);
+        ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
         let colors = &theme.tokens.colors;
-        let text_w = Some(f64_to_f32(card.width() - metrics.inset * 2.0));
+        let text_w = Some(f32_of_f64(card.width() - metrics.inset * 2.0));
         text_renderer.draw_text_weighted(
             scene,
             &title,
@@ -573,7 +574,7 @@ fn draw_row(
     let cap_w = InputHint::measure_keycap_labels(&cap, text_renderer, theme);
     let label = entry.action.label();
     let label_w = label_width(entry, text_renderer, metrics);
-    let (_, label_h) = text_renderer.measure(&label, metrics.body, Some(f64_to_f32(label_w)));
+    let (_, label_h) = text_renderer.measure(&label, metrics.body, Some(f32_of_f64(label_w)));
     let (cap_x, label_x) = match align {
         Some(Align::CapLast) => (origin.x + label_w + metrics.gap, origin.x),
         None => (origin.x, origin.x + cap_w + metrics.gap),
@@ -605,43 +606,13 @@ fn draw_row(
             )
                 .into(),
         ),
-        Some(f64_to_f32(label_w)),
+        Some(f32_of_f64(label_w)),
     );
 }
 
 /// The shared keycap's height, as `InputHint` sizes it.
 fn cap_height(theme: &Theme) -> f64 {
     28.0_f64.max(f64::from(theme.tokens.typography.size(TextRole::Caption)) + 8.0)
-}
-
-fn draw_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    // The same Panel material as the OSD and every floating panel (HIG
-    // §9.1/§9.2).
-    let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-    ui::chrome::shell::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-    let body = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        ui::chrome::shell::panel_ground(theme),
-        None,
-        &body,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        ui::chrome::shell::panel_border(theme),
-        None,
-        &body,
-    );
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen widths are far inside f32's range"
-)]
-fn f64_to_f32(value: f64) -> f32 {
-    value as f32
 }
 
 #[cfg(test)]

@@ -24,7 +24,6 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectReply, Effected};
-use ui::permissions::PermissionContext;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
 };
@@ -33,13 +32,13 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-use crate::actions::{DiffmergeAction, DiffmergeEffect};
+use crate::actions::DiffmergeEffect;
 use crate::chrome::{Chrome, Command, Header};
 use crate::diff_view::DiffView;
-use crate::doc::{Comparison, MergeInputs, MergeState};
+use crate::doc::{Comparison, MergeInputs, Session};
 use crate::i18n::{count, t, t_args};
 use crate::merge_view::MergeView;
-use crate::resource::Diffmerge;
+use crate::resource::session;
 use ui::chrome::status_bar;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -141,7 +140,7 @@ pub struct DiffMergeApp {
     invalidation: ViewInvalidation,
     /// Where edits and effects go; `None` until the framework attaches the
     /// surface, when every edit is dropped.
-    dispatcher: Option<Dispatcher<Diffmerge>>,
+    dispatcher: Option<Dispatcher<Session>>,
     /// What was open when the app was last presented the document, so a
     /// newly opened comparison or merge is shown in its mode.
     presented: Option<(Option<Comparison>, Option<MergeInputs>)>,
@@ -267,7 +266,7 @@ impl DiffMergeApp {
     /// Show the document's state. A comparison or merge opened since the
     /// last state is shown in its mode; the first state opens on the
     /// comparison unless only a merge is open.
-    pub(crate) fn present_state(&mut self, state: &MergeState) {
+    pub(crate) fn present_state(&mut self, state: &Session) {
         let comparison_changed = self
             .presented
             .as_ref()
@@ -278,9 +277,10 @@ impl DiffMergeApp {
             .is_none_or(|(_, merge)| *merge != state.merge);
         if comparison_changed {
             match &state.comparison {
-                Some(c) => self
-                    .diff
-                    .set_inputs(&c.left_label, &c.left, &c.right_label, &c.right),
+                Some(c) => {
+                    self.diff
+                        .set_inputs(&c.left_label.0, &c.left.0, &c.right_label.0, &c.right.0);
+                }
                 None => self.diff.set_inputs("", "", "", ""),
             }
         }
@@ -310,9 +310,8 @@ impl DiffMergeApp {
     }
 
     /// Submit edits and effects through `dispatcher`.
-    pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Diffmerge>) {
-        self.merge
-            .attach(crate::resource::merged_dispatcher(&dispatcher));
+    pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Session>) {
+        self.merge.attach(dispatcher.clone());
         self.merge.set_read_only(dispatcher.read_only());
         self.dispatcher = Some(dispatcher);
     }
@@ -352,7 +351,7 @@ impl DiffMergeApp {
     pub(crate) fn answer_effect(
         &mut self,
         effect: DiffmergeEffect,
-        cx: &mut EffectCx<Diffmerge, Self>,
+        cx: &mut EffectCx<Session, Self>,
     ) -> EffectAnswer {
         match effect {
             DiffmergeEffect::ShowDiff
@@ -366,8 +365,8 @@ impl DiffMergeApp {
             DiffmergeEffect::LoadSample => {
                 let dispatcher = cx.dispatcher();
                 dispatcher.group(|| {
-                    for action in crate::actions::sample_actions() {
-                        dispatcher.apply(&action);
+                    for invoke in crate::resource::sample_invocations() {
+                        dispatcher.submit(invoke);
                     }
                 });
                 self.pending_left = None;
@@ -379,10 +378,10 @@ impl DiffMergeApp {
                 left: Some(left),
                 right: Some(right),
             } => Ok(cx.thread(
-                move |_| -> Result<DiffmergeAction, String> {
+                move |_| -> Result<session::OpenComparison, String> {
                     let (left_label, left) = label_and_text(Path::new(&left))?;
                     let (right_label, right) = label_and_text(Path::new(&right))?;
-                    Ok(DiffmergeAction::OpenComparison {
+                    Ok(session::OpenComparison {
                         left_label,
                         left,
                         right_label,
@@ -390,9 +389,9 @@ impl DiffMergeApp {
                     })
                 },
                 |app: &mut Self, opened, cx| match opened {
-                    Ok(action) => {
+                    Ok(opened) => {
                         app.load_error = None;
-                        cx.apply(&action);
+                        cx.submit(Session::OPEN_COMPARISON.with(opened));
                         app.show(Mode::Diff);
                         Ok(Effected::done())
                     }
@@ -484,10 +483,10 @@ impl DiffMergeApp {
     /// Submit the resolution a chip, a key or an accessibility action just
     /// queued on the merge panel — the same action the palette's row builds.
     fn submit_resolution(&mut self) {
-        if let Some(action) = self.merge.take_pending_action()
+        if let Some(invoke) = self.merge.take_pending_action()
             && let Some(dispatcher) = &self.dispatcher
         {
-            dispatcher.apply(&action);
+            dispatcher.submit(invoke);
         }
     }
 
@@ -580,7 +579,7 @@ impl DiffMergeApp {
     /// Answer the open-files effect a chooser was answering.
     fn finish_open(&mut self, result: Result<(), String>) {
         if let Some(reply) = self.open_reply.take() {
-            reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
+            reply.finish(result.map(|()| ui::tilo_actions::ActionOutput::default()));
         }
     }
 
@@ -627,12 +626,12 @@ impl DiffMergeApp {
             }
             Some((left_label, left)) => {
                 if let Some(dispatcher) = &self.dispatcher {
-                    dispatcher.apply(&DiffmergeAction::OpenComparison {
+                    dispatcher.submit(Session::OPEN_COMPARISON.with(session::OpenComparison {
                         left_label,
                         left,
                         right_label: label,
                         right: content,
-                    });
+                    }));
                 }
                 self.show(Mode::Diff);
                 false
@@ -798,10 +797,7 @@ impl Widget for DiffMergeApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         // Drive both views to the content rect directly so mode switches
         // don't require a taffy rebuild to position correctly, and so the
         // views end at the window bottom rather than a toolbar's height below
@@ -994,9 +990,9 @@ impl Widget for DiffMergeApp {
             .and_then(|(hunk, choice)| {
                 let hunk = hunk.parse::<usize>().ok()?;
                 let choice = match choice {
-                    "ours" => crate::actions::HunkChoice::Ours,
-                    "theirs" => crate::actions::HunkChoice::Theirs,
-                    "both" => crate::actions::HunkChoice::Both,
+                    "ours" => crate::doc::HunkChoice::Ours,
+                    "theirs" => crate::doc::HunkChoice::Theirs,
+                    "both" => crate::doc::HunkChoice::Both,
                     _ => return None,
                 };
                 Some((hunk, choice))
@@ -1045,18 +1041,6 @@ impl Widget for DiffMergeApp {
         self.invalidation.paint = false;
         self.diff.mark_drawn();
         self.merge.mark_drawn();
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, tr, theme, presence);
     }
 }
 
@@ -1125,35 +1109,39 @@ fn position_label(position: Option<(usize, usize)>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::MergeDoc;
+    use crate::doc::HunkChoice;
     use crate::resource::DiffmergeShell;
-    use tilo_actions::Action as _;
     use ui::framework::testing::TestApp;
     use ui::headless::Framed;
-    use ui::tilo_resource::Resource as _;
+    use ui::tilo_resource::{Replica, Resource as _};
     use winit::event::MouseButton;
 
-    /// A document as a new workspace starts.
-    fn new_document() -> ui::State {
+    /// The record `replica` holds, as a document a frame host edits.
+    fn document_of(mut replica: Replica<Session>) -> ui::State {
         let mut state = ui::State::new();
-        Diffmerge::initialize(&mut state.doc).unwrap();
+        state.doc = automerge::AutoCommit::load(&replica.save()).unwrap();
         state
     }
 
-    /// The bundled samples, opened in a document through their actions.
+    /// A document as a new workspace starts.
+    fn new_document() -> ui::State {
+        document_of(Replica::<Session>::new())
+    }
+
+    /// The bundled samples, opened in a document through their verbs.
     fn sample_document() -> ui::State {
-        let mut state = new_document();
-        for action in crate::actions::sample_actions() {
-            action.apply(&mut state.doc).unwrap();
+        let mut replica = Replica::<Session>::new();
+        for invoke in crate::resource::sample_invocations() {
+            replica.apply(invoke).unwrap();
         }
-        state
+        document_of(replica)
     }
 
     /// The app presented `state` and staged for `scenario`, as a capture
     /// shows it.
     fn presented(state: ui::State, scenario: Option<&str>) -> (DiffMergeApp, ui::State) {
         let mut app = DiffMergeApp::new();
-        app.present_state(&MergeState::from_doc(&state.doc));
+        app.present_state(&Session::read(&state.doc).unwrap());
         app.stage_scenario(scenario);
         (app, state)
     }
@@ -1215,9 +1203,9 @@ mod tests {
         })
         .collect()
     }
-    fn first_conflict(state: &MergeState) -> usize {
+    fn first_conflict(state: &Session) -> usize {
         state
-            .model
+            .merge_model()
             .hunks
             .iter()
             .position(|h| h.resolution.is_conflict())
@@ -1262,8 +1250,8 @@ mod tests {
         .unwrap();
         app.settle();
         let comparison = app.state().comparison.expect("the pair is open");
-        assert_eq!(comparison.left_label, "Grün links.txt");
-        assert_eq!(comparison.right, "Blau\nshared\nadded\n");
+        assert_eq!(comparison.left_label.0, "Grün links.txt");
+        assert_eq!(comparison.right.0, "Blau\nshared\nadded\n");
         let model = comparison.model();
         assert_eq!((model.left_lines, model.right_lines), (2, 3));
 
@@ -1292,8 +1280,8 @@ mod tests {
         let comparison = app.state().comparison.unwrap();
         assert_eq!(
             (
-                comparison.left_label.as_str(),
-                comparison.right_label.as_str()
+                comparison.left_label.0.as_str(),
+                comparison.right_label.0.as_str()
             ),
             ("left.txt", "right.txt")
         );
@@ -1306,7 +1294,7 @@ mod tests {
             })
         });
         assert!(cancelled.is_err(), "a cancelled chooser opens nothing");
-        assert_eq!(app.state().comparison.unwrap().left_label, "left.txt");
+        assert_eq!(app.state().comparison.unwrap().left_label.0, "left.txt");
 
         recorder.respond_to_pick(PortalOutcome::Failed("no portal".into()));
         let failed = ui::host::scoped(&services, || {
@@ -1334,7 +1322,7 @@ mod tests {
     fn hunk_resolution_is_one_action_from_palette_pointer_and_a11y() {
         let mut app = sample_app();
         let state = app.state();
-        assert!(state.composed && state.merge.is_some());
+        assert!(state.composed(&state.merge_model()) && state.merge.is_some());
         let hunk = first_conflict(&state);
         let before = state.merged;
 
@@ -1345,7 +1333,7 @@ mod tests {
             .unwrap()
             .iter()
             .find(|row| {
-                row["resource_kind"] == "diffmerge.conflict" && row["action"] == "take-theirs"
+                row["resource_kind"] == "diffmerge.session.change" && row["action"] == "take-theirs"
             })
             .and_then(|row| row["resource"].as_str())
             .expect("the conflict is published")
@@ -1354,9 +1342,9 @@ mod tests {
             .unwrap();
         app.settle();
         assert_ne!(app.state().merged, before);
-        let resolved = app.read_document(MergeDoc::resolutions);
+        let resolved = app.state().resolutions();
         assert!(
-            matches!(resolved.as_slice(), [(_, choice)] if choice == "theirs"),
+            matches!(resolved.as_slice(), [(_, HunkChoice::Theirs)]),
             "the row resolved its conflict: {resolved:?}"
         );
         assert!(app.undo(), "one undo step");
@@ -1371,8 +1359,8 @@ mod tests {
         app.settle();
         let state = app.state();
         assert_eq!(
-            app.read_document(MergeDoc::resolutions),
-            vec![(hunk, "theirs".to_string())],
+            state.resolutions(),
+            vec![(hunk, HunkChoice::Theirs)],
             "the click resolved that hunk"
         );
         assert_ne!(state.merged, before);
@@ -1388,7 +1376,10 @@ mod tests {
         app.settle();
         let state = app.state();
         assert!(state.merged.contains('Z'), "{:?}", state.merged);
-        assert!(!state.composed, "a hand edit stops sides from being taken");
+        assert!(
+            !state.composed(&state.merge_model()),
+            "a hand edit stops sides from being taken"
+        );
         assert!(
             target_bounds(&mut app, &format!("diffmerge.merge.resolve:{hunk}:ours")).is_none(),
             "no chip is offered over a hand edit"
@@ -1838,7 +1829,7 @@ mod tests {
         assert_eq!(selected_compact_source(app), "Show Ours source");
 
         let theirs_key = ui::a11y::hash_key(&"diffmerge.source.theirs");
-        assert!(Widget::perform_action_at(
+        assert!(Widget::perform_action(
             &mut app.merge,
             &ui::a11y::Action::Activate,
             &[theirs_key],
@@ -1997,17 +1988,14 @@ mod tests {
 
     #[test]
     fn phone_diff_explains_opposite_only_lines_without_changing_the_comparison() {
-        use crate::actions::{DiffmergeAction, DiffmergeEffect};
+        use crate::actions::DiffmergeEffect;
         let mut app = TestApp::<DiffmergeShell>::new().unwrap();
-        app.invoke(
-            ui::tilo_resource::Invoke::apply(&DiffmergeAction::OpenComparison {
-                left_label: "before.txt".into(),
-                left: "head\ntail\n".into(),
-                right_label: "after.txt".into(),
-                right: "head\none\ntwo\nthree\ntail\n".into(),
-            })
-            .unwrap(),
-        )
+        app.invoke(Session::OPEN_COMPARISON.with(session::OpenComparison {
+            left_label: "before.txt".into(),
+            left: "head\ntail\n".into(),
+            right_label: "after.txt".into(),
+            right: "head\none\ntwo\nthree\ntail\n".into(),
+        }))
         .unwrap();
         app.effect(&DiffmergeEffect::ShowDiff).unwrap();
         app.harness().resize((390, 760)).unwrap();

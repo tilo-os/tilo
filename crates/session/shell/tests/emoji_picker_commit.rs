@@ -28,6 +28,7 @@ use shell::shell::overlay_host::ShellOverlayHost;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use taffy::{NodeId, TaffyTree};
+use ui::widget::Widget;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::wp::text_input::zv3::client::{
@@ -37,6 +38,7 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2, zwp_input_method_v2,
 };
+use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::wayland::private_text_input_protocol::{
     tilo_text_input_manager_v1, tilo_text_input_v1,
@@ -1287,4 +1289,91 @@ fn the_picker_opens_at_the_caret_and_centred_when_the_field_reports_none() {
     );
 
     store().forget(field.surface_id);
+}
+
+fn route_picker_event(harness: &mut Harness, event: &WindowEvent) {
+    let modifiers = Modifiers::from(ModifiersState::empty());
+    let mut doc = automerge::AutoCommit::new();
+    let root = automerge::ROOT.clone();
+    let mut handled = false;
+    let mut focus: Option<NodeId> = None;
+    harness.host.handle_event(
+        event,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: ui::widget::Edits::lend(&mut doc),
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: harness.child,
+            taffy: &harness.taffy,
+        },
+    );
+}
+
+#[test]
+fn interrupted_pointer_pick_stays_with_the_open_picker() {
+    use winit::event::{DeviceId, MouseButton};
+    for focus_loss in [true, false] {
+        let mut h = Harness::new();
+        h.key(Key::Character(".".into()), ModifiersState::SUPER);
+        h.type_text("pizza");
+        let cell = h
+            .host
+            .emoji_picker()
+            .emoji_rect(0)
+            .expect("visible pizza")
+            .center();
+        route_picker_event(
+            &mut h,
+            &WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(cell.x, cell.y),
+            },
+        );
+        route_picker_event(
+            &mut h,
+            &WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        if focus_loss {
+            route_picker_event(&mut h, &WindowEvent::Focused(false));
+        } else {
+            h.key(Key::Character("a".into()), ModifiersState::CONTROL);
+            h.type_text("thumbs up");
+            assert_eq!(h.host.emoji_picker().selected(), Some("👍"));
+        }
+        route_picker_event(
+            &mut h,
+            &WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+        assert!(
+            h.host.take_emoji_commits().is_empty(),
+            "an interrupted native pick cannot insert"
+        );
+        assert!(h.host.emoji_picker_open(), "cancel retains the search");
+        h.key(Key::Named(NamedKey::Escape), ModifiersState::empty());
+        assert!(
+            !h.host.emoji_picker_open(),
+            "Escape still closes the picker"
+        );
+        h.key(Key::Character(".".into()), ModifiersState::SUPER);
+        h.type_text("pizza");
+        h.key(Key::Named(NamedKey::Enter), ModifiersState::empty());
+        assert_eq!(
+            h.host.take_emoji_commits(),
+            ["🍕"],
+            "reopen/keyboard pick works once"
+        );
+        assert!(h.host.take_emoji_commits().is_empty());
+        drop(h);
+    }
 }

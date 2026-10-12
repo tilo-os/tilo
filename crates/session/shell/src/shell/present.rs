@@ -144,6 +144,15 @@ pub trait Presenter: Send {
     fn frame_detail(&mut self) -> Option<String> {
         None
     }
+
+    /// Idle work, not a frame: bring whatever this presenter retains for
+    /// `frame`'s layers up to them while the desktop rests, without showing
+    /// anything ([`PresentPipe::warm`]). Asks `keep_going` between steps
+    /// and stops as soon as it says a frame waits. Presenters that retain
+    /// nothing do nothing.
+    fn warm(&mut self, frame: &FramePaint, keep_going: &dyn Fn() -> bool) {
+        let _ = (frame, keep_going);
+    }
 }
 
 enum PresentMsg {
@@ -166,9 +175,18 @@ enum PresentMsg {
         /// buffers do not go back to their clients while it can be rendered.
         pins: crate::shell::gpu_frames::FramePins,
     },
+    /// Idle work for [`Presenter::warm`]; never presented, never counted in
+    /// flight. Its client frames stay pinned until it is done.
+    Warm(Box<Warm>),
     Resize((u32, u32)),
     Dpms(bool),
     Stop,
+}
+
+/// Idle work for the render thread ([`PresentPipe::warm`]).
+struct Warm {
+    frame: FramePaint,
+    pins: crate::shell::gpu_frames::FramePins,
 }
 
 /// Signalled by the render thread each time a frame retires. Boxed as a trait object so
@@ -234,7 +252,7 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
         || total >= SLOW_FRAME_LIFECYCLE
     {
         eprintln!(
-            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={}",
+            "FRAME-LIFECYCLE serial={serial} event=render-retired queue_wait_us={} render_us={} total_us={} inflight_at_enqueue={inflight_at_enqueue} input_age_at_enqueue_us={} revision={} phase_timing={} encode_submit_us={} gpu_completion_wait_us={} bump_settle_us={} backdrop_us={} kms_retirement_us={} vblank_paced={} flip_to_vblank_us={} monotonic_us={}",
             queue_wait.as_micros(),
             render.as_micros(),
             total.as_micros(),
@@ -255,6 +273,10 @@ fn log_frame_lifecycle(serial: u64, revision: u64, timing: FrameLifecycle) {
                     .as_micros()
                     .to_string()
             ),
+            // CLOCK_MONOTONIC at retirement, so a boot or sign-in measurement can place the
+            // session's first presented frame on the system's own clock (TIL-767).
+            crate::compositor::client_input::monotonic_time_ns()
+                .map_or_else(|| "none".to_owned(), |ns| (ns / 1_000).to_string()),
         );
     }
 }
@@ -274,6 +296,17 @@ impl RetireBoard {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push_back(outcome);
+    }
+
+    /// Run [`Presenter::warm`] for `frame` while no frame is in flight: a
+    /// frame handed over before or during it goes first. Its client frames
+    /// go back once it is done.
+    fn warm(&self, presenter: &mut dyn Presenter, Warm { frame, pins }: Warm) {
+        let idle = || self.inflight.load(Ordering::Acquire) == 0;
+        if idle() {
+            presenter.warm(&frame, &idle);
+        }
+        drop(pins);
     }
 
     /// Publish one finished frame, ending with the in-flight decrement that
@@ -299,6 +332,43 @@ fn report_frame(presenter: &mut dyn Presenter, serial: u64, revision: u64, timin
     if let Some(detail) = presenter.frame_detail() {
         eprintln!("CPU-FRAME serial={serial} revision={revision} {detail}");
     }
+}
+
+/// The name of every thread a GPU driver starts while the render thread builds its renderer.
+///
+/// Linux names a new thread after the thread that started it, and drivers do not always rename
+/// theirs. Mesa's CPU rasteriser (lavapipe) names its rasteriser threads `llvmpipe-N` but leaves
+/// its compute-shader pool, which runs every Vello stage, unnamed. Built on the render thread,
+/// that pool was called `tilo-present` too, so the CPU a software-rendered VM spent rasterising
+/// one frame read as the present thread's (TIL-739: `tilo-present×14 1.51%` with the present
+/// thread itself at 0.07%).
+pub const DRIVER_THREAD_NAME: &std::ffi::CStr = c"tilo-gpu-driver";
+
+/// Run `build` (device and renderer setup) with the calling thread named
+/// [`DRIVER_THREAD_NAME`], so the threads the driver starts inside it carry that name rather
+/// than the caller's. The caller's own name is restored afterwards, also when `build` unwinds.
+pub fn with_driver_thread_name<R>(build: impl FnOnce() -> R) -> R {
+    #[cfg(target_os = "linux")]
+    {
+        /// The caller's name as `PR_GET_NAME` wrote it: at most 15 bytes and a NUL.
+        struct Restore([u8; 16]);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: PR_SET_NAME reads a NUL-terminated string of at most 16 bytes, and
+                // the buffer is the 16 bytes PR_GET_NAME filled, NUL included.
+                unsafe { libc::prctl(libc::PR_SET_NAME, self.0.as_ptr(), 0, 0, 0) };
+            }
+        }
+        let mut own = [0u8; 16];
+        // SAFETY: PR_GET_NAME writes at most 16 bytes, NUL included, into a 16-byte buffer.
+        if unsafe { libc::prctl(libc::PR_GET_NAME, own.as_mut_ptr(), 0, 0, 0) } == 0 {
+            let _restore = Restore(own);
+            // SAFETY: a NUL-terminated string of 15 bytes and its NUL, the most PR_SET_NAME keeps.
+            unsafe { libc::prctl(libc::PR_SET_NAME, DRIVER_THREAD_NAME.as_ptr(), 0, 0, 0) };
+            return build();
+        }
+    }
+    build()
 }
 
 /// How long [`PresentPipe::shutdown`] waits for the render thread before giving up on it.
@@ -383,6 +453,7 @@ impl PresentPipe {
                             // Then wake the loop — strictly after the decrement, so a loop that wakes on this signal is guaranteed to see the capacity.
                             on_retire();
                         }
+                        PresentMsg::Warm(warm) => board.warm(&mut *presenter, *warm),
                         PresentMsg::Resize(size) => presenter.resize(size),
                         PresentMsg::Dpms(on) => presenter.set_dpms(on),
                         PresentMsg::Stop => break,
@@ -561,6 +632,18 @@ impl PresentPipe {
         Some(serial)
     }
 
+    /// Hand the render thread idle work: `frame`'s layers, drawn while the
+    /// desktop rests, for the presenter to retain ([`Presenter::warm`]).
+    /// It runs after the frames already handed over and yields to any frame
+    /// handed over after it; it is not a frame, so it takes no capacity and
+    /// gets no serial. Returns `false` if the render thread has gone away.
+    pub fn warm(&self, frame: FramePaint) -> bool {
+        let pins = frame.client_frame_pins();
+        self.tx
+            .send(PresentMsg::Warm(Box::new(Warm { frame, pins })))
+            .is_ok()
+    }
+
     pub fn resize(&self, size: (u32, u32)) {
         let _ = self.tx.send(PresentMsg::Resize(size));
     }
@@ -624,6 +707,42 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use std::time::Duration;
+
+    /// A thread a driver starts while the renderer is built reads [`DRIVER_THREAD_NAME`], not
+    /// the render thread's name, and the render thread gets its own name back, also when the
+    /// build unwinds.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn driver_thread_name_reaches_threads_started_inside_and_is_undone_after() {
+        fn comm() -> String {
+            std::fs::read_to_string("/proc/thread-self/comm")
+                .expect("read this thread's name")
+                .trim_end()
+                .to_owned()
+        }
+        fn started_thread_comm() -> String {
+            std::thread::spawn(comm)
+                .join()
+                .expect("join an unnamed thread")
+        }
+        std::thread::Builder::new()
+            .name("tilo-present".to_owned())
+            .spawn(|| {
+                assert_eq!(started_thread_comm(), "tilo-present");
+                let inside = with_driver_thread_name(started_thread_comm);
+                assert_eq!(inside, DRIVER_THREAD_NAME.to_str().expect("UTF-8 name"));
+                assert_eq!(comm(), "tilo-present");
+                assert_eq!(started_thread_comm(), "tilo-present");
+                let unwound = std::panic::catch_unwind(|| {
+                    with_driver_thread_name(|| panic!("intentional driver setup failure"))
+                });
+                assert!(unwound.is_err());
+                assert_eq!(comm(), "tilo-present");
+            })
+            .expect("spawn a render thread")
+            .join()
+            .expect("render thread assertions");
+    }
 
     /// A presenter that blocks until released, so a test can hold a frame "on the GPU" and observe the pipe's back-pressure.
     struct Blocking {

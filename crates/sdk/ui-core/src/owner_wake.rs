@@ -302,10 +302,6 @@ impl OwnerWakeQueue {
             .entries
             .is_empty()
     }
-    /// Registered metadata count; never a mounted or freshly admitted census.
-    pub fn registered_count(&self) -> usize {
-        self.index.borrow().len()
-    }
 }
 
 /// A snapshot owns retry custody until each admitted callback completes.

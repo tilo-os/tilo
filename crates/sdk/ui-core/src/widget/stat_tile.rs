@@ -483,14 +483,6 @@ impl StatTile {
         }
     }
 
-    /// Replace or clear the unit.
-    pub fn set_unit(&mut self, unit: Option<String>) {
-        if unit != self.unit {
-            self.unit = unit;
-            self.dirty = true;
-        }
-    }
-
     /// Replace or clear the note.
     pub fn set_note(&mut self, note: Option<String>) {
         if note != self.note {
@@ -505,14 +497,6 @@ impl StatTile {
         if change != self.change {
             self.layout_dirty |= change.is_some() != self.change.is_some();
             self.change = change;
-            self.dirty = true;
-        }
-    }
-
-    /// Replace or clear the tone.
-    pub fn set_tone(&mut self, tone: Option<Tone>) {
-        if tone != self.tone {
-            self.tone = tone;
             self.dirty = true;
         }
     }
@@ -729,6 +713,7 @@ impl Widget for StatTile {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
@@ -892,7 +877,12 @@ impl Widget for StatGroup {
         node
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
         let Ok(layout) = taffy.layout(node) else {
             return false;
         };
@@ -1084,6 +1074,7 @@ mod tests {
         assert!(Widget::perform_action(
             &mut tile,
             &crate::a11y::Action::Activate,
+            &[],
             &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));

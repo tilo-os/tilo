@@ -19,7 +19,7 @@ impl MusicApp {
         ui::widget::Button::icon_only(
             "music-open-file",
             ui::icons::Icon::FolderOpen,
-            &ui::i18n!("music-open-audio-file"),
+            &crate::i18n::t("music-open-audio-file"),
         )
         .on_action(binding)
     }
@@ -400,9 +400,10 @@ mod tests {
                 }
                 let intent = ui::widget::controls::take_control_invocation(&mut app)
                     .expect("visible shared button intent");
+                assert_eq!(intent.address.resource, "music.library");
                 assert_eq!(
-                    intent.address,
-                    tilo_actions::ActionAddress::new("music.library", "open-file")
+                    intent.address.action,
+                    ui::tilo_resource::Effect::id(&crate::actions::MusicEffect::OpenFile)
                 );
                 assert!(intent.arguments.is_empty());
                 assert!(
@@ -579,6 +580,10 @@ mod tests {
         };
         let status = status.value.unwrap();
         assert_eq!(status["duration_ms"], duration);
+        assert_eq!(
+            status["position_ms"], duration,
+            "actual local EOS must retain its observed end position after decoder teardown"
+        );
         assert_eq!(status["confirmed_playing"], false);
         assert_eq!(status["requested_playing"], false);
         // The self-managed sink retains its actual decoded-buffer history at
@@ -614,6 +619,7 @@ mod tests {
                 assert_eq!(output.value, Some(serde_json::json!({"state":"playing"})));
                 action.contract.result.validate(&output).unwrap();
                 assert!(app.audio.frames_rendered() > 0);
+                assert!(app.audio.is_playing_confirmed());
                 break;
             }
             assert!(ui::time::now() < deadline, "replay produced no actual PCM");
@@ -812,8 +818,7 @@ mod tests {
         };
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -881,8 +886,7 @@ mod tests {
         wav(&path);
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -939,8 +943,7 @@ mod tests {
         wav(&path);
         let mut app = MusicApp::without_profile();
         app.disconnect();
-        let mut doc = automerge::AutoCommit::new();
-        crate::doc::seed(&mut doc, &crate::seed::sample_library());
+        let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
@@ -1073,12 +1076,14 @@ mod tests {
             .expect("tests capture decoded audio")
             .clone();
         let until = tilo_test_env::hang_deadline();
-        // A playing source must also be rendering before the caller acts on
-        // it. Unlike a sound server's sink, the capture sink can stall when it
-        // is paused while still completing its switch to PLAYING.
+        // First PCM can arrive before the asynchronous Playing transition.
+        // Keep driving production tick until the active decoder confirms it,
+        // within the original deadline. The capture sink can also stall when
+        // paused while still completing its switch to Playing.
         let rendered_before = capture.snapshot().rendered;
         while app.audio.frames_rendered() == 0
             || app.audio.needs_poll()
+            || (app.pb.playing && !app.audio.is_playing_confirmed())
             || (app.pb.playing && capture.snapshot().rendered == rendered_before)
         {
             app.tick();
@@ -1113,7 +1118,7 @@ mod tests {
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             app.sync(&doc, &automerge::ROOT);
             assert!(app.lib.tracks.is_empty());
-            assert!(crate::doc::load_library(&doc).tracks.is_empty());
+            assert!(crate::seed::library_of(&doc).tracks.is_empty());
             assert_eq!(app.pb.queue.len(), 1);
             assert!(app.pb.playing);
             assert!(app.worker.is_none());
@@ -1174,6 +1179,7 @@ mod tests {
                         .validate(&output)
                         .expect("real resumed PCM completion must match the published result");
                     assert!(app.audio.frames_rendered() >= before);
+                    assert!(app.audio.is_playing_confirmed());
                     break;
                 }
                 assert!(

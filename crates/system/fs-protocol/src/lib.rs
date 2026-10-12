@@ -8,6 +8,9 @@
 //! - [`files`] — stable file records: [`FileRecordId`], versions, bindings,
 //!   content revisions, conflicts, history and merge-preflight projections, and
 //!   the signed [`FileMutationTransaction`].
+//! - [`projection`] — the per-entry projections the mount answers through
+//!   extended attributes (sync state, metadata, record index, availability,
+//!   sharing, history) and their xattr names.
 //! - [`file_invite`] — signed, record-scoped file invitations
 //!   ([`FileInviteV1`], [`BearerFileInvite`]).
 //! - [`share_control`] — the bounded local share-control socket protocol.
@@ -33,6 +36,7 @@
 
 pub mod file_invite;
 pub mod files;
+pub mod projection;
 pub mod recipient_control;
 pub mod share_control;
 
@@ -61,13 +65,13 @@ pub use files::{
     MERGE_PREFLIGHT_XATTR_PREFIX, MergePreflightProjectionV1, PreviewStatus, PreviewVariant,
     prefer_conflict_resolution,
 };
-#[allow(
-    deprecated,
-    reason = "stable source compatibility for the moved collab-types API"
-)]
-pub use files::{
-    FileMutationOperationV1, FileMutationParticipantRoleV1, FileMutationParticipantV1,
-    FileMutationTransactionManifestV1, FileMutationTransactionV1,
+pub use projection::{
+    AVAILABILITY_CONTROL_XATTR, AVAILABILITY_XATTR, AvailabilityPolicy, AvailabilityProjectionV1,
+    CONTENT_HASH_XATTR, HISTORY_CONTROL_XATTR, HISTORY_XATTR, HistoryProjectionV1, METADATA_XATTR,
+    MetadataProjectionV1, PIN_XATTR, ProjectedFreshness, ProjectedReplicaEvidence,
+    ProjectedTransfer, ProjectionError, RECORD_ID_XATTR, Residency, SHARE_CONTROL_XATTR,
+    SHARE_XATTR, SYNC_XATTR, ShareGrantProjectionV1, ShareGrantStatus, ShareProjectionV1,
+    ShareSubjectProjection, SyncState, THUMB_XATTR, TransferPhase, TransferProgress,
 };
 pub use recipient_control::{
     MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,

@@ -305,18 +305,6 @@ impl Container {
         self
     }
 
-    /// [`Self::interactive`] through an exported resource action.
-    #[must_use]
-    pub fn interactive_action(
-        mut self,
-        id: impl Into<String>,
-        binding: tilo_actions::ActionBinding<()>,
-    ) -> Self {
-        self.activation = crate::widget::activation::Activation::new(id);
-        self.activation.set_action(binding);
-        self
-    }
-
     /// The container's surface under its current interaction: the raised
     /// well when it has a background (lifted on hover and press), the
     /// ground's selection lift when it is bare and interactive.
@@ -530,8 +518,17 @@ impl Widget for Container {
         self.paint_surface(scene, transform, theme);
 
         if let Some(child) = &mut self.child {
-            child.draw(scene, transform, text_renderer, theme, presence);
+            crate::widget::draw_child(
+                child.as_mut(),
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
         }
+
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -543,7 +540,7 @@ impl Widget for Container {
         if self.activation.is_bound() {
             if *ctx.handled {
                 // A control inside took the press; the container stays put.
-                self.activation.state.pressed = false;
+                self.activation.cancel_press();
                 return;
             }
             let target = self.rect.inflate(self.bleed.0, self.bleed.1);
@@ -571,6 +568,7 @@ impl Widget for Container {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -672,41 +670,6 @@ impl Widget for Container {
         self.child
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty())
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.paint_surface(scene, transform, theme);
-
-        if let Some(child) = &mut self.child {
-            child.draw_with_presence(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                permissions,
-            );
-        }
-
-        crate::widget::draw_gate_and_peer_focus(
-            self,
-            scene,
-            transform,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 
@@ -895,6 +858,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut c,
                 &crate::a11y::Action::Activate,
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

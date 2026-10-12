@@ -5,10 +5,9 @@
     reason = "categorical projection is bounded floating-point geometry"
 )]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::widget::ModelPath;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -20,12 +19,12 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
 };
-use crate::widget::{TaffyTreeExt, Widget};
 
 #[derive(Clone, Debug)]
 pub struct Category {
@@ -640,25 +639,8 @@ impl InteractiveChart for CategoryChart {
 }
 
 impl Widget for CategoryChart {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = crate::widget::placed(&layout, origin);
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     #[allow(
         clippy::too_many_lines,
         reason = "axes, bars, labels, legend and inspector share one paint pass"
@@ -924,17 +906,14 @@ impl Widget for CategoryChart {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(key) = crate::widget::chart_navigation::activated_key(action, key_path) else {
             return false;
         };
         if self.style.show_legend
@@ -943,7 +922,7 @@ impl Widget for CategoryChart {
         {
             for series in &self.series {
                 let target = format!("legend:{}", series.id);
-                if crate::a11y::hash_key(&target) == *key {
+                if crate::a11y::hash_key(&target) == key {
                     return self.toggle_series(&series.id.clone());
                 }
             }
@@ -954,7 +933,7 @@ impl Widget for CategoryChart {
             }
             for category in &self.categories {
                 let target = format!("{}:{}", series.id, category.id);
-                if crate::a11y::hash_key(&target) == *key {
+                if crate::a11y::hash_key(&target) == key {
                     self.activated = Some((series.id.clone(), category.id.clone()));
                     return true;
                 }
@@ -965,14 +944,8 @@ impl Widget for CategoryChart {
     fn name(&self) -> &'static str {
         "CategoryChart"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

@@ -36,6 +36,7 @@ NATIVE_PREFIXES = ("native/",)
 # The native runner and the tools that drive it.
 NATIVE_RUNNER_FILES = {
     "app/native_runner.rs",
+    "app/native_runner/startup.rs",
     "application/host.rs",
     "dx12_shader_cache.rs",
     "headless.rs",

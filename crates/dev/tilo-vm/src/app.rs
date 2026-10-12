@@ -45,6 +45,7 @@ use crate::sshkey;
 use crate::vmbuild;
 
 mod admin;
+mod artifact;
 mod builder;
 mod device;
 #[cfg(test)]
@@ -880,6 +881,7 @@ impl App {
             Some(Command::Vm(command)) => self.vm(command),
             Some(Command::Slot(SlotCommand::Apps(SlotAppsCommand::List))) => Ok(apps_list()),
             Some(Command::Slot(command)) => self.slot(command),
+            Some(Command::SwapArtifact(request)) => self.swap_artifact(&request),
             Some(Command::Swap {
                 component,
                 slot,
@@ -4703,6 +4705,19 @@ impl App {
         let after = build::sccache_stats(&mut self.runner);
         self.receipt
             .set("cache", build::cache_summary(before, after));
+        for native in build::native_builds(component, &target) {
+            let runner = &mut self.runner;
+            if !self
+                .receipt
+                .phase("native-build", || runner.interactive(&native))?
+            {
+                return Err(CliError::CommandFailed {
+                    command: native.display(),
+                    status: "build failed".into(),
+                    stderr: String::new(),
+                });
+            }
+        }
         let staging = build::Staging::new(&worktree)?;
         let install = build::install(component, &target, &staging.tree());
         let runner = &mut self.runner;
@@ -5973,6 +5988,7 @@ pub fn scenario_driver(entry: &Component) -> String {
 /// The slot a command names explicitly, after `--slot` was folded in.
 fn named_slot(command: &Command) -> Option<String> {
     match command {
+        Command::SwapArtifact(request) => request.slot.clone(),
         Command::Swap { slot, .. }
         | Command::Input { slot, .. }
         | Command::Control { slot, .. }

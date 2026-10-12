@@ -169,10 +169,6 @@ where
         &self.items
     }
 
-    pub fn item_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.items.get_mut(index)
-    }
-
     /// # Errors
     ///
     /// Returns [`DuplicateListKey`] when `key` already exists.
@@ -316,6 +312,9 @@ pub struct VirtualList<M: ListModel> {
     mounted: Vec<MountedRow<M::Key>>,
     selection: KeySelection<M::Key>,
     multi_select: bool,
+    /// Moving the focused row by keyboard (or assistive technology) also
+    /// selects it.
+    follow_focus: bool,
     focused_key: Option<M::Key>,
     on_select: Option<SelectCallback<M::Key>>,
     on_activate: Option<KeyCallback<M::Key>>,
@@ -340,6 +339,8 @@ pub struct VirtualList<M: ListModel> {
     bleed: f64,
     /// Whether the rows were last laid out beside a scroll bar.
     rows_beside_bar: bool,
+    /// The list takes its parent's height, and its viewport follows it.
+    fill_height: bool,
     last_tick: Option<Instant>,
     last_anchor: Option<SparseAnchor<M::Key>>,
     requested_range: Option<Range<usize>>,
@@ -347,6 +348,32 @@ pub struct VirtualList<M: ListModel> {
     structure_dirty: bool,
     layout_dirty: bool,
     interaction: crate::interaction::InteractionEnvironment,
+    /// The scroll offset the rows' layout was built at: a scroll that brings
+    /// no row near moves them in `apply_layout`, without a rebuild.
+    layout_offset: f64,
+    /// The rows mounted at the last reconcile, and whether a scroll since
+    /// brought others near: a rebuild that only mounts and lets go of rows
+    /// is one the frame's damage describes
+    /// ([`crate::widget::StructureChange::Described`]).
+    mounted_range: Range<usize>,
+    remount: bool,
+    /// What the frame being drawn shows, and what the last frame the host
+    /// presented showed: a scroll between the two that changed nothing else
+    /// is offered to the host as a copy ([`crate::scroll_copy::offer`]).
+    shown_drawing: Option<ListShown>,
+    shown_presented: Option<ListShown>,
+}
+
+/// Where a frame shows the rows: the offset, the list's box, the transform
+/// it is drawn with, whether the rows stand beside the bar, and what of the
+/// list's own paint (selection, focus, a reorder) the rows do not carry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ListShown {
+    offset: f64,
+    rect: Rect,
+    transform: Affine,
+    beside_bar: bool,
+    chrome: u64,
 }
 
 impl<M: ListModel> VirtualList<M> {
@@ -415,6 +442,7 @@ impl<M: ListModel> VirtualList<M> {
             mounted: Vec::new(),
             selection: KeySelection::new(),
             multi_select: false,
+            follow_focus: false,
             focused_key: None,
             on_select: None,
             on_activate: None,
@@ -435,6 +463,7 @@ impl<M: ListModel> VirtualList<M> {
             gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
             rows_beside_bar: false,
+            fill_height: false,
             last_tick: None,
             last_anchor: None,
             requested_range: None,
@@ -442,6 +471,11 @@ impl<M: ListModel> VirtualList<M> {
             structure_dirty: true,
             layout_dirty: true,
             interaction: crate::interaction::InteractionEnvironment::default(),
+            layout_offset: 0.0,
+            mounted_range: 0..0,
+            remount: false,
+            shown_drawing: None,
+            shown_presented: None,
         };
         list.refresh_anchor();
         list
@@ -486,9 +520,26 @@ impl<M: ListModel> VirtualList<M> {
         self.visible_window_changed();
     }
 
+    /// Take the parent's full height (a pane's one list) instead of a fixed
+    /// viewport; the viewport follows the laid-out height.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.fill_height = true;
+        self
+    }
+
     #[must_use]
     pub fn multi_select(mut self, enabled: bool) -> Self {
         self.multi_select = enabled;
+        self
+    }
+
+    /// Select the row the keyboard moves to, as a single-selection list
+    /// whose selection is what it shows elsewhere (the open item of a
+    /// master-detail window) does. A modifier-extended move still extends.
+    #[must_use]
+    pub fn selection_follows_focus(mut self) -> Self {
+        self.follow_focus = true;
         self
     }
 
@@ -675,13 +726,44 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     pub fn set_scroll_offset(&mut self, offset: f64) {
-        let before = self.viewport.visible_range();
         self.viewport.set_offset(offset);
-        if self.viewport.visible_range() != before {
-            self.structure_dirty = true;
-        }
+        // The rows move in `apply_layout`; rows the scroll brought near are
+        // mounted by the rebuild the layout pass asks for, which the
+        // frame's damage describes.
         self.layout_dirty = true;
         self.refresh_anchor();
+    }
+
+    /// What of the list's own paint the rows do not carry: the selection
+    /// it paints for them, its focus ring, a reorder in flight.
+    fn chrome_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.is_focused.hash(&mut hasher);
+        self.focused_key.hash(&mut hasher);
+        self.delegate_selection.hash(&mut hasher);
+        self.reorder.is_active().hash(&mut hasher);
+        self.selection.is_select_all().hash(&mut hasher);
+        // The selection whatever its order: each key's own hash, combined.
+        let selected = self.selection.stored_keys().fold(0_u64, |combined, key| {
+            let mut one = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut one);
+            combined ^ one.finish()
+        });
+        selected.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Where the frame being drawn shows the rows and how far they moved on
+    /// screen since the last presented frame, when only a scroll moved them.
+    fn scrolled_since_presented(&self) -> Option<(ListShown, f64)> {
+        let (drawing, presented) = (self.shown_drawing?, self.shown_presented?);
+        (drawing.rect == presented.rect
+            && drawing.transform == presented.transform
+            && drawing.beside_bar == presented.beside_bar
+            && drawing.chrome == presented.chrome
+            && drawing.offset.to_bits() != presented.offset.to_bits())
+        .then_some((drawing, presented.offset - drawing.offset))
     }
 
     #[must_use]
@@ -873,6 +955,7 @@ impl<M: ListModel> VirtualList<M> {
             self.structure_dirty = true;
         }
         self.mounted = mounted;
+        self.mounted_range = self.viewport.visible_range();
     }
 
     fn row_at_cursor(&self) -> Option<(usize, M::Key)> {
@@ -926,19 +1009,6 @@ impl<M: ListModel> VirtualList<M> {
             });
     }
 
-    fn reconcile_after_reorder(&mut self, anchor: Option<&SparseAnchor<M::Key>>) {
-        self.viewport
-            .reconcile(self.model.len(), |key| self.model.index_of(key), anchor);
-        self.selection
-            .reconcile(|key| self.model.index_of(key).is_some());
-        self.focused_key = self
-            .focused_key
-            .take()
-            .filter(|key| self.model.index_of(key).is_some());
-        self.request_dirty = true;
-        self.visible_window_changed();
-    }
-
     fn commit_reorder(&mut self, dropped: ReorderDrop<M::Key>) -> bool {
         let anchor = self.capture_anchor();
         let changed = self
@@ -946,7 +1016,7 @@ impl<M: ListModel> VirtualList<M> {
             .as_mut()
             .is_some_and(|commit| commit(&mut self.model, dropped));
         if changed {
-            self.reconcile_after_reorder(anchor.as_ref());
+            self.reconcile_model(anchor.as_ref());
         }
         changed
     }
@@ -1033,13 +1103,21 @@ impl<M: ListModel> VirtualList<M> {
             return false;
         };
         self.focused_key = Some(key.clone());
-        if extend {
-            self.apply_selection(key, false, true);
-        }
+        self.select_focused(key, extend);
         self.viewport
             .scroll_to_index(index, ScrollAlignment::Nearest);
         self.visible_window_changed();
         true
+    }
+
+    /// The selection after the keyboard moved to `key`: extended to it, or
+    /// moved onto it when the selection follows focus.
+    fn select_focused(&mut self, key: M::Key, extend: bool) {
+        if extend {
+            self.apply_selection(key, false, true);
+        } else if self.follow_focus && !self.selection.is_selected(&key) {
+            self.apply_selection(key, false, false);
+        }
     }
 
     fn page_focus(&mut self, forward: bool, extend: bool) -> bool {
@@ -1056,9 +1134,7 @@ impl<M: ListModel> VirtualList<M> {
             return false;
         };
         self.focused_key = Some(key.clone());
-        if extend {
-            self.apply_selection(key, false, true);
-        }
+        self.select_focused(key, extend);
         self.visible_window_changed();
         scrolled || index != current
     }
@@ -1111,29 +1187,6 @@ impl<M: ListModel> VirtualList<M> {
         let before = self.viewport.offset();
         self.set_scroll_offset(before + delta);
         self.viewport.offset().to_bits() != before.to_bits()
-    }
-
-    fn route_to_children(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(row) = self
-            .mounted
-            .iter_mut()
-            .find(|row| row.widget.wants_pointer_capture())
-            && let Some(node) = row.node
-        {
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            return;
-        }
-        for row in self.mounted.iter_mut().rev() {
-            let Some(node) = row.node else {
-                continue;
-            };
-            row.widget
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            if *ctx.handled {
-                break;
-            }
-        }
     }
 
     fn handle_scrollbar_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
@@ -1261,7 +1314,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.reconcile_mounted();
+        // Rows a scroll alone brought near are mounted by the layout pass,
+        // which asks for a rebuild the frame's damage describes; anything
+        // else reconciles now.
+        let scrolled_only = !self.structure_dirty
+            && !self.request_dirty
+            && self.viewport.visible_range() != self.mounted_range;
+        if !scrolled_only {
+            self.reconcile_mounted();
+        }
         for row in &mut self.mounted {
             row.widget.sync(state, path);
         }
@@ -1351,7 +1412,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             Style {
                 size: Size {
                     width: percent(1.0_f32),
-                    height: Dimension::length(px(self.viewport.viewport())),
+                    height: if self.fill_height {
+                        percent(1.0_f32)
+                    } else {
+                        Dimension::length(px(self.viewport.viewport()))
+                    },
                 },
                 overflow: taffy::Point {
                     x: taffy::Overflow::Clip,
@@ -1363,12 +1428,25 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.structure_dirty = false;
+        self.remount = false;
+        self.layout_offset = self.viewport.offset();
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-        let child_origin = Point::new(self.rect.x0, self.rect.y0);
+        if self.fill_height
+            && self.rect.height() > 0.0
+            && (self.rect.height() - self.viewport.viewport()).abs() > 0.5
+        {
+            self.viewport.set_viewport(self.rect.height());
+            self.visible_window_changed();
+        }
+        // Rows stand where the layout was built, moved by the scroll since.
+        let child_origin = Point::new(
+            self.rect.x0,
+            self.rect.y0 + self.layout_offset - self.viewport.offset(),
+        );
         let mut measurements = Vec::with_capacity(self.mounted.len());
         for row in &mut self.mounted {
             let Some(child) = row.node else {
@@ -1379,13 +1457,29 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         let mut measured = false;
         for (index, key, height) in measurements {
-            measured |= self.viewport.measure(index, key, height.max(1.0));
+            // A first measurement equal to the estimate moves nothing: the
+            // rows a scroll brought near keep the frame described.
+            let geometry = |viewport: &SparseVirtualViewport<M::Key>| {
+                (
+                    viewport.item_height(index).map(f64::to_bits),
+                    viewport.offset().to_bits(),
+                    viewport.content_extent().to_bits(),
+                )
+            };
+            let before = geometry(&self.viewport);
+            self.viewport.measure(index, key, height.max(1.0));
+            measured |= geometry(&self.viewport) != before;
         }
         if measured {
             self.visible_window_changed();
         } else {
             self.layout_dirty = false;
             self.refresh_anchor();
+        }
+        // A scroll brought other rows near: the rebuild mounting them is
+        // described by the frame's damage.
+        if self.viewport.visible_range() != self.mounted_range {
+            self.remount = true;
         }
     }
 
@@ -1401,6 +1495,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         if self.reduce_motion {
             self.momentum.stop();
         }
+        self.shown_drawing = Some(ListShown {
+            offset: self.viewport.offset(),
+            rect: self.rect,
+            transform: crate::scroll_copy::on_screen(transform),
+            beside_bar: self.rows_beside_bar,
+            chrome: self.chrome_fingerprint(),
+        });
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -1493,7 +1594,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             return;
         }
         if !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
-            self.route_to_children(event, ctx);
+            crate::widget::route_to_mounted(
+                &mut self.mounted,
+                |mounted| (&mut mounted.widget, mounted.node),
+                event,
+                ctx,
+            );
         }
         if *ctx.handled {
             return;
@@ -1597,8 +1703,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     WheelStep::Ignored => false,
                 };
             }
+            // A key a focused row left alone moves through the list, and
+            // the list takes the focus from the row.
             WindowEvent::KeyboardInput { event, .. }
-                if self.is_focused && event.state == ElementState::Pressed =>
+                if (self.is_focused || self.mounted.iter().any(|row| row.widget.is_focused()))
+                    && event.state == ElementState::Pressed =>
             {
                 self.momentum.stop();
                 if event.logical_key == Key::Named(NamedKey::Escape) && self.reorder.cancel() {
@@ -1611,6 +1720,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                         toggle,
                         ctx.modifiers.state().shift_key(),
                     );
+                    if *ctx.handled && !self.is_focused {
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
                 }
             }
             _ => {}
@@ -1683,11 +1795,72 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = std::mem::take(&mut self.structure_dirty);
+        let mut dirty =
+            std::mem::take(&mut self.structure_dirty) | std::mem::take(&mut self.remount);
         for row in &mut self.mounted {
             dirty |= row.widget.take_structure_dirty();
         }
         dirty
+    }
+
+    /// Mounting the rows a scroll brought near, and letting go of the ones
+    /// it took away, is described: they come and go inside what the list
+    /// shows, and a mounted row draws itself whole. Any other change to the
+    /// rows (a model change, a rebuilt delegate) is not.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        use crate::widget::StructureChange;
+        let mut change = if std::mem::take(&mut self.structure_dirty) {
+            StructureChange::Rebuild
+        } else if std::mem::take(&mut self.remount) {
+            StructureChange::Described
+        } else {
+            StructureChange::None
+        };
+        for row in &mut self.mounted {
+            change = change.join(row.widget.take_structure_change());
+        }
+        change
+    }
+
+    /// A scroll that changed nothing else offers the host a copy of the
+    /// rows that stay on screen, the bar's track being what does not move
+    /// with them; what changed in the rows besides is theirs to say. Any
+    /// other change repaints the list.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if let Some((shown, delta)) = self.scrolled_since_presented() {
+            let overlays = self.scrollbar_track().into_iter().collect();
+            if crate::scroll_copy::offer(
+                self,
+                shown.rect,
+                vello::kurbo::Vec2::new(0.0, delta),
+                overlays,
+                shown.transform,
+            ) {
+                let first = regions.len();
+                for row in &self.mounted {
+                    row.widget.collect_damage(regions);
+                }
+                if let Some(changed) = regions.get_mut(first..) {
+                    for rect in changed {
+                        *rect = rect.intersect(shown.rect);
+                    }
+                }
+                return;
+            }
+        }
+        let shown_changed = self.shown_drawing != self.shown_presented;
+        if shown_changed || self.needs_redraw() {
+            regions.push(self.rect);
+        }
+    }
+
+    fn mark_drawn(&mut self) {
+        // Not drawn this frame, what the screen shows where the list lies
+        // is not known to be its rows: the next scroll repaints it.
+        self.shown_presented = self.shown_drawing.take();
+        for row in &mut self.mounted {
+            row.widget.mark_drawn();
+        }
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1788,7 +1961,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         };
         match action {
             Action::Focus => {
-                self.focused_key = Some(key);
+                self.focused_key = Some(key.clone());
+                self.select_focused(key, false);
                 self.viewport
                     .scroll_to_index(index, ScrollAlignment::Nearest);
                 self.visible_window_changed();
@@ -2017,16 +2191,6 @@ mod tests {
 
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
-
-        fn draw(
-            &mut self,
-            _scene: &mut Scene,
-            _transform: Affine,
-            _text_renderer: &mut TextRenderer,
-            _theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
         }
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -2781,6 +2945,71 @@ mod tests {
     }
 
     #[test]
+    fn a_filling_list_takes_its_parents_height_as_its_viewport() {
+        let mut list = plain_rows(1000).filling();
+        let doc = AutoCommit::new();
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let mut lay_out_in = |list: &mut VirtualList<_>, taffy: &mut TaffyTree<()>| {
+            list.sync(&doc, &automerge::ROOT);
+            taffy.clear();
+            node_map.clear();
+            let node = list.build_layout(taffy, &Theme::dark(), &mut node_map);
+            let parent = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: length(300.0_f32),
+                            height: length(600.0_f32),
+                        },
+                        ..Default::default()
+                    },
+                    &[node],
+                )
+                .unwrap();
+            taffy
+                .compute_layout(
+                    parent,
+                    Size {
+                        width: AvailableSpace::MaxContent,
+                        height: AvailableSpace::MaxContent,
+                    },
+                )
+                .unwrap();
+            list.apply_layout(taffy, node, Point::ZERO);
+        };
+        lay_out_in(&mut list, &mut taffy);
+        assert!((list.get_rect().height() - 600.0).abs() < 0.5);
+        lay_out_in(&mut list, &mut taffy);
+        let rows = list.visible_range();
+        assert!(
+            rows.end * 40 >= 600,
+            "the window covers the height: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn selection_can_follow_the_keyboard_focus() {
+        let selected = Rc::new(RefCell::new(Vec::new()));
+        let record = Rc::clone(&selected);
+        let mut list = plain_rows(10)
+            .selection_follows_focus()
+            .on_select(move |key, on| record.borrow_mut().push((key, on)));
+        let (taffy, node) = lay_out(&mut list, 300.0);
+        list.set_focus(true);
+        assert!(list.reveal(&2));
+        let down = crate::synthetic_input::named_key(NamedKey::ArrowDown);
+        assert!(dispatch(&mut list, &down, &taffy, node));
+        assert_eq!(list.focused_key(), Some(&3));
+        assert!(
+            list.selection().is_selected(&3),
+            "the focused row is chosen"
+        );
+        assert!(!list.selection().is_selected(&2));
+        assert_eq!(selected.borrow().last(), Some(&(3, true)));
+    }
+
+    #[test]
     fn reveal_scrolls_a_row_into_view_and_focuses_it() {
         let mut list = plain_rows(1000);
         let _ = lay_out(&mut list, 300.0);
@@ -2871,3 +3100,7 @@ mod tests {
         assert!(list.row_selection(3).above);
     }
 }
+
+#[cfg(test)]
+#[path = "virtual_list_copy_tests.rs"]
+mod copy_tests;

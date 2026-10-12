@@ -811,31 +811,75 @@ fn watch_app() -> TubeApp {
 #[test]
 
 fn share_copies_a_link_through_a_real_click() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let subscriber = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::filter::Targets::new()
+                .with_target("tube::share", tracing::Level::DEBUG),
+        )
+        .with(tracing_subscriber::fmt::layer().with_test_writer());
+    let _trace = tracing::subscriber::set_default(subscriber);
     let mut app = live_catalogue();
     app.effect(&tube::actions::TubeEffect::OpenVideo {
         video: WATCH_ID.into(),
     })
     .unwrap();
     app.settle();
-    // settle() flushes effects but does not wait for the NavShell entrance.
-    // click_named reads the current rectangle, then each pointer event runs
-    // another production frame. An entrance can move that rectangle between
-    // hover and press, preventing the Share action from being submitted.
-    // Wait for actual stable presentation before targeting the real button;
-    // extending the later notice timeout cannot recover a missed click.
-    assert!(
-        app.harness()
-            .settle_for_capture(ui::time::Duration::from_secs(5)),
-        "the watch page must finish its entrance before clicking Share"
-    );
     assert!(
         app.with_surface::<TubeApp, _>(|viewer| !viewer.model_for_test().is_liked(WATCH_ID))
             .unwrap(),
         "not liked to start"
     );
-    // Start observing immediately after the real pointer sequence, rather
-    // than flushing extra frames against the three-second toast lifetime.
+    // with_surface runs another host tick and relayout, which can start new
+    // presentation work. Settle after that final inspection so click_named's
+    // target rectangle stays valid through the real hover/press/release path.
+    // settle() above flushes effects but does not await the NavShell entrance.
+    assert!(
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_secs(5)),
+        "the watch page must finish its entrance before clicking Share"
+    );
+    // Observe the real effect through the published accessibility notice.
+    // Under a busy shard, the click can enqueue work beyond the next host
+    // tick, so inspect the model only after that effect has appeared.
+    tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click begins");
     app.harness().click_named("watch_copy_link").unwrap();
+    tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click returned");
+    let observed = app
+        .harness()
+        .wait_until(ui::time::Duration::from_secs(5), |h| {
+            h.a11y_nodes().iter().any(|(_, node)| {
+                node.label() == Some("Notifications")
+                    && node.value().is_some_and(|value| {
+                        value.contains("Link copied") && value.contains(WATCH_ID)
+                    })
+            })
+        });
+    if !observed {
+        let notices: Vec<_> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.label() == Some("Notifications"))
+            .map(|(_, node)| node.value().map(str::to_owned))
+            .collect();
+        eprintln!(
+            "share timeout at {:?}; a11y notices: {notices:?}",
+            ui::time::now()
+        );
+        app.with_surface::<TubeApp, _>(|viewer| {
+            eprintln!(
+                "share timeout route: {:?}; model notices: {:?}",
+                viewer.route_for_test(),
+                viewer.model_for_test().notices
+            );
+        })
+        .unwrap();
+    }
+    assert!(
+        observed,
+        "the real click must publish the copied-link notice before inspecting the model"
+    );
     app.with_surface::<TubeApp, _>(|viewer| {
         assert!(
             viewer
@@ -847,18 +891,6 @@ fn share_copies_a_link_through_a_real_click() {
         );
     })
     .unwrap();
-    assert!(
-        app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |h| {
-                h.a11y_nodes().iter().any(|(_, node)| {
-                    node.label() == Some("Notifications")
-                        && node.value().is_some_and(|value| {
-                            value.contains("Link copied") && value.contains(WATCH_ID)
-                        })
-                })
-            }),
-        "the real click must publish the copied-link notice before inspecting the model"
-    );
 
     app.with_surface::<TubeApp, _>(|viewer| {
         assert!(
@@ -884,6 +916,120 @@ fn share_copies_a_link_through_a_real_click() {
                     .is_some_and(|value| value.contains("Link copied") && value.contains(WATCH_ID))
         }),
         "the share confirmation is actually published by the toast strip"
+    );
+}
+
+/// The settled watch page with the pointer resting on "Copy link", fed by a
+/// worker whose results the test lands; and that button's identity.
+fn hovering_copy_link() -> (
+    ui::framework::testing::TestApp<tube::TubeShell>,
+    std::sync::mpsc::SyncSender<tube::api::Update>,
+    usize,
+) {
+    let mut app = live_catalogue();
+    let results = app
+        .with_surface::<TubeApp, _>(TubeApp::script_worker_for_test)
+        .expect("the canonical Tube surface is mounted");
+    app.effect(&tube::actions::TubeEffect::OpenVideo {
+        video: WATCH_ID.into(),
+    })
+    .unwrap();
+    app.settle();
+    assert!(
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_secs(5)),
+        "the watch page must finish its entrance before the pointer arrives"
+    );
+    let centre = app.harness().targets()["watch_copy_link"].center();
+    app.harness().send(&winit::event::WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
+    });
+    let button = copy_link_identity(&mut app);
+    (app, results, button)
+}
+
+fn copy_link_identity(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> usize {
+    let button = find(app.harness().root_widget(), "watch_copy_link").expect("Copy link shows");
+    std::ptr::from_ref(button).cast::<()>().addr()
+}
+
+/// A worker result lands, as the network answering does, and the next
+/// frame folds it: the watch page is rebuilt with fresh widgets while the
+/// pointer stays where it was.
+fn land_worker_result(
+    app: &mut ui::framework::testing::TestApp<tube::TubeShell>,
+    results: &std::sync::mpsc::SyncSender<tube::api::Update>,
+    before: usize,
+    label: &str,
+) {
+    let rect = app.harness().targets()["watch_copy_link"];
+    results
+        .send(tube::api::Update::Status {
+            live: false,
+            label: label.into(),
+        })
+        .unwrap();
+    app.harness().relayout();
+    assert_ne!(
+        copy_link_identity(app),
+        before,
+        "the result rebuilt the page with a fresh Copy link button"
+    );
+    assert_eq!(
+        app.harness().targets()["watch_copy_link"],
+        rect,
+        "the fresh button sits where the pointer rests"
+    );
+}
+
+fn press(
+    app: &mut ui::framework::testing::TestApp<tube::TubeShell>,
+    state: winit::event::ElementState,
+) {
+    app.harness().send(&winit::event::WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state,
+        button: winit::event::MouseButton::Left,
+    });
+}
+
+fn link_copied(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> bool {
+    app.harness()
+        .wait_until(ui::time::Duration::from_secs(5), |h| {
+            h.a11y_nodes().iter().any(|(_, node)| {
+                node.label() == Some("Notifications")
+                    && node.value().is_some_and(|value| {
+                        value.contains("Link copied") && value.contains(WATCH_ID)
+                    })
+            })
+        })
+}
+
+/// A person hovers "Copy link", the page updates under the still pointer,
+/// and they click. The click must not be lost.
+#[test]
+fn a_click_after_a_worker_result_rebuilt_the_page_still_shares() {
+    let (mut app, results, button) = hovering_copy_link();
+    land_worker_result(&mut app, &results, button, "connecting… (rebuild)");
+    press(&mut app, winit::event::ElementState::Pressed);
+    press(&mut app, winit::event::ElementState::Released);
+    assert!(
+        link_copied(&mut app),
+        "a press after a content rebuild, with the pointer unmoved, submits Share"
+    );
+}
+
+/// As above, but the worker result lands while the button is held down.
+#[test]
+fn a_worker_result_between_press_and_release_still_shares() {
+    let (mut app, results, button) = hovering_copy_link();
+    press(&mut app, winit::event::ElementState::Pressed);
+    land_worker_result(&mut app, &results, button, "connecting… (held)");
+    press(&mut app, winit::event::ElementState::Released);
+    assert!(
+        link_copied(&mut app),
+        "a press, rebuild, release sequence submits Share"
     );
 }
 

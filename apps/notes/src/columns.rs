@@ -14,12 +14,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use ui::Widget;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::TaffyTreeExt;
 
@@ -88,30 +85,19 @@ impl Widget for ColumnSlot {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let x0 = origin.x + f64::from(layout.location.x);
-        let y0 = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x0,
-            y0,
-            x0 + f64::from(layout.size.width),
-            y0 + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.place.rect.set(self.rect);
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
     }
 
     fn name(&self) -> &'static str {
         "NotesColumn"
+    }
+
+    /// It paints nothing, so it never has anything to repaint: the page tree
+    /// and the note drawn where it sits report their own damage. (A leaf's
+    /// default would claim its whole column on every hover in the shell.)
+    fn needs_redraw(&self) -> bool {
+        false
     }
 
     fn get_rect(&self) -> Rect {

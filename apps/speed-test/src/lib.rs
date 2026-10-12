@@ -11,6 +11,7 @@
 )]
 
 pub mod app;
+pub mod locales;
 mod measure;
 mod model;
 pub mod resource;

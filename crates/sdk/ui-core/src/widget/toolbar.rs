@@ -13,6 +13,7 @@
 //! [`Toolbar::lay_out_in`] (or [`Toolbar::lay_out_at`] once it has been
 //! measured). The band behind a window's toolbar row is [`paint_band`]
 //! with its controls inset by [`band_padding`].
+use crate::num::{f32_of_f64, f64_of_usize};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -645,7 +646,7 @@ impl Toolbar {
                 ToolbarItem::Button(command) => {
                     let text = match self.orientation {
                         Orientation::Horizontal => {
-                            count_to_f64(command.label.chars().count()) * 7.0
+                            f64_of_usize(command.label.chars().count()) * 7.0
                         }
                         Orientation::Vertical => {
                             f64::from(theme.tokens.typography.size(TextRole::Caption))
@@ -657,7 +658,7 @@ impl Toolbar {
             })
             .collect();
         let gap = f64::from(theme.tokens.spacing.s3);
-        let total = axes.iter().sum::<f64>() + gap * count_to_f64(axes.len().saturating_sub(1));
+        let total = axes.iter().sum::<f64>() + gap * f64_of_usize(axes.len().saturating_sub(1));
         let budget = if total <= axis_extent {
             axis_extent
         } else {
@@ -782,7 +783,7 @@ impl Toolbar {
                 count += 1;
             }
         }
-        used + gap * count_to_f64(count.saturating_sub(1))
+        used + gap * f64_of_usize(count.saturating_sub(1))
     }
 
     /// Which commands give way to the More menu in `axis_total`: none when
@@ -891,7 +892,7 @@ impl Toolbar {
             .filter(|(_, p)| **p)
             .map(|(size, _)| self.axis(*size))
             .sum::<f64>()
-            + gap * count_to_f64(count.saturating_sub(1));
+            + gap * f64_of_usize(count.saturating_sub(1));
         let spacers = self
             .items
             .iter()
@@ -902,7 +903,7 @@ impl Toolbar {
         let spacer = if spacers == 0 {
             0.0
         } else {
-            (axis_total - used - chip - chip_gap).max(0.0) / count_to_f64(spacers)
+            (axis_total - used - chip - chip_gap).max(0.0) / f64_of_usize(spacers)
         };
         self.item_rects = vec![Rect::ZERO; self.items.len()];
         let mut cursor = match self.orientation {
@@ -995,8 +996,8 @@ impl Toolbar {
             let (w, h) = content.size();
             if let Some(slot) = self.extents.get_mut(index) {
                 *slot = Size {
-                    width: crate::num::f32_of_f64(w),
-                    height: crate::num::f32_of_f64(h),
+                    width: f32_of_f64(w),
+                    height: f32_of_f64(h),
                 };
             } else {
                 self.extents.resize(
@@ -1007,8 +1008,8 @@ impl Toolbar {
                     },
                 );
                 self.extents.push(Size {
-                    width: crate::num::f32_of_f64(w),
-                    height: crate::num::f32_of_f64(h),
+                    width: f32_of_f64(w),
+                    height: f32_of_f64(h),
                 });
             }
             if let Some(slot) = self.detached.get_mut(index) {
@@ -1362,18 +1363,10 @@ fn count_to_f32(n: usize) -> f32 {
     f32::from(u16::try_from(n).unwrap_or(u16::MAX))
 }
 
-fn count_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
 #[allow(
     clippy::cast_possible_truncation,
     reason = "bounded logical layout dimensions"
 )]
-#[cfg(test)]
-fn to_f32(value: f64) -> f32 {
-    value as f32
-}
-
 impl crate::widget::controls::ActionControls for Toolbar {
     fn install_control_custody(
         &mut self,
@@ -1589,7 +1582,7 @@ impl Widget for Toolbar {
         let node = if self.has_elements() {
             // Hosted controls are laid out by the host, out of flow; the
             // toolbar sizes itself from its measured row in
-            // `adjust_layout_with_measure`.
+            // `adjust_layout_style`.
             let children: Vec<NodeId> = self
                 .items
                 .iter_mut()
@@ -1623,7 +1616,7 @@ impl Widget for Toolbar {
             height: known.height.unwrap_or(self.intrinsic.height),
         }
     }
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
@@ -1701,15 +1694,7 @@ impl Widget for Toolbar {
         tree.set_style(node, style).is_ok() || changed
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = tree.layout(node).copied().unwrap_or_default();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(tree, node, origin);
         self.place();
         let elements = self.element_nodes(tree, node);
         for (index, child) in elements {
@@ -1864,6 +1849,14 @@ impl Widget for Toolbar {
             .draw_overlay(scene, transform, text, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if (self.focused || self.traps_focus())
+            && matches!(event, WindowEvent::KeyboardInput { event, .. }
+                if event.repeat && event.state == ElementState::Pressed
+                    && matches!(event.logical_key, Key::Named(NamedKey::Enter | NamedKey::Space)))
+        {
+            *ctx.handled = true;
+            return;
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Some(Point::new(
                 position.x / ctx.scale_factor,
@@ -1916,14 +1909,8 @@ impl Widget for Toolbar {
                 element.handle_event(
                     event,
                     &mut crate::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: ctx.modifiers,
-                        state: ctx.state.reborrow(),
-                        path: ctx.path,
-                        handled: &mut *ctx.handled,
-                        focus_target: &mut *ctx.focus_target,
-                        node_id: content.node,
                         taffy: &content.taffy,
+                        ..ctx.reborrow(ctx.path, content.node)
                     },
                 );
                 if *ctx.handled {
@@ -2440,6 +2427,65 @@ mod tests {
     }
 
     #[test]
+    fn held_activation_keys_do_not_repeat_admitted_toolbar_commands() {
+        use crate::headless::Framed;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let press = || WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: crate::synthetic_input::key_event(
+                Key::Named(NamedKey::Enter),
+                None,
+                ElementState::Pressed,
+            ),
+            is_synthetic: true,
+        };
+        for width in [800, 100] {
+            let calls = Rc::new(Cell::new(0));
+            let count = Rc::clone(&calls);
+            let toolbar = Toolbar::new(Orientation::Horizontal)
+                .push_button("Open workspace settings", move || {
+                    count.set(count.get() + 1)
+                })
+                .with_view("test.workspace-settings");
+            let mut frame = Framed::new(crate::State::new(), toolbar, (width, 480), Theme::dark());
+            assert!(Framed::harness(&frame).native_app_audit().is_certified());
+            if width == 100 {
+                Framed::harness_mut(&mut frame)
+                    .perform_named("toolbar.overflow", &Action::Activate)
+                    .unwrap();
+                Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            }
+            Framed::harness_mut(&mut frame)
+                .perform_named("toolbar.item.0", &Action::Focus)
+                .unwrap();
+            let mut held = press();
+            if let WindowEvent::KeyboardInput { event, .. } = &mut held {
+                event.repeat = true;
+            }
+            Framed::harness_mut(&mut frame).send_host_event(&held);
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert_eq!(
+                calls.get(),
+                0,
+                "{width}: a held key cannot start a new command"
+            );
+            Framed::harness_mut(&mut frame).send_host_event(&press());
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            assert_eq!(
+                calls.get(),
+                1,
+                "{width}: one deliberate key press invokes once"
+            );
+            for _ in 0..3 {
+                Framed::harness_mut(&mut frame).send_host_event(&held);
+                Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            }
+            assert_eq!(calls.get(), 1, "{width}: repetition must not invoke again");
+        }
+    }
+
+    #[test]
     fn native_commands_are_admitted_and_operate_in_the_row_and_overflow() {
         use crate::headless::Framed;
         use std::cell::Cell;
@@ -2675,7 +2721,7 @@ mod tests {
                 node,
                 Style {
                     size: Size {
-                        width: Dimension::length(to_f32(axis_extent)),
+                        width: Dimension::length(f32_of_f64(axis_extent)),
                         height: Dimension::length(28.0),
                     },
                     ..Default::default()
@@ -2686,7 +2732,7 @@ mod tests {
             .compute_layout(
                 node,
                 Size {
-                    width: taffy::AvailableSpace::Definite(to_f32(axis_extent)),
+                    width: taffy::AvailableSpace::Definite(f32_of_f64(axis_extent)),
                     height: taffy::AvailableSpace::Definite(28.0),
                 },
             )
@@ -2887,7 +2933,7 @@ mod tests {
             let mut text = TextRenderer::new();
             let mut tree = TaffyTree::new();
             let node = tb.build_layout(&mut tree, &theme, &mut HashMap::new());
-            tb.adjust_layout_with_measure(&mut tree, node, &mut text);
+            tb.adjust_layout_style(&mut tree, node, &mut text);
             tree.set_style(
                 node,
                 Style {

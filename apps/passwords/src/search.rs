@@ -2,8 +2,8 @@
 //!
 //! An item is findable by its name, its username and its websites, and
 //! nothing else: passwords, notes and custom field values never enter the
-//! index. A hit runs the item's exported `open` action, so search, the
-//! palette and agents show an item the same way. A `kind:` facet narrows a
+//! index. A hit is anchored at the item's row and opens it there, as an
+//! agent's `open` of that anchor does. A `kind:` facet narrows a
 //! query to logins, API keys, notes, Wi-Fi networks or other secrets.
 
 use accounts::{SecretItem, SecretItemKind};
@@ -48,7 +48,7 @@ pub(crate) fn entries(items: &[SecretItem]) -> Vec<SearchEntry> {
         .iter()
         .map(|item| {
             let mut entry = SearchEntry::new(item.title.clone(), String::new())
-                .invoking(crate::actions::open_item_address(&item.id))
+                .anchored(crate::actions::item_resource_id(&item.id.0))
                 .grouped(ITEM_KIND)
                 .with_icon(icon(item.kind).name())
                 .facet(KIND_FACET, "Kind", kind_slug(item.kind))
@@ -118,10 +118,9 @@ mod tests {
             .next()
             .expect("a hit");
         assert_eq!(
-            hit.action_address(),
-            Some(crate::actions::open_item_address(&accounts::SecretId(
-                "demo-bank".into()
-            )))
+            hit.action_id,
+            crate::actions::item_resource_id("demo-bank"),
+            "a hit is anchored at the item's row"
         );
     }
     #[test]

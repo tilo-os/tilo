@@ -509,6 +509,7 @@ pub fn pin_process() -> Option<ProcessPin> {
                 }
                 ProbeError::NoRenderer(nodes) => {
                     crate::compositor::gpu_health::record_no_renderer(nodes);
+                    pin_software();
                 }
                 ProbeError::NoRenderNodes | ProbeError::OverrideUnusable { .. } => {}
             }
@@ -541,6 +542,41 @@ pub fn pin_process() -> Option<ProcessPin> {
         applied,
         notes,
     })
+}
+
+/// A machine whose every render node has no GPU behind it renders with
+/// lavapipe: pin this process's loaders to it, so neither the compositor nor
+/// the apps it launches (which inherit the pin, `launcher::gpu::
+/// inherited_software_pin`) load every installed driver, and apps ask for
+/// Vulkan alone instead of also starting OpenGL for a GPU that is not there.
+/// Same contract as [`pin_process`]: called from `main` before any thread
+/// exists, and a variable the operator set is left alone.
+#[cfg(target_os = "linux")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "called from `pin_process` in `main` before any thread is spawned, and the EGL/Vulkan loaders of this process read these variables at first use"
+)]
+fn pin_software() {
+    let pin = match launcher::gpu::software_pin(&launcher::gpu::IcdSearch::default()) {
+        Ok(pin) => pin,
+        Err(why) => {
+            tracing::info!(target: "shell::compositor::gpu", "no software renderer to pin to: {why}");
+            return;
+        }
+    };
+    for (key, value) in pin.env() {
+        if std::env::var_os(key).is_some() {
+            continue;
+        }
+        // SAFETY: called from `main` before any thread is spawned, so no
+        // other thread can be reading the environment concurrently.
+        unsafe { std::env::set_var(key, &value) };
+    }
+    tracing::info!(
+        target: "shell::compositor::gpu",
+        vulkan = %pin.vulkan_icd_json.display(),
+        "no GPU: pinned this session's loaders to the software renderer"
+    );
 }
 
 #[cfg(test)]

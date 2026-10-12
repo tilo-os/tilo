@@ -16,8 +16,10 @@
 pub mod colorimetry;
 pub mod contribution;
 pub mod hdr_metadata;
+pub mod presence_slot;
 pub mod retention;
 
+pub use presence_slot::PresenceSlot;
 pub use retention::{Retention, app_document_channel, retention};
 
 use serde::{Deserialize, Serialize};
@@ -548,14 +550,14 @@ mod tests {
     /// Syntactically valid but unsigned; only the postcard framing needs to
     /// round-trip.
     fn dummy_envelope() -> Box<collab_types::SignedOp> {
-        use collab_types::{AttestationId, Ed25519PublicKey, OpClass, SignedOp};
+        use collab_types::{AttestationId, Ed25519PublicKey, OpKind, SignedOp};
         use std::time::SystemTime;
         Box::new(SignedOp::new_unsigned(
             vec![0xDE, 0xAD, 0xBE, 0xEF],
             artifact(0x11),
             Ed25519PublicKey::from_bytes([7u8; 32]),
             AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             42,
         ))
@@ -1002,14 +1004,6 @@ mod tests {
 
     const VARIANT_COUNT: usize = 28;
 
-    fn hex(bytes: &[u8]) -> String {
-        use std::fmt::Write;
-        bytes.iter().fold(String::new(), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
-    }
-
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
     const GOLDEN: &[(&str, &str)] = &[
@@ -1128,9 +1122,9 @@ mod tests {
                 "3030302d30303030303030303030306309757569643a3163326604deadbeef10",
                 "1111111111111111111111111111111107070707070707070707070707070707",
                 "0707070707070707070707070707070710222222222222222222222222222222",
-                "220000002a004000000000000000000000000000000000000000000000000000",
+                "220000002a000000400000000000000000000000000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000000000",
-                "00000000000000",
+                "000000000000000000",
             ),
         ),
         (
@@ -1158,14 +1152,14 @@ mod tests {
             concat!(
                 "0f10444444444444444444444444444444440204deadbeef1011111111111111",
                 "1111111111111111110707070707070707070707070707070707070707070707",
-                "07070707070707070710222222222222222222222222222222220000002a0040",
+                "07070707070707070710222222222222222222222222222222220000002a0000",
+                "0040000000000000000000000000000000000000000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000000000",
+                "000004deadbeef10111111111111111111111111111111110707070707070707",
+                "0707070707070707070707070707070707070707070707071022222222222222",
+                "2222222222222222220000002a00000040000000000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000000000",
-                "04deadbeef101111111111111111111111111111111107070707070707070707",
-                "0707070707070707070707070707070707070707070710222222222222222222",
-                "222222222222220000002a004000000000000000000000000000000000000000",
-                "0000000000000000000000000000000000000000000000000000000000000000",
-                "00000000000000000000000000d6e848",
+                "0000000000000000000000000000000000d6e848",
             ),
         ),
         (
@@ -1219,7 +1213,7 @@ mod tests {
         let mut actual = Vec::new();
         for (case, message) in &fixtures {
             let bytes = postcard::to_allocvec(message).expect("fixture encodes");
-            actual.push((*case, hex(&bytes)));
+            actual.push((*case, hex::encode(&bytes)));
         }
         let expected: Vec<_> = GOLDEN
             .iter()

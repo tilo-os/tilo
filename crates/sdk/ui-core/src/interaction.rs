@@ -228,11 +228,6 @@ impl InteractionEnvironment {
         )
     }
 
-    pub fn horizontal_target_rect(self, visual: Rect) -> Rect {
-        let height = visual.height().max(f64::from(self.minimum_target()));
-        Rect::from_center_size(visual.center(), (visual.width(), height))
-    }
-
     /// Hover affordances have no meaning for a coarse direct pointer.
     pub const fn supports_hover(self) -> bool {
         matches!(self.pointer_precision, PointerPrecision::Fine)
@@ -314,16 +309,6 @@ impl InteractionEnvironment {
             modality: InputModality::Controller,
             available: self.available.with(InputDevice::Controller),
             controller: Some(family),
-            ..self
-        }
-    }
-
-    /// Override the legends without changing the current modality. Hardware
-    /// discovery uses this for Apple USB/Bluetooth keyboards on non-Mac hosts.
-    #[must_use]
-    pub const fn with_keyboard_family(self, family: KeyboardFamily) -> Self {
-        Self {
-            keyboard_family: family,
             ..self
         }
     }

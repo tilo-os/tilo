@@ -10,7 +10,6 @@
 
 use std::sync::Arc;
 
-use collab_types::caps::Actor;
 use tilo_desktop_model::Workspace;
 
 use tilo_actions::remote::{
@@ -25,13 +24,14 @@ use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, In
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
-    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES,
+    ActionDirectoryRoot, BrokerActor, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES,
     InvocationInputs, InvocationOwner, LaunchScope, PublishedAction, PublishedInput,
-    PublishedSurface, ResourceRef, Verb, confirmation_satisfied, permission_verb,
-    published_directory_action, validate_directory_target_input,
+    PublishedSurface, app_node, confirmation_satisfied, published_directory_action,
+    validate_directory_target_input,
 };
 use crate::automation;
 use crate::collab_broker::CrdtRoute;
+use crate::services::LaunchPlace;
 use tilo_automation::SHORTCUTS_APP_ID;
 
 /// The longest a waiter on a running invocation sleeps without a signalled
@@ -74,7 +74,17 @@ impl BrokerActor {
     pub(super) fn for_caller(caller: &Caller) -> Self {
         match caller.principal() {
             CallerPrincipal::Person(id) => Self::person(id.clone()),
-            CallerPrincipal::Agent(id) => Self::agent(format!("agent:{id}")),
+            CallerPrincipal::Agent(id) => {
+                let agent = Self::agent(format!("agent:{id}"));
+                // A person's own device handed this connection to the agent
+                // (`Caller::delegated_to`); a delegated agent device acts for
+                // the person its certificate chains to.
+                match (caller.acting_for_person(), caller.user_public_key()) {
+                    (Some(person), _) => agent.for_person(person).session_delegated(),
+                    (None, Some(root)) => agent.for_person(super::principal_id_for_root(*root)),
+                    (None, None) => agent,
+                }
+            }
             CallerPrincipal::App(id) => Self::agent(format!("app:{id}")),
         }
     }
@@ -135,6 +145,14 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
     ) -> Result<(), ActionHostError> {
         self.state.action_cancel(caller, id)
     }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        self.state.request_witness(caller, None, request)
+    }
 }
 
 /// The broker's own door, as the [`ActionHost`](tilo_actions::remote::ActionHost)
@@ -191,6 +209,14 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
         self.state.action_cancel(caller, id)
+    }
+
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        self.state.request_witness(caller, None, request)
     }
 }
 
@@ -282,7 +308,7 @@ fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescripto
         locus: ExecutionLocus::default(),
         kind: tilo_actions::OperationKind::Effect,
         contract: tilo_actions::ActionContract {
-            permission: tilo_actions::PermissionRequirement::Write,
+            kind: tilo_actions::ActionKind::Undoable,
             risk: tilo_actions::RiskLevel::Low,
             retry: tilo_actions::RetryPolicy::Idempotent,
             ..tilo_actions::ActionContract::default()
@@ -367,7 +393,9 @@ fn refusal(reason: String) -> ActionHostError {
 /// The legacy JSON evidence the workspace profile path reads.
 fn confirmation_evidence(confirmation: Option<&Confirmation>) -> serde_json::Value {
     match confirmation {
-        None => serde_json::json!({}),
+        // Governing a room is a person's own act: an answer given for
+        // someone acting for them confirms nothing here.
+        None | Some(Confirmation::Witnessed(_)) => serde_json::json!({}),
         Some(Confirmation::Confirmed) => serde_json::json!({"confirm": true}),
         Some(Confirmation::Phrase(phrase)) => serde_json::json!({"confirmation_phrase": phrase}),
     }
@@ -421,12 +449,14 @@ impl CapnpBrokerState {
             }
             // Records are read device to device by the shell; an application
             // does not reach another device's records through this door.
-            RemoteActionMessage::RecordRequest { .. } => None,
+            RemoteActionMessage::RecordRequest { .. }
+            | RemoteActionMessage::FeedbackRequest { .. } => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordResponse { .. } => Some(person.clone()),
+            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::FeedbackResponse { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {
             Box::new(refuse(message, ActionHostError::NotPermitted).unwrap_or(
@@ -514,11 +544,14 @@ impl CapnpBrokerState {
         match caller.room() {
             Some(confined) => confined == workspace.room.to_string(),
             None => match caller.principal() {
-                CallerPrincipal::Person(id) => workspace.role_of_at(id, now).is_some(),
-                CallerPrincipal::Agent(id) => workspace.role_of_agent_at(id, now).is_some(),
                 // An application is always admitted into one room;
-                // unconfined, it is a member of none.
+                // unconfined, it takes part in none.
                 CallerPrincipal::App(_) => false,
+                // Anyone else takes part in a room they may read; a foreign
+                // device reads wherever its person does.
+                CallerPrincipal::Person(_) | CallerPrincipal::Agent(_) => {
+                    BrokerActor::for_caller(caller).reads_in(workspace, now)
+                }
             },
         }
     }
@@ -531,7 +564,7 @@ impl CapnpBrokerState {
         &self,
         caller: &Caller,
         room: &str,
-        decide: impl FnOnce(&Workspace, &Actor, u64) -> R,
+        decide: impl FnOnce(&Workspace, &BrokerActor, u64) -> R,
     ) -> Option<R> {
         let membership = self.membership.as_ref()?;
         // An unavailable clock offers nothing rather than deciding at an
@@ -544,7 +577,7 @@ impl CapnpBrokerState {
             .decide_in_room(room, |workspace| {
                 let workspace =
                     workspace.filter(|workspace| Self::may_act_in(caller, workspace, now))?;
-                Some(decide(workspace, &actor.policy_in(workspace, now), now))
+                Some(decide(workspace, &actor, now))
             })
             .ok()
             .flatten()
@@ -569,12 +602,12 @@ impl CapnpBrokerState {
             .unwrap_or_default()
     }
 
-    /// Owned copies of the workspaces `caller` may act in, with the policy
-    /// actor for each, all from one sample. Only for a pass that hands each
+    /// Owned copies of the workspaces `caller` may act in, with the actor
+    /// it is in each, all from one sample. Only for a pass that hands each
     /// workspace to host services (which read the host's authority
     /// themselves) and so cannot run under the borrow; only the caller's
     /// own workspaces are copied.
-    fn workspaces_for(&self, caller: &Caller) -> Vec<(Workspace, Actor, u64)> {
+    fn workspaces_for(&self, caller: &Caller) -> Vec<(Workspace, BrokerActor, u64)> {
         let Some(membership) = self.membership.as_ref() else {
             return Vec::new();
         };
@@ -595,48 +628,46 @@ impl CapnpBrokerState {
         workspaces
             .into_iter()
             .map(|workspace| {
-                let policy = self
-                    .caller_actor(caller, &workspace.room.to_string())
-                    .policy_in(&workspace, now);
-                (workspace, policy, now)
+                let actor = self.caller_actor(caller, &workspace.room.to_string());
+                (workspace, actor, now)
             })
             .collect()
     }
 
-    pub(super) fn allowed(
+    /// Whether `actor` is offered the action `target` (resource kind,
+    /// resource, action) the app `app` publishes under `contract`: it may
+    /// take it, or would be asked first.
+    pub(super) fn offered(
         workspace: &Workspace,
-        policy: &Actor,
+        actor: &BrokerActor,
         now: u64,
         app: &str,
-        resource: &str,
-        action: &str,
-        permission: tilo_actions::PermissionRequirement,
+        target: (&str, &str, &str),
+        contract: &tilo_actions::ActionContract,
     ) -> bool {
-        // An action that asks nothing of a person still has to be granted to
-        // an application: it holds no membership that would imply it.
-        let acting_app = policy
-            .principals
-            .iter()
-            .any(|principal| matches!(principal, collab_types::caps::Principal::App(_)));
-        let verb = permission_verb(permission).or_else(|| acting_app.then_some(Verb::Read));
-        verb.is_none_or(|verb| {
-            workspace.decide_at(
-                policy,
-                &ResourceRef::Action {
-                    app: app.to_string(),
-                    resource: resource.to_string(),
-                    action: action.to_string(),
-                },
-                verb,
-                now,
-            ) == CapDecision::Allow
-        })
+        actor.action_answer_in(workspace, app, target, &contract.need(), now)
+            != tilo_action_policy::Answer::Deny
+    }
+
+    /// Whether `actor` may take the action `target` now
+    /// ([`tilo_action_policy::Answer::admits`]).
+    pub(super) fn allowed(
+        workspace: &Workspace,
+        actor: &BrokerActor,
+        now: u64,
+        app: &str,
+        target: (&str, &str, &str),
+        contract: &tilo_actions::ActionContract,
+    ) -> bool {
+        actor
+            .action_answer_in(workspace, app, target, &contract.need(), now)
+            .admits(actor.direct())
     }
 
     /// Every live published surface, carrying its actions only where
     /// `scope` builds that surface's rows: who publishes is copied, not every
     /// app's whole surface, when that is all a caller asked.
-    fn live_surfaces(&self, scope: RowScope<'_>) -> Vec<PublishedSurface> {
+    pub(super) fn live_surfaces(&self, scope: RowScope<'_>) -> Vec<PublishedSurface> {
         self.surfaces
             .lock()
             .map(|surfaces| {
@@ -696,6 +727,7 @@ impl CapnpBrokerState {
             .filter(|_| caller.device_public_key().is_none());
         let mut keymap = None;
         for (workspace, policy, now) in self.workspaces_for(caller) {
+            let first = rows.len();
             let room = workspace.room.to_string();
             let mut live_apps = std::collections::HashSet::new();
             for surface in surfaces
@@ -718,18 +750,17 @@ impl CapnpBrokerState {
                         .actions
                         .iter()
                         .filter(|action| {
-                            Self::allowed(
+                            Self::offered(
                                 &workspace,
                                 &policy,
                                 now,
                                 &surface.app_id,
-                                &action.resource,
-                                &action.action,
-                                action.contract.permission,
+                                (&action.resource_kind, &action.resource, &action.action),
+                                &action.contract,
                             )
                         })
                         .map(|action| {
-                            action_row(
+                            CatalogueRow::for_action(
                                 surface.peer_id.to_string(),
                                 &surface.app_id,
                                 descriptor(action),
@@ -776,18 +807,25 @@ impl CapnpBrokerState {
                         .descriptors(&workspace)
                         .into_iter()
                         .filter(|descriptor| {
-                            Self::allowed(
+                            Self::offered(
                                 &workspace,
                                 &policy,
                                 now,
                                 governance.app_id(),
-                                &descriptor.address.resource,
-                                &descriptor.address.action,
-                                descriptor.contract.permission,
+                                (
+                                    &descriptor.resource_kind,
+                                    &descriptor.address.resource,
+                                    &descriptor.address.action,
+                                ),
+                                &descriptor.contract,
                             )
                         })
                         .map(|descriptor| {
-                            action_row(provider.clone(), governance.app_id(), descriptor)
+                            CatalogueRow::for_action(
+                                provider.clone(),
+                                governance.app_id(),
+                                descriptor,
+                            )
                         }),
                 );
             }
@@ -796,18 +834,21 @@ impl CapnpBrokerState {
                     automation::descriptors(&workspace)
                         .into_iter()
                         .filter(|descriptor| {
-                            Self::allowed(
+                            Self::offered(
                                 &workspace,
                                 &policy,
                                 now,
                                 SHORTCUTS_APP_ID,
-                                &descriptor.address.resource,
-                                &descriptor.address.action,
-                                descriptor.contract.permission,
+                                (
+                                    &descriptor.resource_kind,
+                                    &descriptor.address.resource,
+                                    &descriptor.address.action,
+                                ),
+                                &descriptor.contract,
                             )
                         })
                         .map(|descriptor| {
-                            action_row(provider.clone(), SHORTCUTS_APP_ID, descriptor)
+                            CatalogueRow::for_action(provider.clone(), SHORTCUTS_APP_ID, descriptor)
                         }),
                 );
             }
@@ -820,14 +861,17 @@ impl CapnpBrokerState {
                         .into_iter()
                         .filter(|row| {
                             row.action.as_ref().is_some_and(|descriptor| {
-                                Self::allowed(
+                                Self::offered(
                                     &workspace,
                                     &policy,
                                     now,
                                     service.app_id(),
-                                    &descriptor.address.resource,
-                                    &descriptor.address.action,
-                                    descriptor.contract.permission,
+                                    (
+                                        &descriptor.resource_kind,
+                                        &descriptor.address.resource,
+                                        &descriptor.address.action,
+                                    ),
+                                    &descriptor.contract,
                                 )
                             })
                         }),
@@ -845,15 +889,19 @@ impl CapnpBrokerState {
                         .iter()
                         .filter(|app| !live_apps.contains(&app.package_id))
                         .filter(|app| {
-                            workspace.decide_at(
-                                &policy,
-                                &ResourceRef::App(app.package_id.clone()),
-                                Verb::Write,
+                            policy.may_in(
+                                &workspace,
+                                &app_node(&workspace, &app.package_id),
+                                tilo_action_policy::ActionKind::Undoable,
                                 now,
-                            ) == CapDecision::Allow
+                            )
                         })
                         .map(|app| {
-                            action_row(provider.clone(), &app.package_id, app_open_descriptor(app))
+                            CatalogueRow::for_action(
+                                provider.clone(),
+                                &app.package_id,
+                                app_open_descriptor(app),
+                            )
                         }),
                 );
                 rows.extend(
@@ -862,15 +910,15 @@ impl CapnpBrokerState {
                         .filter(|_| closes_applications)
                         .filter(|app| live_apps.contains(&app.package_id))
                         .filter(|app| {
-                            workspace.decide_at(
-                                &policy,
-                                &ResourceRef::App(app.package_id.clone()),
-                                Verb::Write,
+                            policy.may_in(
+                                &workspace,
+                                &app_node(&workspace, &app.package_id),
+                                tilo_action_policy::ActionKind::Undoable,
                                 now,
-                            ) == CapDecision::Allow
+                            )
                         })
                         .map(|app| {
-                            action_row(
+                            CatalogueRow::for_action(
                                 provider.clone(),
                                 &app.package_id,
                                 app_close_descriptor(&app.package_id, &app.display_name),
@@ -878,8 +926,40 @@ impl CapnpBrokerState {
                         }),
                 );
             }
+            if let Some(added) = rows.get_mut(first..) {
+                Self::mark_asks(&workspace, &policy, now, added);
+            }
         }
         (rows, providers)
+    }
+
+    /// Mark each of `rows` whose action the room's grants let `actor` take
+    /// only after asking: it asks for confirmation, which the person gives
+    /// on their own device.
+    fn mark_asks(workspace: &Workspace, actor: &BrokerActor, now: u64, rows: &mut [CatalogueRow]) {
+        for row in rows {
+            let app = row.app_id.clone();
+            let Some(descriptor) = row.action.as_mut() else {
+                continue;
+            };
+            if descriptor.contract.confirmation != tilo_actions::ConfirmationPolicy::None {
+                continue;
+            }
+            if actor.action_answer_in(
+                workspace,
+                &app,
+                (
+                    &descriptor.resource_kind,
+                    &descriptor.address.resource,
+                    &descriptor.address.action,
+                ),
+                &descriptor.contract.need(),
+                now,
+            ) == tilo_action_policy::Answer::Ask
+            {
+                descriptor.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+            }
+        }
     }
 
     /// Actions retained from applications that are closed in `workspace`,
@@ -888,7 +968,7 @@ impl CapnpBrokerState {
     fn launchable_catalogue(
         &self,
         workspace: &Workspace,
-        policy: &Actor,
+        policy: &BrokerActor,
         now: u64,
         live_apps: &std::collections::HashSet<String>,
         (scope, rows): (RowScope<'_>, &mut Vec<CatalogueRow>),
@@ -898,12 +978,12 @@ impl CapnpBrokerState {
         for surface in self.launchable.surfaces().into_iter().filter(|surface| {
             surface.route.cluster_id == room
                 && !live_apps.contains(&surface.app_id)
-                && workspace.decide_at(
-                    policy,
-                    &ResourceRef::App(surface.app_id.clone()),
-                    Verb::Write,
+                && policy.may_in(
+                    workspace,
+                    &app_node(workspace, &surface.app_id),
+                    tilo_action_policy::ActionKind::Undoable,
                     now,
-                ) == CapDecision::Allow
+                )
         }) {
             let provider = launchable_provider(&surface);
             if scope.wants(&provider) {
@@ -912,18 +992,21 @@ impl CapnpBrokerState {
                         .actions
                         .iter()
                         .filter(|action| {
-                            Self::allowed(
+                            Self::offered(
                                 workspace,
                                 policy,
                                 now,
                                 &surface.app_id,
-                                &action.resource,
-                                &action.action,
-                                action.contract.permission,
+                                (&action.resource_kind, &action.resource, &action.action),
+                                &action.contract,
                             )
                         })
                         .map(|action| {
-                            action_row(provider.clone(), &surface.app_id, descriptor(action))
+                            CatalogueRow::for_action(
+                                provider.clone(),
+                                &surface.app_id,
+                                descriptor(action),
+                            )
                         }),
                 );
             }
@@ -1326,9 +1409,12 @@ impl CapnpBrokerState {
         // workspace is copied, once every check on the same sample passed.
         let workspace = self
             .decide_for(caller, &room, |workspace, policy, now| {
-                if workspace.decide_at(policy, &ResourceRef::App(app_id.clone()), Verb::Write, now)
-                    != CapDecision::Allow
-                {
+                if !policy.may_in(
+                    workspace,
+                    &app_node(workspace, &app_id),
+                    tilo_action_policy::ActionKind::Undoable,
+                    now,
+                ) {
                     return Err(refusal(
                         "the caller is not allowed to launch that application".into(),
                     ));
@@ -1339,13 +1425,18 @@ impl CapnpBrokerState {
                         policy,
                         now,
                         &app_id,
-                        &action.resource,
-                        &action.action,
-                        action.contract.permission,
+                        (&action.resource_kind, &action.resource, &action.action),
+                        &action.contract,
                     ) {
                         return Err(ActionHostError::UnknownAction);
                     }
-                    if !confirmation_satisfied(action, request.confirmation.as_ref()) {
+                    let argument = request.argument.to_slot();
+                    if !confirmation_satisfied(
+                        &action
+                            .contract
+                            .confirmation_for_argument(argument.as_deref()),
+                        request.confirmation.as_ref(),
+                    ) {
                         return Err(ActionHostError::ConfirmationRequired);
                     }
                 }
@@ -1382,6 +1473,13 @@ impl CapnpBrokerState {
         let address = &request.target.address;
         let timeout = self.launchable.delivery_timeout();
         let deadline = tokio::time::sleep(timeout);
+        let expired = || ActionHostError::Unavailable {
+            reason: format!(
+                "{app_id} was launched but did not offer \"{}\" within {:.1} s",
+                address.action,
+                timeout.as_secs_f32()
+            ),
+        };
         let abandoned = completer.abandoned();
         tokio::pin!(deadline, abandoned);
         // Taken before the first look, so a publication between that look
@@ -1393,6 +1491,9 @@ impl CapnpBrokerState {
             if completer.is_abandoned() {
                 return Err(stopped_waiting());
             }
+            if tokio::time::Instant::now() >= deadline.deadline() {
+                return Err(expired());
+            }
             if let Some(peer_id) =
                 self.ready_publisher(app_id, &room, destination.record.as_deref(), address)
             {
@@ -1401,7 +1502,22 @@ impl CapnpBrokerState {
                 return self.start_for(caller, None, None, origin, &delivered);
             }
             if !launched {
-                // Re-read the launch policy immediately before the actual host call.
+                let permit = tokio::select! {
+                    biased;
+                    () = &mut abandoned => return Err(stopped_waiting()),
+                    () = &mut deadline => return Err(expired()),
+                    seen = changes.changed() => {
+                        if seen.is_err() {
+                            return Err(ActionHostError::Unavailable { reason: "the broker stopped".into() });
+                        }
+                        continue;
+                    }
+                    permit = super::launchable::launch_permits().acquire_owned() => {
+                        permit.map_err(|_| ActionHostError::Unavailable { reason: "the launch queue stopped".into() })?
+                    }
+                };
+                // Re-read custody and launch policy after the queue wait.
+                self.check_launch_origin(caller, origin, &room)?;
                 let current = self.admit_launchable(caller, request)?;
                 if current.workspace.room != destination.workspace.room
                     || current.app_id != *app_id
@@ -1411,14 +1527,33 @@ impl CapnpBrokerState {
                 }
                 let state = Arc::clone(self);
                 let app = app_id.clone();
-                tokio::task::spawn_blocking(move || {
-                    state.launch_retained(&app, &current.workspace)
-                })
-                .await
-                .unwrap_or_else(|error| Err(error.to_string()))
-                .map_err(|reason| ActionHostError::Refused {
-                    reason: format!("{app_id} could not be launched: {reason}"),
-                })?;
+                let place = self.launch_place(caller, &room, None);
+                // The package's room record is what a plain launch opens.
+                let record = destination
+                    .record
+                    .clone()
+                    .filter(|record| !record.is_empty());
+                let mut launch = tokio::task::spawn_blocking(move || {
+                    let _permit = permit;
+                    state.launch_retained(&app, &current.workspace, record.as_deref(), &place)
+                });
+                let launched_result = tokio::select! {
+                    biased;
+                    () = &mut abandoned => {
+                        launch.abort();
+                        return Err(stopped_waiting());
+                    }
+                    () = &mut deadline => {
+                        launch.abort();
+                        return Err(expired());
+                    }
+                    result = &mut launch => result,
+                };
+                launched_result
+                    .unwrap_or_else(|error| Err(error.to_string()))
+                    .map_err(|reason| ActionHostError::Refused {
+                        reason: format!("{app_id} could not be launched: {reason}"),
+                    })?;
                 launched = true;
                 continue;
             }
@@ -1428,15 +1563,7 @@ impl CapnpBrokerState {
                         reason: "the broker stopped".into(),
                     });
                 },
-                () = &mut deadline => {
-                    return Err(ActionHostError::Unavailable {
-                        reason: format!(
-                            "{app_id} was launched but did not offer \"{}\" within {:.1} s",
-                            address.action,
-                            timeout.as_secs_f32()
-                        ),
-                    });
-                }
+                () = &mut deadline => return Err(expired()),
                 () = &mut abandoned => return Err(stopped_waiting()),
             }
         }
@@ -1502,17 +1629,50 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    /// Start `app_id` in `workspace` through the host's launcher, or the one
-    /// a test installed in its place.
-    fn launch_retained(&self, app_id: &str, workspace: &Workspace) -> Result<(), String> {
+    /// Start `app_id` in `workspace` on `record` at `place` through the
+    /// host's launcher, or the one a test installed in its place.
+    fn launch_retained(
+        &self,
+        app_id: &str,
+        workspace: &Workspace,
+        record: Option<&str>,
+        place: &LaunchPlace,
+    ) -> Result<(), String> {
         if let Some(launcher) = self.launchable.launcher() {
-            return launcher(app_id, workspace);
+            return launcher(app_id, workspace, record, place);
         }
         self.services
             .launcher
             .as_ref()
             .ok_or_else(|| "application launch unsupported".to_string())?
-            .launch(app_id, workspace)
+            .launch(app_id, workspace, record, place)
+    }
+
+    /// Where a view `caller`'s action needs opens in `room`: beside the
+    /// asking app's own view; where a person is looking, for the person's
+    /// own invocation; else beside the view the actor last worked in, so an
+    /// agent or a Shortcut keeps working next to where it already is.
+    fn launch_place(
+        &self,
+        caller: &Caller,
+        room: &str,
+        launch: Option<&LaunchScope>,
+    ) -> LaunchPlace {
+        if let Some(scope) = launch {
+            return LaunchPlace::Beside {
+                app_id: scope.app_id.clone(),
+            };
+        }
+        match caller.principal() {
+            CallerPrincipal::Person(_) => LaunchPlace::Focus,
+            CallerPrincipal::App(app_id) => LaunchPlace::Beside {
+                app_id: app_id.clone(),
+            },
+            CallerPrincipal::Agent(_) => self
+                .launchable
+                .view_of(room, &BrokerActor::for_caller(caller).id)
+                .map_or(LaunchPlace::Focus, |app_id| LaunchPlace::Beside { app_id }),
+        }
     }
 
     /// The live connection of `app_id` in `room` that publishes `address`
@@ -1766,7 +1926,8 @@ impl CapnpBrokerState {
         // from the action as it is now, so only reads and plain edits act on
         // the directory as it is now.
         if request.revision.is_none()
-            && offered.contract.advertised_confirmation() != tilo_actions::ConfirmationPolicy::None
+            && offered.contract.confirmation_for_argument(argument)
+                != tilo_actions::ConfirmationPolicy::None
         {
             return Err(ActionHostError::InvalidRequest {
                 reason: CONFIRMED_ACTION_NEEDS_REVISION.into(),
@@ -1777,7 +1938,7 @@ impl CapnpBrokerState {
             root.peer_id,
             &offered,
             argument,
-            &actor.id,
+            &actor,
             request.confirmation.as_ref(),
         )?;
         let surface = PublishedSurface {
@@ -1874,16 +2035,17 @@ impl CapnpBrokerState {
                 ))
             })
             .ok_or(ActionHostError::UnknownAction)?;
+        // Offered when the caller may take it or would be asked first;
+        // admission requires the confirmation an ask needs.
         let (offered, room) = self
             .decide_for(caller, &room, |workspace, policy, now| {
-                Self::allowed(
+                Self::offered(
                     workspace,
                     policy,
                     now,
                     &app_id,
-                    &action.resource,
-                    &action.action,
-                    action.contract.permission,
+                    (&action.resource_kind, &action.resource, &action.action),
+                    &action.contract,
                 )
             })
             .and_then(|allowed| allowed.then_some((action, room)))
@@ -1893,7 +2055,7 @@ impl CapnpBrokerState {
             peer_id,
             &offered,
             argument.as_deref(),
-            &actor.id,
+            &actor,
             request.confirmation.as_ref(),
         )?;
         self.start_invocation_confirmed_for_origin(
@@ -1911,7 +2073,10 @@ impl CapnpBrokerState {
             },
             origin.cloned(),
         )
-        .map(|job| job.id)
+        .map(|job| {
+            self.launchable.note_view(&room, &actor.id, &app_id);
+            job.id
+        })
         .map_err(refusal)
     }
 
@@ -1943,8 +2108,12 @@ impl CapnpBrokerState {
             }
             let author = match caller.principal() {
                 CallerPrincipal::Person(person)
-                    if workspace.decide_at(&policy, &ResourceRef::Workspace, Verb::Write, now)
-                        == CapDecision::Allow =>
+                    if policy.may_in(
+                        &workspace,
+                        &workspace.node(),
+                        tilo_action_policy::ActionKind::Undoable,
+                        now,
+                    ) =>
                 {
                     Some(person.as_str())
                 }
@@ -1952,9 +2121,7 @@ impl CapnpBrokerState {
             };
             return self
                 .launch_application(
-                    &workspace,
-                    &policy,
-                    now,
+                    (&workspace, &policy, now),
                     actor,
                     app_id,
                     crate::services::LaunchContent {
@@ -1962,6 +2129,7 @@ impl CapnpBrokerState {
                         caller: launch,
                         author,
                     },
+                    &self.launch_place(caller, room, launch),
                 )
                 .map_err(refusal);
         }
@@ -1983,7 +2151,7 @@ impl CapnpBrokerState {
                 actor,
                 (&workspace, &policy, now),
                 &address.action,
-                argument,
+                (argument, request.confirmation.as_ref()),
             );
         }
         if let Some(service) = self.services.keyboard_shortcuts.as_ref()
@@ -1995,7 +2163,7 @@ impl CapnpBrokerState {
                 actor,
                 (&workspace, &policy, now),
                 address,
-                argument,
+                (argument, request.confirmation.as_ref()),
             );
         }
         if let Some(governance) = self.services.workspace_governance.as_ref()
@@ -2015,15 +2183,59 @@ impl CapnpBrokerState {
         Err(ActionHostError::UnknownAction)
     }
 
+    /// Admit `descriptor`, published by `app`, for `policy` in `workspace`
+    /// at `now`: allowed; or, where the room's grants ask first, with the
+    /// confirmation of the person — their own word when they act
+    /// themselves, else the answer they gave on their device. Admitted, it
+    /// spends the `Once` grants it relied on.
+    fn admit_answer(
+        &self,
+        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
+        app: &str,
+        descriptor: &ActionDescriptor,
+        (argument, confirmation): (Option<&str>, Option<&Confirmation>),
+    ) -> Result<(), ActionHostError> {
+        let (answer, spent) = policy.action_verdict_in(
+            workspace,
+            app,
+            (
+                &descriptor.resource_kind,
+                &descriptor.address.resource,
+                &descriptor.address.action,
+            ),
+            &descriptor.contract.need(),
+            now,
+        );
+        let confirmed = match answer {
+            tilo_action_policy::Answer::Allow => true,
+            tilo_action_policy::Answer::Deny => return Err(ActionHostError::NotPermitted),
+            tilo_action_policy::Answer::Ask => match confirmation {
+                Some(Confirmation::Witnessed(token)) => self.take_witness(
+                    token,
+                    policy.id(),
+                    (&descriptor.address.resource, &descriptor.address.action),
+                    argument,
+                ),
+                Some(Confirmation::Confirmed) => policy.direct(),
+                _ => false,
+            },
+        };
+        if !confirmed {
+            return Err(ActionHostError::ConfirmationRequired);
+        }
+        self.spend_once_grants(&workspace.room.to_string(), &spent);
+        Ok(())
+    }
+
     /// Apply one shortcut library action for `caller` in `workspace`. A
     /// saved shortcut is checked against exactly what `caller` is offered now.
     fn start_shortcut_library(
         &self,
         caller: &Caller,
         actor: &BrokerActor,
-        (workspace, policy, now): (&Workspace, &Actor, u64),
+        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
         action: &str,
-        argument: Option<&str>,
+        (argument, confirmation): (Option<&str>, Option<&Confirmation>),
     ) -> Result<u64, ActionHostError> {
         let library = self
             .services
@@ -2032,17 +2244,12 @@ impl CapnpBrokerState {
             .ok_or(ActionHostError::UnknownAction)?;
         let descriptor =
             automation::library_descriptor(action).ok_or(ActionHostError::UnknownAction)?;
-        if !Self::allowed(
-            workspace,
-            policy,
-            now,
+        self.admit_answer(
+            (workspace, policy, now),
             SHORTCUTS_APP_ID,
-            &descriptor.address.resource,
-            action,
-            descriptor.contract.permission,
-        ) {
-            return Err(ActionHostError::NotPermitted);
-        }
+            &descriptor,
+            (argument, confirmation),
+        )?;
         let operation = automation::decode_library(action, argument)
             .map_err(|reason| ActionHostError::InvalidRequest { reason })?;
         let catalog =
@@ -2096,25 +2303,20 @@ impl CapnpBrokerState {
         &self,
         service: &dyn crate::services::KeyboardShortcutServices,
         actor: &BrokerActor,
-        (workspace, policy, now): (&Workspace, &Actor, u64),
+        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
         address: &ActionAddress,
-        argument: Option<&str>,
+        (argument, confirmation): (Option<&str>, Option<&Confirmation>),
     ) -> Result<u64, ActionHostError> {
         let mut keymap = settings_store::hardware::ShortcutConfig::load();
         let descriptor = service
             .descriptor(&keymap, address)
             .ok_or(ActionHostError::UnknownAction)?;
-        if !Self::allowed(
-            workspace,
-            policy,
-            now,
+        self.admit_answer(
+            (workspace, policy, now),
             service.app_id(),
-            &address.resource,
-            &address.action,
-            descriptor.contract.permission,
-        ) {
-            return Err(ActionHostError::NotPermitted);
-        }
+            &descriptor,
+            (argument, confirmation),
+        )?;
         let id = self
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2390,13 +2592,8 @@ impl CapnpBrokerState {
             tilo_actions::InvocationUpdate::Accepted { invocation },
         );
         let host = BrokerDoor::new(Arc::clone(self));
-        let consents = if shortcut.saved_by.as_deref() == Some(actor.as_str()) {
-            shortcut.consents.clone()
-        } else {
-            Vec::new()
-        };
         let state = Arc::clone(self);
-        let caller = caller.clone();
+        let caller = caller.clone().running_shortcut(shortcut.id.clone());
         let room = room.to_string();
         runtime.spawn(async move {
             let report = tilo_automation::run(
@@ -2409,7 +2606,6 @@ impl CapnpBrokerState {
                     mode: start.mode,
                     trigger: start.trigger,
                     inputs: start.inputs,
-                    consents,
                 },
             )
             .await;
@@ -2492,20 +2688,18 @@ impl CapnpBrokerState {
     /// Returns a message when the caller may not launch the application or no launcher is installed.
     pub fn launch_application(
         &self,
-        workspace: &Workspace,
-        policy: &Actor,
-        now: u64,
+        (workspace, policy, now): (&Workspace, &BrokerActor, u64),
         actor: &BrokerActor,
         app_id: &str,
         content: crate::services::LaunchContent<'_>,
+        place: &LaunchPlace,
     ) -> Result<u64, String> {
-        if workspace.decide_at(
-            policy,
-            &ResourceRef::App(app_id.to_string()),
-            Verb::Write,
+        if !policy.may_in(
+            workspace,
+            &app_node(workspace, app_id),
+            tilo_action_policy::ActionKind::Undoable,
             now,
-        ) != CapDecision::Allow
-        {
+        ) {
             return Err("the caller is not allowed to launch that application".into());
         }
         // Content is only ever read through the asking application's own
@@ -2522,7 +2716,7 @@ impl CapnpBrokerState {
             .invocation_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match launcher.launch_content(app_id, workspace, content) {
+        let update = match launcher.launch_content(app_id, workspace, content, place) {
             Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),
@@ -2557,18 +2751,17 @@ impl CapnpBrokerState {
     pub fn close_application(
         &self,
         workspace: &Workspace,
-        policy: &Actor,
+        policy: &BrokerActor,
         now: u64,
         actor: &BrokerActor,
         app_id: &str,
     ) -> Result<u64, String> {
-        if workspace.decide_at(
-            policy,
-            &ResourceRef::App(app_id.to_string()),
-            Verb::Write,
+        if !policy.may_in(
+            workspace,
+            &app_node(workspace, app_id),
+            tilo_action_policy::ActionKind::Undoable,
             now,
-        ) != CapDecision::Allow
-        {
+        ) {
             return Err("the caller is not allowed to close that application".into());
         }
         let launcher = self
@@ -2685,23 +2878,6 @@ impl CapnpBrokerState {
     }
 }
 
-fn action_row(provider: String, app_id: &str, action: ActionDescriptor) -> CatalogueRow {
-    CatalogueRow {
-        provider,
-        app_id: app_id.to_string(),
-        parent_resource: String::new(),
-        resource: CatalogueResource {
-            id: action.address.resource.clone(),
-            kind: action.resource_kind.clone(),
-            label: action.resource_label.clone(),
-            presentation: None,
-        },
-        action: Some(action),
-        has_children: false,
-        visibility: None,
-    }
-}
-
 /// A directory row, already validated and permission-checked on the local
 /// set, as a catalogue row.
 fn directory_row(
@@ -2811,9 +2987,9 @@ mod launch_content_tests {
 #[cfg(test)]
 mod foreign_caller_tests {
     use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
-    use super::{CapDecision, ResourceRef, Verb};
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
+    use tilo_action_policy::roles;
     use tilo_actions::remote::Caller;
 
     /// Every room is governed by one device.
@@ -2836,7 +3012,7 @@ mod foreign_caller_tests {
     fn a_foreign_caller_is_capped_only_in_rooms_its_device_does_not_govern() {
         let user = [26; 32];
         let mut workspace = Workspace::new(WorkspaceId(6), "Callers");
-        workspace.owner = Some(hex::encode(user));
+        workspace.set_owner(hex::encode(user));
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = CapnpBrokerState::new(
@@ -2852,8 +3028,12 @@ mod foreign_caller_tests {
         assert!(state.certificate_authority.set(authority).is_ok());
         let may_administer = |caller: &Caller| {
             let (workspace, policy, now) = state.workspaces_for(caller).pop().unwrap();
-            workspace.decide_at(&policy, &ResourceRef::Workspace, Verb::Admin, now)
-                == CapDecision::Allow
+            policy.may_in(
+                &workspace,
+                &roles::governance_action(&workspace.policy.room, roles::governance::SETTINGS),
+                roles::GOVERNANCE_KIND,
+                now,
+            )
         };
         let caller =
             |device, foreign| Caller::authenticated(user, device).from_foreign_device(foreign);
@@ -2893,7 +3073,13 @@ mod app_close_tests {
                 unconfined: false,
             }]
         }
-        fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
+            _: &crate::services::LaunchPlace,
+        ) -> Result<(), String> {
             Ok(())
         }
         fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
@@ -2918,7 +3104,7 @@ mod app_close_tests {
     fn broker(launcher: Arc<Launcher>, live: bool) -> (Arc<CapnpBrokerState>, Caller, String) {
         let user = [31; 32];
         let mut workspace = Workspace::new(WorkspaceId(8), "Close");
-        workspace.owner = Some(hex::encode(user));
+        workspace.set_owner(hex::encode(user));
         let room = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);

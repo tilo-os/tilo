@@ -142,7 +142,25 @@ containerfile="$repo/os/Containerfile"
 # profile and pinned Cosign. Its staged-trust and verified-update helpers move
 # from direct rootfs COPY to that component at the same installed paths and
 # executable mode; the component installer tests cover their staged sources.
-expected_contract=01e3f452f1160b9a99aeb6135d8e0ca32fea63ab2fbaa0463f8ebf805f574489
+# The baked runtime, /usr/share/fonts/tilo and the font-catalogs tree arrive
+# in one COPY of the runtime-image-payload tree (hard links carry the font
+# catalog's bytes once, TIL-609): that row replaces the runtime's and the font
+# catalogs' native-builder-payload rows; every installed path is unchanged and
+# /usr/share/fonts/tilo, formerly written by a RUN, is new to the contract.
+# The Plymouth theme arrives rendered from the plymouth-assets stage, which
+# replaces the context copy of its sources; make-plymouth-assets.py, which
+# rendered it inside the rootfs, no longer enters /usr/local/bin (TIL-733).
+# The app store arrives from the app-store stage, the builder's store with the
+# env-runtime's host-identical files left out and named in its host-sources
+# (TIL-735); the installed path is unchanged.
+# tilo-network-start.service replaces tilo-network-start.timer: the network is
+# queued once logins are allowed instead of at OnBootSec=0, where it held the
+# greeter through network.target (TIL-767).
+# The installer locale list is copied from the install-profile-model crate,
+# which compiles it in; the installed path is unchanged.
+# The atomic firstboot file helper is one intentional payload addition in
+# the existing libexec COPY instruction; the layer budget is unchanged.
+expected_contract=e2c242e8adc8513350560d056eddaa04fa659277d18a9af17fad316a79fa3131
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -153,8 +171,15 @@ actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" 
 # A unique destination makes the sorted contract sufficient: no later COPY can
 # mask an earlier payload at the same path. Directory-content copies remain
 # single-source entries and were intentionally not consolidated.
+# Two directory-content copies share /usr/ as their destination, with disjoint
+# trees: the Windows provider's (provider.json; on ARM also the FEX payload
+# and the x86 guest under /usr/lib/tilo/windows-runners), and the assembled
+# runtime tree
+# (/usr/lib/tilo-runtime, /usr/share/fonts/tilo, /usr/share/tilo/font-catalogs),
+# which must be one COPY so its hard links stay one layer's.
 duplicates="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
-  awk -F '\t' '{ count[$3]++ } END { for (path in count) if (count[path] > 1) print path }')"
+  awk -F '\t' '$1 == "runtime-image-payload" && $2 == "/image/usr/" && $3 == "/usr/" { next }
+    { count[$3]++ } END { for (path in count) if (count[path] > 1) print path }')"
 [ -z "$duplicates" ] || {
   printf 'rootfs copy destinations are no longer unique:\n%s\n' "$duplicates" >&2
   exit 1

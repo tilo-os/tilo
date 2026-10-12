@@ -356,11 +356,6 @@ impl RemoteInputFirewall {
         self.kill_switch = false;
     }
 
-    /// Whether remote input is currently killed.
-    pub fn kill_switch_engaged(&self) -> bool {
-        self.kill_switch
-    }
-
     /// Forget a peer's budget and held modifiers — call when it disconnects.
     pub fn forget_peer(&mut self, peer: PeerId) {
         self.peers.remove(&peer);

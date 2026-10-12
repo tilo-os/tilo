@@ -554,27 +554,6 @@ impl RichTextLine {
             .byte_at_point(Point::new(x, self.inner.get_rect().center().y))
     }
 
-    /// Prefers [`Mark::Link`] over other kinds so link hit-tests still
-    /// find the link even if the text is also bold.
-    pub fn mark_at_byte(&self, byte: usize) -> Option<&Mark> {
-        let mut link_hit: Option<&Mark> = None;
-        let mut any_hit: Option<&Mark> = None;
-        for s in &self.marks {
-            if s.range.start <= byte && byte < s.range.end {
-                if matches!(
-                    s.mark,
-                    Mark::Link(_) | Mark::Transclusion(_) | Mark::ExternalLink(_)
-                ) {
-                    link_hit = Some(&s.mark);
-                }
-                if any_hit.is_none() {
-                    any_hit = Some(&s.mark);
-                }
-            }
-        }
-        link_hit.or(any_hit)
-    }
-
     #[doc(hidden)]
     pub fn inner_mut(&mut self) -> &mut TextInput {
         &mut self.inner
@@ -584,6 +563,13 @@ impl RichTextLine {
     #[doc(hidden)]
     pub fn inner(&self) -> &TextInput {
         &self.inner
+    }
+
+    /// What the last draw painted outside the line's rect
+    /// ([`TextInput::overhang`]).
+    #[must_use]
+    pub fn overhang(&self) -> Option<Rect> {
+        self.inner.overhang()
     }
 
     fn refresh_attributes(&mut self) {
@@ -1072,12 +1058,20 @@ impl Widget for RichTextLine {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        #[cfg(test)]
+        let attributes_probe = crate::profiling::frame_probe::span("line_attributes");
         self.prepare_attributes(theme);
         self.sync_wrapped_spans(theme);
+        #[cfg(test)]
+        drop(attributes_probe);
+        #[cfg(test)]
+        let input_probe = crate::profiling::frame_probe::span("text_input_draw");
         // TextInput owns glyph shaping and painting. This wrapper supplies
         // attributes and draws only mark decorations that are not glyphs.
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
+        #[cfg(test)]
+        drop(input_probe);
 
         if self.marks.is_empty() && self.transient_colors.is_empty() {
             return;
@@ -1245,11 +1239,12 @@ impl Widget for RichTextLine {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = crate::doc::document(state, path);
-        let handled = Widget::perform_action(&mut self.inner, action, state, path);
+        let handled = Widget::perform_action(&mut self.inner, action, &[], state, path);
         if handled && matches!(action, crate::a11y::Action::SetValue(_)) {
             self.marks.clear();
             self.pending_marks.clear();
@@ -1263,20 +1258,6 @@ impl Widget for RichTextLine {
 
 fn transient_color(theme: &Theme, kind: TokenKind) -> vello::peniko::Color {
     theme.tokens.syntax.color(kind)
-}
-
-/// Composes `transform` with a translation by `(dx, dy)`. `kurbo::Affine`'s
-/// `Mul` impl trips `arithmetic_side_effects` like any operator overload,
-/// but composing two f64-based affine transforms cannot meaningfully
-/// overflow — same reasoning clippy already exempts bare `f64` arithmetic
-/// for.
-#[allow(
-    dead_code,
-    clippy::arithmetic_side_effects,
-    reason = "feature-gated rendering helper; Affine::mul cannot meaningfully overflow"
-)]
-fn translated(transform: Affine, dx: f64, dy: f64) -> Affine {
-    transform * Affine::translate((dx, dy))
 }
 
 /// Clamps to the end. Converts Automerge marks (char-indexed) to the byte
@@ -1322,12 +1303,6 @@ pub(crate) fn diff_splice(old: &str, new: &str) -> (usize, usize, usize) {
     let removed = o_rest.saturating_sub(suffix);
     let inserted = n_rest.saturating_sub(suffix);
     (prefix, inserted, removed)
-}
-
-/// Re-exported so callers don't have to depend on the `marks` module
-/// directly.
-pub fn segments_of(text_len: usize, marks: &[MarkSpan]) -> Vec<MarkSegment> {
-    marks::segments_for(text_len, marks)
 }
 
 /// Pulled out as a free function so the chip-sizing math is
@@ -1808,6 +1783,7 @@ mod tests {
                     anchor: 0,
                     focus: 4
                 },
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
@@ -1823,6 +1799,7 @@ mod tests {
                     anchor: 4,
                     focus: 4
                 },
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));

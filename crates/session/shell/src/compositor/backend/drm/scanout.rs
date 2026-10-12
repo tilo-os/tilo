@@ -1,18 +1,21 @@
 //! DRM scanout — modeset a connector and present GPU-rendered frames.
 //!
 //! KMS hardware cursor plane (`set_cursor2`/`move_cursor`, software cursor as fallback) plus
-//! two buffer rings per output, each ping-ponged via `page_flip`:
+//! two buffer rings per output, each ping-ponged by page flips. Every flip goes through
+//! [`super::kms_flip::KmsFlip`]: an atomic commit of the primary plane where the driver
+//! takes atomic, else a legacy `drmModePageFlip`:
 //!
 //! - **Direct** ([`DirectScanoutTargets`]): two GBM buffers the size of the output's mode,
 //!   imported as Vulkan render targets. Vello renders the output's part of the scene upright,
-//!   and the final pass writes it into the back slot turned by the output's transform
+//!   and the final pass writes it into the back slot turned by the output's transform and,
+//!   in SDR, mapped through its ICC profile
 //!   ([`super::paint::VelloDrmBridge::paint_output_until`]); nothing crosses the CPU. Each
-//!   output is judged alone (`direct_scanout_rejection` in `drm/mod.rs`): no ICC profile, a
-//!   hardware cursor plane, page-flip events, and the renderer on this card. Any rotation is
-//!   eligible.
+//!   output is judged alone (`direct_scanout_rejection` in `drm/mod.rs`): a hardware cursor
+//!   plane, page-flip events, and the renderer on this card. Any rotation and any ICC
+//!   profile is eligible.
 //! - **Readback**: two dumb buffers allocated at modeset, falling back to
 //!   `dirty_framebuffer/set_crtc` without page flips. The output's pixels are read back from
-//!   the GPU and written on the CPU (rotated, colour-managed, swizzled from vello's
+//!   the GPU and written on the CPU (rotated, colour-managed with qcms, swizzled from vello's
 //!   `Rgba8Unorm` to `Xrgb8888`). Only outputs that fail a direct check, or whose direct
 //!   frame failed, present this way.
 //!
@@ -28,6 +31,7 @@ use std::io::Read as _;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use ui::num::i32_of_f64;
 
 use smithay::backend::session::Session;
 use smithay::reexports::drm as drm_re;
@@ -37,14 +41,15 @@ use drm_re::Device as BasicDevice;
 use drm_re::buffer::{Buffer as _, DrmFourcc, DrmModifier, PlanarBuffer};
 use drm_re::control::dumbbuffer::DumbBuffer;
 use drm_re::control::{
-    ClipRect, Device as ControlDevice, Event, FbCmd2Flags, Mode, ModeTypeFlags, PageFlipFlags,
-    connector, crtc, framebuffer,
+    ClipRect, Device as ControlDevice, Event, FbCmd2Flags, Mode, ModeTypeFlags, connector, crtc,
+    framebuffer,
 };
 use smithay::backend::allocator::gbm::{GbmBufferFlags, GbmDevice};
 
 use super::client_scanout::{
-    ClientFramebuffer, ClientHold, ClientPlane, ClientScanout, ClientStatus,
+    ClientFramebuffer, ClientHold, ClientPlane, ClientScanout, ClientStatus, OfferTarget,
 };
+use super::kms_flip::{FlipTarget, KmsFlip};
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
 use super::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbTargetHistory, XrgbWritePlan,
@@ -369,8 +374,9 @@ pub struct DirectScanoutTargets {
     buffers: GbmScanoutBuffers,
     format: ScanoutFormat,
     /// The CRTC was modeset onto one of these buffers. A legacy page flip
-    /// cannot change the framebuffer format, so HDR targets become visible
-    /// through one `set_crtc` before flips take over.
+    /// cannot change the framebuffer format, and the HDR signal is switched
+    /// on with it, so HDR targets become visible through one `set_crtc`
+    /// before flips take over.
     crtc_bound: bool,
     /// KMS accepted a frame rendered into one of these targets; until then the
     /// CRTC still shows the dumb front.
@@ -1601,7 +1607,7 @@ impl CursorPlanes {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = (gx, gy);
         let rects: Vec<_> = self.outputs.iter().map(|o| o.rect).collect();
-        let (xi, yi) = (pixel_coord(gx), pixel_coord(gy));
+        let (xi, yi) = (i32_of_f64(gx), i32_of_f64(gy));
         let Some(i) = output_index_at(&rects, xi, yi) else {
             return;
         };
@@ -1672,18 +1678,6 @@ pub(crate) fn logical_to_physical_point(
         ),
         T::Rotate270 => (y, width.saturating_sub(1).saturating_sub(x)),
     }
-}
-
-/// Truncate a sub-pixel logical coordinate to a whole pixel. Rust's `as` cast from `f64` to
-/// `i32` already saturates to `i32::MIN`/`MAX` and maps NaN to 0 (no panic, no wraparound), so an
-/// out-of-range or NaN pointer position clamps rather than misbehaving; dropping the fractional
-/// part is the intended pixel-snapping behaviour, not a bug.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "float-to-int `as` saturates and maps NaN to 0; truncating the fractional pixel is intentional"
-)]
-fn pixel_coord(value: f64) -> i32 {
-    value as i32
 }
 
 /// Index of the first output rect containing `(xi, yi)`, or `None` in a gap between mismatched-size outputs; pure so cursor routing is unit-testable without a DRM device.
@@ -1799,6 +1793,8 @@ pub struct DrmScanout {
     /// The primary plane and the client buffers tried on it, for scanning a
     /// fullscreen client's buffer out.
     client_plane: ClientPlane,
+    /// How page flips reach KMS: every flip goes through it.
+    flip: KmsFlip,
 }
 
 /// Two dumb buffers and their framebuffers, in one pixel format.
@@ -1993,7 +1989,7 @@ impl DrmScanout {
 
         // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.
         let cursor_size =
-            super::input_config::AccessibilityInputSettings::load().effective_cursor_size();
+            tilo_accessibility_settings::AccessibilitySettings::load().effective_cursor_size();
         let cursor_dim = Self::cursor_plane_dim(&card);
         let (cursor_buffer, hw_cursor_active) =
             match Self::setup_hw_cursor(&card, crtc, cursor_size, cursor_dim) {
@@ -2018,6 +2014,7 @@ impl DrmScanout {
             };
 
         let use_pageflip = connector_uses_pageflip(&card, connector);
+        let flip = probe_flips(&card, connector, crtc, (width, height), use_pageflip);
         Ok(Self {
             card,
             pci_bus_id,
@@ -2058,7 +2055,8 @@ impl DrmScanout {
             hdr_signal,
             hdr_request: None,
             hdr_encoder: None,
-            client_plane: ClientPlane::default(),
+            client_plane: ClientPlane::with_plane(flip.plane().cloned()),
+            flip,
         })
     }
 
@@ -2666,8 +2664,8 @@ impl DrmScanout {
                         pitch,
                         dw,
                         dh,
-                        pixel_coord(px),
-                        pixel_coord(py),
+                        i32_of_f64(px),
+                        i32_of_f64(py),
                         bitmap,
                     );
                 }
@@ -2876,7 +2874,7 @@ impl DrmScanout {
                 if let Some((px, py)) = cursor
                     && let Some(bitmap) = cursor_bitmap.as_deref()
                 {
-                    draw_cursor(dst, pitch, dw, dh, pixel_coord(px), pixel_coord(py), bitmap);
+                    draw_cursor(dst, pitch, dw, dh, i32_of_f64(px), i32_of_f64(py), bitmap);
                 }
                 if let Some(slot) = self.xrgb_software_cursor.get_mut(idx) {
                     *slot = current_cursor;
@@ -2987,13 +2985,13 @@ impl DrmScanout {
                         pitch,
                         dw,
                         dh,
-                        (pixel_coord(px), pixel_coord(py)),
+                        (i32_of_f64(px), i32_of_f64(py)),
                         bitmap,
                         encoder,
                     ),
                     (true, None) => {}
                     (false, _) => {
-                        draw_cursor(dst, pitch, dw, dh, pixel_coord(px), pixel_coord(py), bitmap);
+                        draw_cursor(dst, pitch, dw, dh, i32_of_f64(px), i32_of_f64(py), bitmap);
                     }
                 }
             }
@@ -3031,6 +3029,19 @@ impl DrmScanout {
         )
     }
 
+    /// Queue a page flip onto `framebuffer`: every flip this output makes,
+    /// whichever ring or client buffer it shows ([`KmsFlip::queue`]).
+    fn queue_flip(&mut self, framebuffer: framebuffer::Handle) -> std::io::Result<()> {
+        self.flip.queue(&self.card, framebuffer)
+    }
+
+    /// Whether this output's flips may change the framebuffer's format
+    /// (they are atomic): a client buffer of another format than the
+    /// targets' can then be flipped in and out.
+    pub(super) fn flips_change_format(&self) -> bool {
+        self.flip.changes_format()
+    }
+
     /// Queue a page flip to buffer `idx`, making it the new front. A transient `EBUSY`/`EAGAIN` skips the frame; a "not supported" errno latches the page-flip path off, falling back to `dirty_framebuffer`.
     fn flip_to(&mut self, idx: usize) -> bool {
         self.apply_adaptive_sync();
@@ -3038,10 +3049,7 @@ impl DrmScanout {
             tracing::warn!("DRM scanout: no framebuffer at index {idx}; skipping page flip");
             return false;
         };
-        match self
-            .card
-            .page_flip(self.crtc, fb, PageFlipFlags::EVENT, None)
-        {
+        match self.queue_flip(fb) {
             Ok(()) => {
                 self.flip_submission = self.flip_submission.wrapping_add(1);
                 self.flip_queued_at = Some(std::time::Instant::now());
@@ -3078,13 +3086,6 @@ impl DrmScanout {
                 }
             }
         }
-    }
-
-    /// Flush the live buffer with `DRM_IOCTL_MODE_DIRTYFB` (how virtio-gpu transfers a CPU buffer to the host), falling back to a forced `set_crtc` where dirtyfb is unsupported.
-    /// Restrict the next flush to these output-local rectangles.
-    /// An empty list, or never calling this, flushes the whole mode.
-    pub fn set_damage_clips(&mut self, clips: Vec<ClipRect>) {
-        self.damage_clips = clips;
     }
 
     /// `None` flushes the whole mode on the next present.
@@ -3310,10 +3311,7 @@ impl DrmScanout {
                 "direct scanout slot {index} has no KMS framebuffer"
             ));
         };
-        match self
-            .card
-            .page_flip(self.crtc, framebuffer, PageFlipFlags::EVENT, None)
-        {
+        match self.queue_flip(framebuffer) {
             Ok(()) => {
                 self.flip_pending = true;
                 if targets.state.submit(index) {
@@ -3428,8 +3426,32 @@ impl DrmScanout {
     pub(super) fn client_framebuffer(
         &mut self,
         dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf,
+        fourcc: DrmFourcc,
     ) -> Result<std::sync::Arc<ClientFramebuffer>, String> {
-        self.client_plane.framebuffer(&self.card, self.crtc, dmabuf)
+        self.client_plane
+            .framebuffer(&self.card, self.flip.target(), dmabuf, fourcc)
+    }
+
+    /// Refresh what this output's primary plane offers a fullscreen client
+    /// in place of `target` framebuffers on the KMS device `device`; `None`
+    /// withdraws the offer ([`super::client_scanout::ClientPlane::offer`]).
+    pub(super) fn offer_client_plane(&mut self, device: u64, target: Option<DrmFourcc>) {
+        let target = target.map(|format| OfferTarget {
+            format,
+            changes_format: self.flip.changes_format(),
+        });
+        self.client_plane
+            .offer(&self.card, self.crtc, device, target);
+    }
+
+    /// Publish this output's offer to fullscreen clients into `planes`, when
+    /// it changed since last published.
+    pub(super) fn publish_client_plane(
+        &mut self,
+        output: OutputId,
+        planes: &super::client_scanout::ClientPlanes,
+    ) {
+        self.client_plane.publish_offer(output, planes);
     }
 
     /// A flip of `dmabuf` failed: composite it from now on.
@@ -3461,10 +3483,7 @@ impl DrmScanout {
             return DirectSubmit::Failed("HDR targets cannot flip to a client buffer".to_owned());
         }
         self.apply_adaptive_sync();
-        match self
-            .card
-            .page_flip(self.crtc, client.framebuffer(), PageFlipFlags::EVENT, None)
-        {
+        match self.queue_flip(client.framebuffer()) {
             Ok(()) => {
                 self.flip_pending = true;
                 if targets.state.submit_client() {
@@ -3623,32 +3642,6 @@ pub struct ScanoutBuild {
     pub scanout: DrmScanout,
 }
 
-/// Open `card_path` once and build one [`DrmScanout`] per connected connector with a usable mode,
-/// each on a distinct crtc sharing a dup of the single card fd — required since libseat refuses a
-/// second `open` of an already-open node, and it means every crtc's flip completions arrive on one
-/// event stream, drained once and routed by crtc. A connector with no free crtc/mode is logged and
-/// skipped; `Err` only when nothing came up. The runtime normally retains the [`CardHandle`]
-/// itself and calls [`CardHandle::bring_up_all`] for every seat GPU; this helper remains a
-/// convenience for callers that need a complete one-card transaction.
-///
-/// # Errors
-///
-/// Returns `Err` if the card itself can't be opened, or if every connected connector
-/// failed to come up (each connector's own modeset failure is logged and skipped rather than
-/// propagated — this only errors when *none* came up).
-pub fn open_all_scanouts<S: Session>(
-    session: &mut S,
-    card_path: &Path,
-) -> Result<(CardHandle, Vec<ScanoutBuild>), String> {
-    let card = CardHandle::open(session, card_path)?;
-    let builds = card.bring_up_all();
-    if builds.is_empty() {
-        return Err("no connected connector could be brought up for scanout".into());
-    }
-    tracing::info!(count = builds.len(), "DRM scanout: brought up outputs");
-    Ok((card, builds))
-}
-
 /// Pick a crtc for `conn_info` not already in `used`: the current encoder's crtc if free, else one
 /// allowed by the connector's possible encoders (multi-head routing), else any free crtc. `None` when every crtc is taken.
 fn pick_crtc(
@@ -3786,8 +3779,8 @@ fn software_cursor_damage_rect(
     let bitmap = bitmap?;
     let span_x = i32::try_from(bitmap.width).ok()?;
     let span_y = i32::try_from(bitmap.height).ok()?;
-    let x0 = pixel_coord(px).saturating_sub(i32::try_from(bitmap.hotspot.0).ok()?);
-    let y0 = pixel_coord(py).saturating_sub(i32::try_from(bitmap.hotspot.1).ok()?);
+    let x0 = i32_of_f64(px).saturating_sub(i32::try_from(bitmap.hotspot.0).ok()?);
+    let y0 = i32_of_f64(py).saturating_sub(i32::try_from(bitmap.hotspot.1).ok()?);
     let right = x0.saturating_add(span_x);
     let bottom = y0.saturating_add(span_y);
     let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
@@ -3911,6 +3904,35 @@ fn monotonic_now() -> Duration {
 /// describes only the destination-history commit decision.
 fn pageflip_history_commit_is_safe(dirty_ok: bool, flip_ok: bool) -> bool {
     dirty_ok && flip_ok
+}
+
+/// Choose, once the CRTC is set up, how `connector`'s flips reach KMS
+/// ([`KmsFlip::probe`]), and say so in the session log.
+fn probe_flips(
+    card: &Card,
+    connector: connector::Handle,
+    crtc: crtc::Handle,
+    size: (u32, u32),
+    use_pageflip: bool,
+) -> KmsFlip {
+    let flip = KmsFlip::probe(
+        card,
+        FlipTarget { crtc, size },
+        legacy_flip_reason(use_pageflip),
+    );
+    flip.log(u32::from(connector));
+    flip
+}
+
+/// Why an output's flips stay legacy without asking the card: a connector
+/// that presents without page flips never flips, and
+/// [`super::kms_flip::KMS_ATOMIC_ENV`]`=0` asks for legacy flips.
+fn legacy_flip_reason(use_pageflip: bool) -> Option<String> {
+    if !use_pageflip {
+        return Some("the connector presents without page flips".to_owned());
+    }
+    super::kms_flip::atomic_flips_forced_off()
+        .then(|| format!("forced by {}=0", super::kms_flip::KMS_ATOMIC_ENV))
 }
 
 /// Virtual CRTCs do not signal vblank. Page-flipping one waits out the kernel
@@ -4583,8 +4605,8 @@ mod tests {
                         pitch,
                         width,
                         height,
-                        pixel_coord(x),
-                        pixel_coord(y),
+                        i32_of_f64(x),
+                        i32_of_f64(y),
                         &arrow(48),
                     );
                 }

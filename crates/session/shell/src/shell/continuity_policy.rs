@@ -177,7 +177,9 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::DeviceHealthReport { .. }
             | PersonalFabricAction::InputLeaseGranted { .. }
             | PersonalFabricAction::InputLeaseRevoked { .. }
-            | PersonalFabricAction::Input { .. } => ContinuityCapability::DisplayInput,
+            | PersonalFabricAction::Input { .. }
+            | PersonalFabricAction::SpatialInputProtocol { .. }
+            | PersonalFabricAction::SpatialInputSequenced { .. } => ContinuityCapability::DisplayInput,
             PersonalFabricAction::NearbyDrop { .. }
             | PersonalFabricAction::NearbyDropResult { .. }
             | PersonalFabricAction::NearbyTransferOffer { .. }

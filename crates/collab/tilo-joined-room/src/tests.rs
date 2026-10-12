@@ -2,6 +2,7 @@
 use crate::testing::{APP, ROOM, raw_fixture};
 use crate::{DocumentRead, NativeWorkspaceOwner, RoomId, open_file};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::{
     path::PathBuf,
@@ -17,12 +18,16 @@ use tilo_peer_state::{
     workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId},
 };
 
+#[path = "changes_read_tests.rs"]
+mod changes_read;
+
 struct Enrolled {
     _directory: tempfile::TempDir,
     path: PathBuf,
     owner: NativeWorkspaceOwner,
     room: RoomId,
     now: SystemTime,
+    replay: NeighbourMsg,
 }
 
 /// Enroll through the file store and admit the governor's history.
@@ -35,6 +40,12 @@ fn enrolled() -> Enrolled {
     let enrollment = crate::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
+    let replay = messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message, NeighbourMsg::AppDocument { .. }))
+        .expect("fixture has signed app state")
+        .clone();
     for message in messages.into_iter().skip(1) {
         owner
             .receive(
@@ -51,6 +62,7 @@ fn enrolled() -> Enrolled {
         owner,
         room,
         now,
+        replay,
     }
 }
 
@@ -63,7 +75,6 @@ fn admit_test_agent(joined: &Enrolled, agent: &str) {
 }
 
 fn set_test_agent_membership(joined: &Enrolled, agent: &str, admitted: bool) {
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     let key = SigningKey::from_bytes(&[61; 32]);
     let messages = joined
         .owner
@@ -71,17 +82,23 @@ fn set_test_agent_membership(joined: &Enrolled, agent: &str, admitted: bool) {
             let before = view.peer().clone();
             let mut candidate = before.clone();
             if admitted {
-                candidate.put_governed_capabilities(
-                    &[
-                        CapOverride::grant(Subject::agent(agent), Scope::Workspace, Verb::Write)
-                            .with_id(format!("test-agent-{agent}")),
-                    ],
+                candidate.put_governed_grants(
+                    &[tilo_action_policy::Grant::new(
+                        format!("test-agent-{agent}"),
+                        tilo_action_policy::Subject::agent(agent),
+                        tilo_action_policy::TreePath::room(candidate.room()),
+                        tilo_action_policy::KindSet::READ_UNDOABLE,
+                        tilo_action_policy::Answer::Allow,
+                        tilo_action_policy::Subject::person("governor"),
+                    )],
                     &key,
                     joined.now,
                 )?;
             } else {
-                candidate.remove_governed_capabilities(
-                    &[format!("test-agent-{agent}")],
+                candidate.remove_governed_grants(
+                    &[tilo_action_policy::GrantId::new(format!(
+                        "test-agent-{agent}"
+                    ))],
                     &key,
                     joined.now,
                 )?;
@@ -111,7 +128,13 @@ fn set_test_agent_membership(joined: &Enrolled, agent: &str, admitted: bool) {
     }
 }
 
-fn queued_and_started_task(joined: &Enrolled) -> (String, tilo_user_identity::DeviceCert) {
+fn queued_task(
+    joined: &Enrolled,
+) -> (
+    String,
+    tilo_user_identity::DeviceCert,
+    tilo_user_identity::DeviceCert,
+) {
     admit_test_agent(joined, "scribe");
     let (caller, host) = joined
         .owner
@@ -158,6 +181,11 @@ fn queued_and_started_task(joined: &Enrolled) -> (String, tilo_user_identity::De
     let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = result else {
         panic!("queue result")
     };
+    (task_id, caller, host)
+}
+
+fn queued_and_started_task(joined: &Enrolled) -> (String, tilo_user_identity::DeviceCert) {
+    let (task_id, caller, host) = queued_task(joined);
     joined
         .owner
         .commit_workspace_task_command(
@@ -201,7 +229,7 @@ fn edit_from_view(
     let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
     let before = chat.get_heads();
     chat.put(ROOT, "topic", topic).unwrap();
-    chat.commit();
+    chat.commit_edit("fixture", "topic");
     let message = view.peer().clone().publish_incremental(
         APP,
         "",
@@ -667,7 +695,7 @@ fn projections(joined: &Enrolled) -> usize {
 /// signs it: with the process-wide unordered sequence, not `floor + 1`.
 fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
     use collab_types::{
-        DocumentMutation, Ed25519PublicKey, OpClass, SignedOp, document_artifact_id,
+        DocumentMutation, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
         document_attestation_id, next_unordered_document_sequence, sign_op,
     };
     let changes = joined
@@ -676,17 +704,18 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
             let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             let before = chat.get_heads();
             chat.put(ROOT, "topic", topic).unwrap();
-            chat.commit();
+            chat.commit_edit("fixture", "topic");
             Ok(chat.save_after(&before))
         })
         .unwrap();
     let key = member();
+    let mutation = DocumentMutation::Incremental(changes);
     let mut envelope = SignedOp::new_unsigned(
-        DocumentMutation::Incremental(changes).encode().unwrap(),
+        mutation.encode().unwrap(),
         document_artifact_id(APP, ROOM, ""),
         Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
         document_attestation_id(APP, ROOM, ""),
-        OpClass::Splice,
+        OpKind::Change,
         joined.now,
         next_unordered_document_sequence(joined.now),
     );
@@ -860,6 +889,70 @@ fn a_member_reads_the_admitted_document_and_a_stranger_does_not() {
     assert!(read(member, "uuid:absent", None, usize::MAX).is_err());
 }
 
+/// A governor checkpoint reaches this owner as several signed frames. A read
+/// between them hands out nothing and says the checkpoint is pending, so the
+/// reader asks again; a refusal would end an app's collaboration for good.
+/// It still refuses a device that may not read the record.
+#[test]
+fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
+    let joined = enrolled();
+    let member = member().verifying_key().to_bytes();
+    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+    let governor_key = SigningKey::from_bytes(&[61; 32]);
+    let covered = edit_with(&joined.owner, joined.room, joined.now, "covered next");
+    joined.owner.commit_document(covered, joined.now).unwrap();
+    let mut remote = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.peer().clone()))
+        .unwrap();
+    let frames = remote
+        .durable_bootstrap_messages(&governor_key, joined.now, 600)
+        .unwrap();
+    let read = |reader| {
+        joined.owner.with_current(joined.room, |view| {
+            view.read_document(reader, APP, "", None, usize::MAX, joined.now)
+        })
+    };
+    let mut pending = 0;
+    for frame in frames {
+        joined
+            .owner
+            .receive(
+                joined.room,
+                TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                frame,
+                joined.now,
+            )
+            .unwrap();
+        match read(member) {
+            Ok(DocumentRead::Captured(_)) => {}
+            Ok(DocumentRead::CheckpointPending) => {
+                pending += 1;
+                assert!(
+                    read(stranger).is_err(),
+                    "a pending checkpoint is reported only to a reader of the record"
+                );
+            }
+            Ok(DocumentRead::Unchanged(_)) => panic!("no revision was offered"),
+            Err(error) => panic!("a read between checkpoint frames was refused: {error}"),
+        }
+    }
+    assert!(
+        pending > 0,
+        "the checkpoint's frames leave the room between cuts"
+    );
+    let Ok(DocumentRead::Captured(document)) = read(member) else {
+        panic!("the completed checkpoint is read again");
+    };
+    let doc = AutoCommit::load(&document.bytes).unwrap();
+    assert_eq!(
+        doc.get(ROOT, "topic")
+            .unwrap()
+            .map(|(value, _)| value.to_string()),
+        Some("\"covered next\"".into())
+    );
+}
+
 #[test]
 fn an_unchanged_committed_read_does_not_restore_the_room() {
     let joined = enrolled();
@@ -891,6 +984,39 @@ fn an_unchanged_committed_read_does_not_restore_the_room() {
     assert!(
         read(stranger, Some(document.revision)).is_err(),
         "a device outside the room cannot reuse a revision it was never given"
+    );
+}
+
+#[test]
+fn a_held_revision_is_checked_from_heads_with_the_read_permission() {
+    let joined = enrolled();
+    let member = member().verifying_key().to_bytes();
+    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+    let Ok(DocumentRead::Captured(document)) = joined.owner.with_current(joined.room, |view| {
+        view.read_document(member, APP, "", None, usize::MAX, joined.now)
+    }) else {
+        panic!("the first read admits the document");
+    };
+    let holds = |reader, known| {
+        joined.owner.with_current(joined.room, |view| {
+            view.holds_revision(reader, APP, "", known, joined.now)
+        })
+    };
+    crate::document_read::reset_room_restores();
+    assert_eq!(holds(member, document.revision), Ok(Some(true)));
+    assert_eq!(
+        holds(member, [0; 32]),
+        Ok(Some(false)),
+        "another revision is not held"
+    );
+    assert_eq!(
+        crate::document_read::room_restores(),
+        0,
+        "answered from the admitted heads, without restoring the room"
+    );
+    assert!(
+        holds(stranger, document.revision).is_err(),
+        "the read permission is checked as a read checks it"
     );
 }
 
@@ -1168,12 +1294,14 @@ fn removed_agent_cannot_receive_a_direction_for_its_retained_run() {
     joined
         .owner
         .with_current(joined.room, |view| {
-            let (_, _, caps) = tilo_peer_state::room::extract_governed_fields(
+            let (_, policy) = tilo_peer_state::room::extract_governed_fields(
                 view.peer().admitted_room().unwrap(),
             );
             assert!(
-                caps.iter()
-                    .all(|cap| cap.subject != collab_types::caps::Subject::agent("scribe")),
+                policy
+                    .grants
+                    .iter()
+                    .all(|grant| grant.subject != tilo_action_policy::Subject::agent("scribe")),
                 "the signed removal must actually remove the agent"
             );
             Ok(())
@@ -1352,7 +1480,7 @@ fn manual_task_owner_replay_restart_and_attachment_are_canonical() {
             Ok(view
                 .peer()
                 .permissions(view.device().device_public_key, joined.now)?
-                .2)
+                .person)
         })
         .unwrap();
     assert_eq!(task.created_by, author);
@@ -1540,70 +1668,214 @@ fn manual_owner_commands_refuse_host_impersonation_and_agent_instruction_carrier
     );
 }
 
-/// What the owner file held before byte fields became base64: the same
-/// record pretty-printed, every byte a JSON integer.
-fn legacy_owner_file(current: &[u8]) -> Vec<u8> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-    let mut value: serde_json::Value = serde_json::from_slice(current).unwrap();
-    let rooms = value["rooms"].as_object_mut().unwrap();
-    assert!(!rooms.is_empty());
-    for room in rooms.values_mut() {
-        for field in ["peer", "invitation", "enrollment_intent"] {
-            let text = room[field].as_str().expect("byte fields are base64 text");
-            room[field] = serde_json::to_value(STANDARD.decode(text).unwrap()).unwrap();
-        }
-    }
-    serde_json::to_vec_pretty(&value).unwrap()
+#[test]
+fn removed_agent_cannot_admit_action_for_retained_run() {
+    let joined = enrolled();
+    let (task_id, _) = queued_and_started_task(&joined);
+    joined
+        .owner
+        .with_task_action_admission(joined.room, &task_id, "scribe", 1, 0, || Ok(()))
+        .unwrap();
+    set_test_agent_membership(&joined, "scribe", false);
+    let mut invoked = false;
+    let result =
+        joined
+            .owner
+            .with_task_action_admission(joined.room, &task_id, "scribe", 1, 0, || {
+                invoked = true;
+                Ok(())
+            });
+    assert!(
+        result.is_err(),
+        "removed agent must lose retained task execution authority"
+    );
+    assert!(
+        !invoked,
+        "a denied admission must not reach the application"
+    );
 }
 
 #[test]
-fn legacy_int_array_owner_file_still_loads() {
+fn person_run_approval_replays_exactly_and_retains_direction_fences_after_restart() {
+    let joined = enrolled();
+    let (task_id, caller, host) = queued_task(&joined);
+    let approval = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(500),
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::ApproveRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+                expected_run_epoch: 0,
+                after_revision: 0,
+            },
+        },
+    };
+    let reopened = assert_approval_replay(&joined, &approval, &task_id, caller.device_public_key);
+    let mut changed_request = approval;
+    let CommitOperation::WorkspaceTaskCommand { invocation, .. } = &mut changed_request.operation
+    else {
+        panic!("approval");
+    };
+    *invocation = uuid::Uuid::from_u128(501);
+    assert!(
+        reopened
+            .commit_workspace_task_command(changed_request, joined.now)
+            .is_err()
+    );
+    let direction = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(502),
+            authority: WorkspaceTaskAuthority::Person { caller },
+            command: WorkspaceTaskCommand::DirectionForRun {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                after_revision: 0,
+                text: "Keep the compatibility warning".into(),
+            },
+        },
+    };
+    reopened
+        .commit_workspace_task_command(direction, joined.now)
+        .unwrap();
+    assert!(
+        reopened
+            .with_task_action_admission(
+                joined.room,
+                &task_id,
+                "scribe",
+                1,
+                0,
+                || -> Result<(), String> { panic!("unseen direction must fence execution") }
+            )
+            .is_err()
+    );
+    let ack = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(503),
+            authority: WorkspaceTaskAuthority::Agent {
+                attestor: host,
+                agent_id: "scribe".into(),
+            },
+            command: WorkspaceTaskCommand::AppliedAck {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                revision: 1,
+            },
+        },
+    };
+    reopened
+        .commit_workspace_task_command(ack.clone(), joined.now)
+        .unwrap();
+    let after = std::fs::read(&joined.path).unwrap();
+    let restarted = open_file(&joined.path).unwrap();
+    restarted
+        .commit_workspace_task_command(ack, joined.now)
+        .unwrap();
+    assert_eq!(std::fs::read(&joined.path).unwrap(), after);
+    restarted
+        .with_task_action_admission(joined.room, &task_id, "scribe", 1, 1, || Ok(()))
+        .unwrap();
+    set_test_agent_membership(&joined, "scribe", false);
+    assert!(
+        joined
+            .owner
+            .with_task_action_admission(
+                joined.room,
+                &task_id,
+                "scribe",
+                1,
+                1,
+                || -> Result<(), String> { panic!("removed agent must not execute") }
+            )
+            .is_err()
+    );
+}
+
+fn assert_approval_replay(
+    joined: &Enrolled,
+    approval: &OwnerCommitRequest,
+    task_id: &str,
+    device: [u8; 32],
+) -> NativeWorkspaceOwner {
+    let receipt = joined
+        .owner
+        .commit_workspace_task_command(approval.clone(), joined.now)
+        .unwrap();
+    receipt.validate_for(approval).unwrap();
+    let bytes = std::fs::read(&joined.path).unwrap();
+    let reopened = open_file(&joined.path).unwrap();
+    reopened
+        .commit_workspace_task_command(approval.clone(), joined.now)
+        .unwrap()
+        .validate_for(approval)
+        .unwrap();
+    assert_eq!(std::fs::read(&joined.path).unwrap(), bytes);
+    let state = reopened.workspace_task_snapshot(joined.room).unwrap();
+    let run = state.controls[task_id].active_run.as_ref().unwrap();
+    assert_eq!(run.epoch, 1);
+    assert_eq!(run.approval.as_ref().unwrap().device, device);
+    assert_eq!(
+        state.tasks[0].audit.last().unwrap().actor,
+        run.approval.as_ref().unwrap().person
+    );
+    reopened
+}
+
+#[test]
+fn owner_file_holds_byte_fields_as_compact_base64() {
     let joined = enrolled();
     let current = std::fs::read(&joined.path).unwrap();
-    let legacy = legacy_owner_file(&current);
-    assert!(
-        current.len() * 3 < legacy.len(),
-        "base64 compact record {} bytes against legacy {} bytes",
-        current.len(),
-        legacy.len()
-    );
-    let legacy_path = joined.path.with_file_name("legacy-joined-rooms.json");
-    std::fs::write(&legacy_path, &legacy).unwrap();
-    let reopened = open_file(&legacy_path).unwrap();
+    assert!(!current.contains(&b'\n'), "the owner file is compact");
+    let value: serde_json::Value = serde_json::from_slice(&current).unwrap();
+    let room = &value["rooms"][joined.room.to_string()];
+    for field in ["peer", "invitation", "enrollment_intent"] {
+        assert!(room[field].is_string(), "{field} is base64 text");
+    }
+}
+
+#[test]
+fn retained_replay_reuses_exact_committed_publication() {
+    let joined = enrolled();
+    let governor = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.governor().device_public_key))
+        .unwrap();
+    let message = joined.replay.clone();
+    let before = std::fs::read(&joined.path).unwrap();
+    let generation = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.generation()))
+        .unwrap();
+    let report = joined
+        .owner
+        .receive(
+            joined.room,
+            TransportOrigin::RetainedRelayDelta(governor),
+            message,
+            joined.now,
+        )
+        .unwrap();
+    assert!(matches!(
+        report.primary(),
+        tilo_peer_state::InputDisposition::Duplicate(_)
+    ));
     assert_eq!(
-        serde_json::to_vec(&*reopened.0.authority.read()).unwrap(),
-        current,
-        "the legacy record loads to exactly the record the current file holds"
+        joined
+            .owner
+            .with_current(joined.room, |view| Ok(view.generation()))
+            .unwrap(),
+        generation,
+        "an unchanged authenticated replay must reuse the actual committed generation"
     );
-    // A restored peer's durable() bytes order per-author watermarks by hash,
-    // so compare what the room holds rather than a re-encoding of it.
-    let state = |owner: &NativeWorkspaceOwner| {
-        owner
-            .with_current(joined.room, |view| {
-                Ok((
-                    view.peer().rows(),
-                    view.peer().document_heads(APP, ""),
-                    view.generation(),
-                    view.continuity(),
-                ))
-            })
-            .unwrap()
-    };
-    assert_eq!(state(&reopened), state(&joined.owner));
-    // The next publication rewrites the legacy file in the current format.
-    let request = edit(&reopened, joined.room, joined.now);
-    reopened.commit_document(request, joined.now).unwrap();
-    let rewritten = std::fs::read(&legacy_path).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&rewritten).unwrap();
-    assert!(value["rooms"][joined.room.to_string()]["peer"].is_string());
-    assert!(!rewritten.contains(&b'\n'), "the owner file is compact");
-    let after = state(&reopened);
-    assert_ne!(after, state(&joined.owner));
-    drop(reopened);
-    let reread = open_file(&legacy_path).unwrap();
     assert_eq!(
-        serde_json::to_vec(&*reread.0.authority.read()).unwrap(),
-        rewritten
+        std::fs::read(&joined.path).unwrap(),
+        before,
+        "an unchanged authenticated replay must not rewrite durable owner state"
     );
-    assert_eq!(state(&reread), after);
 }

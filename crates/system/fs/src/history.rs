@@ -10,88 +10,18 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use fs_protocol::projection::{
+    HISTORY_PROJECTION_VERSION, MAX_PROJECTED_CONFLICTS, MAX_PROJECTED_VERSIONS,
+};
 use fs_protocol::{
     ConflictResolution, ConflictStatus, FileConflictV1, FileProvenance, FileRecordError,
-    FileRecordId, FileVersionId, FileVersionV1,
+    FileRecordId, FileVersionId, FileVersionV1, HistoryProjectionV1,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
 const HISTORY_SCHEMA_VERSION: u16 = 1;
-pub const HISTORY_XATTR: &str = "user.tilo.history";
-pub const HISTORY_CONTROL_XATTR: &str = "user.tilo.history-control";
-pub const HISTORY_PROJECTION_VERSION: u16 = 1;
-pub const MAX_HISTORY_PROJECTION_BYTES: usize = 16 * 1024;
-const MAX_PROJECTED_VERSIONS: usize = 12;
-const MAX_PROJECTED_CONFLICTS: usize = 8;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HistoryProjectionV1 {
-    pub schema_version: u16,
-    pub record_id: FileRecordId,
-    pub total_versions: u64,
-    pub versions_truncated: bool,
-    pub heads: Vec<FileVersionId>,
-    pub versions: Vec<FileVersionV1>,
-    pub conflicts_truncated: bool,
-    pub conflicts: Vec<FileConflictV1>,
-}
-
-impl HistoryProjectionV1 {
-    /// Serialize this bounded projection for the history xattr.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when JSON encoding fails or the result exceeds the
-    /// projection byte limit.
-    pub fn to_xattr_bytes(&self) -> Result<Vec<u8>, HistoryError> {
-        let bytes = serde_json::to_vec(self)?;
-        if bytes.len() > MAX_HISTORY_PROJECTION_BYTES {
-            return Err(HistoryError::ProjectionTooLarge(bytes.len()));
-        }
-        Ok(bytes)
-    }
-
-    /// Parse and fully validate a history xattr projection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for oversized or malformed JSON, unsupported schema,
-    /// invalid records/conflicts, or an inconsistent record id/count.
-    pub fn parse_xattr(bytes: &[u8]) -> Result<Self, HistoryError> {
-        if bytes.len() > MAX_HISTORY_PROJECTION_BYTES {
-            return Err(HistoryError::ProjectionTooLarge(bytes.len()));
-        }
-        let value: Self = serde_json::from_slice(bytes)?;
-        if value.schema_version != HISTORY_PROJECTION_VERSION {
-            return Err(HistoryError::UnsupportedProjectionVersion(
-                value.schema_version,
-            ));
-        }
-        if value.versions.len() > MAX_PROJECTED_VERSIONS
-            || value.conflicts.len() > MAX_PROJECTED_CONFLICTS
-            || value.total_versions < value.versions.len() as u64
-        {
-            return Err(HistoryError::InvalidProjection);
-        }
-        for version in &value.versions {
-            version.validate()?;
-            if version.record_id != value.record_id {
-                return Err(HistoryError::WrongRecord);
-            }
-        }
-        for conflict in &value.conflicts {
-            conflict.validate()?;
-            if conflict.record_id != value.record_id {
-                return Err(HistoryError::WrongRecord);
-            }
-        }
-        Ok(value)
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HistoryDocument {
@@ -890,24 +820,6 @@ impl FileHistoryStore {
         Some(result)
     }
 
-    /// Content roots retained by the durable immutable history.  A home peer
-    /// uses these to keep historical versions recoverable while reclaiming
-    /// only blobs proven unreachable from both the live namespace and history.
-    pub fn retained_content_hashes(&self) -> Vec<fs_protocol::ContentHash> {
-        let Ok(current) = self.state.lock() else {
-            return Vec::new();
-        };
-        let mut hashes = current
-            .records
-            .values()
-            .flat_map(|record| record.versions.values())
-            .filter_map(|version| version.content_hash)
-            .collect::<Vec<_>>();
-        hashes.sort_unstable_by_key(|hash| hash.0);
-        hashes.dedup();
-        hashes
-    }
-
     pub fn projection(&self, record_id: FileRecordId) -> Option<HistoryProjectionV1> {
         let snapshot = self.snapshot(record_id)?;
         let total_versions = snapshot.versions.len() as u64;
@@ -1150,12 +1062,6 @@ pub enum HistoryError {
     ResolutionTimestampMismatch,
     #[error("conflict {0} was already resolved differently")]
     AlreadyResolved(Uuid),
-    #[error("history projection is too large ({0} bytes)")]
-    ProjectionTooLarge(usize),
-    #[error("unsupported history projection version {0}")]
-    UnsupportedProjectionVersion(u16),
-    #[error("history projection is internally inconsistent")]
-    InvalidProjection,
     #[error("signed record publication failed: {0}")]
     Publication(String),
     #[error("record cannot take another signed version: {0}")]
@@ -1568,7 +1474,7 @@ mod tests {
             assert_eq!(projection.versions.len(), MAX_PROJECTED_VERSIONS);
             assert_eq!(projection.versions.first().unwrap().timestamp_ms, 8);
             let bytes = projection.to_xattr_bytes().unwrap();
-            assert!(bytes.len() <= MAX_HISTORY_PROJECTION_BYTES);
+            assert!(bytes.len() <= fs_protocol::projection::MAX_HISTORY_PROJECTION_BYTES);
             assert_eq!(
                 HistoryProjectionV1::parse_xattr(&bytes).unwrap(),
                 projection

@@ -7,6 +7,7 @@ source authority, import, activation and the slot lifecycle.
 """
 import argparse
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 import platform
@@ -124,10 +125,40 @@ def profile_directory(profile):
     return 'debug' if profile == 'dev' else profile
 
 
+def runtime_dependencies():
+    """os/scripts/collect-runtime-dependencies.py, which the release bundles share."""
+    path = Path(__file__).resolve().parents[1] / 'scripts/collect-runtime-dependencies.py'
+    spec = importlib.util.spec_from_file_location('collect_runtime_dependencies', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def runtime_engines(directory):
+    """The engine libraries build-thin-apps.sh built beside the toolkit.
+
+    Signed into the SDK whichever apps are selected, like the toolkit itself:
+    each is loaded only by its app, but the runtime id covers it."""
+    listing = directory / 'runtime-engines'
+    if not listing.is_file():
+        raise ValueError('build-thin-apps.sh left no runtime engine list beside the toolkit')
+    engines = [directory / name for name in listing.read_text().split()]
+    if any(not re.fullmatch(r'lib[a-z0-9_]+\.so', path.name) or not path.is_file()
+           for path in engines):
+        raise ValueError('a listed runtime engine is not a built library beside the toolkit')
+    return engines
+
+
 def native_dependencies(objects, dependency_env):
-    """Collect the native closure of every ELF before signing its SDK."""
-    paths = set()
-    for binary in objects:
+    """Collect the native closure of every ELF before signing its SDK, with the
+    libraries the toolkit loads on first use (GLib, GStreamer; TIL-713)."""
+    collector = runtime_dependencies()
+    library_dirs = [Path(d) for d in dependency_env.get('LD_LIBRARY_PATH', '').split(':') if d]
+    cache = {}
+    lazy = list(dict.fromkeys(collector.locate(soname, library_dirs, cache)
+                              for binary in objects for soname in collector.lazy_needed(binary)))
+    paths = set(lazy)
+    for binary in [*objects, *lazy]:
         report = run(['ldd', str(binary)], env=dependency_env, capture=True).stdout
         if 'not found' in report:
             raise ValueError(f'{binary} has unresolved native dependencies')
@@ -164,11 +195,12 @@ def assemble_inside(args):
     std = sorted(libdir.glob('libstd-*.so'))
     if len(std) != 1 or not toolkit.is_file():
         raise ValueError('the exact graph toolkit or Rust standard library is missing')
+    engines = runtime_engines(toolkit.parent)
     dependency_env = dict(os.environ, LD_LIBRARY_PATH=f'{toolkit.parent}:{libdir}')
-    closure = native_dependencies([toolkit, *binaries], dependency_env)
+    closure = native_dependencies([toolkit, *engines, *binaries], dependency_env)
     fonts = prepare_runtime_fonts(repo, stage / 'work')
     publish_runtime_fonts(repo, fonts, stage / 'tree/usr/share/tilo/font-catalogs')
-    includes = list(dict.fromkeys([toolkit, std[0], *closure, fonts]))
+    includes = list(dict.fromkeys([toolkit, *engines, std[0], *closure, fonts]))
     bundle = target / 'release/tilo-runtime-bundle'
     identity = stage / 'work/runtime-identity.json'
     version_file = stage / 'work/runtime-version'

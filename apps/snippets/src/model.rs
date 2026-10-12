@@ -1,30 +1,33 @@
-//! Pure data model for the snippet library.
+//! The snippet library's model: what is stored, and the pure queries the
+//! window asks of it.
 //!
-//! A library is a flat list of [`Snippet`]s plus a derived view of the
-//! folders and tags that organise them. Folders are an explicit string
-//! field on each snippet; tags are a set. Everything here is plain data
-//! and pure logic — no IO, no CRDT, no rendering. The [`crate::doc`]
-//! layer projects this onto an Automerge document so libraries sync
-//! across devices; the widgets render it.
+//! [`Snippets`] is the record: one [`Snippet`] per item of a
+//! [`Collection`], each a typed struct whose fields merge the way their types
+//! say (a body merges character by character, tags per tag, uses add up).
+//! `#[derive(Model)]` is the whole storage contract; nothing here touches
+//! the document. The record's verbs are in [`crate::resource`].
 
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use std::collections::BTreeMap;
 
-/// Stable identifier for one snippet. Backs every cross-reference and
-/// the per-snippet CRDT object key.
-pub type SnippetId = Uuid;
+use ui::tilo_resource::{self, Atom, Collection, Counter, Id, Model, Refusal, Set};
+
+/// The id of one snippet: its item in the library's collection.
+pub type SnippetId = Id;
 
 /// The syntax a snippet body is written in. Drives both the language
 /// badge and the syntax highlighter's grammar. `PlainText` is the
 /// fallback for prose snippets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Language {
+    #[default]
+    #[model(rename = "text")]
     PlainText,
     Shell,
     Rust,
     Sql,
     Git,
     Python,
+    #[model(rename = "javascript")]
     JavaScript,
     Json,
     Yaml,
@@ -75,35 +78,6 @@ impl Language {
         }
     }
 
-    /// Lowercase token used as the on-wire value and to match
-    /// `language:foo` search filters.
-    pub fn slug(self) -> &'static str {
-        match self {
-            Language::PlainText => "text",
-            Language::Shell => "shell",
-            Language::Rust => "rust",
-            Language::Sql => "sql",
-            Language::Git => "git",
-            Language::Python => "python",
-            Language::JavaScript => "javascript",
-            Language::Json => "json",
-            Language::Yaml => "yaml",
-            Language::Markdown => "markdown",
-            Language::Html => "html",
-            Language::Css => "css",
-            Language::Toml => "toml",
-            Language::Dockerfile => "dockerfile",
-        }
-    }
-
-    /// Parse a slug back into a language, defaulting to plain text.
-    pub fn from_slug(s: &str) -> Language {
-        Language::ALL
-            .into_iter()
-            .find(|l| l.slug() == s)
-            .unwrap_or(Language::PlainText)
-    }
-
     /// The language's name in the person's language: the proper names of
     /// programming languages stay as they are; plain text is translated.
     pub fn name(self) -> String {
@@ -137,45 +111,62 @@ impl Language {
 
 /// One reusable snippet. The body may contain `${name}` placeholders
 /// that the expand flow fills in before copying.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+#[model(check = Snippet::valid)]
 pub struct Snippet {
-    pub id: SnippetId,
+    /// Title
+    #[model(label)]
     pub title: String,
-    pub language: Language,
-    /// Logical folder this snippet lives in (e.g. "Deploy", "Git").
-    /// Empty string == the implicit "All Snippets" root.
-    pub folder: String,
-    pub tags: Vec<String>,
+    /// Body
     pub body: String,
-    /// Free-text note shown above the body in the detail pane.
+    /// What the snippet is for, shown above the body.
     pub description: String,
-    /// Whether the user starred this snippet.
+    /// Starred
     pub favorite: bool,
-    /// Monotonic counter bumped on each copy — drives the "Most used"
-    /// smart folder and the per-row usage hint.
-    pub uses: u32,
+    /// Folder: empty for none (only "All snippets" lists it). Written
+    /// whole, so two people filing it at once do not merge two names.
+    pub folder: Atom,
+    /// Language
+    pub language: Language,
+    /// Tags
+    pub tags: Set<String>,
+    /// How often it was copied: drives "Most used" and the row's usage
+    /// hint. Only copying it changes the count.
+    #[model(readonly)]
+    pub uses: Counter,
 }
 
 impl Snippet {
-    /// A blank snippet with a fresh id, ready to be edited.
-    pub fn blank(folder: &str) -> Self {
+    /// A blank snippet titled `title`, filed under `folder`.
+    pub fn titled(title: impl Into<String>, folder: impl Into<String>) -> Self {
         Self {
-            id: Uuid::new_v4(),
-            title: crate::tr("snippets-untitled"),
-            language: Language::PlainText,
-            folder: folder.to_string(),
-            tags: Vec::new(),
-            body: String::new(),
-            description: String::new(),
-            favorite: false,
-            uses: 0,
+            title: title.into(),
+            folder: Atom(folder.into()),
+            ..Self::default()
         }
     }
 
+    /// Folder and tag names are what the sidebar lists and what people
+    /// type to find them again: never blank, never padded.
+    fn valid(&self) -> Result<(), Refusal> {
+        if self.folder.0.trim() != self.folder.0 {
+            return Err(Refusal::new("a folder name has no surrounding spaces"));
+        }
+        if self
+            .tags
+            .iter()
+            .any(|tag| tag.trim().is_empty() || tag.trim() != tag)
+        {
+            return Err(Refusal::new(
+                "a tag is not blank and has no surrounding spaces",
+            ));
+        }
+        Ok(())
+    }
+
     /// Extract the ordered, de-duplicated set of `${placeholder}` names
-    /// in the body. Placeholders are `${` + identifier-ish chars + `}`.
-    /// The first occurrence wins for ordering so the expand form reads
-    /// top-to-bottom.
+    /// in the body. The first occurrence wins for ordering so the expand
+    /// form reads top-to-bottom.
     pub fn placeholders(&self) -> Vec<String> {
         placeholders_in(&self.body)
     }
@@ -183,6 +174,72 @@ impl Snippet {
     /// True if the body has at least one `${placeholder}`.
     pub fn has_placeholders(&self) -> bool {
         !self.placeholders().is_empty()
+    }
+
+    /// How often the snippet was copied.
+    pub fn use_count(&self) -> usize {
+        usize::try_from(self.uses.get()).unwrap_or_default()
+    }
+}
+
+/// The snippet library: every snippet, in the order they were made.
+#[derive(Model, Default, Clone, Debug, PartialEq)]
+pub struct Snippets {
+    pub snippets: Collection<Snippet>,
+}
+
+impl Snippets {
+    pub fn get(&self, id: &SnippetId) -> Option<&Snippet> {
+        self.snippets.get(id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.snippets.is_empty()
+    }
+
+    /// Distinct folder names, sorted. Snippets in no folder are covered by
+    /// the "All" smart folder.
+    pub fn folders(&self) -> Vec<String> {
+        let mut folders: Vec<String> = self
+            .snippets
+            .values()
+            .map(|s| s.folder.0.clone())
+            .filter(|f| !f.is_empty())
+            .collect();
+        folders.sort();
+        folders.dedup();
+        folders
+    }
+
+    /// Distinct tags across the whole library, sorted, with the per-tag
+    /// snippet count.
+    pub fn tags(&self) -> Vec<(String, usize)> {
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for tag in self.snippets.values().flat_map(|s| s.tags.iter()) {
+            *counts.entry(tag.clone()).or_default() += 1;
+        }
+        counts.into_iter().collect()
+    }
+
+    /// Resolve a sidebar [`Selection`] into the ordered snippets the list
+    /// shows. "Most used" sorts by use, everything else favorites first,
+    /// then by title.
+    pub fn query(&self, selection: &Selection) -> Vec<SnippetId> {
+        let mut matched: Vec<(&Id, &Snippet)> = self
+            .snippets
+            .iter()
+            .filter(|(_, s)| selection_matches(selection, s))
+            .collect();
+        if matches!(selection, Selection::Smart(SmartFolder::MostUsed)) {
+            matched.sort_by(|(_, a), (_, b)| b.uses.cmp(&a.uses).then(a.title.cmp(&b.title)));
+        } else {
+            matched.sort_by(|(_, a), (_, b)| {
+                b.favorite
+                    .cmp(&a.favorite)
+                    .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            });
+        }
+        matched.into_iter().map(|(id, _)| id.clone()).collect()
     }
 }
 
@@ -304,92 +361,14 @@ impl Default for Selection {
     }
 }
 
-/// In-memory snippet library with the query/mutation ops the UI needs.
-#[derive(Clone, Debug, Default)]
-pub struct Library {
-    pub snippets: Vec<Snippet>,
-}
-
-impl Library {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn get(&self, id: SnippetId) -> Option<&Snippet> {
-        self.snippets.iter().find(|s| s.id == id)
-    }
-
-    pub fn get_mut(&mut self, id: SnippetId) -> Option<&mut Snippet> {
-        self.snippets.iter_mut().find(|s| s.id == id)
-    }
-
-    pub fn insert(&mut self, snippet: Snippet) {
-        self.snippets.push(snippet);
-    }
-
-    pub fn remove(&mut self, id: SnippetId) {
-        self.snippets.retain(|s| s.id != id);
-    }
-
-    /// Distinct folder names in stable, sorted order. The empty-string
-    /// root folder is never returned (it's covered by the "All" smart
-    /// folder).
-    pub fn folders(&self) -> Vec<String> {
-        let mut set: Vec<String> = self
-            .snippets
-            .iter()
-            .map(|s| s.folder.clone())
-            .filter(|f| !f.is_empty())
-            .collect();
-        set.sort();
-        set.dedup();
-        set
-    }
-
-    /// Distinct tags across the whole library, sorted, with the per-tag
-    /// snippet count.
-    pub fn tags(&self) -> Vec<(String, usize)> {
-        use std::collections::BTreeMap;
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for s in &self.snippets {
-            for t in &s.tags {
-                *counts.entry(t.clone()).or_default() += 1;
-            }
-        }
-        counts.into_iter().collect()
-    }
-
-    /// Resolve a sidebar [`Selection`] into the ordered list of snippet ids
-    /// to show in the list pane. Favorites sort first, then by title.
-    pub fn query(&self, selection: &Selection) -> Vec<SnippetId> {
-        let mut matched: Vec<&Snippet> = self
-            .snippets
-            .iter()
-            .filter(|s| selection_matches(selection, s))
-            .collect();
-        // Smart "Most used" sorts by usage desc; everything else sorts
-        // favorites-first then alphabetical.
-        if matches!(selection, Selection::Smart(SmartFolder::MostUsed)) {
-            matched.sort_by(|a, b| b.uses.cmp(&a.uses).then(a.title.cmp(&b.title)));
-        } else {
-            matched.sort_by(|a, b| {
-                b.favorite
-                    .cmp(&a.favorite)
-                    .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-            });
-        }
-        matched.into_iter().map(|s| s.id).collect()
-    }
-}
-
 /// Whether a [`Selection`] includes `snippet`.
 fn selection_matches(selection: &Selection, snippet: &Snippet) -> bool {
     match selection {
         Selection::Smart(SmartFolder::All) => true,
         Selection::Smart(SmartFolder::Favorites) => snippet.favorite,
-        Selection::Smart(SmartFolder::MostUsed) => snippet.uses > 0,
-        Selection::Folder(f) => &snippet.folder == f,
-        Selection::Tag(t) => snippet.tags.iter().any(|x| x == t),
+        Selection::Smart(SmartFolder::MostUsed) => snippet.uses.get() > 0,
+        Selection::Folder(f) => &snippet.folder.0 == f,
+        Selection::Tag(t) => snippet.tags.contains(t),
     }
 }
 
@@ -398,92 +377,67 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    /// Placeholder ordering/dedup, expansion and language slugs.
-    #[test]
-    fn placeholders_expand_and_language_slugs_round_trip() {
-        // Case `placeholders_are_ordered_and_deduped`.
-        {
-            let s = Snippet {
-                body: "echo ${name} then ${host} then ${name} again".into(),
-                ..Snippet::blank("")
-            };
-            assert_eq!(s.placeholders(), vec!["name", "host"]);
+    fn library(snippets: impl IntoIterator<Item = Snippet>) -> Snippets {
+        let mut library = Snippets::default();
+        for (n, snippet) in snippets.into_iter().enumerate() {
+            library
+                .snippets
+                .push(Id::from_raw(format!("s{n}")), snippet);
         }
-
-        // Case `placeholders_ignore_unmatched_and_empty`.
-        {
-            assert_eq!(placeholders_in("a $ b ${} c ${ok}"), vec!["ok"]);
-            assert_eq!(placeholders_in("no braces here"), Vec::<String>::new());
-        }
-
-        // Case `expand_substitutes_known_keeps_unknown`.
-        {
-            let mut v = HashMap::new();
-            v.insert("name".to_string(), "world".to_string());
-            let out = expand("hi ${name}, ${missing}", &v);
-            assert_eq!(out, "hi world, ${missing}");
-        }
-
-        // Case `language_slug_round_trips`.
-        {
-            for l in Language::ALL {
-                assert_eq!(Language::from_slug(l.slug()), l);
-            }
-        }
+        library
     }
 
-    /// Favourite ordering, smart favourites and folder filters.
+    /// Placeholder ordering/dedup and expansion.
+    #[test]
+    fn placeholders_expand() {
+        let s = Snippet {
+            body: "echo ${name} then ${host} then ${name} again".into(),
+            ..Snippet::default()
+        };
+        assert_eq!(s.placeholders(), vec!["name", "host"]);
+        assert_eq!(placeholders_in("a $ b ${} c ${ok}"), vec!["ok"]);
+        assert_eq!(placeholders_in("no braces here"), Vec::<String>::new());
+
+        let mut v = HashMap::new();
+        v.insert("name".to_string(), "world".to_string());
+        assert_eq!(expand("hi ${name}, ${missing}", &v), "hi world, ${missing}");
+    }
+
+    /// Favourite ordering, smart favourites, most used and folder and tag
+    /// filters.
     #[test]
     fn library_queries_filter_and_sort() {
-        // Case `favorites_sort_before_others`.
-        {
-            let mut lib = Library::new();
-            lib.insert(Snippet {
-                title: "zebra".into(),
-                favorite: true,
-                ..Snippet::blank("")
-            });
-            lib.insert(Snippet {
-                title: "apple".into(),
-                favorite: false,
-                ..Snippet::blank("")
-            });
-            let ids = lib.query(&Selection::default());
-            assert_eq!(lib.get(ids[0]).unwrap().title, "zebra");
-        }
-
-        // Case `smart_favorites_only_includes_starred`.
-        {
-            let mut lib = Library::new();
-            lib.insert(Snippet {
-                title: "a".into(),
-                favorite: true,
-                ..Snippet::blank("")
-            });
-            lib.insert(Snippet {
-                title: "b".into(),
-                favorite: false,
-                ..Snippet::blank("")
-            });
-            let ids = lib.query(&Selection::Smart(SmartFolder::Favorites));
-            assert_eq!(ids.len(), 1);
-            assert!(lib.get(ids[0]).unwrap().favorite);
-        }
-
-        // Case `folder_selection_filters_by_folder`.
-        {
-            let mut lib = Library::new();
-            lib.insert(Snippet {
-                title: "a".into(),
-                ..Snippet::blank("Deploy")
-            });
-            lib.insert(Snippet {
-                title: "b".into(),
-                ..Snippet::blank("Git")
-            });
-            let ids = lib.query(&Selection::Folder("Deploy".into()));
-            assert_eq!(ids.len(), 1);
-            assert_eq!(lib.get(ids[0]).unwrap().folder, "Deploy");
-        }
+        let starred = Snippet {
+            favorite: true,
+            ..Snippet::titled("zebra", "")
+        };
+        let mut used = Snippet::titled("apple", "Deploy");
+        used.uses.add(3);
+        used.tags.insert("k8s".to_owned());
+        let lib = library([starred, used, Snippet::titled("mango", "Git")]);
+        let titles = |ids: Vec<Id>| -> Vec<String> {
+            ids.iter()
+                .map(|id| lib.get(id).unwrap().title.clone())
+                .collect()
+        };
+        assert_eq!(
+            titles(lib.query(&Selection::default())),
+            ["zebra", "apple", "mango"]
+        );
+        assert_eq!(
+            titles(lib.query(&Selection::Smart(SmartFolder::Favorites))),
+            ["zebra"]
+        );
+        assert_eq!(
+            titles(lib.query(&Selection::Smart(SmartFolder::MostUsed))),
+            ["apple"]
+        );
+        assert_eq!(
+            titles(lib.query(&Selection::Folder("Deploy".into()))),
+            ["apple"]
+        );
+        assert_eq!(titles(lib.query(&Selection::Tag("k8s".into()))), ["apple"]);
+        assert_eq!(lib.folders(), ["Deploy", "Git"]);
+        assert_eq!(lib.tags(), [("k8s".to_owned(), 1)]);
     }
 }

@@ -325,11 +325,6 @@ impl TimePicker {
         self.publish_local_state();
     }
 
-    pub fn set_seconds(&mut self, seconds: Option<u8>) {
-        self.seconds = seconds.map(|seconds| seconds.min(MINSEC_MAX));
-        self.publish_local_state();
-    }
-
     pub fn set_value(&mut self, value: TimeValue) {
         self.apply_value(value.normalized());
         self.publish_local_state();
@@ -509,8 +504,7 @@ impl Widget for TimePicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.apply_layout_external(crate::widget::placed(&layout, origin));
+        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
     }
 
     fn draw(
@@ -699,6 +693,7 @@ impl Widget for TimePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -1159,6 +1154,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("21:07:09".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
@@ -1168,6 +1164,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("24:00".into()),
+                &[],
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));

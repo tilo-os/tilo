@@ -1,8 +1,48 @@
-//! Shared pointer, touch and keyboard semantics for interactive chart widgets.
+//! Shared layout, pointer, touch and keyboard semantics for chart widgets.
 
 use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
+
+/// The layout half of a chart's `Widget` impl: a leaf as wide as its parent
+/// and `self.height` tall, placed into `self.rect`, dirty until first placed.
+macro_rules! chart_leaf {
+    () => {
+        fn build_layout(
+            &mut self,
+            taffy: &mut taffy::TaffyTree<()>,
+            _theme: &crate::theme::Theme,
+            node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            let style = taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::length(self.height),
+                },
+                ..Default::default()
+            };
+            crate::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
+        }
+
+        fn apply_layout(
+            &mut self,
+            taffy: &taffy::TaffyTree<()>,
+            node: taffy::NodeId,
+            origin: vello::kurbo::Point,
+        ) {
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
+        }
+
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            self.rect
+        }
+
+        fn is_layout_dirty(&self) -> bool {
+            self.rect == vello::kurbo::Rect::ZERO
+        }
+    };
+}
+pub(crate) use chart_leaf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChartNavAction {
@@ -131,6 +171,26 @@ pub fn moved_item(
 ) -> Option<usize> {
     let position = current.and_then(|current| items.iter().position(|item| *item == current));
     moved_index(position, items.len(), action).and_then(|position| items.get(position).copied())
+}
+
+/// The item key an accessibility `Activate` at `keys` targets: the last key.
+/// Any other action, or an empty path, targets nothing.
+pub(crate) fn activated_key(action: &crate::a11y::Action, keys: &[u64]) -> Option<u64> {
+    if matches!(action, crate::a11y::Action::Activate) {
+        keys.last().copied()
+    } else {
+        None
+    }
+}
+
+/// The id among `ids` whose accessibility key an `Activate` at `keys` targets.
+pub(crate) fn activated_id<I: std::hash::Hash>(
+    action: &crate::a11y::Action,
+    keys: &[u64],
+    ids: impl IntoIterator<Item = I>,
+) -> Option<I> {
+    let key = activated_key(action, keys)?;
+    ids.into_iter().find(|id| crate::a11y::hash_key(id) == key)
 }
 
 /// What a chart supplies so [`handle_chart_event`] can drive its hover,

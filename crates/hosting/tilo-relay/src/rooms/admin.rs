@@ -49,7 +49,7 @@ impl RoomAdminProtocol {
             .accept_bi()
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        let bytes = crate::framing::read_frame(&mut recv, MAX_REQUEST_BYTES)
+        let bytes = crate::frame::read_frame(&mut recv, MAX_REQUEST_BYTES)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         let request: RoomAdminRequest = postcard::from_bytes(&bytes)
@@ -65,7 +65,7 @@ impl RoomAdminProtocol {
                 "room reply exceeds the wire limit".into(),
             ));
         }
-        crate::framing::write_frame(&mut send, &bytes)
+        crate::frame::write_frame(&mut send, &bytes)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         send.finish()
@@ -99,11 +99,14 @@ impl RoomAdminProtocol {
     }
 
     async fn execute(&self, device: &DeviceCert, command: RoomCommand) -> RoomReply {
-        let rooms = &self.rooms;
         let result = match command {
             RoomCommand::Create { name } => {
-                match rooms.authorize(device, tilo_clock::unix_now_ns(), "room.create") {
-                    Ok(()) => rooms
+                match self
+                    .rooms
+                    .authorize(device, tilo_clock::unix_now_ns(), "room.create")
+                {
+                    Ok(()) => self
+                        .rooms
                         .create(&name)
                         .await
                         .map(RoomReply::Room)
@@ -112,34 +115,51 @@ impl RoomAdminProtocol {
                 }
             }
             RoomCommand::List => {
-                match rooms.authorize(device, tilo_clock::unix_now_ns(), "room.list") {
-                    Ok(()) => Ok(RoomReply::Rooms(rooms.list().await)),
+                match self
+                    .rooms
+                    .authorize(device, tilo_clock::unix_now_ns(), "room.list")
+                {
+                    Ok(()) => Ok(RoomReply::Rooms(self.rooms.list().await)),
                     Err(error) => Err(error),
                 }
             }
-            RoomCommand::Enter { room } => rooms
+            RoomCommand::Enter { room } => self
+                .rooms
                 .enter(&room, device)
                 .await
                 .map(|changed| RoomReply::Entered { changed }),
-            RoomCommand::Invite { room, request } => rooms
+            RoomCommand::Invite { room, request } => self
+                .rooms
                 .issue(&room, device, request)
                 .await
                 .map(RoomReply::Invitation),
-            RoomCommand::Cancel { room, request } => rooms
+            RoomCommand::Cancel { room, request } => self
+                .rooms
                 .cancel(&room, device, request)
                 .await
                 .map(|()| RoomReply::Done),
-            RoomCommand::Pending { room } => {
-                rooms.pending(&room, device).await.map(RoomReply::Pending)
-            }
-            RoomCommand::SetRole { room, request } => rooms
+            RoomCommand::Pending { room } => self
+                .rooms
+                .pending(&room, device)
+                .await
+                .map(RoomReply::Pending),
+            RoomCommand::SetRole { room, request } => self
+                .rooms
                 .set_member_role(&room, device, request)
                 .await
                 .map(|done| RoomReply::Governance {
                     generation: done.generation,
                 }),
-            RoomCommand::Remove { room, request } => rooms
+            RoomCommand::Remove { room, request } => self
+                .rooms
                 .remove_member(&room, device, request)
+                .await
+                .map(|done| RoomReply::Governance {
+                    generation: done.generation,
+                }),
+            RoomCommand::ClaimTopologyNamespace { room, salt } => self
+                .rooms
+                .claim_topology_namespace(&room, device, salt)
                 .await
                 .map(|done| RoomReply::Governance {
                     generation: done.generation,
@@ -148,7 +168,8 @@ impl RoomAdminProtocol {
                 room,
                 invocation,
                 redacted,
-            } => rooms
+            } => self
+                .rooms
                 .record_member_effect_receipt(&room, device, invocation, &redacted)
                 .await
                 .map(|done| RoomReply::Governance {
@@ -161,19 +182,12 @@ impl RoomAdminProtocol {
 
 impl ProtocolHandler for RoomAdminProtocol {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        let _permit = self.exchanges.clone().try_acquire_owned().map_err(|_| {
-            AcceptError::from_err(std::io::Error::other(
-                "room administration concurrency limit reached",
-            ))
-        })?;
-        n0_future::time::timeout(EXCHANGE_TIMEOUT, self.exchange(&connection))
-            .await
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "room administration timed out",
-                ))
-            })?
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))
+        crate::workspace_join::bounded_accept(
+            &self.exchanges,
+            EXCHANGE_TIMEOUT,
+            "room administration",
+            self.exchange(&connection),
+        )
+        .await
     }
 }

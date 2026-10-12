@@ -5,11 +5,14 @@ use super::{
     caption, card, effect, rows, setting_row, setting_row_described, t, t_args,
 };
 use settings_store::person_displays::{Arrangement, Layout, ResolvedDisplay};
-use ui::tilo_resource::Effect;
+use ui::tilo_resource::{self, Effect};
 
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(default)]
-pub(super) struct SharedDisplayPrefs {
+pub struct SharedDisplayPrefs {
+    #[model(readonly)]
     pub arrangement: Arrangement,
 }
 
@@ -17,15 +20,28 @@ impl ui::storage::SettingsSchema for SharedDisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
 }
 
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[ui::tilo_resource::resource(kind = "settings.display-arrangement", label = "Display arrangement")]
+impl SharedDisplayPrefs {}
+
+#[derive(
+    Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model,
+)]
 #[serde(default)]
-pub(super) struct AutomaticDisplayPrefs {
+pub struct AutomaticDisplayPrefs {
+    /// A device administrator's choice: changed only through its effect.
+    #[model(readonly)]
     pub automatic_display_input: bool,
 }
 
 impl ui::storage::SettingsSchema for AutomaticDisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("continuity");
 }
+
+#[ui::tilo_resource::resource(
+    kind = "settings.automatic-display",
+    label = "Automatic display input"
+)]
+impl AutomaticDisplayPrefs {}
 
 impl DisplayModel {
     pub(super) fn set_automatic_display_input(&mut self, on: bool) -> Result<String, String> {
@@ -55,7 +71,7 @@ impl DisplayModel {
         }
     }
 
-    fn shared_layout(&self) -> Layout {
+    pub(super) fn shared_layout(&self) -> Layout {
         let origins = self
             .person_devices
             .iter()
@@ -294,16 +310,15 @@ impl DisplayModel {
             return None;
         }
         let mut content = vec![caption(&t("display-shared-description"))];
-        content.push(setting_row_described(
-            &t("display-shared-auto-input"),
-            &t("display-shared-auto-description"),
-            Box::new(self.cx.bind(
-                Toggle::from_state(&LocalState::new(
-                    self.automatic_display_prefs.get().automatic_display_input,
-                )),
-                effect(DisplayEffect::SET_AUTOMATIC_DISPLAY_INPUT),
-            )),
-        ));
+        content.push(
+            self.cx
+                .row(t("display-shared-auto-input"))
+                .described(t("display-shared-auto-description"))
+                .toggle_effect(
+                    &LocalState::new(self.automatic_display_prefs.get().automatic_display_input),
+                    effect(DisplayEffect::SET_AUTOMATIC_DISPLAY_INPUT),
+                ),
+        );
         for display in layout.displays.iter().chain(&layout.inactive) {
             let row = self.shared_row(display).into_resource();
             let device = display.device.clone();
@@ -398,6 +413,213 @@ mod tests {
         }]
     }
 
+    fn names(widget: &dyn ui::widget::Widget, found: &mut Vec<String>) {
+        fn visit(node: &ui::a11y::AccessNode, found: &mut Vec<String>) {
+            if let Some(name) = &node.name {
+                found.push(name.clone());
+            }
+            for child in &node.children {
+                visit(child, found);
+            }
+        }
+        if let Some(node) = widget.accessibility() {
+            visit(&node, found);
+        }
+        for child in widget.children() {
+            names(child, found);
+        }
+    }
+
+    #[test]
+    fn shared_canvas_keeps_offline_tiles_and_marks_exclusion_after_the_resource_edit() {
+        fn tiles(widget: &dyn ui::widget::Widget, found: &mut Vec<ui::a11y::AccessNode>) {
+            if widget.name() == "DisplayArrangement" {
+                found.extend(widget.accessibility().unwrap().children);
+            }
+            for child in widget.children() {
+                tiles(child, found);
+            }
+        }
+        let profile = tempfile::tempdir().unwrap();
+        let mut model =
+            DisplayModel::detached(PaneCx::in_file(profile.path().join("settings.json")));
+        let offline = devices().remove(0);
+        let mut local = offline.clone();
+        local.device = "local-peer".into();
+        local.label = "Local computer".into();
+        local.local = true;
+        local.online = true;
+        model.person_devices = vec![offline.clone(), local.clone()];
+        model.device_displays = [&offline, &local]
+            .into_iter()
+            .map(|device| settings_store::device_displays::DeviceDisplay {
+                device: device.device.clone(),
+                device_label: device.label.clone(),
+                connector: "DP-1".into(),
+                output_id: Some("edid:panel-1".into()),
+                label: "Desk panel".into(),
+                online: device.online,
+                local: device.local,
+                x: if device.local { 0 } else { 1920 },
+                y: 120,
+                width: 960,
+                height: 540,
+                scale_milli: 2000,
+                revision: 1,
+            })
+            .collect();
+        let mut before = Vec::new();
+        tiles(
+            model.build_device_arrangement_card().unwrap().as_ref(),
+            &mut before,
+        );
+        assert_eq!(before.len(), 2);
+        let peer = before
+            .iter()
+            .find(|tile| tile.name.as_ref().unwrap().contains("Desk computer"))
+            .unwrap();
+        assert!(peer.description.as_ref().unwrap().contains("Offline"));
+        assert!(!peer.description.as_ref().unwrap().contains("Not in layout"));
+        let identity = peer.semantic_key.clone();
+        let position = peer
+            .description
+            .as_ref()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        model
+            .apply(&DisplayEffect::IncludeSharedDisplay {
+                revision: model.shared_revision(&offline.device, "edid:panel-1"),
+                device: offline.device,
+                output: "edid:panel-1".into(),
+                on: false,
+            })
+            .unwrap();
+        let mut after = Vec::new();
+        tiles(
+            model.build_device_arrangement_card().unwrap().as_ref(),
+            &mut after,
+        );
+        assert_eq!(
+            after.len(),
+            2,
+            "exclusion keeps the remembered offline tile"
+        );
+        let peer = after
+            .iter()
+            .find(|tile| tile.semantic_key == identity)
+            .unwrap();
+        let description = peer.description.as_ref().unwrap();
+        assert!(description.contains("Offline") && description.contains("Not in layout"));
+        assert_eq!(
+            description.split(';').next().unwrap(),
+            position,
+            "inclusion does not rewrite native placement"
+        );
+        assert!(!model.automatic_display_prefs.get().automatic_display_input);
+    }
+
+    #[test]
+    fn shared_canvas_numbers_follow_resolved_device_output_identity_and_order() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut model =
+            DisplayModel::detached(PaneCx::in_file(profile.path().join("settings.json")));
+        let offline = devices().remove(0);
+        let mut local = offline.clone();
+        local.device = "local-peer".into();
+        local.label = "Local computer".into();
+        local.local = true;
+        local.online = true;
+        model.person_devices = vec![offline.clone(), local.clone()];
+        model.device_displays = [&offline, &local]
+            .into_iter()
+            .map(|device| settings_store::device_displays::DeviceDisplay {
+                device: device.device.clone(),
+                device_label: device.label.clone(),
+                connector: "DP-1".into(),
+                output_id: Some("edid:panel-1".into()),
+                label: "Desk panel".into(),
+                online: device.online,
+                local: device.local,
+                x: if device.local { 0 } else { 1920 },
+                y: 120,
+                width: 960,
+                height: 540,
+                scale_milli: 2000,
+                revision: 1,
+            })
+            .collect();
+        let mut legacy = model.device_displays[0].clone();
+        legacy.device = "legacy-peer".into();
+        legacy.device_label = "Legacy computer".into();
+        legacy.output_id = None;
+        legacy.x = 2880;
+        legacy.revision = 0;
+        model.device_displays.insert(1, legacy);
+        model
+            .apply(&DisplayEffect::OrderSharedDisplay {
+                device: local.device,
+                output: "edid:panel-1".into(),
+                revision: 0,
+                order: 1,
+            })
+            .unwrap();
+        let card = model.build_device_arrangement_card().unwrap();
+        let mut before = Vec::new();
+        names(card.as_ref(), &mut before);
+        assert!(
+            before.iter().any(|name| name.starts_with("Display 2:")
+                && name.contains("Desk computer")
+                && name.contains("Offline")),
+            "Actual accessible names: {before:?}"
+        );
+        assert!(
+            before
+                .iter()
+                .any(|name| name.starts_with("Display 1:") && name.contains("Local computer"))
+        );
+        assert!(
+            before
+                .iter()
+                .any(|name| name.starts_with("Display 3:") && name.contains("Legacy computer")),
+            "unresolved rows must not duplicate a resolved number: {before:?}"
+        );
+        model
+            .apply(&DisplayEffect::OrderSharedDisplay {
+                revision: model.shared_revision(&offline.device, "edid:panel-1"),
+                device: offline.device,
+                output: "edid:panel-1".into(),
+                order: 1,
+            })
+            .unwrap();
+        let mut after = Vec::new();
+        names(
+            model.build_device_arrangement_card().unwrap().as_ref(),
+            &mut after,
+        );
+        assert!(
+            after
+                .iter()
+                .any(|name| name.starts_with("Display 1:") && name.contains("Desk computer"))
+        );
+        assert!(
+            after
+                .iter()
+                .any(|name| name.starts_with("Display 2:") && name.contains("Local computer"))
+        );
+        assert!(
+            after
+                .iter()
+                .any(|name| name.starts_with("Display 3:") && name.contains("Legacy computer"))
+        );
+        assert!(
+            !model.automatic_display_prefs.get().automatic_display_input,
+            "numbering never grants input authority"
+        );
+    }
+
     #[test]
     fn shared_display_offline_edits_preserve_hardware_and_revision_boundaries() {
         let profile = tempfile::tempdir().unwrap();
@@ -451,9 +673,12 @@ mod tests {
     #[test]
     fn shared_display_operations_use_the_mounted_exact_resource_door() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        let open = crate::categories::Category::Displays;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
             settings.displays().model().borrow_mut().person_devices = devices();
         });
@@ -504,6 +729,7 @@ mod tests {
                 device: "offline-peer".into(),
                 device_label: "Desk computer".into(),
                 connector: "DP-1".into(),
+                output_id: None,
                 label: "Desk panel".into(),
                 online: true,
                 local: false,
@@ -582,9 +808,12 @@ mod tests {
         let mut app =
             ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
                 .unwrap();
-        let open = crate::effects::open_pane_address(crate::categories::Category::Displays);
-        app.call_on(&open.resource, &open.action, serde_json::json!({}))
-            .unwrap();
+        let open = crate::categories::Category::Displays;
+        app.effect_on(
+            &crate::effects::pane_row_id(open),
+            &crate::effects::open_pane(open),
+        )
+        .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
             settings.displays().model().borrow_mut().person_devices = devices();
         });

@@ -16,6 +16,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use ui::num::f64_of_usize;
 
 use ui::floating_surface::{FloatingRole, FloatingSource, FloatingSurfaceRequest};
 use ui::offscreen::OffscreenRenderer;
@@ -996,13 +997,7 @@ impl CaptureExecutor {
         let folder = path
             .parent()
             .ok_or_else(|| format!("recording path has no parent: {}", path.display()))?;
-        std::process::Command::new("xdg-open")
-            .arg(folder)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("show recording in Files: {error}"))?;
+        xdg_open(folder).map_err(|error| format!("show recording in Files: {error}"))?;
         Ok(CaptureOutcome::RecordingRevealed(path.clone()))
     }
 
@@ -1011,13 +1006,7 @@ impl CaptureExecutor {
             .last_recording
             .as_ref()
             .ok_or_else(|| "there is no completed recording to play".to_string())?;
-        std::process::Command::new("xdg-open")
-            .arg(path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("play recording {}: {error}", path.display()))?;
+        xdg_open(path).map_err(|error| format!("play recording {}: {error}", path.display()))?;
         Ok(CaptureOutcome::RecordingOpened(path.clone()))
     }
 
@@ -1143,13 +1132,7 @@ impl CaptureExecutor {
         let folder = path
             .parent()
             .ok_or_else(|| format!("screenshot path has no parent: {}", path.display()))?;
-        std::process::Command::new("xdg-open")
-            .arg(folder)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("show screenshot in Files: {error}"))?;
+        xdg_open(folder).map_err(|error| format!("show screenshot in Files: {error}"))?;
         Ok(CaptureOutcome::ScreenshotRevealed(path.clone()))
     }
 
@@ -1158,13 +1141,7 @@ impl CaptureExecutor {
             .last_screenshot
             .as_ref()
             .ok_or_else(|| "there is no saved screenshot to open".to_string())?;
-        std::process::Command::new("xdg-open")
-            .arg(path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| format!("open screenshot {}: {error}", path.display()))?;
+        xdg_open(path).map_err(|error| format!("open screenshot {}: {error}", path.display()))?;
         Ok(CaptureOutcome::ScreenshotOpened(path.clone()))
     }
 
@@ -1790,8 +1767,8 @@ fn compose_scene(
     }
     match layout {
         PipLayout::Auto => compose_spatial(source, &regions),
-        PipLayout::Grid => compose_grid(source, &regions),
-        PipLayout::Stack => compose_stack(source, &regions),
+        PipLayout::Grid => compose_placed(source, &regions, grid_geometry(&regions)),
+        PipLayout::Stack => compose_placed(source, &regions, stack_geometry(&regions)),
     }
 }
 
@@ -1806,23 +1783,24 @@ fn compose_spatial(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32)
     Ok((scene, width, height))
 }
 
-fn compose_grid(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), String> {
-    let (raw_w, raw_h, placements) = grid_geometry(regions);
-    let (width, height, global_scale) = output_dimensions(raw_w, raw_h)?;
-    let mut scene = Scene::new();
-    for (region, placement) in regions.iter().zip(placements) {
-        let local_scale = placement.width() / region.width();
-        let transform = Affine::scale(global_scale)
-            * Affine::translate((placement.x0, placement.y0))
-            * Affine::scale(local_scale)
-            * Affine::translate((-region.x0, -region.y0));
-        append_clipped(&mut scene, source, *region, transform);
-    }
-    Ok((scene, width, height))
+/// Hand `target` to the desktop's default handler, detached from the
+/// compositor's stdio.
+fn xdg_open(target: &std::path::Path) -> std::io::Result<std::process::Child> {
+    std::process::Command::new("xdg-open")
+        .arg(target)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
 }
 
-fn compose_stack(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), String> {
-    let (raw_w, raw_h, placements) = stack_geometry(regions);
+/// Draw each region scaled into its placement from `geometry`, which is
+/// the laid-out size and one placement per region.
+fn compose_placed(
+    source: &Scene,
+    regions: &[Rect],
+    (raw_w, raw_h, placements): (f64, f64, Vec<Rect>),
+) -> Result<(Scene, u32, u32), String> {
     let (width, height, global_scale) = output_dimensions(raw_w, raw_h)?;
     let mut scene = Scene::new();
     for (region, placement) in regions.iter().zip(placements) {
@@ -1838,24 +1816,15 @@ fn compose_stack(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32), 
 
 // Widget counts are bounded by the visible capture selection, far below the
 // integer range where conversion to layout-space f64 can lose meaningful data.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "visible capture-region counts stay far below f64's exact-integer range"
-)]
-fn region_count_to_f64(count: usize) -> f64 {
-    count as f64
-}
 
 fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
     let count = regions.len();
-    let cols = region_count_to_f64(count).sqrt().ceil().max(1.0) as usize;
+    let cols = f64_of_usize(count).sqrt().ceil().max(1.0) as usize;
     let rows = count.div_ceil(cols);
     let cell_w = regions.iter().map(Rect::width).fold(1.0_f64, f64::max);
     let cell_h = regions.iter().map(Rect::height).fold(1.0_f64, f64::max);
-    let raw_w =
-        region_count_to_f64(cols) * cell_w + region_count_to_f64(cols.saturating_sub(1)) * GRID_GAP;
-    let raw_h =
-        region_count_to_f64(rows) * cell_h + region_count_to_f64(rows.saturating_sub(1)) * GRID_GAP;
+    let raw_w = f64_of_usize(cols) * cell_w + f64_of_usize(cols.saturating_sub(1)) * GRID_GAP;
+    let raw_h = f64_of_usize(rows) * cell_h + f64_of_usize(rows.saturating_sub(1)) * GRID_GAP;
     let placements = regions
         .iter()
         .enumerate()
@@ -1865,8 +1834,8 @@ fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
             let local_scale = (cell_w / region.width()).min(cell_h / region.height());
             let draw_w = region.width() * local_scale;
             let draw_h = region.height() * local_scale;
-            let x = region_count_to_f64(col) * (cell_w + GRID_GAP) + (cell_w - draw_w) / 2.0;
-            let y = region_count_to_f64(row) * (cell_h + GRID_GAP) + (cell_h - draw_h) / 2.0;
+            let x = f64_of_usize(col) * (cell_w + GRID_GAP) + (cell_w - draw_w) / 2.0;
+            let y = f64_of_usize(row) * (cell_h + GRID_GAP) + (cell_h - draw_h) / 2.0;
             Rect::new(x, y, x + draw_w, y + draw_h)
         })
         .collect();
@@ -1876,13 +1845,13 @@ fn grid_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
 fn stack_geometry(regions: &[Rect]) -> (f64, f64, Vec<Rect>) {
     let card_w = regions.iter().map(Rect::width).fold(1.0_f64, f64::max);
     let card_h = regions.iter().map(Rect::height).fold(1.0_f64, f64::max);
-    let depth = region_count_to_f64(regions.len().saturating_sub(1)) * STACK_OFFSET;
+    let depth = f64_of_usize(regions.len().saturating_sub(1)) * STACK_OFFSET;
     let placements = regions
         .iter()
         .enumerate()
         .map(|(index, region)| {
             let local_scale = (card_w / region.width()).min(card_h / region.height());
-            let offset = region_count_to_f64(index) * STACK_OFFSET;
+            let offset = f64_of_usize(index) * STACK_OFFSET;
             Rect::new(
                 offset,
                 offset,
@@ -2093,15 +2062,7 @@ mod tests {
             node: taffy::NodeId,
             origin: Point,
         ) {
-            let layout = taffy.layout(node).unwrap();
-            let x = origin.x + f64::from(layout.location.x);
-            let y = origin.y + f64::from(layout.location.y);
-            self.rect = Rect::new(
-                x,
-                y,
-                x + f64::from(layout.size.width),
-                y + f64::from(layout.size.height),
-            );
+            self.rect = ui::widget::layout_rect(taffy, node, origin);
         }
 
         fn draw(

@@ -21,6 +21,7 @@ pub mod custody;
 pub mod device_fleet;
 #[cfg(unix)]
 pub mod join_proof;
+pub mod policy_change;
 #[cfg(unix)]
 pub mod provisioning;
 #[cfg(unix)]

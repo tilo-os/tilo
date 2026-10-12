@@ -11,35 +11,8 @@ use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::{DocumentMutation, WholeDocumentPayload};
 use std::collections::BTreeMap;
 use tilo_automerge_isolate::{Applied, Dependencies};
-use tilo_user_identity::DeviceCert;
 
 pub use tilo_relay_protocol::retention::RetentionAuthority;
-
-/// Derive the locally pinned retention authority from an existing governed
-/// room document without creating or replacing room state.
-///
-/// # Errors
-///
-/// Returns an error if the room id is missing or `governor` is not the governed owner.
-pub fn retention_authority_from_governance(
-    document: &AutoCommit,
-    governor: DeviceCert,
-) -> Result<RetentionAuthority, String> {
-    let room = document
-        .get(ROOT, "room")
-        .map_err(|error| error.to_string())?
-        .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
-        .ok_or("governed room id is missing")?;
-    let authority = RetentionAuthority::new(&room, governor)?;
-    if crate::room::governance_of(Some(document)).owner.as_deref()
-        != Some(&hex::encode(authority.governor().user_public_key))
-    {
-        return Err("retention governor is not the governed room owner".into());
-    }
-    identities(&authority, None, document)
-        .map_err(|_| "retention governor is absent or revoked in governance".to_string())?;
-    Ok(authority)
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoomInput {

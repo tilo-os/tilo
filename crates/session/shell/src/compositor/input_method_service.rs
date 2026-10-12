@@ -27,9 +27,10 @@ use smithay::wayland::socket::ListeningSocketSource;
 use settings_store::hardware::InputMethodEngine;
 
 use super::input_environment::InputEnvironment;
-use super::input_method::{InputMethodOwner, OskInput, OskPreference, TrustedInputMethod};
+use super::input_method::{InputMethodOwner, OskInput, TrustedInputMethod};
 use super::state::{ClientState, State};
 use crate::shell::state::RoomId;
+use tilo_accessibility_settings::{AccessibilitySettings, OnScreenKeyboard};
 
 const PACKAGE_ID: &str = super::state::OSK_APP_ID;
 const PACKAGE_KIND: &str = "service";
@@ -37,13 +38,9 @@ const RETRY_BACKOFF: Duration = Duration::from_secs(5);
 const INSTALL_REFRESH: Duration = Duration::from_secs(30);
 
 /// The on-screen keyboard preference in `settings`.
-pub fn osk_preference(settings: &settings_store::live::Snapshot) -> OskPreference {
-    OskPreference::from_setting(
-        settings
-            .document
-            .get("accessibility")
-            .and_then(|section| section.get("on_screen_keyboard")),
-    )
+pub fn osk_preference(settings: &settings_store::live::Snapshot) -> OnScreenKeyboard {
+    AccessibilitySettings::from_section(&settings.section(tilo_accessibility_settings::SECTION))
+        .on_screen_keyboard
 }
 
 /// What one service should be running: the owner it serves and, for the
@@ -514,7 +511,7 @@ pub struct InputMethodServices {
     /// The saved settings the owner follows, re-read by [`Self::reload`].
     primary_layout: String,
     engine: Option<InputMethodEngine>,
-    osk_preference: OskPreference,
+    osk_preference: OnScreenKeyboard,
     /// Whether the on-screen keyboard package can run at all. Without it an
     /// automatic keyboard must never take the seat, or nothing would answer
     /// the focused field.
@@ -573,7 +570,7 @@ impl InputMethodServices {
             sockets,
             primary_layout: "us".to_string(),
             engine: None,
-            osk_preference: OskPreference::default(),
+            osk_preference: OnScreenKeyboard::default(),
             osk_installed: false,
             osk_input: OskInput::default(),
             installed_epoch: crate::shell::launcher::installed_apps_epoch(),
@@ -790,9 +787,14 @@ mod tests {
         }
 
         fn install(&self, version: &str) {
-            std::fs::write(self.directory.path().join("payload/manifest.toml"), format!(
-                "[package]\nid = '{PACKAGE_ID}'\nversion = '{version}'\nkind = 'service'\n[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n"
-            )).unwrap();
+            std::fs::write(
+                self.directory.path().join("payload/manifest.toml"),
+                crate::shell::test_support::canonical_manifest(
+                    &format!("id = '{PACKAGE_ID}'\nversion = '{version}'\nkind = 'service'"),
+                    "[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n",
+                ),
+            )
+            .unwrap();
             crate::shell::launcher::invalidate_app_cache();
         }
 
@@ -939,7 +941,14 @@ mod tests {
         let running = Arc::clone(&fixture.osk().running);
         let other = fixture.directory.path().join("other");
         std::fs::create_dir_all(&other).unwrap();
-        std::fs::write(other.join("manifest.toml"), "[package]\nid = 'dev.tilo.other'\nversion = '1.0.0'\n[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n").unwrap();
+        std::fs::write(
+            other.join("manifest.toml"),
+            crate::shell::test_support::canonical_manifest(
+                "id = 'dev.tilo.other'\nversion = '1.0.0'\nkind = 'app'",
+                "[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n",
+            ),
+        )
+        .unwrap();
         std::fs::OpenOptions::new()
             .append(true)
             .open(fixture.directory.path().join("registry.toml"))
@@ -965,30 +974,6 @@ mod tests {
         );
     }
 
-    /// Context switches of this process's one thread named `name`.
-    fn thread_context_switches(name: &str) -> u64 {
-        let threads: Vec<_> = std::fs::read_dir("/proc/self/task")
-            .unwrap()
-            .map(|task| task.unwrap().path())
-            .filter(|task| {
-                std::fs::read_to_string(task.join("comm")).is_ok_and(|comm| comm.trim() == name)
-            })
-            .collect();
-        assert_eq!(threads.len(), 1, "exactly one {name} thread must be live");
-        std::fs::read_to_string(threads[0].join("status"))
-            .unwrap()
-            .lines()
-            .filter(|line| line.contains("ctxt_switches:"))
-            .map(|line| {
-                line.split_whitespace()
-                    .last()
-                    .unwrap()
-                    .parse::<u64>()
-                    .unwrap()
-            })
-            .sum()
-    }
-
     #[test]
     #[serial_test::serial(process_env)]
     fn running_keyboard_supervisor_sleeps_until_stopped() {
@@ -1000,9 +985,10 @@ mod tests {
         let running = Arc::clone(&fixture.osk().running);
         // Let the supervisor reach its wait; the kernel truncates names to 15 bytes.
         std::thread::sleep(Duration::from_millis(100));
-        let before = thread_context_switches("tilo-input-meth");
+        let supervisor = tilo_test_env::idle::named_thread("tilo-input-meth");
+        let before = tilo_test_env::idle::context_switches(&supervisor);
         std::thread::sleep(Duration::from_millis(400));
-        let idle = thread_context_switches("tilo-input-meth").saturating_sub(before);
+        let idle = tilo_test_env::idle::context_switches(&supervisor).saturating_sub(before);
         let alive = running.load(Ordering::Acquire);
         // Dropping stops the TERM-ignoring fixture through the stop signal
         // alone, and waits (bounded) for the supervisor to finish.

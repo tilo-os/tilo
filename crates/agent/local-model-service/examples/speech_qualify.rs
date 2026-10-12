@@ -114,7 +114,53 @@ mod qualification {
             let _ = self.0.wait();
         }
     }
-    fn fixture(model: &[u8]) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fn activity_fixture(
+        root: &std::path::Path,
+        state: &mut ServiceState,
+        bytes: &[u8],
+    ) -> Result<agent_provider_config::local::LocalModelRelease, Box<dyn std::error::Error>> {
+        let sha = hex::encode(Sha256::digest(bytes));
+        fs::write(root.join("sha256").join(&sha), bytes)?;
+        let release: agent_provider_config::local::LocalModelRelease = serde_json::from_value(
+            serde_json::json!({
+                "id":"activity-qualification", "label":"Public acoustic fixture", "description":"Isolated test only", "version":"9ffd54a1e1ee413ddf265af9913beaf518d1639b",
+                "artifact":{"url":"https://example.invalid/public-activity-fixture", "sha256":sha, "size_bytes":bytes.len()},
+                "artifact_format":"silero_ggml", "license_id":"MIT", "license_url":"https://example.invalid/LICENSE", "requires_acceptance":true,
+                "installed_size_bytes":bytes.len(), "allowed_runtimes":[], "required_memory_mib":64, "required_accelerator_mib":0, "context_window":0,
+                "vision":false, "face_recognition":false, "segmentation":false
+            }),
+        )?;
+        release.validate_shape()?;
+        state.models.insert(
+            release.id.clone(),
+            ManagedModel {
+                model_sha256: sha.clone(),
+                status: LocalModelStatus::Installed,
+                process: None,
+                in_process: Some(InProcessRecord {
+                    revision: release.version.clone(),
+                    license_id: release.license_id.clone(),
+                    size_bytes: u64::try_from(bytes.len())?,
+                    capabilities: vec![InProcessCapability::SpeechActivity],
+                    recorded_at_unix_ms: 1,
+                }),
+            },
+        );
+        state.accepted_licenses.insert(
+            release.id.clone(),
+            LicenseAcceptance {
+                model_version: release.version.clone(),
+                model_sha256: sha,
+                license_id: release.license_id.clone(),
+            },
+        );
+        Ok(release)
+    }
+
+    fn fixture(
+        model: &[u8],
+        activity: Option<&[u8]>,
+    ) -> Result<Fixture, Box<dyn std::error::Error>> {
         let fixture = tempfile::tempdir()?;
         let root = fixture.path().join("store");
         fs::create_dir_all(root.join("sha256"))?;
@@ -169,12 +215,16 @@ mod qualification {
                 license_id: license.into(),
             },
         );
+        let mut releases = vec![release];
+        if let Some(bytes) = activity {
+            releases.push(activity_fixture(&root, &mut state, bytes)?);
+        }
         fs::write(root.join("state.json"), serde_json::to_vec(&state)?)?;
         // Ephemeral fixture key, never installed in any OS or user trust store.
         let key = SigningKey::from_bytes(&[5; 32]);
         let payload = CatalogPayload {
             schema: 1,
-            models: vec![release],
+            models: releases,
             runtimes: vec![],
             recommendation: String::new(),
         };
@@ -225,7 +275,7 @@ mod qualification {
             root,
             catalog,
             keys,
-        } = fixture(model)?;
+        } = fixture(model, None)?;
         let current = std::env::current_exe()?;
         let executable = std::env::current_exe()?
             .parent()
@@ -379,7 +429,9 @@ mod qualification {
         }
         // The parent owns this pipe and a bounded disposable namespace. EOF
         // drops every fixture file; this never changes an OS/user trust store.
-        if arguments.first().is_some_and(|arg| arg == "--hold-fixture") && arguments.len() == 2 {
+        if arguments.first().is_some_and(|arg| arg == "--hold-fixture")
+            && (2..=3).contains(&arguments.len())
+        {
             let path = arguments.get(1).ok_or("public model path")?;
             let mut model = Zeroizing::new(Vec::new());
             fs::File::open(path)?
@@ -414,7 +466,22 @@ mod qualification {
             {
                 return Err("unreviewed public model fixture".into());
             }
-            let held = fixture(&model)?;
+            let activity = if let Some(path) = arguments.get(2) {
+                let mut bytes = Zeroizing::new(Vec::new());
+                fs::File::open(path)?
+                    .take(4 * 1024 * 1024 + 1)
+                    .read_to_end(&mut bytes)?;
+                if bytes.len() != 885_098
+                    || hex::encode(Sha256::digest(&*bytes))
+                        != "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"
+                {
+                    return Err("unreviewed acoustic graph fixture".into());
+                }
+                Some(bytes)
+            } else {
+                None
+            };
+            let held = fixture(&model, activity.as_deref().map(Vec::as_slice))?;
             drop(model);
             println!(
                 "{}",

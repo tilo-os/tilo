@@ -168,10 +168,6 @@ impl<'a> BadgeFace<'a> {
         }
     }
 
-    /// The side of a badge dot in `theme`.
-    pub fn dot_size(theme: &Theme) -> f64 {
-        BadgeMetrics::of(theme).dot
-    }
     #[must_use]
     pub fn style(mut self, style: ChipStyle) -> Self {
         self.style = style;
@@ -337,7 +333,7 @@ impl Widget for Badge {
         let (width, height) = match &self.content {
             BadgeContent::Dot | BadgeContent::Modified => (metrics.dot, metrics.dot),
             BadgeContent::Count(0) => (0.0, 0.0),
-            // `auto`: measured in `measure`, pinned in `adjust_layout_with_measure`.
+            // `auto`: measured in `measure`, pinned in `adjust_layout_style`.
             _ => (-1.0, metrics.height),
         };
         if self.metrics.as_ref() != Some(&metrics) {
@@ -368,7 +364,7 @@ impl Widget for Badge {
     }
 
     /// A text or count badge is as wide as its measured label.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,

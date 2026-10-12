@@ -5,6 +5,7 @@
 use super::tests::tree_of;
 use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
 use tilo_automerge::ApplyIncoming as _;
@@ -28,7 +29,7 @@ fn edit(
             ));
             let heads = doc.get_heads();
             doc.put(ROOT, "offline-edit", value).unwrap();
-            doc.commit();
+            doc.commit_edit("fixture", "offline-edit");
             view.peer().clone().publish_incremental(
                 "so.tilo.chat",
                 "",
@@ -904,9 +905,11 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     // Incompressible text makes the actual native history large while staying
     // inside the original wire cap. The candidate itself fits; its mandatory
     // future recovery representation does not fit the authority envelope.
+    // Originals are base64 now, so the fixture needs more text than when
+    // their byte arrays consumed most of that envelope themselves.
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut random = 0x1234_5678_u32;
-    let text: String = (0..1024 * 1024)
+    let text: String = (0..2 * 1024 * 1024)
         .map(|_| {
             random ^= random << 13;
             random ^= random >> 17;
@@ -920,7 +923,7 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
                 AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap()).unwrap();
             let heads = doc.get_heads();
             doc.put(ROOT, "large-offline", text).unwrap();
-            doc.commit();
+            doc.commit_edit("fixture", "large-offline");
             view.peer().clone().publish_incremental(
                 "so.tilo.chat",
                 "",
@@ -952,7 +955,11 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     store::preflight(&prospective.native_authority, store::MAX_AUTHORITY_BYTES).unwrap();
     assert!(
         tilo_joined_room::preflight_storage(&prospective.native_authority).is_err(),
-        "the refusal must come from the required recovery reserve"
+        "the refusal must come from the required recovery reserve: encoded={}, allowed={:?}",
+        serde_json::to_vec_pretty(&prospective.native_authority)
+            .unwrap()
+            .len(),
+        tilo_joined_room::authority_limit(&prospective.native_authority),
     );
     let path = directory.path().join("state.json");
     let before = std::fs::read(&path).unwrap();
@@ -1008,7 +1015,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     internals::bump_revision(&mut prospective.native_authority);
     // Use the actual sanitizer/serializer on the small tree to derive this
     // fixture. Adding ASCII title text changes only title and durable label.
-    let small = persist::encode_tree(&prospective).unwrap();
+    let small = persist::encode_tree(&prospective).unwrap().bytes;
     let sanitized: crate::shell::state::WorkspaceTree = serde_json::from_slice(&small).unwrap();
     let reserved = publication::required_tree_bytes(&sanitized).unwrap() - small.len();
     assert!(reserved > 2);
@@ -1063,7 +1070,7 @@ fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_c
                 .iter()
                 .find(|slot| slot.room == room)
                 .expect("the enrolled owner must project its real room")
-                .capabilities
+                .sandbox
                 .clone(),
         )
     };
@@ -1078,7 +1085,7 @@ fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_c
             .iter()
             .find(|slot| slot.room == room)
             .unwrap()
-            .capabilities,
+            .sandbox,
         capabilities,
         "a document checkpoint does not withdraw accepted filesystem grants",
     );

@@ -42,6 +42,7 @@ pub enum ReplyKey {
     Observe(InvocationId),
     Cancel(InvocationId),
     Record(u64),
+    Feedback(u64),
 }
 
 impl ReplyKey {
@@ -57,6 +58,9 @@ impl ReplyKey {
             RemoteActionMessage::Observe { invocation, .. } => Self::Observe(*invocation),
             RemoteActionMessage::Cancel { invocation } => Self::Cancel(*invocation),
             RemoteActionMessage::RecordRequest { correlation, .. } => Self::Record(*correlation),
+            RemoteActionMessage::FeedbackRequest { correlation, .. } => {
+                Self::Feedback(*correlation)
+            }
             _ => return None,
         })
     }
@@ -72,6 +76,9 @@ impl ReplyKey {
             RemoteActionMessage::Update { invocation, .. } => Self::Observe(*invocation),
             RemoteActionMessage::CancelResponse { invocation, .. } => Self::Cancel(*invocation),
             RemoteActionMessage::RecordResponse { correlation, .. } => Self::Record(*correlation),
+            RemoteActionMessage::FeedbackResponse { correlation, .. } => {
+                Self::Feedback(*correlation)
+            }
             _ => return None,
         })
     }

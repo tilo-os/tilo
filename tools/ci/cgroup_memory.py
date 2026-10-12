@@ -10,9 +10,11 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import sys
+import time
 
 
 FIELDS = ('memory.max', 'memory.current', 'memory.peak', 'memory.events')
+CPU_COUNTERS = ('usage_usec', 'user_usec', 'system_usec', 'nr_periods', 'nr_throttled', 'throttled_usec')
 
 
 def unescape_mount(value):
@@ -95,8 +97,85 @@ def report(before, after):
         print('CI_CGROUP_MEMORY_EVENTS_DELTA=' + json.dumps(delta, sort_keys=True))
 
 
+def resource_snapshot():
+    """Use the same observed cgroup identity for successful command evidence."""
+    result = snapshot()
+    result['monotonic_ns'] = time.monotonic_ns()
+    for name in ('cpu.max', 'cpuset.cpus.effective', 'cpu.stat',
+                 'cpu.pressure', 'memory.pressure', 'io.pressure'):
+        result[name] = None
+        if result['cgroup'] is not None:
+            try:
+                value = (Path(result['cgroup']) / name).read_text()
+                if len(value) <= 8192:
+                    result[name] = value.strip()
+            except OSError:
+                pass
+    return result
+
+
+def numeric_stat(value):
+    if not isinstance(value, str):
+        return 'unavailable'
+    values = {}
+    for line in value.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            return 'unavailable'
+        key, count = fields
+        if key in CPU_COUNTERS:
+            if not re.fullmatch(r'[0-9]{1,20}', count) or key in values:
+                return 'unavailable'
+            values[key] = int(count)
+    return ' '.join(f'{key} {values[key]}' for key in CPU_COUNTERS if key in values) or 'unavailable'
+
+
+def resource_report(before, after, label):
+    # Emit the existing measure.sh format, without raw paths or child commands.
+    # CPU deltas are valid only while the observed cgroup identity is unchanged.
+    same = (before.get('identity') is not None and before.get('identity') == after.get('identity')
+            and before.get('cgroup') == after.get('cgroup'))
+    started, stopped = before.get('monotonic_ns'), after.get('monotonic_ns')
+    wall = (round((stopped - started) / 1e9, 6)
+            if type(started) is int and type(stopped) is int and stopped >= started else 'unavailable')
+    print(f'==> {label} measurements')
+    print(f'    wall_seconds={wall}')
+    for key in ('user_seconds', 'system_seconds', 'max_rss_kib'):
+        print(f'    {key}=unavailable')
+    quota = after.get('cpu.max')
+    quota = quota if isinstance(quota, str) and re.fullmatch(r'(?:max|[0-9]{1,20}) [0-9]{1,20}', quota) else 'unavailable'
+    print(f'    cgroup_cpu_max={quota}')
+    cpus = after.get('cpuset.cpus.effective')
+    cpus = cpus if isinstance(cpus, str) and re.fullmatch(r'[0-9,-]{1,8192}', cpus) else 'unavailable'
+    print(f'    cgroup_cpuset_cpus_effective={cpus}')
+    print(f'    cgroup_cpu_stat_before={numeric_stat(before.get("cpu.stat")) if same else "unavailable"}')
+    print(f'    cgroup_cpu_stat_after={numeric_stat(after.get("cpu.stat"))}')
+    for resource in ('cpu', 'memory', 'io'):
+        for phase, reading in (('before', before), ('after', after)):
+            value = reading.get(resource + '.pressure')
+            # Preserve only the known numeric PSI rows; never arbitrary text.
+            rows = []
+            if isinstance(value, str) and (phase != 'before' or same):
+                for line in value.splitlines():
+                    if re.fullmatch(r'(?:some|full) avg10=[0-9.]+ avg60=[0-9.]+ avg300=[0-9.]+ total=[0-9]{1,20}', line):
+                        rows.append(line)
+            value = ' '.join(rows) if rows else 'unavailable'
+            print(f'    cgroup_{resource}_pressure_{phase}={value}')
+    for name in ('memory.max', 'memory.peak'):
+        value = after.get(name) or 'unavailable'
+        print(f'    cgroup_{name.replace(".", "_")}={value}')
+
+
 def main():
-    if len(sys.argv) == 1:
+    if sys.argv[1:2] == ['resource-before']:
+        print(json.dumps(resource_snapshot(), sort_keys=True))
+    elif sys.argv[1:2] == ['resource-after'] and len(sys.argv) == 4:
+        try:
+            before = json.loads(Path(sys.argv[2]).read_text())
+        except (OSError, ValueError):
+            before = {}
+        resource_report(before, resource_snapshot(), sys.argv[3])
+    elif len(sys.argv) == 1:
         print(json.dumps(snapshot(), sort_keys=True))
     else:
         try:

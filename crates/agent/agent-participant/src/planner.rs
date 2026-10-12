@@ -67,8 +67,19 @@ pub struct PlanContext {
     pub apps: Vec<String>,
 }
 
-/// Turns a task into steps.
-pub trait Planner {
+/// Steps written out in `task` itself (one JSON step or an array of them),
+/// which every planner takes as written: `None` when the task is not JSON
+/// steps and needs planning.
+#[must_use]
+pub fn written_steps(task: &str, context: &PlanContext) -> Option<Result<Vec<Step>, String>> {
+    let value = serde_json::from_str::<serde_json::Value>(task).ok()?;
+    (value.is_array() || value.is_object()).then(|| steps_from_json(&value, context))
+}
+
+/// Turns a task into steps. A planner runs on a thread of its own, beside
+/// the agent's loop, so it may block (a model call) without holding the
+/// agent's session back.
+pub trait Planner: Send {
     /// The steps for `task`, or why there are none.
     ///
     /// # Errors

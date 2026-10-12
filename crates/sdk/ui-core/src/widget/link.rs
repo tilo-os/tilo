@@ -134,18 +134,6 @@ impl Link {
         self.last_activated.as_deref()
     }
 
-    /// For a parent that routes input by hand instead of through
-    /// [`handle_event`](Widget::handle_event). Returns `true` when the state
-    /// changed, so the caller can request a redraw.
-    pub fn set_hovered(&mut self, hovered: bool) -> bool {
-        if hovered == self.is_hovered {
-            false
-        } else {
-            self.is_hovered = hovered;
-            true
-        }
-    }
-
     /// Bypasses taffy — mirrors
     /// [`TextInput::apply_layout_external`](crate::widget::TextInput) for
     /// parents that lay children out by hand.
@@ -396,6 +384,7 @@ impl Widget for Link {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
+        _key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
@@ -502,6 +491,7 @@ mod tests {
             let handled = crate::host::scoped(&services, || {
                 link.perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     &mut crate::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 )

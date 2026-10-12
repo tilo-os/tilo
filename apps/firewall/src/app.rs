@@ -4,11 +4,11 @@
 //! selected zone is the content (see [`crate::view`]). This module owns what
 //! the shell cannot: the configuration and where it came from, the zone and
 //! rule the person is looking at, the add-rule draft, the delete
-//! confirmation, the result toast, and the effects that push the
+//! confirmation, the last result, and the effects that push the
 //! configuration to firewalld.
 //!
 //! The configuration lives in the shared Automerge document (`doc.rs`): every
-//! edit is a [`FirewallAction`] submitted through the framework dispatcher,
+//! edit is a field edit or verb submitted through the framework dispatcher,
 //! and the framework presents the stored configuration back (see
 //! [`crate::resource`]), so two instances on one record edit the same
 //! ruleset. Which zone is open, the tab and the draft are this window's
@@ -19,33 +19,31 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::LocalState;
 use ui::a11y::{AccessNode, Politeness, Role};
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::time::{Duration, Instant};
 use ui::widget::data_table::TableSort;
-use ui::widget::toast::{ToastKind, ToastStack};
+use ui::widget::toast::ToastKind;
 use ui::widget::{AppModel, ModelPath, NavShell, Widget};
 
 use ui::framework::{Dispatcher, Setting};
 
-use crate::actions::FirewallAction;
 use crate::model::{
     Action, FirewallConfig, Matcher, Proto, Rule, RuleId, Zone, ZoneKind, validate_port,
     validate_source,
 };
+use crate::model::{StoredRule, StoredZonePaths};
 use crate::resource::{AppliedConfig, ApplyOutcome, Firewall, FirewallEffect};
 use crate::view::{self, Draft, Intent, Intents, PageModel, SwitchKey, Switches, Tab};
+use ui::framework::Submit;
+use ui::tilo_resource::Json;
 
-/// How long a result toast stays before it hides itself.
-const TOAST_TTL: Duration = Duration::from_secs(5);
+/// The job that applies the stored configuration to this device.
+const APPLY_JOB: &str = "apply";
 
 /// How a reported result reads: it decides the toast's tone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,8 +117,6 @@ pub struct FirewallApp {
     tab: Tab,
     draft: Draft,
     notice: Option<Notice>,
-    /// The result toast, and when it was last advanced.
-    toasts: ToastStack,
     /// The content column is wide enough for the services' descriptions:
     /// at least `wide_from`, the width of a compact window.
     wide: bool,
@@ -135,12 +131,16 @@ pub struct FirewallApp {
     /// The add-rule dialog is open.
     adding: bool,
 
-    /// Where every on-screen affordance submits its [`FirewallAction`]: one
+    /// Where every on-screen affordance submits its field edit or verb: one
     /// undo step each, replayed byte-identically on peers — the same door
     /// Ctrl+K takes. `None` only for a widget no resource hosts.
     dispatcher: Option<Dispatcher<Firewall>>,
     /// What this device last applied to its firewalld.
     applied: Option<Setting<AppliedConfig>>,
+    /// Where this window applies the stored configuration to the device.
+    jobs: Option<ui::framework::Jobs<Firewall>>,
+    /// The configuration being applied now, as its canonical text.
+    applying: Option<String>,
     /// A failed apply of the stored configuration on this device, until the
     /// window reports it.
     outcome: ApplyOutcome,
@@ -209,7 +209,6 @@ impl FirewallApp {
             tab: Tab::Rules,
             draft: Draft::new(),
             notice: None,
-            toasts: ToastStack::new().with_max(1).with_default_ttl(TOAST_TTL),
             wide: true,
             wide_from: 0.0,
             available,
@@ -217,6 +216,8 @@ impl FirewallApp {
             adding: false,
             dispatcher: None,
             applied: None,
+            jobs: None,
+            applying: None,
             outcome: ApplyOutcome::default(),
             built: None,
             listed: None,
@@ -255,7 +256,7 @@ impl FirewallApp {
                     Tone::Error,
                 );
                 // The empty state carries the reason; no toast repeats it.
-                self.toasts.dismiss(0);
+                self.shell.dismiss_toast();
             }
             "services" => self.tab = Tab::Services,
             "selected" => {
@@ -304,22 +305,27 @@ impl FirewallApp {
             text: text.into(),
             tone,
         };
-        self.toasts.push(notice.text.clone(), notice.tone.kind());
+        self.shell.toast(notice.text.clone(), notice.tone.kind());
         self.notice = Some(notice);
         self.changed = true;
     }
 
-    /// Submit one [`FirewallAction`] — the single write path shared with the
-    /// Ctrl+K palette. The framework applies it after the event and presents
-    /// the stored configuration back, which the next frame shows.
+    /// Submit one field edit or verb of the stored configuration. The
+    /// framework applies it after the event and presents the stored
+    /// configuration back, which the next frame shows.
     ///
     /// This is *only* the document edit. Pushing the ruleset to the kernel
     /// (`firewall-cmd`/`nft`) follows from the stored configuration on each
     /// device — never part of an action.
-    fn dispatch(&self, action: &FirewallAction) {
+    fn dispatch(&self, submit: impl Submit<Firewall>) {
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
+            dispatcher.submit(submit);
         }
+    }
+
+    /// The paths of the selected zone's stored fields.
+    fn zone_paths(&self) -> StoredZonePaths<Firewall> {
+        Firewall::paths().zones.key(self.selected_zone.name())
     }
 
     /// Invoke one of the firewall's effects through the same door as the
@@ -376,10 +382,53 @@ impl FirewallApp {
         self.applied = Some(applied);
     }
 
-    /// Where the projection reports how the latest apply on this device
-    /// ended.
-    pub(crate) fn apply_outcome(&self) -> ApplyOutcome {
-        Rc::clone(&self.outcome)
+    /// Apply the stored configuration to this device with `jobs`, after
+    /// every change of it.
+    pub(crate) fn follow_jobs(&mut self, jobs: ui::framework::Jobs<Firewall>) {
+        self.jobs = Some(jobs);
+    }
+
+    /// Apply `config` to this device's firewalld unless it holds it already
+    /// or is being given it: a job of the window, the latest configuration
+    /// replacing one still being applied. A failure is reported and tried
+    /// again after the next change.
+    pub(crate) fn apply_to_device(&mut self, config: &FirewallConfig) {
+        let (Some(jobs), Some(applied)) = (&self.jobs, &self.applied) else {
+            return;
+        };
+        let Some((canonical, config)) =
+            crate::resource::pending_apply(config, &applied.get()).pop()
+        else {
+            return;
+        };
+        if self.applying.as_deref() == Some(canonical.as_str()) && jobs.is_running(APPLY_JOB) {
+            return;
+        }
+        self.applying = Some(canonical);
+        jobs.start::<Self>(APPLY_JOB, move |cx| {
+            Ok(cx.thread(
+                move |_| {
+                    let result = crate::resource::apply_on_device(&config);
+                    (config, result)
+                },
+                |app: &mut Self,
+                 (config, result): (FirewallConfig, crate::resource::Applied),
+                 _| {
+                    app.applying = None;
+                    if result.is_err() {
+                        let status = crate::resource::applied_status(&result);
+                        let message = status.text.clone();
+                        *app.outcome.borrow_mut() = Some(status);
+                        app.changed = true;
+                        return Err(message);
+                    }
+                    if let Some(applied) = &app.applied {
+                        crate::resource::remember_applied(applied, &config);
+                    }
+                    Ok(ui::framework::Effected::done())
+                },
+            ))
+        });
     }
 
     /// Whether there is a configuration to edit and apply.
@@ -499,11 +548,19 @@ impl FirewallApp {
         if self.available {
             let enabled = self.enabled_switch.with(|on| *on);
             if enabled != self.config.enabled {
-                self.dispatch(&crate::actions::set_enabled_action(enabled));
+                self.dispatch(if enabled {
+                    Firewall::START.invoke()
+                } else {
+                    Firewall::STOP.invoke()
+                });
             }
             let panic = self.panic_switch.with(|on| *on);
             if panic != self.config.panic_mode {
-                self.dispatch(&crate::actions::set_panic_action(panic));
+                self.dispatch(if panic {
+                    Firewall::ENTER_PANIC_MODE.invoke()
+                } else {
+                    Firewall::EXIT_PANIC_MODE.invoke()
+                });
             }
         }
         self.sync_switches();
@@ -610,7 +667,16 @@ impl FirewallApp {
         };
         let id = rule.id;
         let title = rule.matcher.title();
-        self.dispatch(&crate::actions::add_rule_action(self.selected_zone, rule));
+        self.dispatch(self.zone_paths().rules.insert_as(
+            &Firewall::rule(id),
+            usize::MAX,
+            &StoredRule {
+                matcher: Json(rule.matcher),
+                action: rule.action,
+                source: rule.source,
+                enabled: rule.enabled,
+            },
+        ));
         self.selected_rule = Some(id);
         self.tab = Tab::Rules;
         self.adding = false;
@@ -620,7 +686,7 @@ impl FirewallApp {
     }
 
     fn delete_rule(&mut self, id: RuleId) {
-        self.dispatch(&crate::actions::delete_rule_action(self.selected_zone, id));
+        self.dispatch(Firewall::DELETE_RULE.with((self.selected_zone, Firewall::rule(id))));
         if self.selected_rule == Some(id) {
             self.selected_rule = None;
         }
@@ -633,25 +699,28 @@ impl FirewallApp {
             .selected_zone_ref()
             .is_some_and(|zone| zone.rules.iter().any(|rule| rule.id == id));
         if exists {
-            self.dispatch(&crate::actions::set_rule_enabled_action(
-                self.selected_zone,
-                id,
-                on,
-            ));
+            self.dispatch(
+                self.zone_paths()
+                    .rules
+                    .item(&Firewall::rule(id))
+                    .enabled
+                    .set(on),
+            );
         }
     }
 
     fn set_service(&self, id: &str, on: bool) {
-        // Resolved at authoring time so the action is order-free on replay.
-        self.dispatch(&crate::actions::set_service_action(
-            self.selected_zone,
-            id,
-            on,
-        ));
+        let services = self.zone_paths().services;
+        let id = id.to_owned();
+        self.dispatch(if on {
+            services.insert(&id)
+        } else {
+            services.remove(&id)
+        });
     }
 
     fn set_active_zone(&mut self) {
-        self.dispatch(&crate::actions::set_default_zone_action(self.selected_zone));
+        self.dispatch(Firewall::paths().default_zone.set(self.selected_zone));
         self.report(
             format!("{} is now the active zone", self.selected_zone.title()),
             Tone::Success,
@@ -683,20 +752,6 @@ impl FirewallApp {
             self.report(notice.text, notice.tone);
         }
     }
-
-    /// Advance the result toast and place it in the window's bottom
-    /// trailing corner; the stack expires, paints and dismisses it.
-    fn place_toast(&mut self, window: Rect, theme: &Theme) {
-        self.toasts.advance(ui::time::now());
-        self.toasts
-            .place_bottom_right(window, f64::from(theme.tokens.spacing.s6));
-    }
-
-    /// When the showing toast expires, so the window wakes to hide it. The
-    /// stack waits while the pointer is over it and under the capture clock.
-    fn toast_deadline(&self) -> Option<Instant> {
-        Widget::next_wake_deadline(&self.toasts)
-    }
 }
 
 impl ui::widget::Decorator for FirewallApp {
@@ -708,14 +763,6 @@ impl ui::widget::Decorator for FirewallApp {
 
     fn inner_mut(&mut self) -> &mut NavShell {
         &mut self.shell
-    }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -752,11 +799,6 @@ impl ui::widget::Decorator for FirewallApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // The result toast: hovering holds it, a click dismisses it.
-        self.toasts.handle_event(event, ctx);
-        if *ctx.handled {
-            return;
-        }
         self.shell.handle_event(event, ctx);
         self.drain();
         if !*ctx.handled
@@ -777,36 +819,10 @@ impl ui::widget::Decorator for FirewallApp {
         }
     }
 
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.shell
-            .draw_overlay(scene, transform, text, theme, presence);
-        let window = presence
-            .viewport
-            .get()
-            .unwrap_or_else(|| self.shell.get_rect());
-        self.place_toast(window, theme);
-        self.toasts.draw(scene, transform, text, theme, presence);
-    }
-
     fn needs_animation_frame(&self) -> bool {
         // A width that crossed the services' breakpoint rebuilds the page.
         let relayout = self.built.as_ref().is_some_and(|key| key.wide != self.wide);
         relayout || self.shell.needs_animation_frame()
-    }
-
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        let shell = self.shell.next_wake_deadline();
-        match (shell, self.toast_deadline()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
     }
 
     fn name(&self) -> &'static str {

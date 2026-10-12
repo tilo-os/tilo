@@ -131,6 +131,13 @@ fn launch(root: &std::path::Path, mode: &str) -> std::thread::JoinHandle<Capture
 [package]
 id = "so.tilo.network-boundary"
 version = "0.0.0"
+kind = "app"
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
 [entrypoint]
 bin = "bin/network-boundary-fixture"
 type = "gui"
@@ -201,19 +208,29 @@ fn connected(service: &FloatingSurfaceService, allowed: bool) -> u64 {
     connection.unwrap()
 }
 
+struct Phase {
+    connection: u64,
+    request: u64,
+    expects_appearance: bool,
+}
+
 fn publish(
     service: &FloatingSurfaceService,
     delivery: &mut AppearanceDelivery,
     status: &StatusBridge,
-    target: (u64, u64),
+    phase: &Phase,
     allowed: bool,
-) {
-    let (connection, phase) = target;
+) -> serde_json::Value {
+    let mut appearances = 0_usize;
     delivery.publish(
         |_| ui::WindowAppearance::default(),
         &ui::Theme::default(),
         status.network_status(),
         |id, message| {
+            appearances = appearances
+                .checked_add(1)
+                .expect("Appearance count overflow");
+            assert_eq!(id, phase.connection);
             let frame = serde_json::to_value(message).unwrap();
             // The host never sends connection names, addresses or rich NM state.
             assert_eq!(
@@ -221,6 +238,13 @@ fn publish(
                 allowed,
                 "resolved launcher policy must gate the wire hint"
             );
+            if allowed {
+                assert_eq!(
+                    frame["network_status"],
+                    serde_json::to_value(status.network_status()).unwrap(),
+                    "only the two sanitized hint fields cross the wire"
+                );
+            }
             let text = frame.to_string();
             for private in [
                 "primary_connection",
@@ -233,18 +257,37 @@ fn publish(
             service.send(id, message);
         },
     );
-    // Existing semantic inspection provides a same-channel ordering barrier.
+    assert_eq!(
+        appearances,
+        usize::from(phase.expects_appearance),
+        "denied and repeated status transitions must send no Appearance"
+    );
+    // The fixture answers existing semantic inspection with the public SDK
+    // reading, after all preceding Appearance frames on this same channel.
     service.send(
-        connection,
+        phase.connection,
         &FloatingSurfaceHostMessage::DeviceShellOperation {
-            request: phase,
+            request: phase.request,
             operation: DeviceShellOperation::Inspect,
         },
     );
+    let mut observed = None;
     wait_for("App SDK pump acknowledgement", || {
-        service.drain().into_iter().any(|event| matches!(event,
-        FloatingServiceEvent::Message { message: FloatingSurfaceClientMessage::DeviceShellOutcome { request, .. }, .. } if request == phase))
+        for event in service.drain() {
+            if let FloatingServiceEvent::Message {
+                connection,
+                message: FloatingSurfaceClientMessage::DeviceShellOutcome { request, result },
+                ..
+            } = event
+                && connection == phase.connection
+                && request == phase.request
+            {
+                observed = Some(result.expect("the sandbox must observe its public SDK"));
+            }
+        }
+        observed.is_some()
     });
+    observed.unwrap()
 }
 
 fn observations(job: std::thread::JoinHandle<CapturedRunOutput>) -> Vec<serde_json::Value> {
@@ -308,27 +351,54 @@ fn real_launch_cost_hints_stop_on_loss_relaunch_recovers_and_denied_apps_stay_lo
         panic!("owned host follower stopped before fixture completion");
     });
     set_cost(&runtime, &server, &status, 0);
-    for (allowed, costs, expected) in [
-        (true, &[0, 1, 2][..], &[true, false][..]),
+    for (mode, allowed, costs, expected) in [
+        ("host", true, &[0, 1, 2][..], &[true, false][..]),
         // Fresh normal launch receives the current unmetered first snapshot.
-        (true, &[2][..], &[false][..]),
-        (false, &[0, 1, 2][..], &[][..]),
+        ("host", true, &[2][..], &[false][..]),
+        ("off", false, &[0, 1, 2][..], &[][..]),
+        ("allowlist", false, &[0, 1, 2][..], &[][..]),
     ] {
         let service = FloatingSurfaceService::start().unwrap();
-        let job = launch(root, if allowed { "host" } else { "off" });
+        let job = launch(root, mode);
         let connection = connected(&service, allowed);
         let mut delivery = AppearanceDelivery::default();
         delivery.connected(connection, "so.tilo.network-boundary", allowed);
-        for &cost in costs {
-            let phase = u64::from(cost) + 1;
+        for (index, &cost) in costs.iter().enumerate() {
+            let request = u64::from(cost) * 2 + 1;
             set_cost(&runtime, &server, &status, cost);
-            publish(
+            let observed = publish(
                 &service,
                 &mut delivery,
                 &status,
-                (connection, phase),
+                &Phase {
+                    connection,
+                    request,
+                    expects_appearance: allowed || index == 0,
+                },
                 allowed,
             );
+            let expected_cost = if allowed {
+                status.network_status().metered
+            } else {
+                None
+            };
+            assert_eq!(observed["metered"], serde_json::json!(expected_cost));
+            if allowed {
+                assert_eq!(observed["online"], true);
+            }
+            println!("SDK phase mode={mode} cost={cost}: {observed}");
+            let repeated = publish(
+                &service,
+                &mut delivery,
+                &status,
+                &Phase {
+                    connection,
+                    request: request + 1,
+                    expects_appearance: false,
+                },
+                allowed,
+            );
+            assert_eq!(repeated, observed, "idle publication preserves SDK hints");
         }
         let retained_reply = service.reply_writer(connection).unwrap();
         drop(service);

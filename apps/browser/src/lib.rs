@@ -43,7 +43,6 @@ pub mod blocker;
 pub mod browser_widget;
 pub mod browser_window;
 pub mod browsing_mode;
-mod capture_page;
 mod credentials;
 mod daily_controls;
 pub mod downloads;

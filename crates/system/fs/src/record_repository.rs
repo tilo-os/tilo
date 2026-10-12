@@ -304,6 +304,10 @@ pub struct RepositoryState {
     /// [`RecordRepository::written_since`] finds what changed since a
     /// reader last looked without snapshotting every record.
     write_generation: std::sync::atomic::AtomicU64,
+    /// Announces each move of `write_generation`, so an exact-share host can
+    /// hold a recipient's change await open instead of being polled
+    /// ([`RecordRepository::subscribe_writes`]).
+    writes: tokio::sync::watch::Sender<u64>,
     /// Concurrent-head checks made by
     /// [`crate::record_publisher::RecordPublisher::publish_concurrent_head_conflict`].
     #[cfg(test)]
@@ -678,9 +682,14 @@ impl RecordRepository {
     /// The generation a durable write about to publish its records takes.
     /// Called with the records lock held.
     fn next_write_generation(&self) -> u64 {
-        self.write_generation
+        let generation = self
+            .write_generation
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
-            .saturating_add(1)
+            .saturating_add(1);
+        // A woken watcher reads the records through the lock this writer
+        // holds, so it sees the write once the writer publishes it.
+        self.writes.send_replace(generation);
+        generation
     }
 
     /// Records a write outside the scope made durable are no longer the
@@ -1060,6 +1069,7 @@ impl RecordRepository {
             gate: tokio::sync::RwLock::new(()),
             max_versions: std::sync::atomic::AtomicUsize::new(MAX_RECORD_VERSIONS),
             write_generation: std::sync::atomic::AtomicU64::new(0),
+            writes: tokio::sync::watch::Sender::new(0),
             #[cfg(test)]
             concurrent_head_checks: std::sync::atomic::AtomicU64::new(0),
         })
@@ -1892,6 +1902,14 @@ impl RecordRepository {
                 == Some(envelope);
         drop(records);
         is_latest
+    }
+
+    /// Wakes on every durable write to any record of this repository. A
+    /// watcher must still read the record it cares about: the generation
+    /// says that something was written, not what.
+    #[must_use]
+    pub fn subscribe_writes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.writes.subscribe()
     }
 
     /// The records of one workspace written durably since `since`, a

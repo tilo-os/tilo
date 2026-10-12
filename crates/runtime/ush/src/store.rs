@@ -79,14 +79,6 @@ impl Store {
         }
     }
 
-    /// This store with granted directories found below `root` (see
-    /// [`GRANT_ROOT_ENV`]).
-    #[must_use]
-    pub fn with_grant_root(mut self, root: PathBuf) -> Self {
-        self.grant_root = Some(root);
-        self
-    }
-
     /// Where granted directories' contents are, when not at their own paths.
     pub fn grant_root(&self) -> Option<&Path> {
         self.grant_root.as_deref()

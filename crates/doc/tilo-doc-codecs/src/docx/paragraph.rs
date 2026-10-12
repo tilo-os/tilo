@@ -8,7 +8,7 @@
 //! character spacing, kerning, hidden text, the original font names, … — likewise ride on the
 //! run's text as a [`MARK_RPR`] mark and are merged back in `CT_RPr` order.
 
-use super::styles::{attr_val, generic_font, line_spacing_from_spacing, mark_from_rpr_child};
+use super::styles::{attr_val, line_spacing_from_spacing, mark_from_rpr_child};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
@@ -105,7 +105,7 @@ pub(super) fn run_props_xml(modeled: &str, kept: Option<&str>) -> String {
     let family = |raw: &str| {
         first_start(raw)
             .and_then(|e| attr_val(&e, b"w:ascii").or_else(|| attr_val(&e, b"w:hAnsi")))
-            .map(|f| generic_font(&f))
+            .map(|f| crate::generic_font_family(&f).to_owned())
     };
     let mut all = children(modeled);
     for (name, raw) in children(kept) {

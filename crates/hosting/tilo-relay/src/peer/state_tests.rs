@@ -236,6 +236,7 @@ impl Fixture {
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
             signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
@@ -246,9 +247,16 @@ impl Fixture {
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
-        write_state_delivery(delivery, &self.recipient, &session, wire)
-            .await
-            .unwrap();
+        write_state_delivery(
+            delivery,
+            &self.recipient,
+            &session,
+            &mut SessionCoding::default(),
+            &crate::presence_mailbox::PresenceMailbox::default(),
+            wire,
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -1235,6 +1243,7 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
         framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        presence: None,
         signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
@@ -1758,6 +1767,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 trust_policy: &source.policy,
                 disconnect: &source.disconnect,
                 framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+                presence: None,
                 signed_actions: false,
                 private_tx: &private,
                 revocations: &source.revocations,
@@ -1865,6 +1875,7 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
         framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+        presence: None,
         signed_actions: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
@@ -1996,6 +2007,7 @@ impl Fixture {
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
             signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
@@ -2299,6 +2311,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 trust_policy: &writer.source.policy,
                 disconnect: &writer.source.disconnect,
                 framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+                presence: None,
                 signed_actions: false,
                 private_tx: &writer.private,
                 revocations: &writer.source.revocations,
@@ -2444,6 +2457,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
             signed_actions: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
@@ -2579,6 +2593,7 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
             signed_actions: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
@@ -3014,6 +3029,7 @@ impl Fixture {
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
             signed_actions: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
@@ -3365,6 +3381,7 @@ async fn native_sync_refresh_uses_live_subscribed_source_and_rechecks_execution(
             trust_policy: &source.policy,
             disconnect: &source.disconnect,
             framing: tilo_delivery_protocol::transport_v2::StateFraming::V2,
+            presence: None,
             signed_actions: false,
             private_tx: &fixture.private,
             revocations: &source.revocations,

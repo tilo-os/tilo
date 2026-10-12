@@ -32,7 +32,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::FromRawFd;
 use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -60,6 +60,9 @@ pub struct SessionOptions {
     /// The machine's root. `/` outside tests.
     pub host_root: PathBuf,
     pub verbose: bool,
+    /// The key the shell marks its command runs with for Terminal
+    /// ([`crate::runs`]); `None` marks nothing.
+    pub runs: Option<String>,
     /// Connected participant-private editing endpoint from this served session.
     pub editor: Option<Arc<runtime_portal::editor::Socket>>,
 }
@@ -72,6 +75,9 @@ impl Default for SessionOptions {
             term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
             host_root: PathBuf::from("/"),
             verbose: false,
+            runs: std::env::var(crate::runs::KEY_ENV)
+                .ok()
+                .filter(|key| crate::runs::valid_key(key)),
             editor: None,
         }
     }
@@ -237,6 +243,11 @@ impl Session {
             let tree = self.images.tree(&id).map_err(anyhow::Error::msg)?;
             images.push((format!("{label} {id}"), tree));
         }
+        if !self.images.is_local(&runtime) {
+            // Stderr is the session's terminal: the person sees why there is
+            // no prompt yet, instead of a pane that only echoes their keys.
+            eprintln!("ush: preparing this environment's runtime for its first use…");
+        }
         let tree = self.images.tree(&runtime).map_err(anyhow::Error::msg)?;
         images.push((
             format!("runtime {} {runtime}", environment.runtime.release),
@@ -292,8 +303,15 @@ impl Session {
         let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         let runtime_bin = runtime_binary()?;
         let helper_runtime = crate::helper_runtime::HelperRuntime::resolve(&runtime_bin)?;
+        let shell = guest_shell(&images);
+        let runs = self
+            .opts
+            .runs
+            .clone()
+            .filter(|_| self.opts.command.is_empty() && crate::runs::is_bash(&shell));
         Ok(GuestPlan {
-            shell: guest_shell(&images),
+            shell,
+            runs,
             images,
             host_root: self.opts.host_root.clone(),
             session_dir,
@@ -544,6 +562,10 @@ pub enum ServeRequest {
         /// as an earlier answer named it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_session: Option<String>,
+        /// The key the session's shell marks its command runs with
+        /// ([`crate::runs`]), chosen by the app for this session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runs: Option<String>,
         /// Explicit opt-in; existing clients continue to receive exactly one FD.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
@@ -629,6 +651,10 @@ pub enum ServeResponse {
         /// re-attaches to it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay_session: Option<String>,
+        /// The session's shell is asked to mark its runs with the key the
+        /// request named. A shell other than `bash` writes no marks.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        runs: bool,
         /// V1 bundles PTY first, private editor second, under this session's lifetime.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
@@ -702,19 +728,19 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
 /// cannot be set to owner-only.
 pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<()> {
     store.ensure()?;
-    let listener = if let Some(listener) = systemd_listener(socket)? {
+    // Invalid activation addressed to this process is fatal: unlinking and
+    // rebinding would race queued clients and could replace an endpoint
+    // systemd already exposed.
+    // SAFETY: called from the `tilo-ush serve` main thread before it spawns
+    // any connection thread; nothing else has started a thread.
+    let activated = unsafe { tilo_files::native::private::activated_socket(socket)? };
+    let listener = if let Some(listener) = activated {
         listener
     } else {
         if let Some(parent) = socket.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::remove_file(socket);
-        let listener = UnixListener::bind(socket)?;
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
-        }
-        listener
+        tilo_files::native::private::bind_socket(socket)?
     };
     tracing::info!(socket = %socket.display(), "ush: serving guests");
 
@@ -729,56 +755,6 @@ pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<(
         });
     }
     Ok(())
-}
-
-/// Consume systemd's one pre-bound service socket when activation metadata is
-/// addressed to this process. Invalid matching metadata is fatal: falling back
-/// to unlinking and rebinding would race queued clients and could replace an
-/// endpoint systemd already exposed.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "systemd socket activation: LISTEN_* must not leak to guest children; \
-              cleared right after fd 3 is taken, and `serve` calls this before it \
-              spawns any connection thread, from a `tilo-ush serve` main thread \
-              that has started no other threads"
-)]
-fn systemd_listener(expected: &Path) -> anyhow::Result<Option<UnixListener>> {
-    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
-
-    let pid_matches = std::env::var("LISTEN_PID")
-        .ok()
-        .and_then(|value| value.parse::<u32>().ok())
-        == Some(std::process::id());
-    if !pid_matches {
-        return Ok(None);
-    }
-    anyhow::ensure!(
-        std::env::var("LISTEN_FDS").as_deref() == Ok("1"),
-        "systemd must pass exactly one ush listener"
-    );
-    // SAFETY: fcntl only validates the scalar descriptor.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } != -1,
-        "systemd ush listener fd is closed"
-    );
-    // SAFETY: validated activation metadata transfers ownership of fd 3 once.
-    let listener = unsafe { UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
-    anyhow::ensure!(
-        listener.local_addr()?.as_pathname() == Some(expected),
-        "systemd ush listener has an unexpected path"
-    );
-    // Guest processes must never inherit the host supervisor endpoint.
-    anyhow::ensure!(
-        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } != -1,
-        "cannot mark systemd ush listener close-on-exec"
-    );
-    // SAFETY: serve is entered before any worker thread is started.
-    unsafe {
-        std::env::remove_var("LISTEN_PID");
-        std::env::remove_var("LISTEN_FDS");
-        std::env::remove_var("LISTEN_FDNAMES");
-    }
-    Ok(Some(listener))
 }
 
 /// Requests one connection may make. A refused open spends nothing — the
@@ -902,17 +878,34 @@ fn serve_guest_session(
         return Ok(Served::Refused);
     }
 
+    open_environment(stream, writer, store, host_root, environment, &record, req)
+}
+
+/// Build the guest of an environment on this device on a fresh pty and hand
+/// its master to the app; the connection is the session's lifetime.
+fn open_environment(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    host_root: &Path,
+    environment: Option<&str>,
+    record: &str,
+    req: ServeRequest,
+) -> anyhow::Result<Served> {
+    let record = record.to_owned();
     let ServeRequest::OpenSession {
         cols,
         rows,
         term,
         command,
+        runs,
         editor_protocol,
         ..
     } = req
     else {
         return Ok(Served::Done);
     };
+    let runs = runs.filter(|key| command.is_empty() && crate::runs::valid_key(key));
     let (master, slave) = open_pty(cols, rows)?;
     let editor = if editor_protocol == Some(runtime_portal::editor::VERSION) && command.is_empty() {
         Some(runtime_portal::editor::Socket::pair()?)
@@ -933,6 +926,7 @@ fn serve_guest_session(
         term: term.as_deref().unwrap_or("xterm-256color"),
         host_root,
         command: &command,
+        runs: runs.as_deref(),
         editor: editor.as_ref().map(|(_, supervisor)| supervisor),
     };
 
@@ -948,20 +942,31 @@ fn serve_guest_session(
         session: id.clone(),
         environment: record.clone(),
         relay_session: None,
+        runs: runs.is_some(),
         editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
     };
-    if let Some((app, _)) = &editor {
+    let handed = if let Some((app, _)) = &editor {
         use std::os::fd::AsFd;
-        let mut bytes = serde_json::to_vec(&response)?;
-        bytes.push(b'\n');
-        runtime_portal::fd_transport::send_with_fds(
-            writer.as_raw_fd(),
-            &bytes,
-            &[master.as_raw_fd(), app.as_fd().as_raw_fd()],
-        )?;
+        serde_json::to_vec(&response)
+            .map_err(anyhow::Error::from)
+            .and_then(|mut bytes| {
+                bytes.push(b'\n');
+                runtime_portal::fd_transport::send_with_fds(
+                    writer.as_raw_fd(),
+                    &bytes,
+                    &[master.as_raw_fd(), app.as_fd().as_raw_fd()],
+                )
+                .map_err(anyhow::Error::from)
+            })
     } else {
-        reply(writer, &response, Some(master.as_raw_fd()))?;
-    }
+        reply(writer, &response, Some(master.as_raw_fd()))
+    };
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, &record, "close-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+    })?;
     drop(editor);
     // Hold the master open until the app has it: closing before the descriptor
     // is received would hand over a dead terminal.
@@ -1003,15 +1008,16 @@ fn refused_unbuildable(
 
 /// Why the environment `record` (`None`: the default) cannot be built on
 /// this device: the answer for the app and the reason in words. `None` when
-/// it resolves — the default environment is made here on first use, as the
-/// guest would make it.
+/// it resolves. Nothing is written: the session makes the default
+/// environment on its first use, so this answer — which Terminal waits for
+/// with a short deadline — never includes a durable record write.
 pub fn unbuildable(
     store: &Store,
     record: Option<&str>,
     images: &dyn Images,
 ) -> Option<(ServeResponse, String)> {
-    match Records::at(store.records_root()).resolve(record, images) {
-        Ok(_) => None,
+    match Records::at(store.records_root()).resolvable(record, images) {
+        Ok(()) => None,
         Err(crate::records::RecordError::NoRuntime(why)) => {
             let reason = format!("no environment can be built on this device: {why}");
             Some((
@@ -1141,6 +1147,7 @@ fn serve_host(
         term,
         command,
         requested_by,
+        runs,
         ..
     } = req
     else {
@@ -1185,24 +1192,80 @@ fn serve_host(
         "open-session",
         true,
     ));
-    let child = spawn_on_pty(crate::host::host_command(&account, term, command), &slave)?;
+    let runs = runs
+        .as_deref()
+        .filter(|key| {
+            command.is_empty()
+                && crate::runs::valid_key(key)
+                && crate::runs::is_bash(&account.shell)
+        })
+        .and_then(|key| {
+            let rc = store.session_dir(&id).join("runs.bash");
+            std::fs::create_dir_all(store.session_dir(&id)).ok()?;
+            std::fs::write(&rc, crate::runs::bash_rc(true)).ok()?;
+            Some((key, rc))
+        });
+    let child = spawn_on_pty(
+        crate::host::host_command(
+            &account,
+            term,
+            command,
+            runs.as_ref().map(|(k, rc)| (*k, rc.as_path())),
+        ),
+        &slave,
+    )?;
     drop(slave);
-    reply(
+    let handed = reply(
         writer,
         &ServeResponse::Session {
             session: id.clone(),
             environment: "host".into(),
             relay_session: None,
+            runs: runs.is_some(),
             editor_protocol: None,
         },
         Some(master.as_raw_fd()),
-    )?;
+    );
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, "host", "close-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+    })?;
     drop(master);
     let termination = finish_session(stream, child);
     AuditLog::at(store.audit_dir()).append(
         &crate::audit::AuditRecord::new(&id, "host", "close-session", true).because(termination),
     );
     Ok(Served::Done)
+}
+
+/// The relay session a terminal asks for: re-attaching to `relay_session`,
+/// or opening one on the environment `record` (keyed `key`); why not.
+fn relay_session_to(
+    store: &Store,
+    record: Option<&str>,
+    relay_session: Option<&str>,
+    key: &str,
+) -> Result<crate::relay::RelaySession, String> {
+    match relay_session {
+        Some(session) if crate::relay::is_session_id(session) => {
+            Ok(crate::relay::RelaySession::Attach {
+                session: session.to_owned(),
+            })
+        }
+        Some(_) => Err("not a relay session id".into()),
+        None => {
+            // The relay builds the guest from the record as this device
+            // holds it; the default comes into being on first use, as here.
+            Records::at(store.records_root())
+                .resolve(record, &*crate::images::on_this_device())
+                .map_err(|e| e.to_string())?;
+            Ok(crate::relay::RelaySession::Open {
+                record: key.to_owned(),
+            })
+        }
+    }
 }
 
 /// Carry the terminal to an environment session on one of the person's
@@ -1242,26 +1305,12 @@ fn serve_relay(
         return denied(writer, format!("{relay} is not one of your relays"));
     };
     let key = record
-        .clone()
-        .unwrap_or_else(|| tilo_environment::DEFAULT_RECORD.to_owned());
-    let session = match relay_session {
-        Some(session) if crate::relay::is_session_id(session) => {
-            crate::relay::RelaySession::Attach {
-                session: session.clone(),
-            }
-        }
-        Some(_) => return denied(writer, "not a relay session id".into()),
-        None => {
-            // The relay builds the guest from the record as this device
-            // holds it; the default comes into being on first use, as here.
-            let records = Records::at(store.records_root());
-            if let Err(e) = records.resolve(record.as_deref(), &*crate::images::on_this_device()) {
-                return denied(writer, e.to_string());
-            }
-            crate::relay::RelaySession::Open {
-                record: key.clone(),
-            }
-        }
+        .as_deref()
+        .unwrap_or(tilo_environment::DEFAULT_RECORD)
+        .to_owned();
+    let session = match relay_session_to(store, record.as_deref(), relay_session.as_deref(), &key) {
+        Ok(session) => session,
+        Err(reason) => return denied(writer, reason),
     };
     let Some(binary) = crate::relay::bridge_binary() else {
         return denied(
@@ -1293,16 +1342,23 @@ fn serve_relay(
         "open-relay-session",
         true,
     ));
-    reply(
+    let handed = reply(
         writer,
         &ServeResponse::Session {
             session: id.clone(),
             environment: key.clone(),
             relay_session: Some(session_id),
+            runs: false,
             editor_protocol: None,
         },
         Some(master.as_raw_fd()),
-    )?;
+    );
+    let child = accept_session_handoff(handed, child).inspect_err(|_| {
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new(&id, &key, "close-relay-session", true)
+                .because("terminal gone before the session was handed over"),
+        );
+    })?;
     drop(master);
     adopt_relay_tools(status, store.records_root().to_path_buf());
     let termination = finish_session(stream, child);
@@ -1423,6 +1479,23 @@ fn adopt_relay_tools(mut status: crate::relay::StatusReader, records_root: PathB
     });
 }
 
+/// A spawned local guest, host shell or relay bridge belongs to the
+/// supervisor until its descriptor reply is delivered. An abandoned open
+/// must not leave a running child or a zombie behind.
+fn accept_session_handoff(
+    handed: anyhow::Result<()>,
+    mut child: std::process::Child,
+) -> anyhow::Result<std::process::Child> {
+    match handed {
+        Ok(()) => Ok(child),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error)
+        }
+    }
+}
+
 /// Wait for whichever side of a served session ends first and tear the
 /// other down; returns the line the audit log records.
 ///
@@ -1526,6 +1599,8 @@ struct Launch<'a> {
     term: &'a str,
     host_root: &'a Path,
     command: &'a [String],
+    /// The key the session's shell marks its runs with.
+    runs: Option<&'a str>,
     editor: Option<&'a runtime_portal::editor::Socket>,
 }
 
@@ -1566,6 +1641,10 @@ fn spawn_attached(
         cmd.env(crate::store::GRANT_ROOT_ENV, root);
     }
     cmd.env("TERM", launch.term);
+    match launch.runs {
+        Some(key) => cmd.env(crate::runs::KEY_ENV, key),
+        None => cmd.env_remove(crate::runs::KEY_ENV),
+    };
     spawn_on_pty(cmd, slave)
 }
 
@@ -1695,6 +1774,97 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cancelling_a_terminal_connection_kills_and_reaps_its_guest_with_clones_open() {
+        let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
+        let _reader_clone = terminal.try_clone().expect("reader lifetime clone");
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn guest");
+        let pid = libc::pid_t::try_from(child.id()).expect("guest pid");
+        terminal
+            .shutdown(std::net::Shutdown::Both)
+            .expect("cancel pending or accepted session");
+        let termination = finish_session(&supervisor, child);
+        assert!(
+            termination.starts_with("terminal closed; exit"),
+            "{termination}"
+        );
+        // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
+            -1,
+            "production teardown must reap the child, not leave a zombie"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn failed_descriptor_handoff_kills_and_reaps_the_unclaimed_child() {
+        let (mut supervisor, terminal) = UnixStream::pair().expect("socket pair");
+        terminal
+            .shutdown(std::net::Shutdown::Both)
+            .expect("cancel before reply");
+        let (master, _slave) = open_pty(80, 24).expect("PTY");
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn guest or bridge");
+        let pid = libc::pid_t::try_from(child.id()).expect("child pid");
+        let handed = reply(
+            &mut supervisor,
+            &ServeResponse::Session {
+                session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                environment: "default".into(),
+                relay_session: None,
+                runs: false,
+                editor_protocol: None,
+            },
+            Some(master.as_raw_fd()),
+        );
+        assert!(
+            handed.is_err(),
+            "the cancelled terminal cannot accept a descriptor"
+        );
+        assert!(accept_session_handoff(handed, child).is_err());
+        // SAFETY: waitpid writes only to this local status; WNOHANG cannot block.
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) },
+            -1,
+            "the production failed-handoff path must reap the child"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    /// Terminal parses this reply strictly (`UshSessionReply` in
+    /// `apps/terminal/src/main_body.rs`, unknown fields refused), and its test
+    /// `a_session_that_marks_its_runs_opens_and_keeps_the_key` sends these
+    /// bytes. A field added here must be added there too, or every open of a
+    /// session that sends it fails as a malformed reply.
+    #[test]
+    fn a_session_reply_keeps_its_wire_form() {
+        let reply = ServeResponse::Session {
+            session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            environment: "default".into(),
+            relay_session: None,
+            runs: true,
+            editor_protocol: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&reply).unwrap(),
+            "{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}"
+        );
+    }
+
     fn open(target: Target) -> ServeRequest {
         ServeRequest::OpenSession {
             target,
@@ -1704,6 +1874,7 @@ mod tests {
             command: Vec::new(),
             requested_by: crate::host::RequestedBy::Person,
             relay_session: None,
+            runs: None,
             editor_protocol: None,
         }
     }

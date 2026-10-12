@@ -50,6 +50,16 @@ jobs:
           esac
       - name: Checkout public-trust context fixture
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          filter: blob:none
+          sparse-checkout: |
+            tools/ci/resolve_builder.py
+            tools/ci/images.toml
+            os/tests/named_public_trust_context.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - name: Resolve the CI builder before starting job containers
         id: resolve
         env:

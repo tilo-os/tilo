@@ -5,25 +5,21 @@
     reason = "heatmap layout and colour interpolation are bounded numeric operations"
 )]
 
-use std::collections::HashMap;
-
 use crate::widget::ModelPath;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Widget;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
 };
-use crate::widget::{TaffyTreeExt, Widget};
 
 #[derive(Clone, Debug)]
 pub struct HeatmapCell {
@@ -142,10 +138,6 @@ impl Heatmap {
         self.height = height.max(100.0);
         self
     }
-    pub fn set_cells(&mut self, cells: Vec<HeatmapCell>) {
-        self.cells = cells;
-        self.hovered = None;
-    }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }
@@ -223,25 +215,6 @@ impl Heatmap {
             (min.min(0.0), min.min(0.0) + 1.0)
         }
     }
-    fn mix(a: Color, b: Color, amount: f64) -> Color {
-        let amount = amount.clamp(0.0, 1.0);
-        let channel = |start: u8, end: u8| {
-            let value = f64::from(start) + (f64::from(end) - f64::from(start)) * amount;
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "interpolated u8 channels are clamped by their endpoints"
-            )]
-            {
-                value.round() as u8
-            }
-        };
-        Color::from_rgb8(
-            channel(a.r(), b.r()),
-            channel(a.g(), b.g()),
-            channel(a.b(), b.b()),
-        )
-    }
 }
 
 impl InteractiveChart for Heatmap {
@@ -289,24 +262,8 @@ impl InteractiveChart for Heatmap {
 }
 
 impl Widget for Heatmap {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     #[allow(
         clippy::too_many_lines,
         reason = "matrix cells, axes and inspector share one retained paint pass"
@@ -387,7 +344,11 @@ impl Widget for Heatmap {
                 continue;
             };
             let color = if cell.value.is_finite() {
-                Self::mix(low, high, (cell.value - min) / (max - min))
+                crate::tokens::colors::mix8(
+                    low,
+                    high,
+                    crate::num::f32_of_f64((cell.value - min) / (max - min)),
+                )
             } else {
                 missing
             };
@@ -494,40 +455,28 @@ impl Widget for Heatmap {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(id) = crate::widget::chart_navigation::activated_id(
+            action,
+            key_path,
+            self.cells.iter().map(|cell| &cell.id),
+        ) else {
             return false;
         };
-        if let Some(cell) = self
-            .cells
-            .iter()
-            .find(|cell| crate::a11y::hash_key(&cell.id) == *key)
-        {
-            self.activated = Some(cell.id.clone());
-            return true;
-        }
-        false
+        self.activated = Some(id.clone());
+        true
     }
     fn name(&self) -> &'static str {
         "Heatmap"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

@@ -21,6 +21,7 @@ use smithay::backend::input::{
     PointerButtonEvent, PointerMotionEvent, TouchEvent, TouchSlot,
 };
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
+use tilo_accessibility_settings::AccessibilitySettings;
 use tilo_clock::unix_now_ms;
 // xkb comes from smithay's re-export, no new dependency; mirrors `XkbConfig::default()`'s `XKB_DEFAULT_*` handling via empty rule names (see `KeyboardXkb::new`).
 use smithay::backend::session::Session;
@@ -47,9 +48,7 @@ use super::gestures::GestureAction;
 use super::gestures::{GestureConfig, GestureTracker};
 use super::hotplug::{self, ConnectedOutput, LiveOutput};
 use super::input_config;
-use super::input_config::{
-    AccessibilityInputSettings, DeviceCaps, InputSettings, KeyboardSettings,
-};
+use super::input_config::{DeviceCaps, InputSettings, KeyboardSettings};
 use super::output_signal::{HdrRequest, OutputSignalStatus};
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
@@ -64,6 +63,7 @@ use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
     TabletPhase, TouchEvent as TiloTouchEvent,
 };
+use crate::shell::render::icc_lut::IccLut;
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
 /// deterministic and unit-testable without a seat or keyboard device.
@@ -237,7 +237,7 @@ pub struct DrmDispatchState {
     pub commands: Option<Sender<ScanoutCommand>>,
     /// The persisted pointer/keyboard preferences, applied to every libinput device as it appears.
     pub input: InputSettings,
-    pub accessibility: AccessibilityInputSettings,
+    pub accessibility: AccessibilitySettings,
     /// Slow-keys presses are accepted only after being held for the delay.
     pub slow_pending: HashMap<xkb::Keycode, std::time::Instant>,
     /// Sticky modifiers stay logically down through the next non-modifier.
@@ -333,6 +333,9 @@ pub struct DrmDispatchState {
     pub signal_status: BTreeMap<String, OutputSignalStatus>,
     /// Receiving end of the presenter's signalling reports.
     pub signal_reports: Option<Receiver<SignalReport>>,
+    /// What each output's primary plane offers fullscreen clients, as the
+    /// presenter last learned it ([`super::client_scanout::ClientPlanes`]).
+    pub client_planes: super::client_scanout::ClientPlanes,
 }
 
 /// What the DRM backend keeps for drawing tablets.
@@ -1136,7 +1139,7 @@ impl DrmDispatchState {
         cards: BTreeMap<u64, CardHandle>,
         seat: LibSeatSession,
         input: InputSettings,
-        accessibility: AccessibilityInputSettings,
+        accessibility: AccessibilitySettings,
         scale_override: Option<f64>,
         commands_tx: Sender<ScanoutCommand>,
         keyboard: Option<KeyboardXkb>,
@@ -1195,9 +1198,7 @@ impl DrmDispatchState {
             tablets: TabletRuntime::load(),
             keyboard,
             keyboard_device: None,
-            keyboard_config: settings_store::hardware::RichInputConfig::from_section(
-                &settings_store::load_section("input"),
-            ),
+            keyboard_config: settings_store::hardware::RichInputConfig::load(),
             keyboard_cache: BTreeMap::new(),
             keyboard_identities: BTreeMap::new(),
             keyboard_key_owners: BTreeMap::new(),
@@ -1205,6 +1206,7 @@ impl DrmDispatchState {
             fullscreen_output: None,
             signal_status: BTreeMap::new(),
             signal_reports: None,
+            client_planes: super::client_scanout::ClientPlanes::default(),
         }
     }
 
@@ -1628,6 +1630,8 @@ impl DrmDispatchState {
             // A replugged or rebuilt output gets a fresh chance at what an
             // earlier generation of it failed to drive.
             self.signal_status.remove(&build.config_key);
+            // Its plane is probed again by the first fullscreen client on it.
+            self.client_planes.publish(id, None);
             self.live.push(LiveEntry {
                 key,
                 id,
@@ -1660,6 +1664,8 @@ impl DrmDispatchState {
                 color_profile: None,
                 color_transform: None,
                 color_buffer: Vec::new(),
+                color_lut: None,
+                direct_calibration: None,
                 direct_targets: None,
                 direct_ineligible: None,
                 present_by_readback: false,
@@ -3691,13 +3697,20 @@ pub struct ScanoutEntry {
     pub position: (i32, i32),
     pub transform: settings_store::hardware::OutputTransform,
     pub color_profile: Option<String>,
+    /// The profile's qcms transform, which the readback presenter runs on the CPU.
     pub color_transform: Option<qcms::Transform>,
     pub color_buffer: Vec<u8>,
+    /// The same transform sampled for the direct path's final GPU pass.
+    pub color_lut: Option<IccLut>,
+    /// The [`IccLut::id`] the direct path last rendered this output through, `None` for no
+    /// profile. When it is not `color_lut`'s, the profile changed and the next frame renders
+    /// in full instead of keeping the image calibrated for the old one.
+    pub direct_calibration: Option<u64>,
     /// Lazily created same-device GBM/Vulkan targets. `None` means the safe
     /// readback presenter remains authoritative.
     pub direct_targets: Option<DirectScanoutTargets>,
-    /// Why this output's current shape cannot use direct scanout (a rotation,
-    /// an ICC profile, ...). Re-evaluated every frame.
+    /// Why this output cannot use direct scanout (no cursor plane, no page-flip
+    /// events, another GPU, ...). Re-evaluated every frame.
     pub direct_ineligible: Option<&'static str>,
     /// The current frame presents this output through the combined readback:
     /// it is powered and its direct frame was not, or could not be, submitted.
@@ -3796,19 +3809,54 @@ impl ScanoutEntry {
             return;
         }
         self.color_profile = profile;
-        self.color_transform = self.color_profile.as_deref().and_then(|path| {
-            let input = qcms::Profile::new_sRGB();
-            let output = qcms::Profile::new_from_path(path)?;
-            qcms::Transform::new(
-                &input,
-                &output,
-                qcms::DataType::RGBA8,
-                qcms::Intent::Perceptual,
-            )
-        });
-        if self.color_profile.is_some() && self.color_transform.is_none() {
+        let calibration = self.color_profile.as_deref().and_then(color_calibration);
+        if self.color_profile.is_some() && calibration.is_none() {
             tracing::warn!(profile = ?self.color_profile, "DRM display: rejected invalid ICC profile");
         }
+        (self.color_transform, self.color_lut) = calibration.unzip();
+    }
+}
+
+/// The ICC profile at `path` as both presenters apply it: the qcms transform from sRGB to
+/// the panel (perceptual) that the readback runs on the CPU, and the same transform sampled
+/// for the direct path's final GPU pass. `None` when qcms cannot read the profile.
+fn color_calibration(path: &str) -> Option<(qcms::Transform, IccLut)> {
+    let input = qcms::Profile::new_sRGB();
+    let output = qcms::Profile::new_from_path(path)?;
+    let transform = qcms::Transform::new(
+        &input,
+        &output,
+        qcms::DataType::RGBA8,
+        qcms::Intent::Perceptual,
+    )?;
+    let lut = IccLut::from_transform(&transform);
+    Some((transform, lut))
+}
+
+#[cfg(test)]
+mod color_calibration_tests {
+    use super::color_calibration;
+    use crate::shell::render::icc_lut::tests::lut16;
+
+    #[test]
+    fn a_profile_file_calibrates_the_readback_and_the_direct_path_alike() {
+        let dir = tempfile::tempdir().unwrap();
+        let panel = lut16();
+        let path = dir.path().join("panel.icc");
+        std::fs::write(&path, panel.lut16_profile()).unwrap();
+        let (transform, _) = color_calibration(path.to_str().unwrap())
+            .expect("a readable profile yields the qcms transform and its LUT");
+        // The readback's transform is the one the profile defines.
+        let colours = [[12_u8, 200, 90, 255], [255, 255, 255, 255], [0, 0, 0, 255]];
+        let mut readback = colours.concat();
+        let mut reference = colours.concat();
+        transform.apply(&mut readback);
+        panel.transform().apply(&mut reference);
+        assert_eq!(readback, reference);
+
+        std::fs::write(&path, b"not an ICC profile").unwrap();
+        assert!(color_calibration(path.to_str().unwrap()).is_none());
+        assert!(color_calibration(dir.path().join("missing.icc").to_str().unwrap()).is_none());
     }
 }
 
@@ -4132,8 +4180,8 @@ impl DrmRuntime {
 
         // The persisted preferences, read once here so the same values drive libinput device config, gesture direction and the per-output scale override.
         let input = InputSettings::load();
-        let accessibility = AccessibilityInputSettings::load();
-        let scale_override = load_display_scale_override();
+        let accessibility = AccessibilitySettings::load();
+        let scale_override = settings_store::display_scale::load_user_scale();
         tracing::info!(
             tap_to_click = input.tap_to_click,
             natural_scroll = input.natural_scroll_for(true),
@@ -4259,9 +4307,7 @@ impl DrmRuntime {
 
     /// Switch the physical keyboard to input source `index` at once.
     pub fn set_keyboard_source(&mut self, index: usize) {
-        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::from_section(
-            &settings_store::load_section("input"),
-        );
+        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::load();
         self.dispatch.keyboard_cache.clear();
         let scope = self
             .dispatch
@@ -4278,9 +4324,7 @@ impl DrmRuntime {
     /// New devices receive these settings when they appear.
     pub fn reload_input_settings(&mut self) {
         let input = InputSettings::load();
-        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::from_section(
-            &settings_store::load_section("input"),
-        );
+        self.dispatch.keyboard_config = settings_store::hardware::RichInputConfig::load();
         self.dispatch.keyboard_cache.clear();
         let scope = self
             .dispatch
@@ -4291,7 +4335,7 @@ impl DrmRuntime {
             &settings_store::keyboard_sources::effective(&self.dispatch.keyboard_config, scope),
         );
         let previous_cursor_size = self.dispatch.accessibility.effective_cursor_size();
-        let accessibility = AccessibilityInputSettings::load();
+        let accessibility = AccessibilitySettings::load();
         self.dispatch.input = input;
         self.dispatch.key_repeat.cancel();
         if let Some(keyboard) = self
@@ -4411,7 +4455,7 @@ impl DrmDispatchState {
     /// keyboard dispatch for seconds on a DP-MST dock. What is connected
     /// changes only through a udev edge, which re-probes.
     pub fn reload_display_settings(&mut self) {
-        let scale_override = load_display_scale_override();
+        let scale_override = settings_store::display_scale::load_user_scale();
         if scale_override != self.scale_override {
             self.scale_override = scale_override;
             self.relayout_outputs();
@@ -4853,15 +4897,6 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
         is_tablet_pad: device
             .has_capability(smithay::reexports::input::DeviceCapability::TabletPad),
     }
-}
-
-/// The `display.scale` the user has set, or `None`. Distinguishing
-/// "unset" from "set to 1.0" is the point: unset derives the scale from the panel, 1.0 means the user chose 100% on a `HiDPI` panel.
-fn load_display_scale_override() -> Option<f64> {
-    settings_store::load_section("display")
-        .get("scale")
-        .and_then(serde_json::Value::as_f64)
-        .filter(|s| (0.5..=3.0).contains(s))
 }
 
 /// Touch slot as a plain integer for the backend event. libinput reports `-1` for single-touch devices with no slot concept — all one finger, so slot 0 is honest.
@@ -7412,7 +7447,7 @@ mod tests {
 
     #[test]
     fn physical_key_timestamp_survives_translation_but_not_synthetic_repeat() {
-        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
+        let mut state = keyboard_dispatch(AccessibilitySettings::default());
         let a = xkb::Keycode::new(38);
         let origin = 123_456_789_000;
         state.handle_keyboard_key(a, true, Some(origin));
@@ -7450,7 +7485,7 @@ mod tests {
         );
     }
 
-    fn keyboard_dispatch(accessibility: AccessibilityInputSettings) -> DrmDispatchState {
+    fn keyboard_dispatch(accessibility: AccessibilitySettings) -> DrmDispatchState {
         let (mut state, _rx) = dispatch_with_channel();
         state.keyboard = Some(
             KeyboardXkb::from_settings(&KeyboardSettings::default())
@@ -7463,7 +7498,7 @@ mod tests {
     #[test]
     fn keyboard_assignments_switch_before_first_key_and_retire_old_modifiers() {
         use settings_store::keyboard_sources::KeyboardProfile;
-        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
+        let mut state = keyboard_dispatch(AccessibilitySettings::default());
         state.keyboard_config.keyboard_assignments.insert(
             "german".into(),
             KeyboardProfile {
@@ -7510,7 +7545,7 @@ mod tests {
 
     #[test]
     fn keyboard_assignments_share_keys_until_both_devices_release() {
-        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
+        let mut state = keyboard_dispatch(AccessibilitySettings::default());
         let key = xkb::Keycode::new(38);
         state.handle_keyboard_device_key("first", key, true, None);
         state.handle_keyboard_device_key("second", key, true, None);
@@ -7524,7 +7559,7 @@ mod tests {
 
     #[test]
     fn keyboard_assignments_unplug_releases_only_the_vanished_devices_keys() {
-        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
+        let mut state = keyboard_dispatch(AccessibilitySettings::default());
         let key = xkb::Keycode::new(38);
         let shift = xkb::Keycode::new(50);
         state.handle_keyboard_device_key("first", shift, true, None);
@@ -7554,7 +7589,7 @@ mod tests {
 
     #[test]
     fn bounce_keys_swallow_a_rebound_press_and_flash_when_asked() {
-        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+        let mut state = keyboard_dispatch(AccessibilitySettings {
             bounce_keys: true,
             bounce_keys_alert: true,
             ..Default::default()
@@ -7582,7 +7617,7 @@ mod tests {
 
     #[test]
     fn mouse_keys_turn_the_keypad_into_clicks_instead_of_typing() {
-        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+        let mut state = keyboard_dispatch(AccessibilitySettings {
             mouse_keys: true,
             ..Default::default()
         });
@@ -7621,7 +7656,7 @@ mod tests {
 
     #[test]
     fn switching_mouse_keys_off_mid_drag_releases_the_button() {
-        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+        let mut state = keyboard_dispatch(AccessibilitySettings {
             mouse_keys: true,
             ..Default::default()
         });

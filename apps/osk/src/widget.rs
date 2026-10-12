@@ -80,6 +80,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -88,7 +89,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
 
 use crate::actions::SetPreference;
-use crate::learned::{LearnedTyping, Lesson};
+use crate::learned::{Learned, Lesson};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -351,7 +352,7 @@ pub struct OskWidget {
     /// Whether what was learned is to be forgotten, saved copies included.
     forget_learned: bool,
     /// What the keyboard learned from this person, as last presented.
-    learned: std::rc::Rc<LearnedTyping>,
+    learned: std::rc::Rc<Learned>,
 
     /// Whether the keyboard is on screen. This is not the keyboard's own
     /// choice — visibility belongs to the compositor, which shows the keyboard
@@ -801,11 +802,6 @@ impl OskWidget {
         self.apply_hint_case();
     }
 
-    /// The focused field's content hints.
-    pub fn content_hints(&self) -> u32 {
-        self.hints
-    }
-
     /// Whether the focused field holds a secret: nothing typed there is
     /// composed, suggested from or learned.
     pub fn is_secret_field(&self) -> bool {
@@ -1017,7 +1013,7 @@ impl OskWidget {
 
     /// Take `learned`, what the keyboard learned from this person on any of
     /// their devices, as what it knows about their typing.
-    pub fn present_learned(&mut self, learned: std::rc::Rc<LearnedTyping>) {
+    pub fn present_learned(&mut self, learned: std::rc::Rc<Learned>) {
         self.learned = learned;
         if self.personalization_enabled {
             self.adopt_learned();
@@ -1047,9 +1043,9 @@ impl OskWidget {
         if let Some(transitions) = learned.transitions.get(self.language.code()) {
             self.predictor.adopt_learned(transitions);
         }
-        self.touch_model.adopt(&learned.touch);
+        self.touch_model.adopt(&learned.touch_offsets());
         if let Some(ac) = &mut self.autocorrect {
-            ac.adopt_kept(&learned.kept);
+            ac.adopt_kept(learned.kept.iter());
         }
     }
 
@@ -1529,7 +1525,7 @@ impl OskWidget {
         let learned = &self.learned;
         let ac = self.autocorrect.get_or_insert_with(|| {
             let mut ac = Autocorrector::new(dict, KeyAdjacency::default());
-            ac.adopt_kept(&learned.kept);
+            ac.adopt_kept(learned.kept.iter());
             ac
         });
         ac.set_adjacency(adjacency);
@@ -2581,13 +2577,6 @@ impl OskWidget {
         self.cursor_drag.as_ref().is_some_and(|d| d.active)
     }
 
-    /// Show the effective tap targets over the keys (a debug aid).
-    #[must_use]
-    pub fn with_hit_overlay(mut self, on: bool) -> Self {
-        self.hit_overlay = on;
-        self
-    }
-
     /// Show or stop showing the effective tap targets over the keys.
     pub fn set_hit_overlay(&mut self, on: bool) {
         self.hit_overlay = on;
@@ -2769,33 +2758,26 @@ impl Widget for OskWidget {
         } else {
             0.0
         };
-        let node = match taffy.new_leaf(Style {
-            flex_shrink: 0.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: if self.visible && self.fill_surface {
-                    Dimension::percent(1.0)
-                } else {
-                    Dimension::length(total_h)
+        taffy.widget_leaf(
+            Style {
+                flex_shrink: 0.0,
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: if self.visible && self.fill_surface {
+                        Dimension::percent(1.0)
+                    } else {
+                        Dimension::length(total_h)
+                    },
                 },
+                ..Default::default()
             },
-            ..Default::default()
-        }) {
-            Ok(node) => node,
-            // `TaffyTree::new_leaf` only ever returns `Err` when the tree is
-            // at capacity; this arm exists so a future upstream change
-            // degrades the app instead of aborting the whole session.
-            Err(_) => NodeId::from(0u64),
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = ui::widget::placed(l, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.layout_bands();
         if let Some(pose) = self.pose.take() {
             self.take_pose(pose);
@@ -3951,7 +3933,6 @@ mod tests {
             // A non-letter layout must lay out and draw without panicking even
             // though it has no Shift / symbols affordances.
             use ui::offscreen::OffscreenRenderer;
-            use ui::permissions::PermissionContext;
             use vello::peniko::Color;
 
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
@@ -3961,17 +3942,9 @@ mod tests {
 
             let theme = Theme::dark();
             let presence = PresenceCtx::empty();
-            let permission = PermissionContext::permissive();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            osk.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("osk_dialpad.png");
@@ -3986,7 +3959,6 @@ mod tests {
             // A full offscreen frame with a populated suggestion bar must produce
             // non-empty pixels (the bar + chips draw).
             use ui::offscreen::OffscreenRenderer;
-            use ui::permissions::PermissionContext;
             use vello::peniko::Color;
 
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
@@ -3999,17 +3971,9 @@ mod tests {
 
             let theme = Theme::dark();
             let presence = PresenceCtx::empty();
-            let permission = PermissionContext::permissive();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            osk.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("osk_suggestion_bar.png");

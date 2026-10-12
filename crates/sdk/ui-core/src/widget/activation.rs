@@ -13,6 +13,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::pointer_replay::{HeldPress, PressAt, Release};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 
 /// Hover, press and focus of one pressable surface. Faces take this so an
@@ -70,10 +71,8 @@ impl NativeControl {
         kind: tilo_actions::OperationKind,
         handler: Box<dyn FnMut()>,
     ) -> (Self, tilo_actions::ActionBinding<()>) {
-        let mut spec =
-            tilo_actions::ActionSpec::operation("invoke", label, kind, NATIVE_INVOKE, &id)
-                .expect("a control id is always JSON serializable");
-        spec.contract.discovery = tilo_actions::DiscoveryScope::Launchable;
+        let spec = tilo_actions::ActionSpec::operation("invoke", label, kind, NATIVE_INVOKE, &id)
+            .expect("a control id is always JSON serializable");
         let resource =
             tilo_actions::Resource::new(format!("tilo.control:{id}"), "tilo.control", label)
                 .with_action(spec);
@@ -117,7 +116,11 @@ pub(crate) struct Activation {
     action: Option<ActionEmitter<()>>,
     on_activate: Option<Box<dyn FnMut()>>,
     native: Option<NativeControl>,
+    /// What the surface shows. `state.pressed` mirrors `held`, which is
+    /// the press itself: [`Self::press`], [`Self::release`] and
+    /// [`Self::cancel_press`] keep the two in step.
     pub(crate) state: Interaction,
+    held: HeldPress,
     cursor: Point,
 }
 
@@ -238,7 +241,7 @@ impl Activation {
             }
             WindowEvent::CursorLeft { .. } => {
                 self.state.hovered = false;
-                self.state.pressed = false;
+                self.cancel_press();
             }
             WindowEvent::MouseInput {
                 state,
@@ -249,23 +252,47 @@ impl Activation {
                     && !exclude.iter().any(|inner| inner.contains(self.cursor));
                 match state {
                     ElementState::Pressed if inside => {
-                        self.state.pressed = true;
+                        self.press(rect);
                         *ctx.focus_target = Some(ctx.node_id);
                         *ctx.handled = true;
                     }
-                    ElementState::Released if self.state.pressed => {
-                        self.state.pressed = false;
-                        *ctx.handled = true;
-                        if inside {
+                    ElementState::Released => {
+                        let release = self.release(rect, inside);
+                        *ctx.handled |= release.ended();
+                        if release == Release::Click(()) {
                             self.activate();
                         }
                     }
-                    _ => {}
+                    ElementState::Pressed => {}
                 }
             }
             _ => {}
         }
         before != self.state
+    }
+
+    /// A press landed on the surface at `rect`.
+    pub(crate) fn press(&mut self, rect: Rect) {
+        self.held.press(PressAt::one(&self.id, rect));
+        self.state.pressed = true;
+    }
+
+    /// A left-button release, `over` the surface at `rect` or not: the
+    /// press this surface took, or the one a surface it replaced took at
+    /// this place, ends. Does not activate.
+    pub(crate) fn release(&mut self, rect: Rect, over: bool) -> Release {
+        let release = self
+            .held
+            .release(over.then_some(PressAt::one(&self.id, rect)));
+        self.state.pressed = false;
+        release
+    }
+
+    /// Forget the press without a click (the pointer left, a control
+    /// inside took the gesture).
+    pub(crate) fn cancel_press(&mut self) {
+        self.held.cancel();
+        self.state.pressed = false;
     }
 
     pub(crate) fn install_custody(
@@ -330,7 +357,7 @@ struct PaintedTarget {
 /// [`PaintedTargets::paint_focus`]), and acts on
 /// [`PaintedTargets::take_activated`]. Its accessibility node lists the
 /// targets as buttons ([`PaintedTargets::accessibility_children`]) and
-/// routes their activation back ([`PaintedTargets::perform_action_at`],
+/// routes their activation back ([`PaintedTargets::perform_action`],
 /// [`PaintedTargets::perform_semantic_action`]).
 /// Tab moves between the targets while the host holds keyboard focus
 /// ([`PaintedTargets::wants_tab_input`]).
@@ -339,6 +366,8 @@ pub struct PaintedTargets {
     targets: Vec<PaintedTarget>,
     hovered: Option<String>,
     pressed: Option<String>,
+    /// `pressed`, as a host rebuilt in this one's place sees it.
+    carried: HeldPress,
     armed_rect: Option<Rect>,
     cancelled_release_pending: bool,
     focused: Option<String>,
@@ -347,6 +376,7 @@ pub struct PaintedTargets {
     host_focused: bool,
     shift: bool,
     cursor: Point,
+    input_scale_factor: Option<f64>,
     activated: Vec<String>,
 }
 
@@ -446,6 +476,7 @@ impl PaintedTargets {
     /// Cancel the gesture while retaining ownership of its eventual release.
     pub fn cancel_pointer_press(&mut self) {
         self.cancelled_release_pending |= self.pressed.take().is_some();
+        self.carried.cancel();
         self.armed_rect = None;
     }
 
@@ -496,10 +527,16 @@ impl PaintedTargets {
         }
     }
 
-    fn handle_mouse(&mut self, state: ElementState, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_mouse(&mut self, state: ElementState, handled: &mut bool) {
         let under = self.hit(self.cursor).map(str::to_string);
         match state {
             ElementState::Pressed => {
+                // A fresh press starts a new gesture even outside our targets:
+                // an absent old release must not capture the new click.
+                self.pressed = None;
+                self.carried = HeldPress::default();
+                self.armed_rect = None;
+                self.cancelled_release_pending = false;
                 if let Some(id) = under.filter(|id| !self.interaction(id).disabled) {
                     self.focused = Some(id.clone());
                     self.armed_rect = self
@@ -507,36 +544,56 @@ impl PaintedTargets {
                         .iter()
                         .find(|target| target.id == id)
                         .map(|target| target.rect);
+                    if let Some(rect) = self.armed_rect {
+                        self.carried.press(PressAt::one(&id, rect));
+                    }
                     self.cancelled_release_pending = false;
                     self.pressed = Some(id);
-                    *ctx.focus_target = Some(ctx.node_id);
-                    *ctx.handled = true;
+                    *handled = true;
                 }
             }
             ElementState::Released => {
                 self.armed_rect = None;
                 if std::mem::take(&mut self.cancelled_release_pending) {
-                    *ctx.handled = true;
+                    self.carried.cancel();
+                    *handled = true;
                 } else if let Some(pressed) = self.pressed.take() {
-                    *ctx.handled = true;
+                    self.carried.cancel();
+                    *handled = true;
                     if under.as_deref() == Some(pressed.as_str()) {
                         self.activate(&pressed);
                     }
+                } else if let Some(target) = self
+                    .targets
+                    .iter()
+                    .rev()
+                    .find(|target| target.rect.contains(self.cursor))
+                    .filter(|target| !target.disabled)
+                    // A host rebuilt while the button was held: the target
+                    // pressed in its predecessor, at the same place,
+                    // completes here.
+                    && self
+                        .carried
+                        .release(Some(PressAt::one(&target.id, target.rect)))
+                        == Release::Click(())
+                {
+                    let id = target.id.clone();
+                    *handled = true;
+                    self.activate(&id);
                 }
             }
         }
     }
 
-    /// Track the pointer and keys against the registered targets. A press
-    /// and release on the same target activates it; Enter or Space
-    /// activates the focused one; Tab and Shift+Tab move focus between
-    /// targets. Marks the event handled when a target took it, and asks the
-    /// host for keyboard focus when one is pressed. Returns whether
-    /// anything visible changed.
-    pub fn handle_event(
+    /// Pointer routing for canvas hosts without a widget focus context.
+    /// Uses the same completed-click and cancellation rules as `handle_event`,
+    /// without requesting keyboard focus. Returns whether feedback changed;
+    /// handled includes a cancelled gesture's matching release.
+    pub fn handle_pointer_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        scale_factor: f64,
+        handled: &mut bool,
     ) -> bool {
         let before = (
             self.hovered.clone(),
@@ -544,13 +601,16 @@ impl PaintedTargets {
             self.focused.clone(),
             self.host_focused,
         );
+        if self
+            .input_scale_factor
+            .is_some_and(|scale| scale.to_bits() != scale_factor.to_bits())
+        {
+            self.cancel_pointer_press();
+        }
+        self.input_scale_factor = Some(scale_factor);
         match event {
-            WindowEvent::ModifiersChanged(modifiers) => {
-                self.shift = modifiers.state().shift_key();
-            }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.hovered = self.hit(self.cursor).map(str::to_string);
             }
             WindowEvent::CursorLeft { .. } => {
@@ -568,14 +628,56 @@ impl PaintedTargets {
                     && self.wants_pointer_capture() =>
             {
                 self.cancel_pointer_press();
-                *ctx.handled = true;
+                *handled = true;
             }
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_mouse(*state, ctx);
+                self.handle_mouse(*state, handled);
+            }
+            _ => {}
+        }
+        before
+            != (
+                self.hovered.clone(),
+                self.pressed.clone(),
+                self.focused.clone(),
+                self.host_focused,
+            )
+    }
+
+    /// Track the pointer and keys against the registered targets. A press
+    /// and release on the same target activates it; Enter or Space
+    /// activates the focused one; Tab and Shift+Tab move focus between
+    /// targets. Marks the event handled when a target took it, and asks the
+    /// host for keyboard focus when one is pressed. Returns whether
+    /// anything visible changed.
+    pub fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        let mut pointer_handled = false;
+        let changed = self.handle_pointer_event(event, ctx.scale_factor, &mut pointer_handled);
+        if pointer_handled {
+            *ctx.handled = true;
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                *ctx.focus_target = Some(ctx.node_id);
+            }
+        }
+        let before = (self.focused.clone(), self.host_focused);
+        match event {
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.shift = modifiers.state().shift_key();
             }
             WindowEvent::KeyboardInput { event, .. }
                 if self.host_focused && event.state == ElementState::Pressed =>
@@ -607,13 +709,7 @@ impl PaintedTargets {
             }
             _ => {}
         }
-        before
-            != (
-                self.hovered.clone(),
-                self.pressed.clone(),
-                self.focused.clone(),
-                self.host_focused,
-            )
+        changed || before != (self.focused.clone(), self.host_focused)
     }
 
     /// The focus ring around the focused target, while the host holds
@@ -664,8 +760,8 @@ impl PaintedTargets {
 
     /// Route an assistive-technology action on one of
     /// [`Self::accessibility_children`]: forward the host's
-    /// `Widget::perform_action_at` key path here.
-    pub fn perform_action_at(&mut self, action: &crate::a11y::Action, key_path: &[u64]) -> bool {
+    /// `Widget::perform_action` key path here.
+    pub fn perform_action(&mut self, action: &crate::a11y::Action, key_path: &[u64]) -> bool {
         let Some(&key) = key_path.first() else {
             return false;
         };
@@ -680,7 +776,7 @@ impl PaintedTargets {
         self.perform_semantic_action(action, &id)
     }
 
-    /// [`Self::perform_action_at`] by the target's id (its semantic action
+    /// [`Self::perform_action`] by the target's id (its semantic action
     /// target): forward the host's `Widget::perform_semantic_action` here.
     pub fn perform_semantic_action(&mut self, action: &crate::a11y::Action, target: &str) -> bool {
         match action {
@@ -906,9 +1002,9 @@ mod tests {
         assert_eq!(nodes[1].name.as_deref(), Some("8"));
         assert!(nodes[2].state.disabled);
         let key = nodes[1].key.expect("keyed by id");
-        assert!(targets.perform_action_at(&crate::a11y::Action::Activate, &[key]));
+        assert!(targets.perform_action(&crate::a11y::Action::Activate, &[key]));
         assert_eq!(targets.take_activated(), vec!["eight".to_string()]);
-        assert!(!targets.perform_action_at(&crate::a11y::Action::Activate, &[key ^ 1]));
+        assert!(!targets.perform_action(&crate::a11y::Action::Activate, &[key ^ 1]));
         assert!(!targets.perform_semantic_action(&crate::a11y::Action::Activate, "nine"));
     }
 }
