@@ -68,7 +68,7 @@ impl WorkspaceStore {
         let scratch = self
             .root
             .join(format!(".{GENERATION_FILE}-{}", hex::encode(minted)));
-        tilo_files::native::atomic::write(&scratch, &minted)?;
+        crate::store::atomic_write(&scratch, &minted)?;
         let linked = fs::hard_link(&scratch, &path);
         let _ = fs::remove_file(&scratch);
         match linked {

@@ -118,17 +118,18 @@ impl ConsoleServer {
             .unwrap_or_default()
     }
 
-    /// Serve every endpoint, returning the ones that could not start with
-    /// their reason. One failing endpoint does not stop the others.
-    pub fn serve_all(&self, endpoints: &[Endpoint], waker: &Waker) -> Vec<(Endpoint, io::Error)> {
-        endpoints
-            .iter()
-            .filter_map(|endpoint| {
-                self.serve(endpoint, Arc::clone(waker))
-                    .err()
-                    .map(|error| (endpoint.clone(), error))
-            })
-            .collect()
+    /// Serve every endpoint [`Endpoint::discover`] finds for `app`, logging
+    /// which listen and which could not start. One failing endpoint does not
+    /// stop the others.
+    pub fn serve_discovered(&self, app: &str, waker: &Waker) {
+        for endpoint in Endpoint::discover(app) {
+            match self.serve(&endpoint, Arc::clone(waker)) {
+                Ok(()) => tracing::info!(app, ?endpoint, "console listening"),
+                Err(error) => {
+                    tracing::warn!(app, ?endpoint, %error, "console endpoint unavailable");
+                }
+            }
+        }
     }
 
     /// Start serving one endpoint on background threads.

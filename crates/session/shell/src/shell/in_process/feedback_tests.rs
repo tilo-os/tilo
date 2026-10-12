@@ -8,6 +8,82 @@ use ui::headless::FrameHarness;
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const AUTHOR: &str = "feedback-fixture-person";
 
+fn authenticated_startup() -> tilo_desktop::feedback::transport::Startup {
+    use tilo_desktop::feedback::transport::{Enrollment, NoCapture, SessionTransport, Startup};
+    let device = ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+        .verifying_key()
+        .to_bytes();
+    let admission = Enrollment {
+        destination: Destination {
+            room: ROOM.into(),
+            provider: "record:so.tilo.chat:".into(),
+            channel: "feedback".into(),
+        },
+        owner: tilo_actions::remote::Caller::authenticated([11; 32], device).in_room(ROOM),
+        reporter: tilo_actions::remote::Caller::authenticated([12; 32], device).in_room(ROOM),
+        permissions: PermissionContext::member_of(ROOM, hex::encode([12; 32]), Role::Owner)
+            .at_unix_time(0),
+    };
+    let current = admission.clone();
+    Startup::new(
+        admission,
+        Box::new(SessionTransport::new(
+            Box::new(move || Ok(current.clone())),
+            Box::new(|_, _| Ok(())),
+            Box::new(|_| Ok(None)),
+        )),
+        Box::new(NoCapture),
+    )
+    .unwrap()
+}
+
+#[test]
+fn authenticated_startup_binds_only_its_profile_person_and_mounts_private_review() {
+    let root = tempfile::tempdir().unwrap();
+    let mut wrong = InProcessApps::at(&root.path().join("wrong"), "another-person").unwrap();
+    let reporter = authenticated_startup().reporter().clone();
+    assert!(matches!(
+        wrong.install_feedback_startup(&reporter, authenticated_startup()),
+        Err(LaunchError::BindingMismatch)
+    ));
+    assert!(wrong.feedback.is_none());
+    let mut apps =
+        InProcessApps::at(&root.path().join("reporter"), &hex::encode([12; 32])).unwrap();
+    let wrong_device = tilo_actions::remote::Caller::authenticated(
+        [12; 32],
+        ed25519_dalek::SigningKey::from_bytes(&[43; 32])
+            .verifying_key()
+            .to_bytes(),
+    )
+    .in_room(ROOM);
+    assert!(matches!(
+        apps.install_feedback_startup(&wrong_device, authenticated_startup()),
+        Err(LaunchError::BindingMismatch)
+    ));
+    assert!(apps.feedback.is_none());
+    apps.install_feedback_startup(&reporter, authenticated_startup())
+        .unwrap();
+    apps.store.flush(None).unwrap();
+    assert!(
+        apps.install_feedback_startup(&reporter, authenticated_startup())
+            .is_err()
+    );
+    let inputs =
+        crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(root.path(), apps)
+            .unwrap();
+    let mut frame = mount(&inputs);
+    frame.relayout();
+    assert!(frame.capture_protected());
+    call(
+        &mut frame,
+        "field-edit",
+        &json!({"edit": {"path": [{"field": "issue"}], "op": "set", "value": "The book lost my position"}}),
+    )
+    .unwrap();
+    call(&mut frame, "review", &json!({})).unwrap();
+    assert!(frame.capture_protected());
+}
+
 struct DestinationOwner {
     frame: FrameHarness,
     records: ui::record::RecordStore,
@@ -29,7 +105,7 @@ impl DestinationOwner {
                     &ui::bound_dispatch::BoundActionAddress {
                         instance_id: 7,
                         address: tilo_actions::ActionAddress::new(
-                            "chat.channel:feedback",
+                            chat::projection::item_id("channels", "feedback"),
                             "submit-feedback",
                         ),
                     },
@@ -96,25 +172,20 @@ fn destination_owner(apps: &mut InProcessApps) -> Rc<RefCell<DestinationOwner>> 
         .reserve_record(&checkout)
         .unwrap()
         .initialize(|doc| {
-            chat::doc::ChatDoc::seed_workspace(
+            let failed = |error: ui::tilo_actions::DoorError| error.to_string();
+            chat::demo::start_in(doc, AUTHOR, (ROOM, "Private fixture"), "Fixture", "F")
+                .map_err(failed)?;
+            chat::demo::insert_category(doc, AUTHOR, "feedback-category", ROOM, "Feedback")
+                .map_err(failed)?;
+            chat::demo::insert_channel(
                 doc,
-                ROOM,
-                "Private fixture",
                 AUTHOR,
-                "Fixture",
-                "F",
-                0,
-            )?;
-            chat::doc::ChatDoc::insert_category(doc, "feedback-category", ROOM, "Feedback");
-            chat::doc::ChatDoc::insert_channel(
-                doc,
                 "feedback",
-                ROOM,
-                "feedback-category",
+                (ROOM, "feedback-category"),
                 "Feedback",
                 chat::model::ChannelKind::Text,
-            );
-            Ok(())
+            )
+            .map_err(failed)
         })
         .unwrap();
     records.try_flush().unwrap();
@@ -194,6 +265,11 @@ fn mount(inputs: &crate::shell::hosted_inputs::HostedTileInputs) -> FrameHarness
     .unwrap()
 }
 
+/// The composer's field edit that includes the screenshot or leaves it out.
+fn screenshot(include: bool) -> serde_json::Value {
+    json!({"edit": {"path": [{"field": "include_screenshot"}], "op": "set", "value": include}})
+}
+
 #[test]
 fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_receipt() {
     let root = tempfile::tempdir().unwrap();
@@ -219,21 +295,21 @@ fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_re
     assert!(frame.capture_protected());
     call(
         &mut frame,
-        "describe",
-        &json!({"issue":"The book failed; token=secret12345"}),
+        "field-edit",
+        &json!({"edit": {"path": [{"field": "issue"}], "op": "replace", "text": "The book failed; token=secret12345"}}),
     )
     .unwrap();
     assert!(call(&mut frame, "submit", &json!({})).is_err());
-    call(&mut frame, "screenshot", &json!({"include":true})).unwrap();
+    call(&mut frame, "field-edit", &screenshot(true)).unwrap();
     assert!(call(&mut frame, "review", &json!({})).is_err());
     assert!(owner.borrow().sends.is_empty());
-    call(&mut frame, "screenshot", &json!({"include":false})).unwrap();
+    call(&mut frame, "field-edit", &screenshot(false)).unwrap();
     call(&mut frame, "review", &json!({})).unwrap();
     // Approval may still be Saving when the action returns. Observe the
     // production controller's later transport refusal after local durability.
     let _approval = call(&mut frame, "submit", &json!({}));
     assert!(frame.wait_until(ui::time::Duration::from_secs(5), |frame| {
-        inputs.in_process().unwrap().borrow().pump_feedback();
+        inputs.in_process().unwrap().borrow_mut().pump_feedback();
         frame
             .inspection_json()
             .unwrap()
@@ -267,7 +343,7 @@ fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_re
     frame.relayout();
     assert!(!frame.inspection_json().unwrap().contains("secret12345"));
     owner.borrow_mut().offline = false;
-    inputs.in_process().unwrap().borrow().pump_feedback();
+    inputs.in_process().unwrap().borrow_mut().pump_feedback();
     call(&mut frame, "retry", &json!({})).unwrap();
     owner.borrow_mut().deliver();
     let submission = owner.borrow().sends.first().unwrap().clone();
@@ -284,7 +360,7 @@ fn native_private_feedback_reopens_approved_outbox_and_reads_actual_canonical_re
     );
     owner.borrow_mut().receipts = true;
     assert!(frame.wait_until(ui::time::Duration::from_secs(5), |frame| {
-        inputs.in_process().unwrap().borrow().pump_feedback();
+        inputs.in_process().unwrap().borrow_mut().pump_feedback();
         frame
             .inspection_json()
             .unwrap()
@@ -298,7 +374,10 @@ fn assert_canonical_report(owner: &DestinationOwner, submission: &Submission) {
         .records
         .read(&RecordId::package_primary(), |doc| {
             assert_eq!(chat::feedback::reports(doc).unwrap().len(), 1);
-            assert_eq!(chat::doc::ChatDoc::list_messages(doc, "feedback").len(), 1);
+            assert_eq!(
+                chat::projection::read(doc).message_rows("feedback").len(),
+                1
+            );
             chat::feedback::report(doc, &submission.id)
                 .unwrap()
                 .unwrap()
@@ -318,8 +397,8 @@ fn unconfigured_native_feedback_cannot_review_send_or_create_shared_drafts() {
     let mut frame = mount(&inputs);
     call(
         &mut frame,
-        "describe",
-        &json!({"issue":"Unconfigured private draft"}),
+        "field-edit",
+        &json!({"edit": {"path": [{"field": "issue"}], "op": "replace", "text": "Unconfigured private draft"}}),
     )
     .unwrap();
     assert!(call(&mut frame, "review", &json!({})).is_err());

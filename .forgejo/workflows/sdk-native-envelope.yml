@@ -1,0 +1,156 @@
+# Explicit resource diagnostic only; never replaces current-head or main SDK gates.
+name: CI / bounded SDK native envelope
+on:
+  workflow_dispatch:
+    inputs:
+      memory_gib:
+        description: 'Enforced job memory; identical Linux SDK commands in both cases.'
+        type: choice
+        default: '22'
+        options: ['22', '36']
+      runner:
+        description: 'Existing ARM pool or the single approved software canary.'
+        type: choice
+        default: 'runner-large-arm64'
+        options: ['runner-large-arm64', 'runner-sdk-envelope-canary']
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  # The browser runtime pins wasm-bindgen; the CLI must match it exactly.
+  WASM_BINDGEN_VERSION: "0.2.108"
+
+jobs:
+  builder:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+      memory: ${{ steps.envelope.outputs.memory }}
+      runner: ${{ steps.envelope.outputs.runner }}
+    steps:
+      - name: Validate fixed diagnostic memory limit
+        id: envelope
+        env:
+          REQUESTED_MEMORY: ${{ github.event.inputs.memory_gib }}
+          REQUESTED_RUNNER: ${{ github.event.inputs.runner }}
+        run: |
+          case "$REQUESTED_MEMORY" in
+            22|36) printf 'memory=%s\n' "$REQUESTED_MEMORY" >> "$GITHUB_OUTPUT" ;;
+            *) echo 'Unsupported diagnostic memory limit' >&2; exit 2 ;;
+          esac
+          case "${REQUESTED_RUNNER:-runner-large-arm64}" in
+            runner-large-arm64|runner-sdk-envelope-canary)
+              printf 'runner=%s\n' "${REQUESTED_RUNNER:-runner-large-arm64}" >> "$GITHUB_OUTPUT" ;;
+            *) echo 'Unsupported diagnostic runner' >&2; exit 2 ;;
+          esac
+      - name: Checkout public-trust context fixture
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          filter: blob:none
+          sparse-checkout: |
+            tools/ci/resolve_builder.py
+            tools/ci/images.toml
+            os/tests/named_public_trust_context.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Resolve the CI builder before starting job containers
+        id: resolve
+        env:
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+        run: python3 tools/ci/resolve_builder.py
+      - name: Verify named public-trust contexts with Docker BuildKit
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: bash os/tests/named_public_trust_context.sh docker
+
+  sdk:
+    needs: [builder]
+    # Several full debug graphs (tilo-app-cli's tests, Calculator, a generated
+    # app for two targets) share one target directory: they outgrow the
+    # quality lane's 20 GiB disk and reach its 5 GiB memory limit. Each step
+    # reports its peak memory.
+    # Exact dispatch source, all existing Linux SDK commands; no merge onto a moving main.
+    runs-on: ${{ needs.builder.outputs.runner }}
+    timeout-minutes: 180
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      options: --memory=${{ needs.builder.outputs.memory }}g --memory-swap=${{ needs.builder.outputs.memory }}g --cpus=24
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: Verify native Linux SDK runner architecture
+        env:
+          EXPECTED_ARCH: aarch64
+        run: bash os/dev/assert-native-arch.sh "$EXPECTED_ARCH"
+      - name: Prohibit swap within this diagnostic job
+        run: >-
+          python3 tools/ci/qualify_native_envelope.py prepare
+          --memory-gib ${{ needs.builder.outputs.memory }} --cpus 24
+          --state "$RUNNER_TEMP/sdk-envelope-before.json"
+      - name: Observe enforced native envelope before compilation
+        run: >-
+          python3 tools/ci/qualify_native_envelope.py before
+          --memory-gib ${{ needs.builder.outputs.memory }} --cpus 24
+          --state "$RUNNER_TEMP/sdk-envelope-before.json"
+      - name: tilo-caps and the tilo-app target commands
+        run: |
+          bash tools/ci/measure.sh "tilo-caps tests" -- cargo test --locked -p tilo-caps
+          bash tools/ci/measure.sh "tilo-app target tests" -- cargo test --locked -p tilo-app-cli --lib targets::
+      - name: Build tilo-app and tilo-app-package
+        # One `--bin` filter applies to every selected package, so each
+        # binary is named.
+        run: >-
+          bash tools/ci/measure.sh "tilo-app build" --
+          cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
+      - name: Calculator for Linux
+        run: bash tools/ci/measure.sh "Calculator for Linux" -- target/debug/tilo-app build --target linux apps/calculator
+      # The generated app compiles its whole graph into a temporary target
+      # directory that the test removes. Run before the .tapp step, the two
+      # builds never occupy the runner's disk at the same time.
+      - name: A generated app builds outside the repository (native and wasm32)
+        run: |
+          rustup target add wasm32-unknown-unknown
+          bash tools/ci/measure.sh "generated app outside the repository" -- \
+            cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture
+      - name: Calculator .tapp
+        # A Tilo OS .tapp links the toolkit from runtime-dylib, so this step
+        # compiles the whole runtime: about 1,050 crates in a profile nothing
+        # else here builds. At thin-app's opt-level 3 with one codegen unit
+        # those compiles take far longer. This package is signed with an ephemeral
+        # key and never shipped, so it is optimized lightly; release-apps.yml
+        # builds the shipped runtime at the full profile.
+        env:
+          TILO_PKG: ${{ github.workspace }}/target/debug/tilo-app-package
+          CARGO_PROFILE_THIN_APP_OPT_LEVEL: "1"
+          CARGO_PROFILE_THIN_APP_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_THIN_APP_DEBUG: "0"
+        run: |
+          bash tools/ci/measure.sh "Calculator .tapp" -- \
+            target/debug/tilo-app package --target linux apps/calculator \
+            --output "$RUNNER_TEMP/calculator.tapp" --force
+          test -s "$RUNNER_TEMP/calculator.tapp"
+      - name: Report compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report || true
+
+      - name: Verify unchanged envelope and memory counters
+        if: always()
+        run: >-
+          python3 tools/ci/qualify_native_envelope.py after
+          --memory-gib ${{ needs.builder.outputs.memory }} --cpus 24
+          --state "$RUNNER_TEMP/sdk-envelope-before.json"

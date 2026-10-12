@@ -22,6 +22,8 @@ run 'Workspace membership' ./scripts/check-workspace-complete.sh
 run 'Repository layout' python3 tools/policy/check_repository_layout.py
 run 'Integration tests are compiled by a test target' \
   python3 tools/policy/check_integration_test_modules.py
+run 'Checked-in capnp bindings match their schemas' \
+  python3 tools/policy/check_capnp_bindings.py
 run 'Workflow timeouts' python3 tools/policy/check_workflow_timeouts.py
 run 'Workflow dependency and supply-chain invariants' \
   bash os/tests/workflow_dependency_invariants.sh
@@ -74,6 +76,8 @@ run 'Document content stays behind the document layer' \
   python3 tools/policy/check_document_engine_boundary.py
 run 'Desktop crates dependency boundary' \
   python3 tools/policy/check_desktop_model_dependencies.py
+run 'Shared app runtime carries no OS internals or dead weight' \
+  python3 tools/policy/check_runtime_dylib_surface.py
 run 'Browser wasm32 builds stay off the workspace-hack' \
   python3 tools/policy/check_wasm_workspace_hack.py
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py

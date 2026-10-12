@@ -1,46 +1,30 @@
-//! Regressions over the generated shell-proof fixture (see
-//! `shell_proof_fixture` and `tests/fixtures/shell-proof/README.md`).
+//! Regressions over the shell-proof scenario, generated at test time (see
+//! `shell_proof_fixture`).
 use super::*;
 use crate::{coedit::CoeditPayload, transport::Envelope};
 use tilo_peer_state::{NeighbourMsg, StatePeer, retained_proof::*};
 
-/// Materialize the original persisted wire bytes for the production store reader.
-/// Keeping the directory alive also preserves consumers that copy retained trees.
+/// Build the shell-proof and shell-selection scenarios once, at test time,
+/// with fresh test identities, in the layout the production store reader and
+/// the tests read. Keeping the directory alive also preserves consumers that
+/// copy retained trees.
 pub(super) fn fixture() -> PathBuf {
     static FIXTURES: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     FIXTURES
         .get_or_init(|| {
             let dir = tempfile::tempdir().unwrap();
-            let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-            for name in ["shell-proof", "shell-selection"] {
-                materialize_tree(&source.join(name), &dir.path().join(name));
-            }
+            super::shell_proof_fixture::write(
+                &super::shell_proof_fixture::generate(),
+                &dir.path().join("shell-proof"),
+            );
+            super::shell_selection_fixture::write(
+                &super::shell_selection_fixture::generate(),
+                &dir.path().join("shell-selection"),
+            );
             dir
         })
         .path()
         .join("shell-proof")
-}
-
-fn materialize_tree(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        if entry.file_type().unwrap().is_dir() {
-            materialize_tree(&path, &to.join(entry.file_name()));
-        } else if path.extension().is_some_and(|extension| extension == "hex") {
-            let bytes = hex::decode(
-                fs::read_to_string(&path)
-                    .unwrap()
-                    .split_ascii_whitespace()
-                    .collect::<String>(),
-            )
-            .unwrap();
-            fs::write(to.join(path.file_stem().unwrap()), bytes).unwrap();
-        } else {
-            fs::copy(&path, to.join(entry.file_name())).unwrap();
-        }
-    }
 }
 pub(super) fn metadata() -> serde_json::Value {
     serde_json::from_slice(&fs::read(fixture().join("failure.json")).unwrap()).unwrap()

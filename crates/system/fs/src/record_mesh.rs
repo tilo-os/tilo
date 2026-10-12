@@ -6,7 +6,7 @@
 
 use std::io;
 
-use collab_types::{FileActor, FileRecordId};
+use fs_protocol::{FileActor, FileRecordId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -534,8 +534,9 @@ impl<'de> Deserialize<'de> for RecordStreamCursor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{Ed25519PublicKey, FileMetadataV1, IndexStatus};
+    use collab_types::Ed25519PublicKey;
     use ed25519_dalek::SigningKey;
+    use fs_protocol::{FileMetadataV1, IndexStatus};
 
     use crate::record_replication::RecordOperationV1;
     use crate::record_replication::{RecordAction, RecordAuthorizer};

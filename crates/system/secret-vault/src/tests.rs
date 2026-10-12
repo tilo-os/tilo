@@ -160,7 +160,7 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
-        private_fs::create_atomic(&dir.join(KEY_FILE), &[0x11; KEY_LEN]).unwrap();
+        tilo_files::native::private::create_atomic(&dir.join(KEY_FILE), &[0x11; KEY_LEN]).unwrap();
         let key = FORMAT.load_or_create_key(dir, Custody::LocalFile).unwrap();
         assert_eq!(key.expose_secret(), &[0x11; KEY_LEN]);
         assert_eq!(std::fs::read(dir.join(KEY_FILE)).unwrap(), [0x11; KEY_LEN]);
@@ -179,7 +179,7 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
-        private_fs::create_atomic(&dir.join(KEY_FILE), b"short").unwrap();
+        tilo_files::native::private::create_atomic(&dir.join(KEY_FILE), b"short").unwrap();
         assert!(FORMAT.load_or_create_key(dir, Custody::LocalFile).is_none());
         assert_eq!(std::fs::read(dir.join(KEY_FILE)).unwrap(), b"short");
     }
@@ -207,7 +207,7 @@ fn local_keys_are_owner_only_and_non_private_keys_are_kept() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
         let key_path = dir.join(KEY_FILE);
-        private_fs::create_atomic(&key_path, &[0x22; KEY_LEN]).unwrap();
+        tilo_files::native::private::create_atomic(&key_path, &[0x22; KEY_LEN]).unwrap();
         let sealed = FORMAT.seal(&key(0x22), b"still mine").unwrap();
         std::fs::write(dir.join(VAULT_FILE), &sealed).unwrap();
         std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(mode)).unwrap();
@@ -265,7 +265,7 @@ fn windows_dpapi_keys_converge_and_bind_to_their_format() {
                 .all(|key| key.as_slice() == persisted.as_slice())
         );
         assert!(!dir.join(KEY_FILE).exists());
-        assert!(private_fs::read(&dir.join("vault.key.dpapi")).is_ok());
+        assert!(tilo_files::native::private::read(&dir.join("vault.key.dpapi")).is_ok());
     }
     // Phase `windows_dpapi_entropy_binds_the_protected_key_to_its_format`.
     {

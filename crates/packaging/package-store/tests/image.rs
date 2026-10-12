@@ -712,6 +712,153 @@ fn system_image_overlay_lowers_are_materialized_locally_with_current_trust_and_i
     );
 }
 
+/// The OS image's sparse system copy of `runtime` (TIL-735): `usr/lib64/libc.so.6`
+/// left out of the tree, its bytes in a host file the image names instead.
+fn sparse_system_runtime(
+    runtime: &Packed,
+    host_bytes: &[u8],
+) -> (tempfile::TempDir, tempfile::TempDir) {
+    let system = scratch();
+    PackageStore::at(system.path())
+        .install_image(
+            full_tapp(runtime).as_slice(),
+            |_| Ok(Admission::default()),
+            None,
+        )
+        .unwrap();
+    let layout = package_store::Layout::new(system.path());
+    let left_out = layout.payload(runtime.meta.id).join("usr/lib64/libc.so.6");
+    std::fs::set_permissions(&left_out, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::remove_file(&left_out).unwrap();
+    let host = scratch();
+    let host_file = host.path().join("usr/lib64/libc.so.6");
+    std::fs::create_dir_all(host_file.parent().unwrap()).unwrap();
+    std::fs::write(&host_file, host_bytes).unwrap();
+    std::fs::write(
+        layout
+            .meta_dir(runtime.meta.id)
+            .join(package_store::HOST_SOURCES_FILE),
+        format!(
+            "usr/lib64/libc.so.6\t{}\t{}\n",
+            host_file.display(),
+            "0".repeat(64)
+        ),
+    )
+    .unwrap();
+    (system, host)
+}
+
+#[test]
+fn a_sparse_system_image_is_rebuilt_from_its_tree_and_the_host_files_it_names() {
+    let ci = SigningIdentity::generate();
+    let (_source, runtime) = seal(
+        Kind::EnvRuntime,
+        "so.tilo.env-runtime",
+        None,
+        &ci,
+        runtime_tree,
+    );
+    let (system, _host) = sparse_system_runtime(&runtime, &bytes(2, 60_000));
+    let user = scratch();
+    let store = Store::new(PackageStore::at(user.path()))
+        .with_system(package_store::Layout::new(system.path()));
+
+    // Never the sparse tree itself: every reader gets the whole, verified one.
+    let tree = materialized_tree(&store, &runtime.meta.id).unwrap();
+    assert!(tree.starts_with(user.path()), "{}", tree.display());
+    assert_eq!(
+        tree,
+        package_store::local_materialized_tree(&store, &runtime.meta.id).unwrap()
+    );
+    assert_eq!(
+        std::fs::read(tree.join("usr/lib64/libc.so.6")).unwrap(),
+        bytes(2, 60_000)
+    );
+    assert_eq!(mode(&tree.join("usr/lib64/libc.so.6")), 0o555);
+    assert_eq!(
+        std::fs::read(tree.join("usr/bin/bash")).unwrap(),
+        bytes(1, 40_000)
+    );
+}
+
+#[test]
+fn a_host_file_that_is_not_the_signed_bytes_is_refused() {
+    let ci = SigningIdentity::generate();
+    let (_source, runtime) = seal(
+        Kind::EnvRuntime,
+        "so.tilo.env-runtime",
+        None,
+        &ci,
+        runtime_tree,
+    );
+    // The host's libc changed under the image (an update, or tampering).
+    let (system, _host) = sparse_system_runtime(&runtime, b"a different libc");
+    let user = scratch();
+    let store = Store::new(PackageStore::at(user.path()))
+        .with_system(package_store::Layout::new(system.path()));
+    assert!(materialized_tree(&store, &runtime.meta.id).is_err());
+    assert!(!store.user().layout().payload(runtime.meta.id).exists());
+}
+
+#[test]
+fn a_host_sources_file_names_only_signed_files_by_plain_absolute_paths() {
+    let ci = SigningIdentity::generate();
+    let (_source, runtime) = seal(
+        Kind::EnvRuntime,
+        "so.tilo.env-runtime",
+        None,
+        &ci,
+        runtime_tree,
+    );
+    let (system, host) = sparse_system_runtime(&runtime, &bytes(2, 60_000));
+    let sources = package_store::Layout::new(system.path())
+        .meta_dir(runtime.meta.id)
+        .join(package_store::HOST_SOURCES_FILE);
+    let libc = host.path().join("usr/lib64/libc.so.6");
+    for (contents, why) in [
+        (
+            format!("usr/lib64/unsigned.so\t{}\n", libc.display()),
+            "names no signed file",
+        ),
+        (
+            "usr/lib64/libc.so.6\tusr/lib64/libc.so.6\n".to_owned(),
+            "not a plain absolute path",
+        ),
+        (
+            format!(
+                "usr/lib64/libc.so.6\t{}/../lib64/libc.so.6\n",
+                host.path().join("usr/lib64").display()
+            ),
+            "not a plain absolute path",
+        ),
+        (
+            "usr/lib64/libc.so.6\n".to_owned(),
+            "expected a tree path and a host path",
+        ),
+        (
+            format!(
+                "usr/lib64/libc.so.6\t{0}\nusr/lib64/libc.so.6\t{0}\n",
+                libc.display()
+            ),
+            "names a tree path twice",
+        ),
+    ] {
+        std::fs::write(&sources, &contents).unwrap();
+        let user = scratch();
+        let store = Store::new(PackageStore::at(user.path()))
+            .with_system(package_store::Layout::new(system.path()));
+        let error = materialized_tree(&store, &runtime.meta.id).unwrap_err();
+        assert!(error.to_string().contains(why), "{contents:?}: {error}");
+    }
+
+    // A left-out file the host sources do not name is missing, not skipped.
+    std::fs::write(&sources, "").unwrap();
+    let user = scratch();
+    let store = Store::new(PackageStore::at(user.path()))
+        .with_system(package_store::Layout::new(system.path()));
+    assert!(materialized_tree(&store, &runtime.meta.id).is_err());
+}
+
 #[test]
 fn modified_system_image_is_not_imported_as_a_signed_overlay_lower() {
     let ci = SigningIdentity::generate();

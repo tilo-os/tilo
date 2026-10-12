@@ -527,6 +527,22 @@ mod wayland {
             self.rx.try_iter().collect()
         }
 
+        /// Where a thread sleeps until this connection has something to read,
+        /// without holding the client — the client is shared with the thread
+        /// that commits typed text, so it cannot block in
+        /// [`Self::blocking_dispatch`].
+        ///
+        /// # Errors
+        /// The socket cannot be duplicated or the nudge socket created.
+        pub fn connection_wait(
+            &self,
+        ) -> std::io::Result<(
+            tilo_input_context::wait::ConnectionWait,
+            tilo_input_context::wait::Nudge,
+        )> {
+            tilo_input_context::wait::ConnectionWait::for_connection(&self.conn)
+        }
+
         /// Block until at least one event is available, dispatch it, and return
         /// the drained batch. Lets a dedicated thread sleep on the socket instead
         /// of busy-polling.

@@ -35,12 +35,7 @@ fn frame(root: Box<dyn Widget>) -> FrameHarness {
     )
 }
 
-fn move_to(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use crate::synthetic_input::cursor_moved;
 
 fn focused(frame: &FrameHarness, name: &str) -> bool {
     frame.access_node_named(name, None).unwrap().state.focused
@@ -109,27 +104,17 @@ impl Widget for Blocker {
         _theme: &Theme,
         map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        let node = taffy
-            .new_leaf(taffy::Style {
-                size: taffy::Size {
-                    width: taffy::style_helpers::length(240.0_f32),
-                    height: taffy::style_helpers::length(80.0_f32),
-                },
-                ..Default::default()
-            })
-            .expect("leaf");
-        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::style_helpers::length(240.0_f32),
+                height: taffy::style_helpers::length(80.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::from_origin_size(
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            ),
-            (f64::from(l.size.width), f64::from(l.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
     fn draw(
         &mut self,
@@ -161,7 +146,7 @@ struct OverlayProbe {
 }
 
 impl Widget for OverlayProbe {
-    crate::testing::inert_widget_methods!(draw, name = "overlay-probe");
+    crate::testing::inert_widget_methods!(name = "overlay-probe");
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -182,8 +167,7 @@ impl Widget for OverlayProbe {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = crate::widget::placed(layout, origin);
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     fn draw_overlay(
@@ -259,13 +243,7 @@ struct Scheduled {
     updates: Rc<Cell<usize>>,
 }
 impl Widget for Scheduled {
-    crate::testing::inert_widget_methods!(
-        leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "scheduled"
-    );
+    crate::testing::inert_widget_methods!(leaf_layout, name = "scheduled");
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.inspections.set(self.inspections.get() + 1);
         None
@@ -577,7 +555,7 @@ fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
         "inert point stays inside the 400x240 frame"
     );
 
-    frame.send_host_event(&move_to(filler_point.0, filler_point.1));
+    frame.send_host_event(&cursor_moved(filler_point.0, filler_point.1));
     let schedule = frame.frame_schedule();
     assert!(
         frame.last_send_skipped_relayout(),
@@ -587,18 +565,18 @@ fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
         schedule.next_wake_deadline.map(|w| w <= Instant::now()),
         frame.redraw_sources()
     );
-    frame.send_host_event(&move_to(filler_point.0 + 8.0, filler_point.1 + 3.0));
+    frame.send_host_event(&cursor_moved(filler_point.0 + 8.0, filler_point.1 + 3.0));
     assert!(
         frame.last_send_skipped_relayout(),
         "repeated inert motion stays skipped"
     );
 
-    frame.send_host_event(&move_to(button.center().x, button.center().y));
+    frame.send_host_event(&cursor_moved(button.center().x, button.center().y));
     assert!(
         !frame.last_send_skipped_relayout(),
         "hover onto a button is paint and produces a frame"
     );
-    frame.send_host_event(&move_to(button.center().x + 1.0, button.center().y));
+    frame.send_host_event(&cursor_moved(button.center().x + 1.0, button.center().y));
     assert!(
         frame.last_send_skipped_relayout(),
         "motion inside the hovered button changes nothing"
@@ -620,12 +598,12 @@ fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
     });
     assert!(!frame.last_send_skipped_relayout());
 
-    frame.send_host_event(&move_to(filler_point.0, filler_point.1));
+    frame.send_host_event(&cursor_moved(filler_point.0, filler_point.1));
     assert!(
         !frame.last_send_skipped_relayout(),
         "leaving the button repaints its resting state"
     );
-    frame.send_host_event(&move_to(filler_point.0 + 2.0, filler_point.1));
+    frame.send_host_event(&cursor_moved(filler_point.0 + 2.0, filler_point.1));
     assert!(frame.last_send_skipped_relayout());
 }
 
@@ -640,7 +618,7 @@ fn hover_only_frames_run_zero_layout_passes() {
     let filler = (button.center().x, other.max_y() + 40.0);
     let ids = frame.layout_node_ids();
 
-    frame.send_host_event(&move_to(button.center().x, button.center().y));
+    frame.send_host_event(&cursor_moved(button.center().x, button.center().y));
     assert!(
         !frame.last_send_skipped_relayout(),
         "hover onto a button paints"
@@ -653,7 +631,7 @@ fn hover_only_frames_run_zero_layout_passes() {
     let frames = frame.relayout_frames();
 
     for step in 0..3 {
-        frame.send_host_event(&move_to(
+        frame.send_host_event(&cursor_moved(
             button.center().x + 1.0 + f64::from(step),
             button.center().y,
         ));
@@ -663,7 +641,7 @@ fn hover_only_frames_run_zero_layout_passes() {
         frames,
         "motion inside the hovered button runs no layout pass"
     );
-    frame.send_host_event(&move_to(filler.0, filler.1));
+    frame.send_host_event(&cursor_moved(filler.0, filler.1));
     assert_eq!(
         frame.relayout_frames(),
         frames + 1,
@@ -674,7 +652,7 @@ fn hover_only_frames_run_zero_layout_passes() {
         "the leave repaints the retained tree"
     );
     for step in 0..3 {
-        frame.send_host_event(&move_to(filler.0 + f64::from(step), filler.1));
+        frame.send_host_event(&cursor_moved(filler.0 + f64::from(step), filler.1));
     }
     assert_eq!(
         frame.relayout_frames(),
@@ -734,21 +712,28 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
     );
     frame.verify_retained_geometry().unwrap();
 
-    // Splitting the block is a structural change: the line count grows, so
-    // the tree is rebuilt (on the press frame; the release frame that follows
-    // retains the new tree). The block stack is one measured leaf, so the
-    // tree does not grow with the document.
+    // Splitting the block adds a line but no widget: the block stack is one
+    // measured leaf, so the editor restacks its lines in a relayout, and
+    // the composed tree (its node ids, focus) survives. The retained
+    // geometry check compares the result with a fresh composition.
     let rebuilt_before = frame.rebuilt_frames();
     frame.key("Enter");
+    assert_eq!(
+        frame.rebuilt_frames(),
+        rebuilt_before,
+        "inserting a block keeps the composition"
+    );
     assert!(
-        frame.rebuilt_frames() > rebuilt_before,
-        "inserting a block rebuilds the composition"
+        frame.last_relayout().measured,
+        "inserting a block re-solves sizes: {:?}",
+        frame.last_relayout()
     );
     assert_eq!(
-        frame.layout_node_ids().len(),
-        ids.len(),
-        "a split adds no layout node"
+        frame.layout_node_ids(),
+        ids,
+        "a split adds no layout node and keeps the others"
     );
+    assert_eq!(frame.focused(), focused, "focus survives a split");
     frame.verify_retained_geometry().unwrap();
 }
 
@@ -831,7 +816,7 @@ fn raw_root_dispatch_maps_history_composition_to_retained_input_and_returns_focu
     let frames = frame.relayout_frames();
     let heads = frame.state.doc.get_heads();
     let focused = frame.focused;
-    frame.dispatch_to_root_outcome(&move_to(center.x, center.y), &modifiers);
+    frame.dispatch_to_root_outcome(&cursor_moved(center.x, center.y), &modifiers);
     let result = frame.dispatch_to_root_outcome(
         &WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),

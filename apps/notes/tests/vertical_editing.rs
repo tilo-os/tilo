@@ -2,7 +2,7 @@
 use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::{BlockEditor, CursorPlacement, Widget};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 struct Editor {
@@ -136,16 +136,9 @@ impl Editor {
     fn key(&mut self, key: NamedKey, shift: bool) {
         // winit keeps platform fields private; this matches the existing
         // headless keyboard fixtures used throughout the integration suite.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(key);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.text = None;
+        let event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
         let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
         };

@@ -80,6 +80,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -88,7 +89,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
 
 use crate::actions::SetPreference;
-use crate::learned::{LearnedTyping, Lesson};
+use crate::learned::{Learned, Lesson};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -351,7 +352,7 @@ pub struct OskWidget {
     /// Whether what was learned is to be forgotten, saved copies included.
     forget_learned: bool,
     /// What the keyboard learned from this person, as last presented.
-    learned: std::rc::Rc<LearnedTyping>,
+    learned: std::rc::Rc<Learned>,
 
     /// Whether the keyboard is on screen. This is not the keyboard's own
     /// choice — visibility belongs to the compositor, which shows the keyboard
@@ -801,11 +802,6 @@ impl OskWidget {
         self.apply_hint_case();
     }
 
-    /// The focused field's content hints.
-    pub fn content_hints(&self) -> u32 {
-        self.hints
-    }
-
     /// Whether the focused field holds a secret: nothing typed there is
     /// composed, suggested from or learned.
     pub fn is_secret_field(&self) -> bool {
@@ -1017,7 +1013,7 @@ impl OskWidget {
 
     /// Take `learned`, what the keyboard learned from this person on any of
     /// their devices, as what it knows about their typing.
-    pub fn present_learned(&mut self, learned: std::rc::Rc<LearnedTyping>) {
+    pub fn present_learned(&mut self, learned: std::rc::Rc<Learned>) {
         self.learned = learned;
         if self.personalization_enabled {
             self.adopt_learned();
@@ -1047,9 +1043,9 @@ impl OskWidget {
         if let Some(transitions) = learned.transitions.get(self.language.code()) {
             self.predictor.adopt_learned(transitions);
         }
-        self.touch_model.adopt(&learned.touch);
+        self.touch_model.adopt(&learned.touch_offsets());
         if let Some(ac) = &mut self.autocorrect {
-            ac.adopt_kept(&learned.kept);
+            ac.adopt_kept(learned.kept.iter());
         }
     }
 
@@ -1529,7 +1525,7 @@ impl OskWidget {
         let learned = &self.learned;
         let ac = self.autocorrect.get_or_insert_with(|| {
             let mut ac = Autocorrector::new(dict, KeyAdjacency::default());
-            ac.adopt_kept(&learned.kept);
+            ac.adopt_kept(learned.kept.iter());
             ac
         });
         ac.set_adjacency(adjacency);
@@ -2581,13 +2577,6 @@ impl OskWidget {
         self.cursor_drag.as_ref().is_some_and(|d| d.active)
     }
 
-    /// Show the effective tap targets over the keys (a debug aid).
-    #[must_use]
-    pub fn with_hit_overlay(mut self, on: bool) -> Self {
-        self.hit_overlay = on;
-        self
-    }
-
     /// Show or stop showing the effective tap targets over the keys.
     pub fn set_hit_overlay(&mut self, on: bool) {
         self.hit_overlay = on;
@@ -2769,38 +2758,26 @@ impl Widget for OskWidget {
         } else {
             0.0
         };
-        let node = match taffy.new_leaf(Style {
-            flex_shrink: 0.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: if self.visible && self.fill_surface {
-                    Dimension::percent(1.0)
-                } else {
-                    Dimension::length(total_h)
+        taffy.widget_leaf(
+            Style {
+                flex_shrink: 0.0,
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: if self.visible && self.fill_surface {
+                        Dimension::percent(1.0)
+                    } else {
+                        Dimension::length(total_h)
+                    },
                 },
+                ..Default::default()
             },
-            ..Default::default()
-        }) {
-            Ok(node) => node,
-            // `TaffyTree::new_leaf` only ever returns `Err` when the tree is
-            // at capacity; this arm exists so a future upstream change
-            // degrades the app instead of aborting the whole session.
-            Err(_) => NodeId::from(0u64),
-        };
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.layout_bands();
         if let Some(pose) = self.pose.take() {
             self.take_pose(pose);
@@ -3714,7 +3691,6 @@ mod tests {
     fn pointer_and_toolbar_taps_route_to_their_targets() {
         eprintln!("phase pointer_tap_routes_to_key_under_cursor");
         {
-            use winit::event::{DeviceId, Modifiers};
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 800.0, 360.0);
 
@@ -3728,26 +3704,9 @@ mod tests {
                 .expect("q key laid out");
             let c = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                osk.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: NodeId::new(0),
-                        taffy: &TaffyTree::new(),
-                    },
-                );
+            let device = winit::event::DeviceId::dummy();
+            let dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
+                ui::testing::dispatch(osk, &ev);
             };
 
             dispatch(
@@ -3824,33 +3783,18 @@ mod tests {
         {
             // A hidden keyboard must not consume taps meant for the app behind it:
             // `handle_event` returns early and `handled` stays false.
-            use winit::event::{DeviceId, Modifiers};
             let mut osk =
                 OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english())).hidden();
             lay_out(&mut osk, 800.0, 360.0);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut handled = false;
-            let mut focus = None;
+            let device = winit::event::DeviceId::dummy();
             // Aim where the 'q' key would be on a visible keyboard.
-            osk.handle_event(
+            let handled = ui::testing::dispatch(
+                &mut osk,
                 &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: ui::widget::Edits::lend(&mut doc),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: NodeId::new(0),
-                    taffy: &TaffyTree::new(),
                 },
             );
             assert!(!handled, "a hidden keyboard does not consume pointer input");
@@ -3989,7 +3933,6 @@ mod tests {
             // A non-letter layout must lay out and draw without panicking even
             // though it has no Shift / symbols affordances.
             use ui::offscreen::OffscreenRenderer;
-            use ui::permissions::PermissionContext;
             use vello::peniko::Color;
 
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
@@ -3999,17 +3942,9 @@ mod tests {
 
             let theme = Theme::dark();
             let presence = PresenceCtx::empty();
-            let permission = PermissionContext::permissive();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            osk.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("osk_dialpad.png");
@@ -4024,7 +3959,6 @@ mod tests {
             // A full offscreen frame with a populated suggestion bar must produce
             // non-empty pixels (the bar + chips draw).
             use ui::offscreen::OffscreenRenderer;
-            use ui::permissions::PermissionContext;
             use vello::peniko::Color;
 
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
@@ -4037,17 +3971,9 @@ mod tests {
 
             let theme = Theme::dark();
             let presence = PresenceCtx::empty();
-            let permission = PermissionContext::permissive();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            osk.draw_with_presence(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &presence,
-                &permission,
-            );
+            osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("osk_suggestion_bar.png");
@@ -4207,7 +4133,6 @@ mod tests {
 
         eprintln!("phase short_tap_is_not_treated_as_a_swipe");
         {
-            use winit::event::{DeviceId, Modifiers};
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 720.0, 360.0);
 
@@ -4220,26 +4145,9 @@ mod tests {
                 .unwrap();
             let c = rect.center();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                osk.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: NodeId::new(0),
-                        taffy: &TaffyTree::new(),
-                    },
-                );
+            let device = winit::event::DeviceId::dummy();
+            let dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
+                ui::testing::dispatch(osk, &ev);
             };
 
             // Press, a tiny jitter (1px), release — all on 'q'. This must type
@@ -4284,32 +4192,14 @@ mod tests {
 
         eprintln!("phase pointer_swipe_decodes_through_keys");
         {
-            use winit::event::{DeviceId, Modifiers};
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 720.0, 360.0);
             let path = path_through(&osk, "the");
             let start = *path.first().unwrap();
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mods = Modifiers::default();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                osk.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: NodeId::new(0),
-                        taffy: &TaffyTree::new(),
-                    },
-                );
+            let device = winit::event::DeviceId::dummy();
+            let dispatch = |osk: &mut OskWidget, ev: WindowEvent| {
+                ui::testing::dispatch(osk, &ev);
             };
 
             // Hover the first key, press, drag along the whole path, release.

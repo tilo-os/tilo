@@ -259,3 +259,65 @@ async fn persisted_revocation_closes_a_member_session_within_a_second() {
         "a persisted revocation must end the session within a second"
     );
 }
+
+/// Home-peer management admits only the owner's devices: a collaborator the
+/// relay's live policy admits on the relay ALPN is refused at its handshake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn management_alpn_rejects_collaborator_admitted_by_live_policy() {
+    let alice = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
+    let relay_dev = alice.enrol("home-server", DeviceCapabilities::host());
+    let relay_key = relay_dev.device_pubkey();
+    let alice_laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let bob_laptop = bob.enrol("collaborator-laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let relay = tilo_relay::daemon::Relay::start(
+        tilo_relay::RelayConfig {
+            state_root: state.path().to_path_buf(),
+            trust_policy: tilo_relay::TrustPolicy::AllowList {
+                users: vec![hex::encode(alice.user_pk), hex::encode(bob.user_pk)],
+            },
+            ..Default::default()
+        },
+        tilo_relay::daemon::RelayIdentity {
+            user_public_key: alice.user_pk,
+            device_signing_key: relay_dev.sk,
+            device_cert: relay_dev.cert,
+            revocations: RevocationList::new(),
+        },
+    )
+    .await
+    .unwrap();
+    let endpoint = client_endpoint().await;
+    let manage = |cert: tilo_user_identity::DeviceCert, sk: ed25519_dalek::SigningKey| {
+        RelayClient::manage_home_peer(
+            &endpoint,
+            relay.node_addr(),
+            alice.user_pk,
+            relay_key,
+            cert,
+            sk,
+            RevocationList::new(),
+            tilo_relay::transport::HomePeerManagementRequest::Status,
+        )
+    };
+
+    // The live policy admits Bob's device on the relay ALPN.
+    RelayClient::connect_to_pinned_host(
+        client_endpoint().await,
+        relay.node_addr(),
+        bob_laptop.cert.clone(),
+        bob_laptop.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .expect("the live policy admits the collaborator on the relay ALPN");
+    // Management answers the owner's device and refuses Bob's.
+    manage(alice_laptop.cert, alice_laptop.sk)
+        .await
+        .expect("the owner's device manages its home peer");
+    assert!(
+        manage(bob_laptop.cert, bob_laptop.sk).await.is_err(),
+        "a collaborator must not pass the management handshake"
+    );
+}

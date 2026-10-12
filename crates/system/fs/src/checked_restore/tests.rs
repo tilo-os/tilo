@@ -1,6 +1,7 @@
 use super::*;
-use collab_types::files::CheckedHistoryOperationV1;
-use collab_types::{Ed25519PublicKey, FileActor, FileProvenance};
+use collab_types::Ed25519PublicKey;
+use fs_protocol::files::CheckedHistoryOperationV1;
+use fs_protocol::{FileActor, FileProvenance};
 use iroh::{Endpoint, endpoint::presets};
 
 struct Fixture {
@@ -8,21 +9,13 @@ struct Fixture {
     endpoint: Endpoint,
     fs: QuickFS,
     ino: u64,
-    original: collab_types::FileVersionId,
+    original: fs_protocol::FileVersionId,
     history: Arc<crate::history::FileHistoryStore>,
     journal: Arc<Mutex<crate::record_transaction::RecordTransactionJournal>>,
 }
 
 impl Fixture {
     async fn new() -> Self {
-        Self::with_signed(true).await
-    }
-
-    #[expect(
-        clippy::similar_names,
-        reason = "`signed` selects the fixture mode, `signer` is its key"
-    )]
-    async fn with_signed(signed: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(crate::store::ContentStore::memory());
@@ -66,13 +59,9 @@ impl Fixture {
         let fs = QuickFS::new(namespace, hydrator, heuristics)
             .with_history(history.clone(), actor)
             .unwrap()
-            .with_checked_history_workspace(publisher.workspace_id());
-        let fs = if signed {
-            fs.with_record_publisher(publisher).unwrap()
-        } else {
-            fs
-        };
-        let fs = fs
+            .with_checked_history_workspace(publisher.workspace_id())
+            .with_record_publisher(publisher)
+            .unwrap()
             .with_replacement_transactions(journal.clone(), directory.path().join("namespace.am"))
             .unwrap();
         let original = history.snapshot(record).unwrap().versions[0].id;
@@ -108,23 +97,19 @@ impl Fixture {
             .with_checked_history_workspace(workspace)
             .with_history(history, actor)
             .unwrap();
-        let fs = if self.fs.record_publisher.is_some() {
-            let repository = Arc::new(
-                crate::record_repository::RecordRepository::open(path.join("records")).unwrap(),
-            );
-            let publisher = Arc::new(
-                crate::record_publisher::RecordPublisher::new(
-                    repository,
-                    workspace,
-                    actor,
-                    ed25519_dalek::SigningKey::from_bytes(&[31; 32]),
-                )
-                .unwrap(),
-            );
-            fs.with_record_publisher(publisher).unwrap()
-        } else {
-            fs
-        };
+        let repository = Arc::new(
+            crate::record_repository::RecordRepository::open(path.join("records")).unwrap(),
+        );
+        let publisher = Arc::new(
+            crate::record_publisher::RecordPublisher::new(
+                repository,
+                workspace,
+                actor,
+                ed25519_dalek::SigningKey::from_bytes(&[31; 32]),
+            )
+            .unwrap(),
+        );
+        let fs = fs.with_record_publisher(publisher).unwrap();
         let journal = Arc::new(Mutex::new(
             crate::record_transaction::RecordTransactionJournal::open(path.join("transactions"))
                 .unwrap(),
@@ -213,35 +198,29 @@ async fn checked_restore_appends_exact_results_once_and_noops_preserve_bytes() {
     }
     // Phase `checked_restore_fresh_noop_preserves_all_durable_bytes_and_namespace`.
     {
-        for signed in [true, false] {
-            let fixture = Fixture::with_signed(signed).await;
-            let mut request = fixture.request();
-            let state = fixture.history.snapshot(request.review.record_id).unwrap();
-            request.operation = Operation::Restore {
-                version_id: state.heads[0],
-            };
-            let before = fixture.durable_bytes();
-            let namespace_before = fixture.fs.ns().save();
-            assert_eq!(
-                fixture.fs.checked_history_restore(fixture.ino, request),
-                Outcome::Unchanged {
-                    intent_id: request.intent_id,
-                    review: request.review
-                }
-            );
-            assert_eq!(fixture.durable_bytes(), before);
-            assert_eq!(fixture.fs.ns().save(), namespace_before);
-            assert_eq!(fixture.journal.lock().unwrap().retained_count(), 0);
-            fixture.endpoint.close().await;
-        }
+        let fixture = Fixture::new().await;
+        let mut request = fixture.request();
+        let state = fixture.history.snapshot(request.review.record_id).unwrap();
+        request.operation = Operation::Restore {
+            version_id: state.heads[0],
+        };
+        let before = fixture.durable_bytes();
+        let namespace_before = fixture.fs.ns().save();
+        assert_eq!(
+            fixture.fs.checked_history_restore(fixture.ino, request),
+            Outcome::Unchanged {
+                intent_id: request.intent_id,
+                review: request.review
+            }
+        );
+        assert_eq!(fixture.durable_bytes(), before);
+        assert_eq!(fixture.fs.ns().save(), namespace_before);
+        assert_eq!(fixture.journal.lock().unwrap().retained_count(), 0);
+        fixture.endpoint.close().await;
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::similar_names,
-    reason = "`stale` is the request, `state` the history it reviews"
-)]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
@@ -283,109 +262,6 @@ async fn checked_restore_refuses_changed_reviews_and_same_byte_ambiguity() {
             before
         );
         assert!(fixture.journal.lock().unwrap().entries().next().is_none());
-        fixture.endpoint.close().await;
-    }
-    // Phase `checked_restore_legacy_same_byte_heads_have_explicit_deterministic_content_reference`.
-    {
-        let fixture = Fixture::with_signed(false).await;
-        let stale = fixture.request();
-        let state = fixture.history.snapshot(stale.review.record_id).unwrap();
-        let current = state
-            .versions
-            .iter()
-            .find(|v| state.heads.contains(&v.id))
-            .unwrap();
-        for (id, stamp) in [(100_u128, 20_u8), (101, 21)] {
-            let mut version = current.clone();
-            version.id = collab_types::FileVersionId(uuid::Uuid::from_u128(id));
-            version.parents = vec![fixture.original];
-            version.timestamp_ms = current.timestamp_ms + 10;
-            version.actor = FileActor {
-                person: Ed25519PublicKey([stamp; 32]),
-                device: Ed25519PublicKey([stamp + 1; 32]),
-            };
-            version.metadata_hash = ContentHash([stamp; 32]);
-            fixture.history.append(version).unwrap();
-        }
-        let before = fixture.durable_bytes();
-        assert_eq!(
-            fixture.fs.checked_history_restore(fixture.ino, stale),
-            Outcome::ReviewRequired
-        );
-        assert_eq!(fixture.durable_bytes(), before);
-        std::fs::write(
-            fixture.directory.path().join("namespace.am"),
-            fixture.fs.ns().save(),
-        )
-        .unwrap();
-        let reopened = fixture.reopen();
-        let ino = reopened
-            .ns()
-            .ensure_ino_for_record_id(stale.review.record_id)
-            .unwrap();
-        let heads = reopened
-            .history
-            .as_ref()
-            .unwrap()
-            .0
-            .snapshot(stale.review.record_id)
-            .unwrap()
-            .heads;
-        let request = Request {
-            review: reopened.checked_history_review(ino).unwrap(),
-            intent_id: uuid::Uuid::new_v4(),
-            ..stale
-        };
-        let Outcome::Applied { receipt } = reopened.checked_history_restore(ino, request) else {
-            panic!("legacy equivalent-head restore");
-        };
-        assert_eq!(
-            receipt.prior_revision.version_id,
-            collab_types::FileVersionId(uuid::Uuid::from_u128(101))
-        );
-        assert_eq!(
-            receipt.prior_reference,
-            collab_types::files::FileRestorePriorReferenceV1::LegacyContentRepresentative
-        );
-        assert_eq!(receipt.prior_revision.content_hash, current.content_hash);
-        assert_eq!(receipt.prior_revision.byte_len, 6);
-        let history = &reopened.history.as_ref().unwrap().0;
-        assert_eq!(
-            history
-                .snapshot(stale.review.record_id)
-                .unwrap()
-                .versions
-                .iter()
-                .find(|v| v.id == receipt.restored_revision.version_id)
-                .unwrap()
-                .parents,
-            heads
-        );
-        let undo = Request {
-            schema_version: 1,
-            intent_id: uuid::Uuid::new_v4(),
-            review: reopened.checked_history_review(ino).unwrap(),
-            operation: Operation::Undo {
-                restore_intent: request.intent_id,
-            },
-        };
-        let Outcome::Applied { receipt: undone } = reopened.checked_history_restore(ino, undo)
-        else {
-            panic!("representative undo");
-        };
-        assert_eq!(undone.restored_revision.content_hash, current.content_hash);
-        assert_eq!(
-            undone.prior_reference,
-            collab_types::files::FileRestorePriorReferenceV1::ObservedRevision
-        );
-        assert_eq!(
-            history
-                .snapshot(stale.review.record_id)
-                .unwrap()
-                .versions
-                .len(),
-            6
-        );
         fixture.endpoint.close().await;
     }
 }
@@ -525,7 +401,7 @@ async fn checked_restore_prepared_recovery_preserves_later_edits_and_fences_writ
         );
         let state = fixture.history.snapshot(request.review.record_id).unwrap();
         let mut version = state.versions.last().unwrap().clone();
-        version.id = collab_types::FileVersionId::new();
+        version.id = fs_protocol::FileVersionId::new();
         version.parents = state.heads;
         assert!(
             matches!(second.publish_structural_version(&version),Err(crate::record_publisher::RecordPublisherError::Repository(crate::record_repository::RecordRepositoryError::RestoreRecoveryRequired(id))) if id == request.intent_id)
@@ -613,103 +489,6 @@ async fn checked_restore_prepared_recovery_preserves_later_edits_and_fences_writ
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn checked_restore_legacy_recovery_reuses_owners_and_preserves_unrelated_records() {
-    // Phase `checked_restore_legacy_uses_existing_durable_owners_and_retains_receipt`.
-    {
-        let fixture = Fixture::with_signed(false).await;
-        let request = fixture.request();
-        let result = fixture.fs.checked_history_restore(fixture.ino, request);
-        let Outcome::Applied { receipt } = &result else {
-            panic!("{result:?}");
-        };
-        assert_eq!(
-            fixture.fs.ns().content_revision_for(fixture.ino),
-            Some(receipt.restored_revision)
-        );
-        assert_eq!(
-            fixture.fs.checked_history_restore(fixture.ino, request),
-            result
-        );
-        let runtime = fixture.fs.replacement_transactions.as_ref().unwrap();
-        let reopened = crate::record_transaction::RecordTransactionJournal::open(
-            fixture.directory.path().join("transactions"),
-        )
-        .unwrap();
-        drop(reopened);
-        let mut persisted =
-            Namespace::from_bytes("reopened", &std::fs::read(&runtime.namespace_path).unwrap())
-                .unwrap();
-        let persisted_ino = persisted
-            .ensure_ino_for_record_id(receipt.record_id)
-            .unwrap();
-        assert_eq!(
-            persisted.content_revision_for(persisted_ino),
-            Some(receipt.restored_revision)
-        );
-        fixture.endpoint.close().await;
-    }
-    // Phase `checked_restore_legacy_prepared_reopen_preserves_later_and_unrelated_records`.
-    {
-        let fixture = Fixture::with_signed(false).await;
-        let request = fixture.request();
-        RESTORE_FAULTS
-            .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
-            .lock()
-            .unwrap()
-            .insert(request.intent_id, TestFault::Prepared);
-        assert_eq!(
-            fixture.fs.checked_history_restore(fixture.ino, request),
-            Outcome::RecoveryPending {
-                intent_id: request.intent_id
-            }
-        );
-        fixture
-            .fs
-            .commit_content(fixture.ino, b"later legacy edit")
-            .unwrap();
-        fixture
-            .fs
-            .rename_named(
-                crate::namespace::ROOT_INO,
-                "test.bin",
-                crate::namespace::ROOT_INO,
-                "later.bin",
-            )
-            .unwrap();
-        let unrelated = fixture
-            .fs
-            .ns()
-            .create_file(crate::namespace::ROOT_INO, "unrelated.bin", None, 0, 1)
-            .unwrap();
-        let unrelated_record = fixture.fs.ns().record_id_for(unrelated).unwrap();
-        let later_hash = fixture.fs.ns().hash_for(fixture.ino);
-        std::fs::write(
-            fixture.directory.path().join("namespace.am"),
-            fixture.fs.ns().save(),
-        )
-        .unwrap();
-        let reopened = fixture.reopen();
-        let ino = reopened
-            .ns()
-            .ensure_ino_for_record_id(request.review.record_id)
-            .unwrap();
-        assert_eq!(reopened.ns().hash_for(ino), later_hash);
-        assert_eq!(reopened.ns().path_for(ino).as_deref(), Some("/later.bin"));
-        assert!(
-            reopened
-                .ns()
-                .ensure_ino_for_record_id(unrelated_record)
-                .is_some()
-        );
-        assert!(matches!(
-            reopened.checked_history_restore(ino, request),
-            Outcome::Applied { .. }
-        ));
-        fixture.endpoint.close().await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
@@ -717,120 +496,116 @@ async fn checked_restore_legacy_recovery_reuses_owners_and_preserves_unrelated_r
 async fn checked_restore_receipts_and_undo_survive_remount_and_reopen() {
     // Phase `checked_restore_remount_receipt_retry_and_current_visibility`.
     {
-        for signed in [true, false] {
-            let fixture = Fixture::with_signed(signed).await;
-            let request = fixture.request();
-            let applied = fixture.fs.checked_history_restore(fixture.ino, request);
-            assert!(matches!(applied, Outcome::Applied { .. }));
-            let mut reopened = fixture.reopen();
-            let ino = reopened
-                .ns()
-                .ensure_ino_for_record_id(request.review.record_id)
-                .unwrap();
-            assert_ne!(reopened.mount_lifetime, request.review.mount_lifetime);
-            let before = fixture.durable_bytes();
-            assert_eq!(reopened.checked_history_restore(ino, request), applied);
-            assert_eq!(fixture.durable_bytes(), before);
-            let mut new_intent = request;
-            new_intent.intent_id = uuid::Uuid::new_v4();
-            assert_eq!(
-                reopened.checked_history_restore(ino, new_intent),
-                Outcome::ReviewRequired
-            );
-            let other = reopened
-                .ns()
-                .create_file(crate::namespace::ROOT_INO, "other.bin", None, 0, 1)
-                .unwrap();
-            assert_eq!(
-                reopened.checked_history_result(other, request.intent_id),
-                Outcome::ReviewRequired
-            );
-            assert_eq!(
-                reopened.checked_history_restore(other, request),
-                Outcome::ReviewRequired
-            );
-            let acl = AclHandle::new(crate::acl::WorkspaceAcl::new());
-            reopened.enforcement = Some((acl.clone(), [55; 32]));
-            assert_eq!(
-                reopened.checked_history_result(ino, request.intent_id),
-                Outcome::NotVisible
-            );
-            let mut readonly = crate::acl::WorkspaceAcl::new();
-            readonly.grant_read([55; 32], "/");
-            acl.replace(readonly);
-            assert_eq!(
-                reopened.checked_history_result(ino, request.intent_id),
-                applied
-            );
-            assert_eq!(
-                reopened.checked_history_restore(ino, request),
-                Outcome::ReadOnly
-            );
-            fixture.endpoint.close().await;
-        }
+        let fixture = Fixture::new().await;
+        let request = fixture.request();
+        let applied = fixture.fs.checked_history_restore(fixture.ino, request);
+        assert!(matches!(applied, Outcome::Applied { .. }));
+        let mut reopened = fixture.reopen();
+        let ino = reopened
+            .ns()
+            .ensure_ino_for_record_id(request.review.record_id)
+            .unwrap();
+        assert_ne!(reopened.mount_lifetime, request.review.mount_lifetime);
+        let before = fixture.durable_bytes();
+        assert_eq!(reopened.checked_history_restore(ino, request), applied);
+        assert_eq!(fixture.durable_bytes(), before);
+        let mut new_intent = request;
+        new_intent.intent_id = uuid::Uuid::new_v4();
+        assert_eq!(
+            reopened.checked_history_restore(ino, new_intent),
+            Outcome::ReviewRequired
+        );
+        let other = reopened
+            .ns()
+            .create_file(crate::namespace::ROOT_INO, "other.bin", None, 0, 1)
+            .unwrap();
+        assert_eq!(
+            reopened.checked_history_result(other, request.intent_id),
+            Outcome::ReviewRequired
+        );
+        assert_eq!(
+            reopened.checked_history_restore(other, request),
+            Outcome::ReviewRequired
+        );
+        let acl = AclHandle::new(crate::acl::WorkspaceAcl::new());
+        reopened.enforcement = Some((acl.clone(), [55; 32]));
+        assert_eq!(
+            reopened.checked_history_result(ino, request.intent_id),
+            Outcome::NotVisible
+        );
+        let mut readonly = crate::acl::WorkspaceAcl::new();
+        readonly.grant_read([55; 32], "/");
+        acl.replace(readonly);
+        assert_eq!(
+            reopened.checked_history_result(ino, request.intent_id),
+            applied
+        );
+        assert_eq!(
+            reopened.checked_history_restore(ino, request),
+            Outcome::ReadOnly
+        );
+        fixture.endpoint.close().await;
     }
     // Phase `checked_restore_backend_undo_redo_survive_reopen_and_refuse_intervening_work`.
     {
-        for signed in [true, false] {
-            let fixture = Fixture::with_signed(signed).await;
-            let request = fixture.request();
-            let Outcome::Applied { receipt: restored } =
-                fixture.fs.checked_history_restore(fixture.ino, request)
-            else {
-                panic!("restore");
-            };
-            let reopened = fixture.reopen();
-            let ino = reopened
-                .ns()
-                .ensure_ino_for_record_id(request.review.record_id)
-                .unwrap();
-            let undo = Request {
-                schema_version: 1,
-                intent_id: uuid::Uuid::new_v4(),
-                review: reopened.checked_history_review(ino).unwrap(),
-                operation: Operation::Undo {
-                    restore_intent: request.intent_id,
-                },
-            };
-            let Outcome::Applied { receipt: undone } = reopened.checked_history_restore(ino, undo)
-            else {
-                panic!("undo");
-            };
-            assert_eq!(
-                undone.restored_revision.content_hash,
-                restored.prior_revision.content_hash
-            );
-            let redo = Request {
-                schema_version: 1,
-                intent_id: uuid::Uuid::new_v4(),
-                review: reopened.checked_history_review(ino).unwrap(),
-                operation: Operation::Redo {
-                    undo_intent: undo.intent_id,
-                },
-            };
-            let Outcome::Applied { receipt: redone } = reopened.checked_history_restore(ino, redo)
-            else {
-                panic!("redo");
-            };
-            assert_eq!(
-                redone.restored_revision.content_hash,
-                restored.restored_revision.content_hash
-            );
-            reopened.commit_content(ino, b"intervening work").unwrap();
-            let undo_later = Request {
-                schema_version: 1,
-                intent_id: uuid::Uuid::new_v4(),
-                review: reopened.checked_history_review(ino).unwrap(),
-                operation: Operation::Undo {
-                    restore_intent: redo.intent_id,
-                },
-            };
-            assert_eq!(
-                reopened.checked_history_restore(ino, undo_later),
-                Outcome::ReviewRequired
-            );
-            fixture.endpoint.close().await;
-        }
+        let fixture = Fixture::new().await;
+        let request = fixture.request();
+        let Outcome::Applied { receipt: restored } =
+            fixture.fs.checked_history_restore(fixture.ino, request)
+        else {
+            panic!("restore");
+        };
+        let reopened = fixture.reopen();
+        let ino = reopened
+            .ns()
+            .ensure_ino_for_record_id(request.review.record_id)
+            .unwrap();
+        let undo = Request {
+            schema_version: 1,
+            intent_id: uuid::Uuid::new_v4(),
+            review: reopened.checked_history_review(ino).unwrap(),
+            operation: Operation::Undo {
+                restore_intent: request.intent_id,
+            },
+        };
+        let Outcome::Applied { receipt: undone } = reopened.checked_history_restore(ino, undo)
+        else {
+            panic!("undo");
+        };
+        assert_eq!(
+            undone.restored_revision.content_hash,
+            restored.prior_revision.content_hash
+        );
+        let redo = Request {
+            schema_version: 1,
+            intent_id: uuid::Uuid::new_v4(),
+            review: reopened.checked_history_review(ino).unwrap(),
+            operation: Operation::Redo {
+                undo_intent: undo.intent_id,
+            },
+        };
+        let Outcome::Applied { receipt: redone } = reopened.checked_history_restore(ino, redo)
+        else {
+            panic!("redo");
+        };
+        assert_eq!(
+            redone.restored_revision.content_hash,
+            restored.restored_revision.content_hash
+        );
+        reopened.commit_content(ino, b"intervening work").unwrap();
+        let undo_later = Request {
+            schema_version: 1,
+            intent_id: uuid::Uuid::new_v4(),
+            review: reopened.checked_history_review(ino).unwrap(),
+            operation: Operation::Undo {
+                restore_intent: redo.intent_id,
+            },
+        };
+        assert_eq!(
+            reopened.checked_history_restore(ino, undo_later),
+            Outcome::ReviewRequired
+        );
+        fixture.endpoint.close().await;
     }
 }
 
@@ -857,87 +632,85 @@ fn pause(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn checked_restore_late_acl_replacement_buffer_aba_and_rebinding_are_zero_write_rejections() {
-    for signed in [true, false] {
-        for change in 0..5 {
-            let mut fixture = Fixture::with_signed(signed).await;
-            let mut grants = crate::acl::WorkspaceAcl::new();
-            grants.grant_read_write([55; 32], "/");
-            let acl = AclHandle::new(grants);
-            fixture.fs.enforcement = Some((acl.clone(), [55; 32]));
-            let request = fixture.request();
-            let (entered, resume) = pause(request.intent_id, TestPause::Hydrated);
-            let handle = tokio::runtime::Handle::current();
-            std::thread::scope(|scope| {
-                let worker = scope.spawn(|| {
-                    let _runtime = handle.enter();
-                    fixture.fs.checked_history_restore(fixture.ino, request)
-                });
-                entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                let expected = match change {
-                    0 => {
-                        acl.replace(crate::acl::WorkspaceAcl::new());
-                        Outcome::NotVisible
-                    }
-                    1 => {
-                        fixture.fs.install_stage(fixture.ino, b"unflushed".to_vec());
-                        Outcome::PendingWrites
-                    }
-                    2 => {
-                        fixture
-                            .fs
-                            .commit_content(fixture.ino, b"ABA alternate")
-                            .unwrap();
-                        fixture.fs.commit_content(fixture.ino, b"second").unwrap();
-                        Outcome::ReviewRequired
-                    }
-                    3 => {
-                        fixture
-                            .fs
-                            .rename_named(
-                                crate::namespace::ROOT_INO,
-                                "test.bin",
-                                crate::namespace::ROOT_INO,
-                                "renamed.bin",
-                            )
-                            .unwrap();
-                        Outcome::ReviewRequired
-                    }
-                    _ => {
-                        let state = fixture.history.snapshot(request.review.record_id).unwrap();
-                        let mut version = state
-                            .versions
-                            .iter()
-                            .find(|v| v.id == fixture.original)
-                            .unwrap()
-                            .clone();
-                        version.id = collab_types::FileVersionId::new();
-                        version.parents = vec![fixture.original];
-                        version.timestamp_ms = 0;
-                        version.provenance = FileProvenance::Edit;
-                        if let Some(original) = fixture.fs.record_publisher.as_ref() {
-                            let second = crate::record_publisher::RecordPublisher::new(
-                                original.repository().clone(),
-                                original.workspace_id(),
-                                fixture.fs.history.as_ref().unwrap().1,
-                                ed25519_dalek::SigningKey::from_bytes(&[31; 32]),
-                            )
-                            .unwrap();
-                            second.publish_structural_version(&version).unwrap();
-                        }
-                        fixture.history.append(version).unwrap();
-                        Outcome::ReviewRequired
-                    }
-                };
-                let before = fixture.durable_bytes();
-                let namespace = fixture.fs.ns().save();
-                resume.send(()).unwrap();
-                assert_eq!(worker.join().unwrap(), expected);
-                assert_eq!(fixture.durable_bytes(), before);
-                assert_eq!(fixture.fs.ns().save(), namespace);
-                assert_eq!(fixture.journal.lock().unwrap().retained_count(), 0);
+    for change in 0..5 {
+        let mut fixture = Fixture::new().await;
+        let mut grants = crate::acl::WorkspaceAcl::new();
+        grants.grant_read_write([55; 32], "/");
+        let acl = AclHandle::new(grants);
+        fixture.fs.enforcement = Some((acl.clone(), [55; 32]));
+        let request = fixture.request();
+        let (entered, resume) = pause(request.intent_id, TestPause::Hydrated);
+        let handle = tokio::runtime::Handle::current();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                let _runtime = handle.enter();
+                fixture.fs.checked_history_restore(fixture.ino, request)
             });
-            fixture.endpoint.close().await;
-        }
+            entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+            let expected = match change {
+                0 => {
+                    acl.replace(crate::acl::WorkspaceAcl::new());
+                    Outcome::NotVisible
+                }
+                1 => {
+                    fixture.fs.install_stage(fixture.ino, b"unflushed".to_vec());
+                    Outcome::PendingWrites
+                }
+                2 => {
+                    fixture
+                        .fs
+                        .commit_content(fixture.ino, b"ABA alternate")
+                        .unwrap();
+                    fixture.fs.commit_content(fixture.ino, b"second").unwrap();
+                    Outcome::ReviewRequired
+                }
+                3 => {
+                    fixture
+                        .fs
+                        .rename_named(
+                            crate::namespace::ROOT_INO,
+                            "test.bin",
+                            crate::namespace::ROOT_INO,
+                            "renamed.bin",
+                        )
+                        .unwrap();
+                    Outcome::ReviewRequired
+                }
+                _ => {
+                    let state = fixture.history.snapshot(request.review.record_id).unwrap();
+                    let mut version = state
+                        .versions
+                        .iter()
+                        .find(|v| v.id == fixture.original)
+                        .unwrap()
+                        .clone();
+                    version.id = fs_protocol::FileVersionId::new();
+                    version.parents = vec![fixture.original];
+                    version.timestamp_ms = 0;
+                    version.provenance = FileProvenance::Edit;
+                    if let Some(original) = fixture.fs.record_publisher.as_ref() {
+                        let second = crate::record_publisher::RecordPublisher::new(
+                            original.repository().clone(),
+                            original.workspace_id(),
+                            fixture.fs.history.as_ref().unwrap().1,
+                            ed25519_dalek::SigningKey::from_bytes(&[31; 32]),
+                        )
+                        .unwrap();
+                        second.publish_structural_version(&version).unwrap();
+                    }
+                    fixture.history.append(version).unwrap();
+                    Outcome::ReviewRequired
+                }
+            };
+            let before = fixture.durable_bytes();
+            let namespace = fixture.fs.ns().save();
+            resume.send(()).unwrap();
+            assert_eq!(worker.join().unwrap(), expected);
+            assert_eq!(fixture.durable_bytes(), before);
+            assert_eq!(fixture.fs.ns().save(), namespace);
+            assert_eq!(fixture.journal.lock().unwrap().retained_count(), 0);
+        });
+        fixture.endpoint.close().await;
     }
 }
 
@@ -949,14 +722,14 @@ async fn checked_restore_late_acl_replacement_buffer_aba_and_rebinding_are_zero_
 async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
     // Phase `checked_restore_real_expiry_is_rechecked_at_final_admission_and_acl_writer_waits`.
     {
-        use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Effect, Expiry, Scope, Subject};
         let mut fixture = Fixture::new().await;
         let expiry = tilo_clock::try_unix_now().unwrap() + 2;
         let cap = CapOverride::new(
             Subject::User(Ed25519PublicKey([55; 32])),
             Scope::FsPath("/".into()),
             Effect::Grant,
-            Verb::Write,
+            Access::Write,
         )
         .expiring(Expiry::AtUnix(expiry));
         let acl = AclHandle::new(crate::acl::WorkspaceAcl::from_capabilities(
@@ -1063,56 +836,78 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
 async fn checked_restore_durable_phases_reopen_exactly_and_frontiers_parent_all_heads() {
     // Phase `checked_restore_every_durable_phase_reopens_exactly_and_next_edit_is_valid`.
     {
-        for signed in [true, false] {
-            for point in [
-                TestFault::Prepared,
-                TestFault::Participant,
-                TestFault::Records,
-                TestFault::History,
-                TestFault::Delta,
-                TestFault::Namespace,
-                TestFault::Broadcast,
-            ] {
-                if !signed && point == TestFault::Participant {
-                    continue;
-                }
-                let fixture = Fixture::with_signed(signed).await;
-                let request = fixture.request();
-                std::fs::write(
-                    fixture.directory.path().join("namespace.am"),
-                    fixture.fs.ns().save(),
-                )
+        for point in [
+            TestFault::Prepared,
+            TestFault::Participant,
+            TestFault::Records,
+            TestFault::History,
+            TestFault::Delta,
+            TestFault::Namespace,
+            TestFault::Broadcast,
+        ] {
+            let fixture = Fixture::new().await;
+            let request = fixture.request();
+            std::fs::write(
+                fixture.directory.path().join("namespace.am"),
+                fixture.fs.ns().save(),
+            )
+            .unwrap();
+            RESTORE_FAULTS
+                .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+                .lock()
+                .unwrap()
+                .insert(request.intent_id, point);
+            assert_eq!(
+                fixture.fs.checked_history_restore(fixture.ino, request),
+                Outcome::RecoveryPending {
+                    intent_id: request.intent_id
+                },
+                "{point:?}"
+            );
+            let receipt = fixture
+                .journal
+                .lock()
+                .unwrap()
+                .checked_receipt(request.intent_id)
                 .unwrap();
-                RESTORE_FAULTS
-                    .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
-                    .lock()
-                    .unwrap()
-                    .insert(request.intent_id, point);
-                assert_eq!(
-                    fixture.fs.checked_history_restore(fixture.ino, request),
-                    Outcome::RecoveryPending {
-                        intent_id: request.intent_id
-                    },
-                    "{signed} {point:?}"
-                );
-                let receipt = fixture
-                    .journal
-                    .lock()
-                    .unwrap()
-                    .checked_receipt(request.intent_id)
-                    .unwrap();
-                let reopened = fixture.reopen();
-                let ino = reopened
+            let reopened = fixture.reopen();
+            let ino = reopened
+                .ns()
+                .ensure_ino_for_record_id(request.review.record_id)
+                .unwrap();
+            assert_eq!(
+                reopened.checked_history_restore(ino, request),
+                Outcome::Applied {
+                    receipt: receipt.clone()
+                }
+            );
+            let count = reopened
+                .history
+                .as_ref()
+                .unwrap()
+                .0
+                .snapshot(request.review.record_id)
+                .unwrap()
+                .versions
+                .len();
+            let before = fixture.durable_bytes();
+            assert_eq!(
+                reopened.checked_history_restore(ino, request),
+                Outcome::Applied {
+                    receipt: receipt.clone()
+                }
+            );
+            assert_eq!(fixture.durable_bytes(), before);
+            reopened.commit_content(ino, b"next ordinary edit").unwrap();
+            assert_ne!(
+                reopened
                     .ns()
-                    .ensure_ino_for_record_id(request.review.record_id)
-                    .unwrap();
-                assert_eq!(
-                    reopened.checked_history_restore(ino, request),
-                    Outcome::Applied {
-                        receipt: receipt.clone()
-                    }
-                );
-                let count = reopened
+                    .hash_for(ino)
+                    .map(|v| ContentHash(*v.as_bytes())),
+                receipt.restored_revision.content_hash
+            );
+            assert_eq!(
+                reopened
                     .history
                     .as_ref()
                     .unwrap()
@@ -1120,144 +915,114 @@ async fn checked_restore_durable_phases_reopen_exactly_and_frontiers_parent_all_
                     .snapshot(request.review.record_id)
                     .unwrap()
                     .versions
-                    .len();
-                let before = fixture.durable_bytes();
-                assert_eq!(
-                    reopened.checked_history_restore(ino, request),
-                    Outcome::Applied {
-                        receipt: receipt.clone()
-                    }
-                );
-                assert_eq!(fixture.durable_bytes(), before);
-                reopened.commit_content(ino, b"next ordinary edit").unwrap();
-                assert_ne!(
-                    reopened
-                        .ns()
-                        .hash_for(ino)
-                        .map(|v| ContentHash(*v.as_bytes())),
-                    receipt.restored_revision.content_hash
-                );
-                assert_eq!(
-                    reopened
-                        .history
-                        .as_ref()
-                        .unwrap()
-                        .0
-                        .snapshot(request.review.record_id)
-                        .unwrap()
-                        .versions
-                        .len(),
-                    count + 1
-                );
-                fixture.endpoint.close().await;
-            }
+                    .len(),
+                count + 1
+            );
+            fixture.endpoint.close().await;
         }
     }
     // Phase `checked_restore_nonwinning_head_invalidates_frontier_and_fresh_restore_parents_all_heads`.
     {
-        for signed in [true, false] {
-            let fixture = Fixture::with_signed(signed).await;
-            let request = fixture.request();
-            let before = fixture.fs.ns().hash_for(fixture.ino);
-            let state = fixture.history.snapshot(request.review.record_id).unwrap();
-            let mut losing = state
+        let fixture = Fixture::new().await;
+        let request = fixture.request();
+        let before = fixture.fs.ns().hash_for(fixture.ino);
+        let state = fixture.history.snapshot(request.review.record_id).unwrap();
+        let mut losing = state
+            .versions
+            .iter()
+            .find(|v| v.id == fixture.original)
+            .unwrap()
+            .clone();
+        losing.id = fs_protocol::FileVersionId::new();
+        losing.parents = vec![fixture.original];
+        losing.timestamp_ms = 0;
+        losing.provenance = FileProvenance::Edit;
+        if let Some(publisher) = fixture.fs.record_publisher.as_ref() {
+            publisher.publish_structural_version(&losing).unwrap();
+        }
+        fixture.history.append(losing).unwrap();
+        assert_eq!(fixture.fs.ns().hash_for(fixture.ino), before);
+        let durable = fixture.durable_bytes();
+        assert_eq!(
+            fixture.fs.checked_history_restore(fixture.ino, request),
+            Outcome::ReviewRequired
+        );
+        assert_eq!(fixture.durable_bytes(), durable);
+        let heads = fixture
+            .history
+            .snapshot(request.review.record_id)
+            .unwrap()
+            .heads;
+        assert_eq!(heads.len(), 2);
+        let request = fixture.request();
+        let Outcome::Applied { receipt } = fixture.fs.checked_history_restore(fixture.ino, request)
+        else {
+            panic!("fresh multihead restore");
+        };
+        let result = fixture
+            .history
+            .snapshot(request.review.record_id)
+            .unwrap()
+            .versions
+            .into_iter()
+            .find(|v| v.id == receipt.restored_revision.version_id)
+            .unwrap();
+        assert_eq!(result.parents, heads);
+        let undo = Request {
+            schema_version: 1,
+            intent_id: uuid::Uuid::new_v4(),
+            review: fixture.fs.checked_history_review(fixture.ino).unwrap(),
+            operation: Operation::Undo {
+                restore_intent: request.intent_id,
+            },
+        };
+        let Outcome::Applied { receipt: undone } =
+            fixture.fs.checked_history_restore(fixture.ino, undo)
+        else {
+            panic!("multihead undo");
+        };
+        assert_eq!(
+            undone.restored_revision.content_hash,
+            receipt.prior_revision.content_hash
+        );
+        let redo = Request {
+            schema_version: 1,
+            intent_id: uuid::Uuid::new_v4(),
+            review: fixture.fs.checked_history_review(fixture.ino).unwrap(),
+            operation: Operation::Redo {
+                undo_intent: undo.intent_id,
+            },
+        };
+        let Outcome::Applied { receipt: redone } =
+            fixture.fs.checked_history_restore(fixture.ino, redo)
+        else {
+            panic!("multihead redo");
+        };
+        assert_eq!(
+            redone.restored_revision.content_hash,
+            receipt.restored_revision.content_hash
+        );
+        let final_state = fixture.history.snapshot(request.review.record_id).unwrap();
+        assert_eq!(final_state.versions.len(), 6);
+        assert_eq!(
+            final_state
                 .versions
                 .iter()
-                .find(|v| v.id == fixture.original)
+                .find(|v| v.id == undone.restored_revision.version_id)
                 .unwrap()
-                .clone();
-            losing.id = collab_types::FileVersionId::new();
-            losing.parents = vec![fixture.original];
-            losing.timestamp_ms = 0;
-            losing.provenance = FileProvenance::Edit;
-            if let Some(publisher) = fixture.fs.record_publisher.as_ref() {
-                publisher.publish_structural_version(&losing).unwrap();
-            }
-            fixture.history.append(losing).unwrap();
-            assert_eq!(fixture.fs.ns().hash_for(fixture.ino), before);
-            let durable = fixture.durable_bytes();
-            assert_eq!(
-                fixture.fs.checked_history_restore(fixture.ino, request),
-                Outcome::ReviewRequired
-            );
-            assert_eq!(fixture.durable_bytes(), durable);
-            let heads = fixture
-                .history
-                .snapshot(request.review.record_id)
-                .unwrap()
-                .heads;
-            assert_eq!(heads.len(), 2);
-            let request = fixture.request();
-            let Outcome::Applied { receipt } =
-                fixture.fs.checked_history_restore(fixture.ino, request)
-            else {
-                panic!("fresh multihead restore");
-            };
-            let result = fixture
-                .history
-                .snapshot(request.review.record_id)
-                .unwrap()
+                .parents,
+            vec![receipt.restored_revision.version_id]
+        );
+        assert_eq!(
+            final_state
                 .versions
-                .into_iter()
-                .find(|v| v.id == receipt.restored_revision.version_id)
-                .unwrap();
-            assert_eq!(result.parents, heads);
-            let undo = Request {
-                schema_version: 1,
-                intent_id: uuid::Uuid::new_v4(),
-                review: fixture.fs.checked_history_review(fixture.ino).unwrap(),
-                operation: Operation::Undo {
-                    restore_intent: request.intent_id,
-                },
-            };
-            let Outcome::Applied { receipt: undone } =
-                fixture.fs.checked_history_restore(fixture.ino, undo)
-            else {
-                panic!("multihead undo");
-            };
-            assert_eq!(
-                undone.restored_revision.content_hash,
-                receipt.prior_revision.content_hash
-            );
-            let redo = Request {
-                schema_version: 1,
-                intent_id: uuid::Uuid::new_v4(),
-                review: fixture.fs.checked_history_review(fixture.ino).unwrap(),
-                operation: Operation::Redo {
-                    undo_intent: undo.intent_id,
-                },
-            };
-            let Outcome::Applied { receipt: redone } =
-                fixture.fs.checked_history_restore(fixture.ino, redo)
-            else {
-                panic!("multihead redo");
-            };
-            assert_eq!(
-                redone.restored_revision.content_hash,
-                receipt.restored_revision.content_hash
-            );
-            let final_state = fixture.history.snapshot(request.review.record_id).unwrap();
-            assert_eq!(final_state.versions.len(), 6);
-            assert_eq!(
-                final_state
-                    .versions
-                    .iter()
-                    .find(|v| v.id == undone.restored_revision.version_id)
-                    .unwrap()
-                    .parents,
-                vec![receipt.restored_revision.version_id]
-            );
-            assert_eq!(
-                final_state
-                    .versions
-                    .iter()
-                    .find(|v| v.id == redone.restored_revision.version_id)
-                    .unwrap()
-                    .parents,
-                vec![undone.restored_revision.version_id]
-            );
-            fixture.endpoint.close().await;
-        }
+                .iter()
+                .find(|v| v.id == redone.restored_revision.version_id)
+                .unwrap()
+                .parents,
+            vec![undone.restored_revision.version_id]
+        );
+        fixture.endpoint.close().await;
     }
 }
 
@@ -1269,216 +1034,183 @@ async fn checked_restore_durable_phases_reopen_exactly_and_frontiers_parent_all_
 async fn checked_restore_scope_codecs_transport_and_parent_bounds_fail_closed() {
     // Phase `checked_restore_scope_codecs_and_transport_fail_closed`.
     {
-        for signed in [true, false] {
-            let mut fixture = Fixture::with_signed(signed).await;
-            let request = fixture.request();
-            let actual = fixture.fs.checked_history_workspace;
-            fixture.fs.checked_history_workspace = Some(uuid::Uuid::nil());
-            assert!(fixture.fs.checked_history_review(fixture.ino).is_err());
-            fixture.fs.checked_history_workspace = if signed {
-                Some(uuid::Uuid::new_v4())
-            } else {
-                None
-            };
-            assert!(fixture.fs.checked_history_review(fixture.ino).is_err());
-            fixture.fs.checked_history_workspace = actual;
-            assert_eq!(
-                fixture
-                    .fs
-                    .checked_restore_xattr(fixture.ino, &vec![b' '; 1025]),
-                Err(EINVAL)
-            );
-            assert_eq!(
-                fixture.fs.checked_restore_xattr(
-                    fixture.ino,
-                    br#"{"schema_version":1,"operation":"restore"}"#
-                ),
-                Err(EINVAL)
-            );
-            let mut wrong = request;
-            wrong.review.mount_lifetime = uuid::Uuid::new_v4();
-            assert_eq!(
-                fixture
-                    .fs
-                    .checked_restore_xattr(fixture.ino, &serde_json::to_vec(&wrong).unwrap()),
-                Err(EBUSY)
-            );
+        let mut fixture = Fixture::new().await;
+        let request = fixture.request();
+        let actual = fixture.fs.checked_history_workspace;
+        fixture.fs.checked_history_workspace = Some(uuid::Uuid::nil());
+        assert!(fixture.fs.checked_history_review(fixture.ino).is_err());
+        fixture.fs.checked_history_workspace = Some(uuid::Uuid::new_v4());
+        assert!(fixture.fs.checked_history_review(fixture.ino).is_err());
+        fixture.fs.checked_history_workspace = actual;
+        assert_eq!(
             fixture
                 .fs
-                .rename_named(
-                    crate::namespace::ROOT_INO,
-                    "test.bin",
-                    crate::namespace::ROOT_INO,
-                    "test.qdoc",
-                )
-                .unwrap();
-            let before = fixture.durable_bytes();
-            assert!(matches!(
-                fixture.fs.checked_history_restore(fixture.ino, request),
-                Outcome::UnsupportedOwner { .. }
-            ));
-            assert_eq!(
-                fixture.fs.restore_version(fixture.ino, fixture.original),
-                Err(libc::ENOTSUP)
-            );
-            assert_eq!(fixture.durable_bytes(), before);
+                .checked_restore_xattr(fixture.ino, &vec![b' '; 1025]),
+            Err(EINVAL)
+        );
+        assert_eq!(
+            fixture.fs.checked_restore_xattr(
+                fixture.ino,
+                br#"{"schema_version":1,"operation":"restore"}"#
+            ),
+            Err(EINVAL)
+        );
+        let mut wrong = request;
+        wrong.review.mount_lifetime = uuid::Uuid::new_v4();
+        assert_eq!(
             fixture
                 .fs
-                .rename_named(
-                    crate::namespace::ROOT_INO,
-                    "test.qdoc",
-                    crate::namespace::ROOT_INO,
-                    "test.bin",
-                )
-                .unwrap();
-            fixture.endpoint.close().await;
-        }
+                .checked_restore_xattr(fixture.ino, &serde_json::to_vec(&wrong).unwrap()),
+            Err(EBUSY)
+        );
+        fixture
+            .fs
+            .rename_named(
+                crate::namespace::ROOT_INO,
+                "test.bin",
+                crate::namespace::ROOT_INO,
+                "test.qdoc",
+            )
+            .unwrap();
+        let before = fixture.durable_bytes();
+        assert!(matches!(
+            fixture.fs.checked_history_restore(fixture.ino, request),
+            Outcome::UnsupportedOwner { .. }
+        ));
+        assert_eq!(fixture.durable_bytes(), before);
+        fixture
+            .fs
+            .rename_named(
+                crate::namespace::ROOT_INO,
+                "test.qdoc",
+                crate::namespace::ROOT_INO,
+                "test.bin",
+            )
+            .unwrap();
+        fixture.endpoint.close().await;
     }
     // Phase `checked_restore_service_parent_bound_rejects_before_any_authored_write`.
     {
-        for signed in [true, false] {
-            let fixture = Fixture::with_signed(signed).await;
-            let initial = fixture.request();
-            let state = fixture.history.snapshot(initial.review.record_id).unwrap();
-            let source = state
-                .versions
-                .iter()
-                .find(|v| v.id == fixture.original)
-                .unwrap();
-            for _ in 0..collab_types::files::MAX_VERSION_PARENTS {
-                let mut version = source.clone();
-                version.id = collab_types::FileVersionId::new();
-                version.parents = vec![fixture.original];
-                version.timestamp_ms = 0;
-                version.provenance = FileProvenance::Edit;
-                if let Some(publisher) = fixture.fs.record_publisher.as_ref() {
-                    publisher.publish_structural_version(&version).unwrap();
-                }
-                fixture.history.append(version).unwrap();
+        let fixture = Fixture::new().await;
+        let initial = fixture.request();
+        let state = fixture.history.snapshot(initial.review.record_id).unwrap();
+        let source = state
+            .versions
+            .iter()
+            .find(|v| v.id == fixture.original)
+            .unwrap();
+        for _ in 0..fs_protocol::files::MAX_VERSION_PARENTS {
+            let mut version = source.clone();
+            version.id = fs_protocol::FileVersionId::new();
+            version.parents = vec![fixture.original];
+            version.timestamp_ms = 0;
+            version.provenance = FileProvenance::Edit;
+            if let Some(publisher) = fixture.fs.record_publisher.as_ref() {
+                publisher.publish_structural_version(&version).unwrap();
             }
-            assert_eq!(
-                fixture
-                    .history
-                    .snapshot(initial.review.record_id)
-                    .unwrap()
-                    .heads
-                    .len(),
-                collab_types::files::MAX_VERSION_PARENTS + 1
-            );
-            let request = fixture.request();
-            let before = fixture.durable_bytes();
-            let namespace = fixture.fs.ns().save();
-            assert_eq!(
-                fixture.fs.checked_history_restore(fixture.ino, request),
-                Outcome::Unavailable
-            );
-            assert_eq!(fixture.durable_bytes(), before);
-            assert_eq!(fixture.fs.ns().save(), namespace);
-            fixture.endpoint.close().await;
+            fixture.history.append(version).unwrap();
         }
+        assert_eq!(
+            fixture
+                .history
+                .snapshot(initial.review.record_id)
+                .unwrap()
+                .heads
+                .len(),
+            fs_protocol::files::MAX_VERSION_PARENTS + 1
+        );
+        let request = fixture.request();
+        let before = fixture.durable_bytes();
+        let namespace = fixture.fs.ns().save();
+        assert_eq!(
+            fixture.fs.checked_history_restore(fixture.ino, request),
+            Outcome::Unavailable
+        );
+        assert_eq!(fixture.durable_bytes(), before);
+        assert_eq!(fixture.fs.ns().save(), namespace);
+        fixture.endpoint.close().await;
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn checked_restore_service_retained_journal_capacity_survives_reopen_and_rejects_before_admission()
  {
-    for signed in [true, false] {
-        let fixture = Fixture::with_signed(signed).await;
-        let request = fixture.request();
-        let Outcome::Applied { receipt } = fixture.fs.checked_history_restore(fixture.ino, request)
+    let fixture = Fixture::new().await;
+    let request = fixture.request();
+    let Outcome::Applied { receipt } = fixture.fs.checked_history_restore(fixture.ino, request)
+    else {
+        panic!("initial receipt");
+    };
+    let template = fixture
+        .journal
+        .lock()
+        .unwrap()
+        .get(request.intent_id)
+        .unwrap()
+        .clone();
+    let publisher = fixture.fs.record_publisher.as_ref().unwrap();
+    // Reopen a real on-disk bounded fixture. Each entry is validated by
+    // the existing journal decoder, including completed receipt scope.
+    for _ in 1..crate::record_transaction::MAX_RECORD_TRANSACTION_ENTRIES {
+        let intent_id = uuid::Uuid::new_v4();
+        let mut manifest = template.transaction.manifest.clone();
+        manifest.transaction_id = intent_id;
+        let fs_protocol::FileMutationOperation::RestoreContent { request, .. } =
+            &mut manifest.operation
         else {
-            panic!("initial receipt");
+            panic!("restore manifest");
         };
-        let version = fixture
-            .history
-            .snapshot(request.review.record_id)
-            .unwrap()
-            .versions
-            .into_iter()
-            .find(|v| v.id == receipt.restored_revision.version_id)
-            .unwrap();
-        let delta = {
-            let journal = fixture.journal.lock().unwrap();
-            if signed {
-                journal
-                    .get(request.intent_id)
-                    .unwrap()
-                    .namespace_delta
-                    .clone()
-                    .unwrap()
-            } else {
-                journal
-                    .legacy_entries()
-                    .next()
-                    .unwrap()
-                    .namespace_delta
-                    .clone()
-            }
-        };
-        // Reopen a real on-disk bounded fixture. Each entry is validated by
-        // the existing journal decoder, including completed receipt scope.
-        for _ in 1..crate::record_transaction::MAX_RECORD_TRANSACTION_ENTRIES {
-            let mut request = request;
-            request.intent_id = uuid::Uuid::new_v4();
-            let mut receipt = receipt.clone();
-            receipt.intent_id = request.intent_id;
-            let entry = crate::record_transaction::LegacyRestoreEntry {
-                schema_version: 2,
-                request,
-                receipt,
-                version: version.clone(),
-                phase: Phase::BroadcastCommitted,
-                namespace_delta: delta.clone(),
-            };
-            entry.validate().unwrap();
-            std::fs::write(
-                fixture
-                    .directory
-                    .path()
-                    .join("transactions")
-                    .join(format!("{}.json", request.intent_id)),
-                serde_json::to_vec(&entry).unwrap(),
-            )
-            .unwrap();
-        }
-        *fixture.journal.lock().unwrap() =
-            crate::record_transaction::RecordTransactionJournal::open(
-                fixture.directory.path().join("transactions"),
-            )
-            .unwrap();
-        assert_eq!(
-            fixture.journal.lock().unwrap().retained_count(),
-            crate::record_transaction::MAX_RECORD_TRANSACTION_ENTRIES
-        );
-        assert_eq!(
-            fixture.fs.checked_history_restore(fixture.ino, request),
-            Outcome::Applied {
-                receipt: receipt.clone()
-            }
-        );
-        let undo = Request {
-            schema_version: 1,
-            intent_id: uuid::Uuid::new_v4(),
-            review: fixture.fs.checked_history_review(fixture.ino).unwrap(),
-            operation: Operation::Undo {
-                restore_intent: request.intent_id,
-            },
-        };
-        let before = fixture.durable_bytes();
-        let namespace = fixture.fs.ns().save();
-        assert_eq!(
-            fixture.fs.checked_history_restore(fixture.ino, undo),
-            Outcome::Unavailable
-        );
-        assert_eq!(fixture.durable_bytes(), before);
-        assert_eq!(fixture.fs.ns().save(), namespace);
-        assert_eq!(
+        request.intent_id = intent_id;
+        let mut entry = publisher.sign_checked_restore(manifest, 0).unwrap();
+        entry.phase = Phase::BroadcastCommitted;
+        entry.namespace_delta.clone_from(&template.namespace_delta);
+        entry.validate().unwrap();
+        std::fs::write(
             fixture
-                .fs
-                .checked_history_result(fixture.ino, request.intent_id),
-            Outcome::Applied { receipt }
-        );
-        fixture.endpoint.close().await;
+                .directory
+                .path()
+                .join("transactions")
+                .join(format!("{intent_id}.json")),
+            serde_json::to_vec(&entry).unwrap(),
+        )
+        .unwrap();
     }
+    *fixture.journal.lock().unwrap() = crate::record_transaction::RecordTransactionJournal::open(
+        fixture.directory.path().join("transactions"),
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.journal.lock().unwrap().retained_count(),
+        crate::record_transaction::MAX_RECORD_TRANSACTION_ENTRIES
+    );
+    assert_eq!(
+        fixture.fs.checked_history_restore(fixture.ino, request),
+        Outcome::Applied {
+            receipt: receipt.clone()
+        }
+    );
+    let undo = Request {
+        schema_version: 1,
+        intent_id: uuid::Uuid::new_v4(),
+        review: fixture.fs.checked_history_review(fixture.ino).unwrap(),
+        operation: Operation::Undo {
+            restore_intent: request.intent_id,
+        },
+    };
+    let before = fixture.durable_bytes();
+    let namespace = fixture.fs.ns().save();
+    assert_eq!(
+        fixture.fs.checked_history_restore(fixture.ino, undo),
+        Outcome::Unavailable
+    );
+    assert_eq!(fixture.durable_bytes(), before);
+    assert_eq!(fixture.fs.ns().save(), namespace);
+    assert_eq!(
+        fixture
+            .fs
+            .checked_history_result(fixture.ino, request.intent_id),
+        Outcome::Applied { receipt }
+    );
+    fixture.endpoint.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1794,58 +1526,53 @@ async fn checked_restore_remote_transactions_and_fault_startup_clear_exact_fence
 async fn checked_restore_admission_errors_retry_exactly_and_availability_tracks_projection() {
     // Phase `checked_restore_admission_io_error_retains_intent_and_signed_fence_until_exact_retry`.
     {
-        for signed in [true, false] {
-            let fixture = Fixture::with_signed(signed).await;
-            let request = fixture.request();
-            let root = fixture.directory.path().join("transactions");
-            std::fs::create_dir_all(&root).unwrap();
-            let backup = fixture.directory.path().join("transactions-before-fault");
-            std::fs::rename(&root, &backup).unwrap();
-            std::fs::write(&root, b"unavailable journal directory").unwrap();
-            let namespace = fixture.fs.ns().save();
-            let history = fixture.history.snapshot(request.review.record_id).unwrap();
-            assert_eq!(
-                fixture.fs.checked_history_restore(fixture.ino, request),
-                Outcome::RecoveryPending {
-                    intent_id: request.intent_id
-                }
-            );
-            assert_eq!(
-                fixture
-                    .journal
-                    .lock()
-                    .unwrap()
-                    .checked_request(request.intent_id),
-                Some(request)
-            );
-            assert_eq!(fixture.fs.ns().save(), namespace);
-            assert_eq!(
-                fixture.history.snapshot(request.review.record_id).unwrap(),
-                history
-            );
-            if signed {
-                assert!(
-                    fixture
-                        .fs
-                        .commit_content(fixture.ino, b"cannot bypass uncertain admission")
-                        .is_err()
-                );
+        let fixture = Fixture::new().await;
+        let request = fixture.request();
+        let root = fixture.directory.path().join("transactions");
+        std::fs::create_dir_all(&root).unwrap();
+        let backup = fixture.directory.path().join("transactions-before-fault");
+        std::fs::rename(&root, &backup).unwrap();
+        std::fs::write(&root, b"unavailable journal directory").unwrap();
+        let namespace = fixture.fs.ns().save();
+        let history = fixture.history.snapshot(request.review.record_id).unwrap();
+        assert_eq!(
+            fixture.fs.checked_history_restore(fixture.ino, request),
+            Outcome::RecoveryPending {
+                intent_id: request.intent_id
             }
-            std::fs::remove_file(&root).unwrap();
-            std::fs::rename(&backup, &root).unwrap();
-            let Outcome::Applied { receipt } =
-                fixture.fs.checked_history_restore(fixture.ino, request)
-            else {
-                panic!("exact IO retry");
-            };
-            let before = fixture.durable_bytes();
-            assert_eq!(
-                fixture.fs.checked_history_restore(fixture.ino, request),
-                Outcome::Applied { receipt }
-            );
-            assert_eq!(fixture.durable_bytes(), before);
-            fixture.endpoint.close().await;
-        }
+        );
+        assert_eq!(
+            fixture
+                .journal
+                .lock()
+                .unwrap()
+                .checked_request(request.intent_id),
+            Some(request)
+        );
+        assert_eq!(fixture.fs.ns().save(), namespace);
+        assert_eq!(
+            fixture.history.snapshot(request.review.record_id).unwrap(),
+            history
+        );
+        assert!(
+            fixture
+                .fs
+                .commit_content(fixture.ino, b"cannot bypass uncertain admission")
+                .is_err()
+        );
+        std::fs::remove_file(&root).unwrap();
+        std::fs::rename(&backup, &root).unwrap();
+        let Outcome::Applied { receipt } = fixture.fs.checked_history_restore(fixture.ino, request)
+        else {
+            panic!("exact IO retry");
+        };
+        let before = fixture.durable_bytes();
+        assert_eq!(
+            fixture.fs.checked_history_restore(fixture.ino, request),
+            Outcome::Applied { receipt }
+        );
+        assert_eq!(fixture.durable_bytes(), before);
+        fixture.endpoint.close().await;
     }
     // Phase `checked_restore_availability_tracks_current_projection_without_changing_exact_receipt`.
     {
@@ -2115,7 +1842,7 @@ async fn checked_restore_startup_completion_rejects_bad_batches_and_retries_io_f
             .proposed_version
             .clone();
         later.parents = vec![later.id];
-        later.id = collab_types::FileVersionId::new();
+        later.id = fs_protocol::FileVersionId::new();
         later.provenance = FileProvenance::Edit;
         publisher.publish_structural_version(&later).unwrap();
         fixture.endpoint.close().await;
@@ -2124,7 +1851,7 @@ async fn checked_restore_startup_completion_rejects_bad_batches_and_retries_io_f
 
 #[tokio::test(flavor = "multi_thread")]
 async fn history_read_complete_paging_and_exact_parent_metadata() {
-    use collab_types::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V};
+    use fs_protocol::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V};
     let fixture = Fixture::new().await;
     for i in 0..25 {
         fixture
@@ -2206,7 +1933,7 @@ async fn history_read_complete_paging_and_exact_parent_metadata() {
 async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
     // Phase `history_read_rejects_stale_wrong_record_missing_cursor_and_revocation`.
     {
-        use collab_types::files::{
+        use fs_protocol::files::{
             FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
         };
         let mut fixture = Fixture::new().await;
@@ -2218,7 +1945,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
             panic!()
         };
         let mut wrong = page.scope;
-        wrong.record_id = collab_types::FileRecordId::new();
+        wrong.record_id = fs_protocol::FileRecordId::new();
         wrong.frontier[0] ^= 1;
         assert_eq!(
             fixture.fs.read_file_history(
@@ -2234,7 +1961,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
             fixture.fs.read_file_history(
                 fixture.ino,
                 Q::Page {
-                    cursor: Some((page.scope.frontier, collab_types::FileVersionId::new()))
+                    cursor: Some((page.scope.frontier, fs_protocol::FileVersionId::new()))
                 }
             ),
             Err(E::InvalidRequest)
@@ -2244,7 +1971,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
                 fixture.ino,
                 Q::Version {
                     frontier: page.scope.frontier,
-                    version_id: collab_types::FileVersionId::new()
+                    version_id: fs_protocol::FileVersionId::new()
                 }
             ),
             Err(E::MissingVersion)
@@ -2274,10 +2001,10 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
     }
     // Phase `history_read_cursors_bind_workspace_mount_record_and_allow_codec_browsing`.
     {
-        use collab_types::files::{
+        use fs_protocol::files::{
             FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
         };
-        let mut fixture = Fixture::with_signed(false).await;
+        let fixture = Fixture::new().await;
         let V::Page(page) = fixture
             .fs
             .read_file_history(fixture.ino, Q::Page { cursor: None })
@@ -2289,13 +2016,6 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
             frontier: page.scope.frontier,
             version_id: fixture.original,
         };
-        fixture.fs.checked_history_workspace = Some(uuid::Uuid::new_v4());
-        assert_eq!(
-            fixture.fs.read_file_history(fixture.ino, query),
-            Err(E::Stale),
-            "workspace change must invalidate cursor"
-        );
-        fixture.fs.checked_history_workspace = Some(page.scope.workspace_id);
         let other = fixture
             .fs
             .namespace
@@ -2393,7 +2113,7 @@ async fn history_reads_reject_stale_cursors_and_bind_them_to_live_scope() {
 async fn history_reads_keep_exact_bytes_separate_from_current_visibility() {
     // Phase `history_read_immutable_bytes_and_post_hydration_visibility`.
     {
-        use collab_types::files::{
+        use fs_protocol::files::{
             FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
         };
         let mut fixture = Fixture::new().await;
@@ -2456,7 +2176,7 @@ async fn history_reads_keep_exact_bytes_separate_from_current_visibility() {
                     );
                     let record_id = replacement.record_id_for(other).unwrap();
                     let mut version = page.versions[0].clone();
-                    version.id = collab_types::FileVersionId::new();
+                    version.id = fs_protocol::FileVersionId::new();
                     version.record_id = record_id;
                     version.parents.clear();
                     fixture.history.append(version).unwrap();
@@ -2471,10 +2191,10 @@ async fn history_reads_keep_exact_bytes_separate_from_current_visibility() {
     }
     // Phase `history_read_backfill_changes_frontier_without_changing_visible_bytes`.
     {
-        use collab_types::files::{
+        use fs_protocol::files::{
             FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
         };
-        let fixture = Fixture::with_signed(false).await;
+        let fixture = Fixture::new().await;
         let V::Page(page) = fixture
             .fs
             .read_file_history(fixture.ino, Q::Page { cursor: None })
@@ -2483,7 +2203,7 @@ async fn history_reads_keep_exact_bytes_separate_from_current_visibility() {
             panic!()
         };
         let mut version = page.versions[0].clone();
-        version.id = collab_types::FileVersionId::new();
+        version.id = fs_protocol::FileVersionId::new();
         version.timestamp_ms = 0;
         version.parents = vec![fixture.original];
         fixture.history.append(version).unwrap();
@@ -2502,7 +2222,7 @@ async fn history_reads_keep_exact_bytes_separate_from_current_visibility() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn history_read_current_winner_is_separate_from_exact_restore_receipt() {
-    use collab_types::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V};
+    use fs_protocol::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V};
     let fixture = Fixture::new().await;
     let request = fixture.request();
     let applied = fixture.fs.checked_history_restore(fixture.ino, request);
@@ -2553,15 +2273,15 @@ async fn history_read_current_winner_is_separate_from_exact_restore_receipt() {
 /// "beta".
 struct QdocVersions {
     fixture: Fixture,
-    v1: collab_types::FileVersionId,
+    v1: fs_protocol::FileVersionId,
     v1_bytes: Vec<u8>,
     v2_bytes: Vec<u8>,
     alpha: String,
 }
 
 impl QdocVersions {
-    async fn new(signed: bool) -> Self {
-        let fixture = Fixture::with_signed(signed).await;
+    async fn new() -> Self {
+        let fixture = Fixture::new().await;
         fixture
             .fs
             .rename_named(
@@ -2629,152 +2349,133 @@ fn snapshot_of(bytes: &[u8]) -> tilo_doc::DocSnapshot {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restores_qdoc_as_new_crdt_revision() {
-    for signed in [true, false] {
-        let versions = QdocVersions::new(signed).await;
-        let fixture = &versions.fixture;
-        let record = fixture.fs.ns().record_id_for(fixture.ino).unwrap();
-        let before = fixture.history.snapshot(record).unwrap();
-        let Outcome::Applied { receipt } = versions.restore(Operation::Restore {
-            version_id: versions.v1,
-        }) else {
-            panic!("a qdoc restores");
-        };
+    let versions = QdocVersions::new().await;
+    let fixture = &versions.fixture;
+    let record = fixture.fs.ns().record_id_for(fixture.ino).unwrap();
+    let before = fixture.history.snapshot(record).unwrap();
+    let Outcome::Applied { receipt } = versions.restore(Operation::Restore {
+        version_id: versions.v1,
+    }) else {
+        panic!("a qdoc restores");
+    };
 
-        let restored = versions.current();
-        assert_eq!(snapshot_of(&restored), snapshot_of(&versions.v1_bytes));
-        assert_eq!(blocks(&restored), vec!["alpha", "beta"]);
-        assert_ne!(
-            restored, versions.v1_bytes,
-            "the restore is a new revision, not v1's bytes"
+    let restored = versions.current();
+    assert_eq!(snapshot_of(&restored), snapshot_of(&versions.v1_bytes));
+    assert_eq!(blocks(&restored), vec!["alpha", "beta"]);
+    assert_ne!(
+        restored, versions.v1_bytes,
+        "the restore is a new revision, not v1's bytes"
+    );
+    let mut restored_doc = automerge::AutoCommit::load(&restored).unwrap();
+    let v2_heads = automerge::AutoCommit::load(&versions.v2_bytes)
+        .unwrap()
+        .get_heads();
+    for head in &v2_heads {
+        assert!(
+            restored_doc.get_change_by_hash(head).is_some(),
+            "the restored document descends from v2"
         );
-        let mut restored_doc = automerge::AutoCommit::load(&restored).unwrap();
-        let v2_heads = automerge::AutoCommit::load(&versions.v2_bytes)
-            .unwrap()
-            .get_heads();
-        for head in &v2_heads {
-            assert!(
-                restored_doc.get_change_by_hash(head).is_some(),
-                "the restored document descends from v2"
-            );
-        }
-        assert_ne!(restored_doc.get_heads(), v2_heads);
-
-        let after = fixture.history.snapshot(record).unwrap();
-        assert_eq!(after.versions.len(), before.versions.len() + 1);
-        let version = after
-            .versions
-            .iter()
-            .find(|v| v.id == receipt.restored_revision.version_id)
-            .unwrap();
-        assert_eq!(
-            version.provenance,
-            FileProvenance::Restore { from: versions.v1 }
-        );
-        assert_eq!(version.parents, before.heads);
-        assert_eq!(
-            version.content_hash,
-            fixture
-                .fs
-                .ns()
-                .hash_for(fixture.ino)
-                .map(|hash| ContentHash(*hash.as_bytes()))
-        );
-        assert_eq!(receipt.restored_revision.byte_len, restored.len() as u64);
-        assert_eq!(
-            fixture
-                .fs
-                .history_version_preview(fixture.ino, version.id)
-                .unwrap(),
-            restored,
-            "the restored revision is a fetchable payload"
-        );
-
-        // Undo is a restore of the prior revision, along the same CRDT route.
-        let Outcome::Applied { receipt: undone } = versions.restore(Operation::Undo {
-            restore_intent: receipt.intent_id,
-        }) else {
-            panic!("the qdoc restore undoes");
-        };
-        let current = versions.current();
-        assert_eq!(snapshot_of(&current), snapshot_of(&versions.v2_bytes));
-        let mut current_doc = automerge::AutoCommit::load(&current).unwrap();
-        for head in restored_doc.get_heads() {
-            assert!(current_doc.get_change_by_hash(&head).is_some());
-        }
-        assert_eq!(undone.prior_revision, receipt.restored_revision);
-        fixture.endpoint.close().await;
     }
+    assert_ne!(restored_doc.get_heads(), v2_heads);
+
+    let after = fixture.history.snapshot(record).unwrap();
+    assert_eq!(after.versions.len(), before.versions.len() + 1);
+    let version = after
+        .versions
+        .iter()
+        .find(|v| v.id == receipt.restored_revision.version_id)
+        .unwrap();
+    assert_eq!(
+        version.provenance,
+        FileProvenance::Restore { from: versions.v1 }
+    );
+    assert_eq!(version.parents, before.heads);
+    assert_eq!(
+        version.content_hash,
+        fixture
+            .fs
+            .ns()
+            .hash_for(fixture.ino)
+            .map(|hash| ContentHash(*hash.as_bytes()))
+    );
+    assert_eq!(receipt.restored_revision.byte_len, restored.len() as u64);
+    assert_eq!(
+        fixture
+            .fs
+            .history_version_preview(fixture.ino, version.id)
+            .unwrap(),
+        restored,
+        "the restored revision is a fetchable payload"
+    );
+
+    // Undo is a restore of the prior revision, along the same CRDT route.
+    let Outcome::Applied { receipt: undone } = versions.restore(Operation::Undo {
+        restore_intent: receipt.intent_id,
+    }) else {
+        panic!("the qdoc restore undoes");
+    };
+    let current = versions.current();
+    assert_eq!(snapshot_of(&current), snapshot_of(&versions.v2_bytes));
+    let mut current_doc = automerge::AutoCommit::load(&current).unwrap();
+    for head in restored_doc.get_heads() {
+        assert!(current_doc.get_change_by_hash(&head).is_some());
+    }
+    assert_eq!(undone.prior_revision, receipt.restored_revision);
+    fixture.endpoint.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restore_preserves_concurrent_peer_edit() {
-    for signed in [true, false] {
-        let versions = QdocVersions::new(signed).await;
-        // A peer holding v2 extends "alpha" while the restore happens here.
-        let peer_bytes = {
-            let mut peer = tilo_doc::Document::load(&versions.v2_bytes).unwrap();
-            peer.splice_text(&versions.alpha, 5, 0, "!");
-            peer.save()
-        };
-        assert!(matches!(
-            versions.restore(Operation::Restore {
-                version_id: versions.v1
-            }),
-            Outcome::Applied { .. }
-        ));
-        let mut merged = automerge::AutoCommit::load(&versions.current()).unwrap();
-        let mut peer = automerge::AutoCommit::load(&peer_bytes).unwrap();
-        tilo_automerge::ApplyIncoming::merge_incoming(&mut merged, &mut peer).unwrap();
-        assert_eq!(
-            blocks(&merged.save()),
-            vec!["alpha!", "beta"],
-            "the peer's edit survives the restore and the restore survives the merge"
-        );
-        versions.fixture.endpoint.close().await;
-    }
+    let versions = QdocVersions::new().await;
+    // A peer holding v2 extends "alpha" while the restore happens here.
+    let peer_bytes = {
+        let mut peer = tilo_doc::Document::load(&versions.v2_bytes).unwrap();
+        peer.splice_text(&versions.alpha, 5, 0, "!");
+        peer.save()
+    };
+    assert!(matches!(
+        versions.restore(Operation::Restore {
+            version_id: versions.v1
+        }),
+        Outcome::Applied { .. }
+    ));
+    let mut merged = automerge::AutoCommit::load(&versions.current()).unwrap();
+    let mut peer = automerge::AutoCommit::load(&peer_bytes).unwrap();
+    tilo_automerge::ApplyIncoming::merge_incoming(&mut merged, &mut peer).unwrap();
+    assert_eq!(
+        blocks(&merged.save()),
+        vec!["alpha!", "beta"],
+        "the peer's edit survives the restore and the restore survives the merge"
+    );
+    versions.fixture.endpoint.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn opaque_file_with_document_bytes_restores() {
-    for signed in [true, false] {
-        let fixture = Fixture::with_signed(signed).await;
-        // `test.bin` is opaque by name, whatever its bytes parse as.
-        let bytes = tilo_doc::Document::new().save();
-        fixture.fs.commit_content(fixture.ino, &bytes).unwrap();
-        let request = fixture.request();
-        let Outcome::Applied { receipt } = fixture.fs.checked_history_restore(fixture.ino, request)
-        else {
-            panic!("an opaque file restores its bytes");
-        };
-        assert_eq!(
-            fixture.fs.read_full_blocking(fixture.ino).unwrap(),
-            b"first"
-        );
-        let state = fixture.history.snapshot(request.review.record_id).unwrap();
-        let original = state
-            .versions
-            .iter()
-            .find(|v| v.id == fixture.original)
-            .unwrap();
-        assert_eq!(
-            receipt.restored_revision.content_hash, original.content_hash,
-            "an opaque restore puts the selected bytes back"
-        );
-
-        if !signed {
-            // The legacy route treats it the same way.
-            fixture.fs.commit_content(fixture.ino, &bytes).unwrap();
-            assert_eq!(
-                fixture.fs.restore_version(fixture.ino, fixture.original),
-                Ok(())
-            );
-            assert_eq!(
-                fixture.fs.read_full_blocking(fixture.ino).unwrap(),
-                b"first"
-            );
-        }
-        fixture.endpoint.close().await;
-    }
+    let fixture = Fixture::new().await;
+    // `test.bin` is opaque by name, whatever its bytes parse as.
+    let bytes = tilo_doc::Document::new().save();
+    fixture.fs.commit_content(fixture.ino, &bytes).unwrap();
+    let request = fixture.request();
+    let Outcome::Applied { receipt } = fixture.fs.checked_history_restore(fixture.ino, request)
+    else {
+        panic!("an opaque file restores its bytes");
+    };
+    assert_eq!(
+        fixture.fs.read_full_blocking(fixture.ino).unwrap(),
+        b"first"
+    );
+    let state = fixture.history.snapshot(request.review.record_id).unwrap();
+    let original = state
+        .versions
+        .iter()
+        .find(|v| v.id == fixture.original)
+        .unwrap();
+    assert_eq!(
+        receipt.restored_revision.content_hash, original.content_hash,
+        "an opaque restore puts the selected bytes back"
+    );
+    fixture.endpoint.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2789,9 +2490,5 @@ async fn namespace_documents_still_have_no_checked_restore_route() {
         fixture.fs.checked_history_review(document),
         Err(Outcome::UnsupportedOwner { .. })
     ));
-    assert_eq!(
-        fixture.fs.restore_version(document, fixture.original),
-        Err(libc::ENOTSUP)
-    );
     fixture.endpoint.close().await;
 }

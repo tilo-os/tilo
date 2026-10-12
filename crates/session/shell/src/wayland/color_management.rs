@@ -274,13 +274,6 @@ struct ParametricBuilderInner {
     tf_power_eexp: Option<u32>,
     /// Primary color volume luminance range: (`min_lum` × `10_000`,
     /// `max_lum`, `reference_lum`) — cd/m².
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
-        )
-    )]
     luminances: Option<(u32, u32, u32)>,
     /// Mastering display primaries in the same wire encoding as
     /// `primaries_custom`.
@@ -292,13 +285,6 @@ struct ParametricBuilderInner {
     /// Max frame-average light level — cd/m².
     max_fall: Option<u32>,
     /// Set once `create` runs so a second `create` is caught cleanly.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
-        )
-    )]
     consumed: bool,
 }
 
@@ -590,12 +576,6 @@ impl ImageDescriptionData {
         (self.identity & 0xFFFF_FFFF) as u32
     }
 
-    /// High 32 bits of the identity for the `ready2` event.
-    #[must_use]
-    pub fn identity_hi(&self) -> u32 {
-        (self.identity >> 32) as u32
-    }
-
     fn information_colors(
         &self,
     ) -> Option<(Option<ColorPrimaries>, Option<TransferCharacteristics>)> {
@@ -694,13 +674,6 @@ struct ColorManagementSurfaceInner {
     /// Guards `get_surface` from creating a second per-surface manager.
     /// Set the first time a `wp_color_management_surface_v1` is minted
     /// for this `wl_surface`.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
-        )
-    )]
     manager_attached: bool,
 }
 

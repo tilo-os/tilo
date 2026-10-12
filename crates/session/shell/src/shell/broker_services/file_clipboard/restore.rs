@@ -99,7 +99,7 @@ impl Info {
         context: &FileClipboardContext,
         source: &Path,
     ) -> Result<(Self, PathBuf), String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         let data = tilo_paths::data_dir().ok_or("host Trash is unavailable")?;
         if source.parent() != Some(data.join("Trash/files").as_path()) {
             return Err("native Restore requires an entry in this host's home Trash".into());
@@ -277,7 +277,7 @@ impl NativeFileClipboard {
         selected: &SelectedDescriptor,
         id: String,
     ) -> Result<Reply, String> {
-        context.authorize(Permission::Write)?;
+        context.authorize(Permission::Undoable)?;
         let path = PathBuf::from(OsString::from_vec(selected.path.clone()));
         if let Ok(prior) = self.operation(context, &id) {
             let source = prior

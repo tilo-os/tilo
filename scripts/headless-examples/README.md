@@ -61,6 +61,11 @@ subject. They never build, configure radios or use the user's desktop/accounts.
 See [continuity interoperability](../../docs/architecture/continuity-interop.md#native-journey-evidence-and-reproduction)
 for build inputs, pinned external dependencies and qualification limits.
 
+`native-pair-journey.py --state-proof` isolates signed native app-state composition
+without an audio server. It requires late app hydration, concurrent semantic edits
+and local presentation on both compositors. See [native app-state acceptance](../../docs/native-app-state-acceptance.md)
+for the remote command, qualification boundaries and installed-device recipe.
+
 `native-pair-journey.py` checks two certified native Chat peers with private
 synthetic audio. It currently fails at governed app creation and writes an
 explicitly unqualified receipt. See [native Chat pair acceptance](../../docs/native-chat-pair-acceptance.md)

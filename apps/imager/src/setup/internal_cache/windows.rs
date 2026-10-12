@@ -1,75 +1,9 @@
 //! Private Windows installer cache. Cooperative current-user boundary only.
 //! FlushFileBuffers orders data, not guaranteed power-loss persistence of directory entries.
+use crate::setup::internal_bundle::{WindowsDirectoryPath, windows_directory_path};
+
 fn require(ok: bool, why: &str) -> Result<(), String> {
     if ok { Ok(()) } else { Err(why.into()) }
-}
-#[derive(Debug, PartialEq, Eq)]
-struct WindowsDirectoryPath {
-    root: [u16; 3],
-    names: Vec<Vec<u16>>,
-}
-
-fn windows_directory_leaf_supported(name: &[u16]) -> bool {
-    if name.is_empty()
-        || name.len() > 255
-        || matches!(name.last(), Some(0x20 | 0x2e))
-        || name
-            .iter()
-            .any(|&unit| unit <= 31 || b"<>:\"/\\|?*~".iter().any(|&c| unit == u16::from(c)))
-    {
-        return false;
-    }
-    // Fold only ASCII for reserved-device comparison. Retain the original
-    // code units, including unpaired surrogates, for every actual open.
-    let mut stem: Vec<_> = name
-        .iter()
-        .copied()
-        .take_while(|&unit| unit != u16::from(b'.'))
-        .map(|unit| match unit {
-            0x61..=0x7a => unit - 0x20,
-            _ => unit,
-        })
-        .collect();
-    while stem.last() == Some(&u16::from(b' ')) {
-        stem.pop();
-    }
-    !["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
-        .iter()
-        .any(|reserved| stem.iter().copied().eq(reserved.encode_utf16()))
-        && !(stem.len() == 4
-            && ["COM", "LPT"]
-                .iter()
-                .any(|prefix| stem[..3].iter().copied().eq(prefix.encode_utf16()))
-            // Include DOS digit aliases and Windows superscript ¹, ² and ³.
-            && matches!(stem[3], 0x30..=0x39 | 0xb9 | 0xb2 | 0xb3))
-}
-
-fn windows_directory_path(
-    raw: impl IntoIterator<Item = u16>,
-) -> Result<WindowsDirectoryPath, String> {
-    // Validate raw units before Path::components can normalize aliases. One
-    // extra unit detects overflow without collecting an unbounded input.
-    let raw: Vec<_> = raw.into_iter().take(4097).collect();
-    require(
-        (3..=4096).contains(&raw.len())
-            && matches!(raw[0], 0x41..=0x5a | 0x61..=0x7a)
-            && raw[1..3] == [u16::from(b':'), u16::from(b'\\')],
-        "require a bounded ordinary absolute Windows drive path",
-    )?;
-    let mut names = Vec::new();
-    if raw.len() > 3 {
-        for name in raw[3..].split(|&unit| unit == u16::from(b'\\')) {
-            require(
-                names.len() < 64 && windows_directory_leaf_supported(name),
-                "unsupported Windows directory component",
-            )?;
-            names.push(name.to_vec());
-        }
-    }
-    Ok(WindowsDirectoryPath {
-        root: [raw[0], raw[1], raw[2]],
-        names,
-    })
 }
 
 fn windows_cache_path(raw: impl IntoIterator<Item = u16>) -> Result<WindowsDirectoryPath, String> {
@@ -114,7 +48,8 @@ mod native {
         MAX_COLLISIONS, MAX_RECORD, MAX_SCAN, Ownership, PreparationComplete, Provider,
         checkpoint::Record, working_leaf,
     };
-    use super::{allowed_ace, require, windows_cache_path, windows_directory_leaf_supported};
+    use super::{allowed_ace, require, windows_cache_path};
+    use crate::setup::internal_bundle::windows_directory_leaf_supported;
     use crate::setup::internal_download::SelectedManifest;
     use sha2::{Digest, Sha256};
     use std::{

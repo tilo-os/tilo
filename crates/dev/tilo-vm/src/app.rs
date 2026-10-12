@@ -45,6 +45,7 @@ use crate::sshkey;
 use crate::vmbuild;
 
 mod admin;
+mod artifact;
 mod builder;
 mod device;
 #[cfg(test)]
@@ -682,6 +683,15 @@ impl App {
     /// that is not on this network, at its address or by name, is reached
     /// over the peer network instead ([`Self::connect_peer`]).
     fn connect(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
+        self.connect_with_wake(vm, false)
+    }
+
+    /// Swaps may resume a managed VM before transport; status remains observational.
+    fn connect_for_swap(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
+        self.connect_with_wake(vm, true)
+    }
+
+    fn connect_with_wake(&mut self, vm: &Resolved, wake: bool) -> Result<Remote, CliError> {
         self.peer = None;
         if let Some(route) = vm.entry.peer.clone()
             && vm.entry.hypervisor == hypervisor::DEVICE
@@ -700,13 +710,20 @@ impl App {
         let mut retried = false;
         let (endpoint, connected) = loop {
             let endpoint = self.endpoint(vm)?;
-            let connected = Remote::connect(
-                &vm.name,
-                &endpoint,
-                vm.entry.key.as_deref(),
-                vm.entry.daemon.as_deref(),
-                debug.clone(),
-            );
+            let transport = || {
+                Remote::connect(
+                    &vm.name,
+                    &endpoint,
+                    vm.entry.key.as_deref(),
+                    vm.entry.daemon.as_deref(),
+                    debug.clone(),
+                )
+            };
+            let connected = if wake {
+                swap_transport(adapter.as_ref(), &vm.vm(), &mut self.runner, transport)
+            } else {
+                transport()
+            };
             match &connected {
                 Err(CliError::Unreachable { detail, .. })
                     if !retried
@@ -864,6 +881,7 @@ impl App {
             Some(Command::Vm(command)) => self.vm(command),
             Some(Command::Slot(SlotCommand::Apps(SlotAppsCommand::List))) => Ok(apps_list()),
             Some(Command::Slot(command)) => self.slot(command),
+            Some(Command::SwapArtifact(request)) => self.swap_artifact(&request),
             Some(Command::Swap {
                 component,
                 slot,
@@ -4073,7 +4091,7 @@ impl App {
         }
         let cohort_inputs = self.cohort_inputs(&component, &source)?;
         let vm = self.resolve_vm(None)?;
-        let mut remote = self.connect(&vm)?;
+        let mut remote = self.connect_for_swap(&vm)?;
         self.check_vm_space(&mut remote, &vm)?;
         let layer = if let ci::Source::Layer(hash) = source {
             hash
@@ -4097,7 +4115,7 @@ impl App {
         }
         self.receipt.set("layer", &layer);
         // Building or pulling the layer can outlast the idle connection.
-        remote = self.connect(&vm)?;
+        remote = self.connect_for_swap(&vm)?;
         let info = frame_cpu_info(entry, frame_cpu_trace)?;
         let result = self.receipt.phase("apply", || {
             remote.call(Swap {
@@ -4607,7 +4625,7 @@ impl App {
         dir: &str,
     ) -> Result<AppInstallResult, CliError> {
         self.runner.cwd = Some(worktree.root.clone());
-        let target = build::target_dir(&self.cargo_metadata());
+        let target = build::target_dir(&self.cargo_metadata()?);
         let staging = build::Staging::new(worktree)?;
         let tapp = staging.tree().with_extension("tapp");
         let package = build::app_package(&target, dir, &tapp);
@@ -4655,15 +4673,10 @@ impl App {
         })
     }
 
-    fn cargo_metadata(&mut self) -> Value {
-        self.runner
-            .output(&CommandLine::new(
-                "cargo",
-                &["metadata", "--no-deps", "--format-version", "1"],
-            ))
-            .ok()
-            .and_then(|o| serde_json::from_str(&o.stdout).ok())
-            .unwrap_or(Value::Null)
+    fn cargo_metadata(&mut self) -> Result<Value, CliError> {
+        let runner = &mut self.runner;
+        self.receipt
+            .phase("metadata", || build::cargo_metadata(runner))
     }
 
     /// `--builder host`: cargo on this Linux host, layer uploaded.
@@ -4675,7 +4688,7 @@ impl App {
     ) -> Result<String, CliError> {
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         self.runner.cwd = Some(worktree.root.clone());
-        let metadata = self.cargo_metadata();
+        let metadata = self.cargo_metadata()?;
         let target = build::target_dir(&metadata);
         let extra = build::dev_features(&metadata, &component.packages);
         let cargo = build::cargo_build(component, &extra);
@@ -4692,6 +4705,19 @@ impl App {
         let after = build::sccache_stats(&mut self.runner);
         self.receipt
             .set("cache", build::cache_summary(before, after));
+        for native in build::native_builds(component, &target) {
+            let runner = &mut self.runner;
+            if !self
+                .receipt
+                .phase("native-build", || runner.interactive(&native))?
+            {
+                return Err(CliError::CommandFailed {
+                    command: native.display(),
+                    status: "build failed".into(),
+                    stderr: String::new(),
+                });
+            }
+        }
         let staging = build::Staging::new(&worktree)?;
         let install = build::install(component, &target, &staging.tree());
         let runner = &mut self.runner;
@@ -5962,6 +5988,7 @@ pub fn scenario_driver(entry: &Component) -> String {
 /// The slot a command names explicitly, after `--slot` was folded in.
 fn named_slot(command: &Command) -> Option<String> {
     match command {
+        Command::SwapArtifact(request) => request.slot.clone(),
         Command::Swap { slot, .. }
         | Command::Input { slot, .. }
         | Command::Control { slot, .. }
@@ -6659,6 +6686,26 @@ fn wait_for_session(remote: &mut Remote, slot: &str) -> bool {
     }
     false
 }
+
+/// Resume only an observed suspended managed VM before the ordinary strict transport.
+fn swap_transport<T>(
+    adapter: &dyn Hypervisor,
+    vm: &Vm<'_>,
+    runner: &mut dyn Runner,
+    transport: impl FnOnce() -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    if adapter.name() != hypervisor::DEVICE && adapter.suspended(vm, runner) == Some(true) {
+        let commands = adapter.wake(vm).ok_or_else(|| CliError::Unsupported {
+            what: format!("waking suspended VM {} with {}", vm.name, adapter.name()),
+            alternative: "resume the VM in the hypervisor's UI before swapping".into(),
+        })?;
+        run_all(runner, &commands)?;
+    }
+    transport()
+}
+
+#[cfg(test)]
+mod swap_wake_tests;
 
 #[cfg(test)]
 mod host_layer_tests;

@@ -34,8 +34,17 @@ driving, storage, platforms and troubleshooting; its source is
 Image-level changes (`os/`, units, packages) move the VM onto a new image
 instead: `tilo-vm vm upgrade --from sha:<commit>` for any commit CI has built,
 `--from local` for one that is not pushed yet (`tilo-vm guide images`). The
-`Build / OS dev` workflow builds every main push and every pull request that
-touches `os/`, fully cached, and publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
+`Build / OS dev` workflow builds on explicit dispatch (select the smallest
+needed architecture list), or for an image-changing pull request labelled
+`os-image` (`os-arm64` also requests both architectures), fully cached. Ordinary
+pushes and unlabelled PRs keep the native slots available for required package
+checks; scheduled and tagged releases retain their existing verification.
+PR dev images and x86 main dev images share one non-cancelling queue, so only
+one of these image workflows can occupy x86 native capacity at a time. This
+also queues an ARM-only request through the PR wrapper; the dedicated ARM main
+wrapper retains its independent queue. Existing requests finish before the
+next image starts.
+Architecture-specific main dispatches build the newest main commit only. It publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
 the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`);
 main also moves `tilo-vm:main-ci` to its newest dev images.
 `Release / OS` builds signed, reproduced releases only: tags, the nightly run
@@ -129,11 +138,17 @@ Routine changes land through pull requests to `main`. Each PR head revision gets
 its own affected-package check and fast-quality lint result. Both test the head
 merged onto the tip of its base branch (`main`, or the lower branch of a stack)
 at the time the run starts, and select affected packages against that tip, so a
-PR is checked as it would land. When `main` moves after a PR's check went green,
-the lander reruns that check, which then only re-runs the packages and suites
-`main`'s new commits reach. A PR that conflicts with
-`main` fails there; merge `main` into the branch. A newer commit on the PR
-cancels the older revision's runs; every push to `main` keeps its own.
+PR is checked as it would land. A green result stands when `main` moves on; the
+lander re-checks only results older than six hours, and that re-check only
+re-runs the packages and suites `main`'s new commits reach. A newer commit on
+the PR cancels the older revision's runs; every push to `main` keeps its own.
+
+Do not merge `main` into your branch to keep it current, and do not wait for a
+conflict to clear. When a ready PR conflicts with `main`, the merge assistant
+merges `main` into its branch, builds and tests what the merge touched, and
+pushes the merge commit; the PR then lands like any other. If it cannot resolve
+the conflict, it converts the PR to a draft and comments with what is in the
+way; resolve that and mark the PR ready again.
 
 A ready (non-draft) PR lands by itself: within a minute of both required checks
 passing on its current head, the lander merges it with a merge commit. The
@@ -211,6 +226,454 @@ scheduled integration runs do not publish an OS release. macOS setup packaging,
 cask publication and installation tests remain in **Release / imager** but are
 disabled during alpha; tags do not enable those lanes.
 
+## Performance results
+
+Performance KPIs (the Linear document "Performance and cost KPIs — what we
+market and how we measure it") are measured by **Perf / scheduled**
+(`.forgejo/workflows/perf-scheduled.yml`), nightly at 01:15 UTC and by manual
+dispatch. It is not a required check and never runs per push. Every result is
+one JSON record (`tools/perf/record.py`): KPI id, unit, n, nearest-rank
+p50/p95/p99/max, commit, build profile, renderer, virtualization, runner class
+and hardware. `tools/perf/compare.py` compares each record only with stored
+records of the same KPI and environment, and fails the run on
+
+- a p50 more than 10 % or a p99 more than 20 % above the median of the last five
+  comparable runs, on two consecutive runs (one bad night is reported as
+  `regression-pending`). A noisy KPI sets `baseline_min_runs` (three for latency
+  timing KPIs; one for dropped frames) and is compared once that many
+  comparable runs, or one accepted run, are stored; until then a run is `new`
+  and joins the baseline;
+- an enforced ceiling in `tools/perf/kpi-budgets.toml` (non-enforced ceilings
+  are marketing targets and are only reported);
+- a selected benchmark that produced no record, reported as `missing` and
+  counted apart from regressions. A run is owed only its own workflow's KPIs:
+  `[lanes]` in `tools/perf/kpi-budgets.toml` names the workflow (`compare.py
+  --lane`) that produces each group, and a lane may claim a single KPI of
+  another lane's group, as VM acceptance claims `render.frame_cpu_ms`. A
+  budget no lane produces does not load, and `tools/perf/test_compare.py`
+  holds each workflow's selectable groups equal to its lane.
+
+The records, each with its verdict, are appended to the public generic package
+`tilo-perf-results` (one immutable file per run, a version per UTC month), so
+the current numbers come from there, not from `docs/benchmarks/`. Read them with
+`python3 tools/perf/store.py fetch https://code.tilo.so`. Dispatch inputs:
+`kpis` selects groups (`fs`, `footprint` (app and OS image sizes), `agent`, `latency`, `render`, `wakeups`, `hosting`); `mode: ab` with `ab_base`,
+`ab_candidate` and `ab_rounds` runs the A/B lane below instead; `accept` takes this run's values as
+the new baseline start after an intended change (from main only); and
+`synthetic_series` with `synthetic_factor` multiplies a run's values to prove
+the gate. A 1.25 factor passes as pending in the first run of a series and fails
+in the second. Synthetic records never enter a real baseline, and `fetch` leaves
+them out (it says how many on stderr; `--synthetic` prints them too): their
+values are multiplied on purpose and their `regression` verdicts are the gate
+test, not a measurement.
+
+The installed desktop's groups, `boot`, `session`, `idle`, `memory`, `disk` and `app`, and
+its one render KPI, `render.frame_cpu_ms` (compositor CPU per painted frame, R04), come from
+**Dev / VM acceptance** (`vm-acceptance.yml`, lane `vm-acceptance`) instead: its nightly run already boots the
+newest published dev disk in a KVM guest and opens a session on it, so its `perf` job
+compares that run's records (`scripts/vm-acceptance/run.py --records`) with the store
+and publishes them, under the same rules, rather than Perf / scheduled booting a second
+VM. They name `renderer=lavapipe`, `virtualization=kvm` and the runner class
+`runner-disk-100g`: software-rendered guest numbers, compared only with each other and
+never quoted as hardware figures. `scripts/vm-acceptance/README.md` ("Performance
+records") lists the KPIs.
+
+The `latency` group is the compositor's side only (headless, no panel).
+Input-to-presentation latency on the reference machines is a weekly,
+report-only run through `tilo-vm`, outside this workflow:
+[docs/benchmarks/reference-hardware.md](docs/benchmarks/reference-hardware.md).
+
+To add a benchmark (a KPI group):
+
+1. Name its KPIs `<group>.<metric>[.<variant>]`, for example
+   `render.frame_ms.4k` or `agent.invoke.local.noop`.
+2. Make it produce records. Either the benchmark writes samples, one number per
+   line, and calls
+   `python3 tools/perf/record.py emit --kpi ... --unit ... --samples-file ... --env-json env.json`,
+   or a function in `tools/perf/adapters.py` parses the output it already
+   prints, as `fs-gate` does for the tilo-fs gate's `PERF` lines. Make
+   `env.json` with `record.py env --profile ... --renderer ... --virtualization
+   ... --runner ...`. State the environment truthfully: llvmpipe, TCG or a dev
+   build is a different environment from GPU, KVM or release, and is never
+   compared with them.
+3. Add a job to `perf-scheduled.yml`, and add the group to `known` in its
+   `plan` job, to the `compare` job's `needs` and to its job-result loop, and
+   to `[lanes.perf-scheduled]` in `tools/perf/kpi-budgets.toml`. If the group
+   has an A/B (`tools/perf/ab.py` `GROUPS`), build the same benchmarks there.
+   The job runs on the runner class the KPI is defined for and consumes
+   artifacts that are already built: a published tapp or image, or an example
+   built once in that job. It must not start a full build. It uploads its
+   records as the artifact `perf-<group>` (`*.jsonl`).
+4. List every KPI the group must report in `tools/perf/kpi-budgets.toml`, with
+   its unit, its ceilings and `enforce`, and override the tolerances only with a
+   measured reason. A listed KPI that stops reporting fails the run.
+5. Add tests for an adapter to `tools/perf/test_adapters.py`. Dispatch the
+   workflow with `kpis=<group>` from your branch: it compares without writing to
+   the store.
+
+Pull requests may gate only on deterministic, runner-independent counters
+(bytes, allocation counts, raster pixels), only when the measured paths change,
+and following `tools/web/wasm_size_ratchet.py`. Wall-clock KPIs belong in
+this lane.
+
+### Proving a performance change (A/B)
+
+A nightly record cannot prove what one change did to a wall-clock or CPU
+KPI: it is compared with earlier nights on other hosts, and the shared
+runners differ by more than most changes (the unchanged relay bench has
+measured 15.9 and 31.2 CPU-seconds per collaborator-hour). To claim a gain,
+or to show there is no regression, dispatch **Perf / scheduled** with
+`mode: ab`:
+
+```bash
+fgj workflow run perf-scheduled.yml -R tilo/tilo --hostname code.tilo.so \
+  --ref <your-branch> -f mode=ab -f kpis=hosting
+# optional: -f ab_base=<ref> (default origin/main)
+#           -f ab_candidate=<ref> (default the dispatched commit) -f ab_rounds=8
+```
+
+One job per group in `kpis` (`hosting`, `latency`, `render`, `agent`,
+`wakeups`, `fs`; `footprint` is bytes of published artifacts and has no A/B)
+builds the base and the candidate in one checkout, one after the other, and
+runs that group's existing benchmark on both, alternating, for `ab_rounds`
+rounds on one runner (`tools/perf/ab.py`). Odd rounds run the base first and
+even rounds the candidate first, so drift over the job falls on both sides.
+Each round pairs the two runs, so a slow host slows both and cancels out.
+The binaries come from each side's commit. The harness (`scripts/perf/`, the
+adapters) comes from the dispatched commit and drives both sides.
+
+For each KPI, the job summary judges the p50 and the p99. The estimate is the
+paired ratio candidate/base (Hodges-Lehmann), with its distribution-free
+95 % interval (exact Wilcoxon signed rank). Beside it are the rounds the
+candidate won and lost, and the sign test. The verdict:
+
+- **improved** or **regressed**: the whole interval lies on one side of no
+  change (lower is better, except fps);
+- **unchanged**: both sides measured the same in every round;
+- **inconclusive**: the interval includes no change. Six rounds is the
+  minimum for a 95 % interval; then every round must agree. Add rounds
+  rather than rerunning until a run agrees with you.
+
+A KPI that only one side reports, such as a metric the candidate adds, is
+listed and not paired. Paste the summary table into the pull request, and
+link the run. The artifact `perf-ab-<group>` holds `ab-result.json`, every
+record and every run's log. Rerun the analysis with
+`python3 tools/perf/ab.py analyse records.jsonl`. A/B results never enter the
+store or the baseline, and the job fails only when a run could not measure,
+never on a verdict. The same tool runs locally on Linux, on a clean checkout:
+`python3 tools/perf/ab.py run --groups hosting --base origin/main --candidate HEAD`.
+
+## App package size
+
+"Apps are ~2 MB" is measured as the bytes of the signed `.tapp` a person
+downloads, per architecture. The KPI targets are a median of at most 2 MB, a
+p90 of at most 4 MB and a max of at most 6 MB (decimal). Each app has its own
+budget in `tools/perf/tapp-size-budget/budget.toml`, set at its measured size
+plus 1 % headroom, rounded up to 64 KiB. `tools/perf/tapp_size_ratchet.py`
+enforces the budgets in four places:
+
+- **CI / affected packages** (`tapps / <arch>`, pull requests only) packages
+  the tapps of up to eight apps the change affects, on x86_64 and aarch64,
+  and holds each to its budget. `tools/ci/select.sh` picks them with
+  `tapp_size_ratchet.py select`: apps of the default collection, those
+  closest to a budget in the registry first, so a toolkit change measures the
+  apps it pushes over first without packaging the whole collection. It
+  packages as Release / apps does, from the same compiler cache. A change
+  that affects no app runs no such job. A pull request runs its own
+  branch's `check.yml`, so a branch older than this job affecting an app
+  fails `select` and asks for main to be merged in, rather than landing
+  unmeasured.
+- **Release / apps** (`Shipped tapps within their size budget`) measures each
+  tapp it has just packaged and signed, which is the affected apps only. It
+  fails when an app is over its budget or has none, so nothing is published.
+  To measure apps the pull request job did not pick, dispatch Release / apps
+  on the branch with `apps=<dir>`, the architecture you need, and publish
+  off. The same job also packages Calculator twice
+  (`tools/apps/check-reproducible-tapp.sh`, the second time compiled again
+  past the compiler cache) and fails on any byte that differs: an app whose
+  package changes without its source re-sends itself in every OS update.
+- **Perf / scheduled** (footprint group, nightly) holds every published app to
+  its budget. It also holds the apps' median, p90 and max to the fleet
+  ceilings: the KPI targets, or an interim ceiling where the fleet does not
+  meet a target yet.
+- **CI / fast quality** runs `check-budget`, a text check. A budget or ceiling
+  may only grow by what a raise file new in the same change adds. The budgeted
+  apps must be exactly the default collection, so an app added to `apps/`
+  brings its budget. A new app may start at the 6 MB max target until it is
+  measured.
+
+The population is the default collection's apps. The runtime package is the
+runtime's own KPI. The runtime and provider stubs are not apps, and apps the
+registry still lists but this repository no longer builds are not counted. The
+nightly names every package it leaves out.
+
+To raise a budget for an intended growth, add one file per change. Never edit
+the base numbers upward:
+
+```toml
+# tools/perf/tapp-size-budget/raises/<change>.toml
+reason = "the toolkit gained guarded OS dictation"  # at least 20 characters
+run = 90210                  # the Release / apps run that measured the growth
+
+[apps."so.tilo.settings"]    # bytes added to each app's budget
+x86_64 = 65536
+aarch64 = 65536
+
+[fleet.x86_64]               # only if a fleet ceiling is crossed
+p50 = 65536
+```
+
+A failing Release / apps job prints this file with each over-budget app's
+numbers. Each architecture's job prints its own lines, so merge them. A raise
+may at most double a budget. When an app shrinks, both gates print the lower
+budget to commit (`[apps."<id>"] <arch> = <bytes>`), with the app removed from
+its raise files. They also print when an interim fleet ceiling can be lowered,
+or removed once its target holds. To re-seed the budgets from the registry,
+run `python3 tools/perf/tapp_size_ratchet.py seed entries.json`, where
+`entries.json` is `https://apps.tilo.so/entries`.
+
+`tools/binary-budget.toml` is different: it is a weekly guard against static
+linking in release binaries, not this KPI.
+
+## Runtime size
+
+Every thin app maps one shared Rust dylib, `libruntime_dylib.so`. A device
+downloads it when an app's runtime is missing, and every app process applies
+its dynamic relocations before `main`. `tools/perf/runtime_size_ratchet.py`
+reads four numbers from the ELF file, per architecture: `bytes`,
+`relocation_bytes` (the relocation tables), `relocated_bytes` (the 4 KiB pages
+those relocations dirty in each app process) and `symbol_relocations` (the
+relocations that need a symbol lookup). The budgets are in
+`tools/perf/runtime-size-budget/budget.toml`, with the same headroom, rounding
+and raise files as the app budgets above.
+
+GLib and GStreamer are part of the runtime but not of every app's start:
+`tools/ci/rustc-thin-app-wrapper.sh` links `libruntime_dylib.so` through
+`tools/ci/runtime-dylib-lazy-link.py`, which keeps them out of `DT_NEEDED`,
+serves the runtime's calls into them through hidden trampolines that load them
+on first use, and records their SONAMEs in the `.tilo.lazy_needed` section. The
+runtime bundle tools (`os/scripts/collect-runtime-dependencies.py`,
+`verify-runtime-bundle-closure.sh`) ship and verify those libraries like
+`DT_NEEDED` ones. A library of `[targets] needed_absent` in the runtime's
+`DT_NEEDED`, in what every app loads with it, or in what a built app of
+`apps_without_media` loads at exec fails the build gate; if the runtime starts
+reading a GLib or GStreamer *variable*, the link itself fails, since nothing can
+provide one before the library loads.
+
+- **Release / apps** (`Shared runtime within its size budget`) measures the
+  dylib it has just built, and the closures above. Its next steps report the
+  loader's cost for an app without media (statistics, the objects it loads,
+  its private dirty memory) and, when Video Player is built, decode its H.264
+  fixture through the thin runtime.
+- **Perf / scheduled** (footprint group) fetches the newest published
+  `so.tilo.runtime` of each architecture, holds it to the budgets and records
+  `footprint.runtime.<metric>.<arch>`.
+- **CI / fast quality** fails when a budget grows without a raise file new in
+  the same change.
+
+To raise a budget for an intended growth, add one file per change:
+
+```toml
+# tools/perf/runtime-size-budget/raises/<change>.toml
+reason = "the toolkit gained a PDF engine"  # at least 20 characters
+run = 90210                  # the Release / apps run that measured the growth
+
+[runtime.x86_64]             # added to each metric's budget
+bytes = 4194304
+```
+
+When the runtime shrinks, both gates print the lower budget to commit.
+
+What the runtime may carry is a rule of its own. It holds the SDK, crates
+several apps share and, until each moves out, engines too heavy for their one
+app's tapp; never an OS daemon or other OS-internal crate (the filesystem, the
+launcher, the app host, the install CLI, the peer transport) and nothing no
+app reaches. An app that calls into such a crate links it itself and gets only
+the code it calls; the Store, for one, depends on `app-host` without its
+default `service` feature. `tools/policy/check_runtime_dylib_surface.py` (CI /
+fast quality) resolves the runtime with the default collection the way the
+release does and fails on either, and on a crate of an engine that has moved
+out.
+
+An engine one app uses moves out of the runtime into an engine library of its
+own: a crate under `crates/runtime/engines/<name>/` that is a Rust
+`dylib` chained on the runtime (Typst: `libtilo_typst_engine.so` for Typst
+Editor; Spotify playback: `libtilo_spotify_engine.so` for Music). It is signed
+into the runtime bundle beside `libruntime_dylib.so`, so the runtime's id,
+signature and verity cover it, but only its app names it `DT_NEEDED`; every
+other app no longer maps or relocates it. The conventions the build relies on:
+
+- the package is `tilo-<name>-engine`, its library `tilo_<name>_engine`; every
+  dependency sits behind a `thin` feature, so builds other than the thin one
+  (workspace checks and tests, `tilo-app dev`) see an empty library;
+- a `[[bin]] tilo-<name>-engine-check` with `required-features = ["thin"]`:
+  `os/scripts/build-thin-apps.sh` builds and runs it in every runtime build,
+  whichever apps are selected, and writes the libraries it built to
+  `target/thin-app/runtime-engines`, which packaging signs into the bundle;
+- `tools/ci/rustc-thin-app-wrapper.sh` gives `tilo_*_engine` crates the
+  runtime's link flags (`-C prefer-dynamic` is what lets one Rust dylib link
+  another);
+- the app links the engine under a feature of its own (`runtime-engine` in
+  Typst Editor and Music), named in `dist/apps/app-collections.toml`, the
+  Containerfile's `APP_FEATURES` and `os/components.toml`; without it the app
+  links the engine's crates statically, as `tilo-app dev` does;
+- the engine's crates go into the surface check's `ENGINES`. They must also
+  stay out of the workspace-hack, which is linked into the runtime: hakari
+  lists a crate there when members build it with different feature sets, so
+  give every member the same set (`tilo-typst-fonts` enables typst-assets'
+  `fonts` on every target for this). Excluding the crate in
+  `.config/hakari.toml` instead fails `cargo hakari verify`.
+
+Release / apps reports each engine's bytes, relocations and dirtied pages
+beside the runtime's, fails when an app of `apps_without_media` loads one,
+renders Typst Editor through its engine and runs Music's Spotify engine
+(`music --probe-spotify-engine`, librespot's code without an account,
+network or audio device).
+
+## OS image size
+
+Every install downloads the OS image and every update pulls its changed
+layers, so its size is a KPI too (TIL-609). `tools/perf/image_size.py`
+measures one image without a container engine: it streams each layer from
+the registry, checks it against its digest and replays the layers with their
+whiteouts. It reports, in bytes:
+
+- `compressed`: the layer blobs a full pull downloads;
+- `unique_content`: the merged root's regular files with identical files
+  counted once, which is what composefs stores after install. Files that only
+  `/sysroot` names are left out and reported as `undeployed`: the base
+  image's own ostree repository, hard-linked to its `/usr`, which bootc does
+  not deploy. Removing a base package from `/usr` therefore shrinks the
+  installed root but not the pull;
+- `redundant_payload`: bytes the layers carry beyond one copy of each distinct
+  file (the same file in two layers or at two paths, or one a later layer
+  replaced). composefs dedupes these on disk, but every pull still downloads
+  them.
+
+It also breaks the image down by layer (with the instruction that made it),
+by directory, by file and by installed package (from the image's own rpmdb).
+`--why PACKAGE` prints the chain of requires and recommends that pulls a
+package in:
+
+```bash
+python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
+  --arch x86_64 --markdown image.md --json image.json --why python3-botocore
+python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:<ref>-<sha7>-x86_64 --markdown image.md
+```
+
+`--dev-base` measures the production-layout `tilo-ci` image that a dev image
+names as its base. Pull requests that touch the image publish
+`tilo-ci:<ref>-<sha7>-<arch>` (Build / OS dev), so measure a branch with
+`--image` before merging. Perf / scheduled (footprint group, nightly)
+measures main's newest image for both architectures and records
+`footprint.image.{compressed_bytes,unique_content_bytes,redundant_payload_bytes}.<arch>`.
+`tools/perf/kpi-budgets.toml` holds them to two rules:
+
+- **Growth.** More than 5 % above the median of the last five nights fails on
+  the second night running. To land intended growth, dispatch Perf / scheduled
+  on main with `kpis=footprint` and `accept=<KPI ids>` once the image has it.
+- **Ceiling.** Compressed bytes and unique content are held to an enforced
+  ceiling, set 5 % over the image TIL-609 measured and lowered by what each
+  later size change saved, so slow creep fails too. It may only be lowered,
+  except by a change that says why in the same pull request; a change that
+  shrinks the image lowers it by its measured saving and records the
+  numbers under `docs/benchmarks/`. The KPI targets (3.5 GB compressed, 7 GB of content for
+  x86_64) are written beside the ceilings. Windows compatibility is most of
+  the gap; TIL-711 moves it to a downloaded system extension.
+
+### Content-based layers (rechunking)
+
+An update downloads every layer whose digest the device does not have. A
+Containerfile layer is a new blob whenever its instruction runs again, so
+with one layer per instruction an update between two commits that changed one
+app pulled about 78 % of the image (TIL-747). Release / OS therefore re-lays
+every generic image it publishes out by content before anything consumes it
+("Rechunk the image", `os/dev/rechunk-image.sh`):
+
+- `os/Containerfile.rechunk` runs [chunkah](https://github.com/coreos/chunkah)
+  (built offline from its checksum-pinned release) over the raw image's root:
+  one component per RPM package, read from the image's rpmdb, files over 1 MB
+  on their own, the rest grouped, packed into at most 96 layers. An unchanged
+  component is the same blob in the next build. Whited-out bytes, the base's
+  old kernel and `/sysroot`'s ostree objects are in no layer. Trees that change
+  on their own schedule get a chunkah run and layers of their own
+  (`os/scripts/rechunk-chunkah.py`): Proton and the Steam runtime; the
+  preinstalled apps, whose binaries and archives change one app at a time; the
+  native runtime, whose directory is named by its payload's digest so that one
+  changed library renames every file in it (with its fonts' hard-linked names
+  in `/usr/share/fonts/tilo` and the font catalogues); the Chromium runtime;
+  and Tilo's own programs and data (`/usr/bin/{shell,fs,app,tilo-*}`,
+  `/usr/libexec/tilo*`, `/usr/lib/tilo`, `/usr/share/tilo`, the UKI), with
+  more layers than components so that chunkah packs nothing there. Otherwise a
+  runtime rename re-sends every layer its files share with unchanged ones, and
+  one new Tilo binary moves RPMs between the main run's bins: which components
+  share a layer depends on every component in the run. The main run is left
+  with the RPMs and the few other files no package owns. Small files that are new in every build although
+  nothing they describe changed (the runtime bundles' signatures and
+  publisher keys, whose keys are minted per build because the launcher trusts
+  them; systemd's update stamp), and the app store's index, which changes
+  with any app, each get one small layer of their own for the same reason.
+- `os/scripts/oci-rechunk.py` takes extended attributes from the raw image's
+  layers where chunkah's differ (BuildKit's snapshot of the image, which
+  chunkah reads, lacks the base binaries' file capabilities), adds one layer
+  with every directory's exact metadata (chunkah caps a directory's time per
+  layer; fontconfig's cache needs font directories' times unchanged), gives
+  the result the raw image's config,
+  and refuses it unless every path matches the raw image: type, mode, owner,
+  xattrs, bytes, symlink target. Only file times may be lower (capped at the
+  package's build time, or for files no package owns at an epoch that moves
+  with the base and the RPM snapshot only), `/sysroot`'s contents are gone,
+  and a hard-link group may be split across layers.
+- The dev lane pushes the rechunked image as `tilo-ci:<ref>-<sha7>-<arch>`
+  and the raw one beside it as `…-<arch>-layered`; a release rechunks its
+  archive, and its independent rebuild's, before the install gate seals it.
+  The repository variable `TILO_RECHUNK=0` turns it off without a commit.
+
+Local images (`os/dev/build-image.sh`, `tilo-vm vm upgrade --from local`) keep
+their Containerfile layers: podman's layer cache is what makes those rebuilds
+cheap, and tilo-vm sends the VM only the blobs it lacks either way.
+
+`--update-from OLD` measures an update: the compressed layers the image has
+and OLD does not. `--update-only` reads only the two manifests:
+
+```bash
+python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:main-<new>-x86_64 \
+  --update-from registry.tilo.so/tilo/tilo-ci:main-<old>-x86_64 --update-only
+```
+
+An update between two commits that change one app downloaded 215 MB of the
+rechunked x86_64 image (5 %), where the layered image re-sent 3.69 GB (78 %)
+(`docs/benchmarks/os-image-size-2026-10-10-rechunk.md`). Most of the 215 MB
+was the ~60 preinstalled apps, byte-identical but signed by a key minted per
+build: the key is in each package's signed root, whose hash is the package id
+and names the payload directory, so every binary moved and every cohort
+archive changed. Build / OS dev now signs the apps it compiles with
+one identity, the repository secret `DEV_APP_PUBLISHER_IDENTITY`, passed to the
+image build as the BuildKit secret `app_publisher_identity`. It is in no trust
+list (`os/Containerfile`, the app store's COPY) and never reaches a
+publication, which takes the released collection. Without it (local builds)
+the image mints one as before. With it, an update between two builds that
+change nothing the image reads is 0.26 MB, and one that changes one app
+33 MB (`docs/benchmarks/os-image-size-2026-10-10-reproducible-apps.md`).
+
+Every lane builds with one `SOURCE_DATE_EPOCH`, the newest creation time of
+the base and the RPM snapshot (`os/dev/image-epoch.sh`), not the commit time.
+Content embeds it: dracut writes it as every cpio time of the initramfs, so
+the 116 MB UKI was a new blob in every release-lane build although its files
+were the same; dnf records it as each package's install time in the rpmdb;
+`fc-cache` records the font directories' times. With it stable, two release
+builds share those layers unless what is in them changed. A publication still
+reseals a second UKI on top, which carries the new tree's composefs digest and
+is new in every release by design. With the runtime, Chromium and Tilo trees,
+an update for a framework change went from 518 MB to 448 MB on x86_64, and the
+release lane no longer re-sends the UKI (116 MB) and the rpmdb (17 MB) when
+nothing in them changed (`docs/benchmarks/os-image-size-2026-10-12-update-layers.md`).
+
+The nightly footprint group records `footprint.image.update_bytes.<arch>`,
+the update from main's previous build (`image_size.py --update-from-previous
+'main-{sha7}-{arch}'`), under an enforced ceiling in
+`tools/perf/kpi-budgets.toml`.
+
 ## Fast checks before assembly
 
 For a native integration test without a full workspace dispatch, use
@@ -245,6 +708,23 @@ expand `-F` files and parses `-f` values as CSV, which breaks JSON arrays.
 
 Do not reserve runners or ask another agent to allocate a slot. Each case's
 result and the exact source/workflow/builder identities appear in the run summary.
+
+Use operation `clippy` to meet CI's lint gate before pushing, including for
+crates that do not build on macOS (`shell`, `tilo-relay`, `launcher`). It runs
+the source's own `tools/ci/clippy-check.sh -p <pkg>…` (all targets,
+`-D warnings`, the workspace lint table), on the runner label, builder image,
+environment and checkout path of CI's `clippy` job, so the two share compiler
+cache entries and a warm package takes minutes. Name one `package`, or up to 64
+in `packages`; leave the test fields empty. A failure prints the rendered
+Clippy diagnostics; the run summary lists the compiler-cache statistics.
+
+```sh
+jq -n --arg source "$(git rev-parse HEAD)" \
+  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"clippy"}}' \
+  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
+```
+
+The source commit must be pushed (any branch) so the runner can fetch it.
 
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
@@ -743,9 +1223,9 @@ exist, investigate Explorer's catalog, then run
 `./tools/windows/check-start-apps.ps1 -Apps hex-editor` (substitute
 the affected package names). The installer does not restart the desktop shell.
 
-Private identity files and local account-vault keys use the shared `private-fs`
-crate. On Windows, files are created with a protected, current-user-only DACL;
-reads validate the opened file's owner, access rules and reparse status. Existing
+Private identity files and local account-vault keys use the shared
+`tilo_files::native::private` module. On Windows, files are created with a
+protected, current-user-only DACL; reads validate the opened file's owner, access rules and reparse status. Existing
 keys with public access are rejected rather than silently replaced. Concurrent
 vault creators publish one complete key without overwriting the winner. The
 shared Accounts vault records failed loads and refuses writes until access is
@@ -763,7 +1243,7 @@ transfer verification covers Unicode paths, acknowledged CSV export/import,
 encrypted backup, wrong-passphrase rejection, and fresh-profile restoration.
 
 ```powershell
-cargo test --locked -p private-fs -p tilo-user-identity -p accounts --lib
+cargo test --locked -p tilo-files -p tilo-user-identity -p accounts --lib
 ```
 
 Apps that need persistent content-addressed blobs without mounting a filesystem
@@ -1778,6 +2258,12 @@ on the staged Rust files, workspace membership
 lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
 CI (`.forgejo/workflows/check.yml`).
+
+Committing a merge checks only what the resolution changed. A file staged
+exactly as the merged-in side has it already passed that side's checks, so the
+hook runs against a temporary index where those files are back at `HEAD`. A
+merge of `origin/main` into a branch 300 commits behind (3,400 staged files)
+takes about 13 seconds instead of nearly three minutes.
 
 A vendored crate under `vendor/` is upstream's code, carried as it ships: the
 added-code checks (`#[ignore]` reasons, `#[allow]` placement, `dbg!`) and

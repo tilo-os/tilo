@@ -356,11 +356,6 @@ impl RemoteInputFirewall {
         self.kill_switch = false;
     }
 
-    /// Whether remote input is currently killed.
-    pub fn kill_switch_engaged(&self) -> bool {
-        self.kill_switch
-    }
-
     /// Forget a peer's budget and held modifiers — call when it disconnects.
     pub fn forget_peer(&mut self, peer: PeerId) {
         self.peers.remove(&peer);
@@ -1357,7 +1352,8 @@ mod tests {
 /// Denials proven through the production injection path, against a real
 /// `State`/`Seat`, asserting both the refusal rule and that the seat didn't
 /// move — a return-value-only check would pass even if the refusal happened after injection.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod production_path {
     use super::*;
     use crate::compositor::state::State;

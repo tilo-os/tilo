@@ -2,10 +2,12 @@
 pub use tilo_action_broker::collab_broker_capnp::*;
 
 mod local_consent;
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod local_consent_tests;
 mod realtime_host;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(crate) use local_consent::LocalSessionLiveness;
 pub(crate) use local_consent::LocalSessionPermit;
 pub(crate) use local_consent::{LocalSessionAuthority, LocalSessionLifecycle};
@@ -134,7 +136,7 @@ pub mod tests {
     fn local_directory_fixture() -> LocalDirectoryFixture {
         let mut tree = WorkspaceTree::default();
         let mut workspace = Workspace::new(WorkspaceId(71), "Directory test room");
-        workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(71));
         local_directory_fixture_with_membership(tree.shared())

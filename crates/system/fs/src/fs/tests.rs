@@ -10,7 +10,7 @@ mod availability_control_tests {
 
     async fn wait_for_availability(
         registry: &Arc<Mutex<AvailabilityRegistry>>,
-        record: collab_types::FileRecordId,
+        record: fs_protocol::FileRecordId,
         predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
         wait_for_availability_with_timeout(
@@ -24,7 +24,7 @@ mod availability_control_tests {
 
     async fn wait_for_availability_with_timeout(
         registry: &Arc<Mutex<AvailabilityRegistry>>,
-        record: collab_types::FileRecordId,
+        record: fs_protocol::FileRecordId,
         timeout: Duration,
         predicate: impl Fn(&RecordAvailability) -> bool + Send + Sync,
     ) {
@@ -387,14 +387,14 @@ mod availability_control_tests {
             .create_file(folder, "later.txt", Some(&first), 20, 2)
             .unwrap();
         let record_id = namespace.lock().unwrap().record_id_for(child).unwrap();
-        let first_version = collab_types::FileVersionId::new();
-        let first_revision = collab_types::ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
+        let first_version = fs_protocol::FileVersionId::new();
+        let first_revision = fs_protocol::ContentRevisionV1 {
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id,
             version_id: first_version,
-            content_hash: Some(collab_types::ContentHash(*first.as_bytes())),
+            content_hash: Some(fs_protocol::ContentHash(*first.as_bytes())),
             byte_len: 20,
-            metadata_hash: collab_types::ContentHash([1; 32]),
+            metadata_hash: fs_protocol::ContentHash([1; 32]),
         };
         assert!(
             namespace
@@ -435,12 +435,12 @@ mod availability_control_tests {
         .await;
         // A later immutable version invalidates the old residency proof and
         // is hydrated under the same durable ancestor pin.
-        let second_version = collab_types::FileVersionId::new();
-        let second_revision = collab_types::ContentRevisionV1 {
+        let second_version = fs_protocol::FileVersionId::new();
+        let second_revision = fs_protocol::ContentRevisionV1 {
             version_id: second_version,
-            content_hash: Some(collab_types::ContentHash(*second.as_bytes())),
+            content_hash: Some(fs_protocol::ContentHash(*second.as_bytes())),
             byte_len: 21,
-            metadata_hash: collab_types::ContentHash([2; 32]),
+            metadata_hash: fs_protocol::ContentHash([2; 32]),
             ..first_revision
         };
         assert!(
@@ -508,7 +508,7 @@ mod availability_control_tests {
         );
 
         // A change that arrives without a wake (as a remote apply does) is
-        // still repaired by the next tick.
+        // still repaired, now on the namespace's own announcement.
         let late = {
             let mut namespace = namespace.lock().unwrap();
             let ino = namespace
@@ -521,6 +521,100 @@ mod availability_control_tests {
         })
         .await;
         assert!(walks() > settled);
+
+        drop(fs);
+        endpoint.close().await;
+    }
+
+    /// TIL-750. The faults the repair tick existed for, with no tick to
+    /// lean on (an hour's backstop): a pinned folder gains a file through a
+    /// namespace change no FUSE callback saw (as a remote apply does), and
+    /// a folder is pinned by a registry writer other than this mount (as
+    /// the storage socket does). Each is hydrated on its own announcement.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pins_are_repaired_on_announcements_without_a_tick() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let local = store.write_content(b"already here").await.unwrap().unwrap();
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
+        let namespace = Arc::new(Mutex::new(Namespace::new("announced-pin").unwrap()));
+        let (folder, first) = {
+            let mut namespace = namespace.lock().unwrap();
+            let folder = namespace.create_dir(ROOT_INO, "offline", 1).unwrap();
+            let first = namespace.create_file(folder, "first", None, 0, 1).unwrap();
+            (folder, namespace.record_id_for(first).unwrap())
+        };
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry))
+            .with_pinned_hydration_every(Duration::from_secs(3600));
+        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+            .unwrap();
+        wait_for_availability(&registry, first, |record| {
+            record.residency == Residency::Resident { bytes: 0 }
+        })
+        .await;
+
+        // A file arrives in the pinned folder outside every FUSE callback.
+        let remote = {
+            let mut namespace = namespace.lock().unwrap();
+            let ino = namespace
+                .create_file(folder, "arrived-remotely", None, 0, 2)
+                .unwrap();
+            namespace.record_id_for(ino).unwrap()
+        };
+        wait_for_availability(&registry, remote, |record| {
+            record.residency == Residency::Resident { bytes: 0 }
+        })
+        .await;
+
+        // Another writer of the registry pins a folder this mount never
+        // touched; the worker learns of it from the registry alone.
+        let (root, other, inside) = {
+            let mut namespace = namespace.lock().unwrap();
+            let other = namespace
+                .create_dir(ROOT_INO, "pinned-elsewhere", 3)
+                .unwrap();
+            let inside = namespace
+                .create_file(other, "inside", Some(&local), 12, 3)
+                .unwrap();
+            (
+                namespace.record_id_for(ROOT_INO).unwrap(),
+                namespace.record_id_for(other).unwrap(),
+                namespace.record_id_for(inside).unwrap(),
+            )
+        };
+        // Let the pass those namespace changes start finish first, so only
+        // the registry's announcement can bring the pin.
+        tokio::time::sleep(PINNED_CHANGE_SETTLE.saturating_mul(4)).await;
+        assert!(
+            registry
+                .lock()
+                .unwrap()
+                .get(inside)
+                .is_none_or(|record| record.residency != Residency::Resident { bytes: 12 }),
+            "an unpinned file was proven resident"
+        );
+        {
+            let mut registry = registry.lock().unwrap();
+            if registry.get(root).is_none() {
+                registry
+                    .put(RecordAvailability::new(root, RecordKind::Directory))
+                    .unwrap();
+            }
+            let mut pinned = RecordAvailability::new(other, RecordKind::Directory);
+            pinned.parent = Some(root);
+            pinned.policy = AvailabilityPolicy::Pinned;
+            registry.put(pinned).unwrap();
+        }
+        wait_for_availability(&registry, inside, |record| {
+            record.residency == Residency::Resident { bytes: 12 }
+        })
+        .await;
 
         drop(fs);
         endpoint.close().await;
@@ -766,7 +860,7 @@ mod availability_control_tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_id_for(ino)
             .unwrap();
-        let version_id = collab_types::FileVersionId::new();
+        let version_id = fs_protocol::FileVersionId::new();
         let registry = Arc::new(Mutex::new(
             AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
         ));
@@ -803,7 +897,7 @@ mod availability_control_tests {
         let queue = Arc::new(tokio::sync::Mutex::new(queue));
         // Simulate a new immutable revision arriving after the old request
         // completed but before daemon restart recovery runs.
-        let newer_version = collab_types::FileVersionId::new();
+        let newer_version = fs_protocol::FileVersionId::new();
         let mut current = registry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -841,9 +935,8 @@ mod share_projection_tests {
     use crate::namespace::ROOT_INO;
     use crate::share_authority::{ShareAuthority, ShareGrantStatus, ShareProjectionV1};
     use crate::store::ContentStore;
-    use collab_types::{
-        Ed25519PublicKey, FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite,
-    };
+    use collab_types::Ed25519PublicKey;
+    use fs_protocol::{FileInviteSpec, FileInviteSubject, FilePermission, mint_file_invite};
     use iroh::endpoint::{Endpoint, presets};
 
     #[tokio::test]
@@ -1040,7 +1133,7 @@ mod thumb_tests {
             let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
             let device = ed25519_dalek::SigningKey::from_bytes(&[0x72; 32]);
             let person = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
-            let actor = collab_types::FileActor {
+            let actor = fs_protocol::FileActor {
                 person: collab_types::Ed25519PublicKey(person.verifying_key().to_bytes()),
                 device: collab_types::Ed25519PublicKey(device.verifying_key().to_bytes()),
             };
@@ -1075,8 +1168,8 @@ mod thumb_tests {
                 .expect("signed preview is installed in the verified projection");
             let snapshot = publisher.snapshot(record_id).unwrap().unwrap();
             assert!(snapshot.metadata.unwrap().previews.iter().any(|preview| {
-                preview.status == collab_types::PreviewStatus::Ready
-                    && preview.hash == Some(collab_types::ContentHash(*verified.as_bytes()))
+                preview.status == fs_protocol::PreviewStatus::Ready
+                    && preview.hash == Some(fs_protocol::ContentHash(*verified.as_bytes()))
             }));
         }
     }
@@ -1544,7 +1637,7 @@ mod predictive_tests {
                     ns.create_projected_file(
                         ROOT_INO,
                         format!("visible-{index:04}"),
-                        collab_types::FileRecordId(uuid::Uuid::from_u128((index + 1) as u128)),
+                        fs_protocol::FileRecordId(uuid::Uuid::from_u128((index + 1) as u128)),
                         None,
                         0,
                         1,
@@ -1775,7 +1868,8 @@ mod predictive_tests {
 #[cfg(test)]
 mod history_integration_tests {
     use super::*;
-    use collab_types::{Ed25519PublicKey, FileActor, FileProvenance};
+    use collab_types::Ed25519PublicKey;
+    use fs_protocol::{FileActor, FileProvenance};
     use iroh::endpoint::{Endpoint, presets};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1822,7 +1916,7 @@ mod history_integration_tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .hash_for(ino)
-                .map(|hash| collab_types::ContentHash(*hash.as_bytes()))
+                .map(|hash| fs_protocol::ContentHash(*hash.as_bytes()))
         );
         fs.commit_content(ino, b"durable bytes").unwrap();
         assert_eq!(
@@ -1857,82 +1951,6 @@ mod history_integration_tests {
         let reopened =
             crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap();
         assert_eq!(reopened.snapshot(record_id).unwrap().versions.len(), 3);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn restoring_history_rehydrates_bytes_and_appends_without_rewriting() {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let store = Arc::new(crate::store::ContentStore::memory());
-        let original = b"first durable revision";
-        let original_hash = store.write_content(original).await.unwrap().unwrap();
-        let hydrator = Arc::new(Hydrator::new(endpoint, store));
-        let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
-        let ino = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .create_file(
-                crate::namespace::ROOT_INO,
-                "history.txt",
-                Some(&original_hash),
-                original.len() as u64,
-                1,
-            )
-            .unwrap();
-        let record_id = namespace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record_id_for(ino)
-            .unwrap();
-        let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
-        let history = Arc::new(
-            crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
-        );
-        let actor = FileActor {
-            person: Ed25519PublicKey([1; 32]),
-            device: Ed25519PublicKey([2; 32]),
-        };
-        let fs = QuickFS::new(namespace, hydrator, heuristics)
-            .with_history(history.clone(), actor)
-            .unwrap();
-        let original_version = history.snapshot(record_id).unwrap().versions[0].id;
-
-        fs.commit_content(ino, b"second revision").unwrap();
-        assert_eq!(
-            fs.history_version_preview(ino, original_version).unwrap(),
-            original,
-            "preview reads immutable bytes without restoring them"
-        );
-        assert_eq!(history.snapshot(record_id).unwrap().versions.len(), 2);
-        fs.restore_version(ino, original_version).unwrap();
-
-        assert_eq!(fs.read_full_blocking(ino).unwrap(), original);
-        let snapshot = history.snapshot(record_id).unwrap();
-        assert_eq!(snapshot.versions.len(), 3);
-        assert_eq!(snapshot.heads.len(), 1);
-        let restored = snapshot
-            .versions
-            .iter()
-            .find(|version| snapshot.heads.contains(&version.id))
-            .unwrap();
-        assert_eq!(
-            restored.provenance,
-            FileProvenance::Restore {
-                from: original_version
-            }
-        );
-        // Equal millisecond timestamps are ordered by version id, so array
-        // positions do not identify the original revision or restored head.
-        let baseline = snapshot
-            .versions
-            .iter()
-            .find(|version| version.id == original_version)
-            .unwrap();
-        assert_eq!(baseline.content_hash, restored.content_hash);
-        assert_eq!(
-            baseline.content_hash,
-            Some(collab_types::ContentHash(*original_hash.as_bytes()))
-        );
     }
 
     fn history_fs(
@@ -2009,69 +2027,14 @@ mod history_integration_tests {
         drop(fs);
         endpoint.close().await;
     }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn restoring_a_qdoc_appends_a_crdt_revision_of_the_current_document() {
-        let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
-        let mut namespace = Namespace::new("documents").unwrap();
-        let ino = namespace
-            .create_file(crate::namespace::ROOT_INO, "notes.qdoc", None, 0, 1)
-            .unwrap();
-        let record_id = namespace.record_id_for(ino).unwrap();
-        let (fs, history) = history_fs(&dir, &endpoint, namespace);
-
-        let mut document = tilo_doc::Document::new();
-        let block = document.insert_block(None, "paragraph");
-        document.splice_text(&block, 0, 0, "first");
-        let first = document.save();
-        assert_eq!(fs.commit_bytes(ino, &first), Ok(()));
-        let first_version = history.snapshot(record_id).unwrap().heads[0];
-        document.splice_text(&block, 5, 0, " and second");
-        let second = document.save();
-        assert_eq!(fs.commit_bytes(ino, &second), Ok(()));
-
-        fs.restore_version(ino, first_version).unwrap();
-
-        let restored = fs.read_full_blocking(ino).unwrap();
-        assert_ne!(
-            restored, first,
-            "a restore is a new revision, not old bytes"
-        );
-        assert_eq!(
-            tilo_doc::Document::load(&restored).unwrap().materialize(),
-            tilo_doc::Document::load(&first).unwrap().materialize()
-        );
-        let mut restored_doc = automerge::AutoCommit::load(&restored).unwrap();
-        for head in automerge::AutoCommit::load(&second).unwrap().get_heads() {
-            assert!(
-                restored_doc.get_change_by_hash(&head).is_some(),
-                "the restore continues the current document's history"
-            );
-        }
-        let snapshot = history.snapshot(record_id).unwrap();
-        let head = snapshot
-            .versions
-            .iter()
-            .find(|version| snapshot.heads.contains(&version.id))
-            .unwrap();
-        assert_eq!(
-            head.provenance,
-            FileProvenance::Restore {
-                from: first_version
-            }
-        );
-        assert_eq!(fs.history_version_preview(ino, head.id).unwrap(), restored);
-        drop(fs);
-        endpoint.close().await;
-    }
 }
 
 #[cfg(test)]
 mod record_publisher_integration_tests {
     use super::*;
-    use collab_types::{Ed25519PublicKey, FileActor, FileProvenance};
+    use collab_types::Ed25519PublicKey;
     use ed25519_dalek::SigningKey;
+    use fs_protocol::{FileActor, FileProvenance};
     use iroh::endpoint::{Endpoint, presets};
     use uuid::Uuid;
 
@@ -2090,7 +2053,7 @@ mod record_publisher_integration_tests {
     fn published_snapshot(
         repository: &crate::record_repository::RecordRepository,
         publisher: &crate::record_publisher::RecordPublisher,
-        record_id: collab_types::FileRecordId,
+        record_id: fs_protocol::FileRecordId,
     ) -> crate::record_protocol::RecordProtocolSnapshotV1 {
         let key = crate::record_repository::RecordRepositoryKey {
             workspace_id: publisher.workspace_id(),
@@ -2176,7 +2139,7 @@ mod record_publisher_integration_tests {
         let baseline_metadata = baseline.metadata.as_ref().unwrap();
         assert_eq!(
             baseline_metadata.content_hash,
-            Some(collab_types::ContentHash(*original_manifest.as_bytes()))
+            Some(fs_protocol::ContentHash(*original_manifest.as_bytes()))
         );
         assert_eq!(baseline_metadata.byte_len, original.len() as u64);
 
@@ -2226,7 +2189,7 @@ mod record_publisher_integration_tests {
             .unwrap();
         assert_eq!(
             after_edit.metadata.as_ref().unwrap().content_hash,
-            Some(collab_types::ContentHash(*edited_manifest.as_bytes()))
+            Some(fs_protocol::ContentHash(*edited_manifest.as_bytes()))
         );
         assert_eq!(
             repository.highest_sequence(key, &actor),
@@ -2282,7 +2245,7 @@ mod record_publisher_integration_tests {
         );
         assert_eq!(
             after_rename.metadata.as_ref().unwrap().content_hash,
-            Some(collab_types::ContentHash(*edited_manifest.as_bytes()))
+            Some(fs_protocol::ContentHash(*edited_manifest.as_bytes()))
         );
         let installed_revision = {
             let namespace = namespace
@@ -2406,7 +2369,7 @@ mod record_publisher_integration_tests {
         assert_eq!(created_dir.binding.as_ref().unwrap().name, "signed-folder");
         assert_eq!(
             created_dir.binding.as_ref().unwrap().kind,
-            collab_types::FileNodeKind::Directory
+            fs_protocol::FileNodeKind::Directory
         );
         assert_eq!(created_dir.versions.len(), 1);
         assert!(created_dir.metadata.is_none());
@@ -2634,11 +2597,11 @@ mod record_publisher_integration_tests {
             .content_revision_for(ino)
             .unwrap()
             .version_id;
-        let first_conflict = collab_types::FileConflictV1 {
+        let first_conflict = fs_protocol::FileConflictV1 {
             id: Uuid::new_v4(),
             record_id,
             versions: vec![original_version, current_version],
-            status: collab_types::ConflictStatus::Open,
+            status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
         history.record_conflict(first_conflict.clone()).unwrap();
@@ -2655,7 +2618,7 @@ mod record_publisher_integration_tests {
         fs.resolve_conflict(
             ino,
             first_conflict.id,
-            collab_types::ConflictStrategy::KeepCurrent,
+            fs_protocol::ConflictStrategy::KeepCurrent,
             current_version,
         )
         .unwrap();
@@ -2671,7 +2634,7 @@ mod record_publisher_integration_tests {
             .unwrap();
         assert_eq!(
             keep_resolution.strategy,
-            collab_types::ConflictStrategy::KeepCurrent
+            fs_protocol::ConflictStrategy::KeepCurrent
         );
         let keep_result = after_keep
             .versions
@@ -2680,7 +2643,7 @@ mod record_publisher_integration_tests {
             .unwrap();
         assert_eq!(
             keep_result.provenance,
-            collab_types::FileProvenance::ConflictResolution
+            fs_protocol::FileProvenance::ConflictResolution
         );
         assert!(
             first_conflict
@@ -2689,11 +2652,11 @@ mod record_publisher_integration_tests {
                 .all(|member| keep_result.parents.contains(member))
         );
 
-        let second_conflict = collab_types::FileConflictV1 {
+        let second_conflict = fs_protocol::FileConflictV1 {
             id: Uuid::new_v4(),
             record_id,
             versions: vec![keep_result.id, original_version],
-            status: collab_types::ConflictStatus::Open,
+            status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
         history.record_conflict(second_conflict.clone()).unwrap();
@@ -2709,7 +2672,7 @@ mod record_publisher_integration_tests {
         fs.resolve_conflict(
             ino,
             second_conflict.id,
-            collab_types::ConflictStrategy::UseOther,
+            fs_protocol::ConflictStrategy::UseOther,
             original_version,
         )
         .unwrap();
@@ -2723,10 +2686,7 @@ mod record_publisher_integration_tests {
             .resolution
             .as_ref()
             .unwrap();
-        assert_eq!(
-            resolution.strategy,
-            collab_types::ConflictStrategy::UseOther
-        );
+        assert_eq!(resolution.strategy, fs_protocol::ConflictStrategy::UseOther);
         assert_eq!(
             signed_state.content_revision.unwrap().version_id,
             resolution.result,
@@ -2743,11 +2703,11 @@ mod record_publisher_integration_tests {
         );
 
         let source_current = resolution.result;
-        let keep_both_conflict = collab_types::FileConflictV1 {
+        let keep_both_conflict = fs_protocol::FileConflictV1 {
             id: Uuid::new_v4(),
             record_id,
             versions: vec![source_current, keep_result.id],
-            status: collab_types::ConflictStatus::Open,
+            status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
         history.record_conflict(keep_both_conflict.clone()).unwrap();
@@ -2768,7 +2728,7 @@ mod record_publisher_integration_tests {
             keep_result.id,
             actor,
         );
-        let target_record = collab_types::FileRecordId(keep_both_uuid(
+        let target_record = fs_protocol::FileRecordId(keep_both_uuid(
             b"target-record",
             publisher.workspace_id(),
             record_id,
@@ -2784,7 +2744,7 @@ mod record_publisher_integration_tests {
             fs.resolve_conflict(
                 ino,
                 keep_both_conflict.id,
-                collab_types::ConflictStrategy::KeepBoth,
+                fs_protocol::ConflictStrategy::KeepBoth,
                 keep_result.id,
             ),
             Err(EIO)
@@ -2903,7 +2863,7 @@ mod record_publisher_integration_tests {
         fs.resolve_conflict(
             ino,
             keep_both_conflict.id,
-            collab_types::ConflictStrategy::KeepBoth,
+            fs_protocol::ConflictStrategy::KeepBoth,
             keep_result.id,
         )
         .unwrap();
@@ -2934,16 +2894,16 @@ mod record_publisher_integration_tests {
                 .as_ref()
                 .unwrap()
                 .strategy,
-            collab_types::ConflictStrategy::KeepBoth
+            fs_protocol::ConflictStrategy::KeepBoth
         );
-        let follow_on_conflict = collab_types::FileConflictV1 {
+        let follow_on_conflict = fs_protocol::FileConflictV1 {
             id: Uuid::new_v4(),
             record_id,
             versions: vec![
                 source_after.content_revision.unwrap().version_id,
                 keep_result.id,
             ],
-            status: collab_types::ConflictStatus::Open,
+            status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
         history.record_conflict(follow_on_conflict.clone()).unwrap();
@@ -2970,7 +2930,7 @@ mod record_publisher_integration_tests {
         fs.resolve_conflict(
             ino,
             keep_both_conflict.id,
-            collab_types::ConflictStrategy::KeepBoth,
+            fs_protocol::ConflictStrategy::KeepBoth,
             keep_result.id,
         )
         .unwrap();
@@ -3045,7 +3005,7 @@ mod record_publisher_integration_tests {
             .resolve_conflict(
                 restarted_source,
                 keep_both_conflict.id,
-                collab_types::ConflictStrategy::KeepBoth,
+                fs_protocol::ConflictStrategy::KeepBoth,
                 keep_result.id,
             )
             .unwrap();
@@ -3148,22 +3108,22 @@ mod record_publisher_integration_tests {
             .unwrap()
             .clone();
         let other_hash = store.write_content(&other_bytes).await.unwrap().unwrap();
-        let other = collab_types::FileVersionV1 {
-            id: collab_types::FileVersionId::new(),
+        let other = fs_protocol::FileVersionV1 {
+            id: fs_protocol::FileVersionId::new(),
             record_id,
             parents: vec![base_version],
             actor,
             timestamp_ms: current.timestamp_ms.saturating_add(1),
-            content_hash: Some(collab_types::ContentHash(*other_hash.as_bytes())),
-            metadata_hash: collab_types::ContentHash([77; 32]),
-            provenance: collab_types::FileProvenance::Edit,
+            content_hash: Some(fs_protocol::ContentHash(*other_hash.as_bytes())),
+            metadata_hash: fs_protocol::ContentHash([77; 32]),
+            provenance: fs_protocol::FileProvenance::Edit,
         };
         history.append(other.clone()).unwrap();
-        let conflict = collab_types::FileConflictV1 {
+        let conflict = fs_protocol::FileConflictV1 {
             id: Uuid::new_v4(),
             record_id,
             versions: vec![current.id, other.id],
-            status: collab_types::ConflictStatus::Open,
+            status: fs_protocol::ConflictStatus::Open,
             resolution: None,
         };
         history.record_conflict(conflict.clone()).unwrap();
@@ -3212,7 +3172,7 @@ mod record_publisher_integration_tests {
             fs.resolve_conflict(
                 ino,
                 conflict.id,
-                collab_types::ConflictStrategy::Merge,
+                fs_protocol::ConflictStrategy::Merge,
                 other.id
             ),
             Err(EIO)
@@ -3268,7 +3228,7 @@ mod record_publisher_integration_tests {
             .unwrap()
             .resolution
             .unwrap();
-        assert_eq!(resolution.strategy, collab_types::ConflictStrategy::Merge);
+        assert_eq!(resolution.strategy, fs_protocol::ConflictStrategy::Merge);
         assert_eq!(
             namespace
                 .lock()
@@ -3290,7 +3250,7 @@ mod record_publisher_integration_tests {
             .resolve_conflict(
                 ino,
                 conflict.id,
-                collab_types::ConflictStrategy::Merge,
+                fs_protocol::ConflictStrategy::Merge,
                 other.id,
             )
             .unwrap();
@@ -3400,17 +3360,7 @@ mod write_stage_tests {
     use iroh::endpoint::{Endpoint, presets};
     use iroh::protocol::Router;
 
-    fn pseudo(len: usize, seed: u64) -> Vec<u8> {
-        let mut x = seed | 1;
-        (0..len)
-            .map(|_| {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                x.to_le_bytes()[0]
-            })
-            .collect()
-    }
+    use crate::test_bytes::pseudo;
 
     /// A peer serving committed content, and a mount on another endpoint
     /// that knows the files by namespace entry only.

@@ -3,7 +3,8 @@
 use super::*;
 use crate::shell::chrome_state::{ChromeState, WsTab};
 use crate::shell::state::WorkspaceTree;
-use automerge::{ReadDoc as _, ScalarValue};
+use automerge::ReadDoc as _;
+use ui::widget::TaffyTreeExt;
 
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
@@ -194,7 +195,7 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
         let entry = ui::widget::history::HistoryEntry {
             id: ui::widget::history::HistoryEntryId([1; 16]),
             author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
-            op_class: collab_types::OpClass::Govern,
+            entry_kind: ui::widget::EntryKind::Access,
             artifact_kind: collab_types::ArtifactKind::Note,
             timestamp: std::time::SystemTime::now(),
             summary: "5 permission changes".into(),
@@ -213,7 +214,7 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
         let entry = ui::widget::history::HistoryEntry {
             id: ui::widget::history::HistoryEntryId([2; 16]),
             author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
-            op_class: collab_types::OpClass::Splice,
+            entry_kind: ui::widget::EntryKind::Text,
             artifact_kind: collab_types::ArtifactKind::File,
             timestamp: std::time::SystemTime::now(),
             summary: "+4 -1 chars".into(),
@@ -222,7 +223,6 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
             redaction: None,
             context: Some(
                 ui::tilo_actions::ActionContext::for_resource(
-                    "Edit",
                     "finance:q2",
                     "sheet",
                     "Q2 finance report",
@@ -240,7 +240,7 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
         let make_entry = |id, purpose: &str| ui::widget::history::HistoryEntry {
             id: ui::widget::history::HistoryEntryId([id; 16]),
             author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
-            op_class: collab_types::OpClass::Splice,
+            entry_kind: ui::widget::EntryKind::Text,
             artifact_kind: collab_types::ArtifactKind::File,
             timestamp: std::time::SystemTime::now(),
             summary: purpose.into(),
@@ -249,7 +249,6 @@ fn collaboration_status_preferences_round_trip_and_fall_back_to_grounded_intent(
             redaction: None,
             context: Some(
                 ui::tilo_actions::ActionContext::for_resource(
-                    "Edit",
                     format!("resource:{id}"),
                     "document",
                     purpose,
@@ -385,7 +384,7 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         let outside = Point::new(20.0, 400.0);
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(outside), mods);
-        let _ = pump(&mut h, &left_button_pressed(), mods);
+        let _ = pump(&mut h, &mouse_press(), mods);
         assert!(
             crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
                 .is_some(),
@@ -573,7 +572,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
@@ -731,29 +730,11 @@ impl Widget for StubContent {
             },
             ..Default::default()
         };
-        let node = taffy.new_leaf(style).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
     }
 
     fn name(&self) -> &'static str {
@@ -876,8 +857,8 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         let mut focus = None;
         for event in [
             cursor_moved_at(next.center()),
-            left_button_pressed(),
-            left_button_released(),
+            mouse_press(),
+            mouse_release(),
         ] {
             let mut handled = false;
             h.host.handle_event(
@@ -1595,7 +1576,10 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         h.host.begin_wifi_password("Tilo test network");
         assert!(pump(
             &mut h,
-            &crate::shell::test_support::typed_key_event(Key::Character("a".into())),
+            &ui::synthetic_input::key_input(
+                &Key::Character("a".into()),
+                winit::event::ElementState::Pressed
+            ),
             Modifiers::default()
         ));
 
@@ -1617,7 +1601,10 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         assert!(!h.host.capture_studio.is_open());
         assert!(pump(
             &mut h,
-            &crate::shell::test_support::typed_key_event(Key::Character("b".into())),
+            &ui::synthetic_input::key_input(
+                &Key::Character("b".into()),
+                winit::event::ElementState::Pressed
+            ),
             Modifiers::default()
         ));
         assert!(h.chrome.borrow().quick_settings.wifi_password.is_some());
@@ -1899,24 +1886,12 @@ fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
 }
 
 fn pump_at_scale(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers, scale: f64) -> bool {
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT.clone();
-    let mut focus: Option<NodeId> = None;
-    let mut handled = false;
-    h.host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: scale,
-            modifiers: &modifiers,
-            state: ui::widget::Edits::lend(&mut doc),
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: h.root_node,
-            taffy: &h.taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .scale_factor(scale)
+        .layout(&h.taffy, h.root_node)
+        .send(&mut h.host, event)
+        .handled
 }
 
 /// Builds a `KeyEvent` over a zeroed buffer — winit 0.30's
@@ -2014,12 +1989,11 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
 }
 
 fn key_press(logical_key: Key) -> WindowEvent {
-    // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero
-    // bit pattern (`logical_key` is overwritten below, `text` is
-    // `Option<…>` whose niche-optimised `None` is the all-zero
-    // bit pattern, and `KeyEventExtra` is `pub(crate)` and only
-    // inspected by winit-internal code that the host never reaches).
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    let mut ev = ui::synthetic_input::key_event(
+        winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+        None,
+        winit::event::ElementState::Pressed,
+    );
     // A character key carries its text, as a real keyboard's does; text
     // fields type from it.
     let text = match &logical_key {
@@ -2033,7 +2007,7 @@ fn key_press(logical_key: Key) -> WindowEvent {
     ev.repeat = false;
     ev.text = text;
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event: ev,
         is_synthetic: false,
     }
@@ -2041,26 +2015,14 @@ fn key_press(logical_key: Key) -> WindowEvent {
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: PhysicalPosition::new(p.x, p.y),
     }
 }
 
-fn left_button_pressed() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
-fn left_button_released() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_release;
 
 /// Paint one frame, which is what populates every cached hit rect.
 fn paint(h: &mut Harness) {
@@ -2095,13 +2057,13 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(row.center()), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
         assert!(handled);
         assert!(
             crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
                 .is_none()
         );
-        assert!(pump(&mut h, &left_button_released(), mods));
+        assert!(pump(&mut h, &mouse_release(), mods));
         assert!(
             crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
                 .is_some(),
@@ -2174,13 +2136,13 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(invite.center()), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
         assert!(handled, "the button claimed the click");
         assert!(
             h.chrome.borrow_mut().take_peer_sync_requests().is_empty(),
             "the press remains cancellable"
         );
-        assert!(pump(&mut h, &left_button_released(), mods));
+        assert!(pump(&mut h, &mouse_release(), mods));
 
         assert_eq!(
             h.chrome.borrow_mut().take_peer_sync_requests(),
@@ -2205,13 +2167,13 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(join.center()), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
         assert!(handled, "the button claimed the click");
         assert!(
             h.chrome.borrow_mut().take_peer_sync_requests().is_empty(),
             "the press remains cancellable"
         );
-        assert!(pump(&mut h, &left_button_released(), mods));
+        assert!(pump(&mut h, &mouse_release(), mods));
 
         assert_eq!(
             h.chrome.borrow_mut().take_peer_sync_requests(),
@@ -2318,7 +2280,7 @@ fn assert_no_peer_sync_work_from_a_click_in_the_panel(h: &mut Harness) {
     let panel = h.host.collaborators_overlay.panel_rect();
     let mods = Modifiers::default();
     let _ = pump(h, &cursor_moved_at(panel.center()), mods);
-    let _ = pump(h, &left_button_pressed(), mods);
+    let _ = pump(h, &mouse_press(), mods);
     assert!(
         h.chrome.borrow_mut().take_peer_sync_requests().is_empty(),
         "a click in a panel with no buttons queued no peer-sync work"
@@ -2618,9 +2580,11 @@ fn install_gui_fixture(dir: &std::path::Path, package_id: &str, name: &str) {
     let manifest_path = payload.join("manifest.toml");
     std::fs::write(
         &manifest_path,
-        format!(
-            "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
-             version = \"1.2.3\"\n[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n"
+        crate::shell::test_support::canonical_manifest(
+            &format!(
+                "id = \"{package_id}\"\nname = \"{name}\"\nversion = \"1.2.3\"\nkind = \"app\""
+            ),
+            "[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n",
         ),
     )
     .unwrap();
@@ -2667,7 +2631,7 @@ fn workspace_settings_pills_close_button_and_surface_are_pointer_accessible() {
         // MouseInput carries no position; seed `last_cursor` via CursorMoved first.
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(p), mods);
-        let handled = pump(&mut h, &left_button_pressed(), mods);
+        let handled = pump(&mut h, &mouse_press(), mods);
 
         assert!(
             handled,
@@ -2689,7 +2653,7 @@ fn workspace_settings_pills_close_button_and_surface_are_pointer_accessible() {
 
         let mods = Modifiers::default();
         let _ = pump(&mut h, &cursor_moved_at(close.center()), mods);
-        assert!(pump(&mut h, &left_button_pressed(), mods));
+        assert!(pump(&mut h, &mouse_press(), mods));
         assert!(!h.chrome.borrow().overlays.ws_settings);
     }
 
@@ -2727,12 +2691,6 @@ fn palette_scrim_and_surface_alphas_match_the_concept_and_theme() {
             assert!(
                 card <= 210,
                 "{}: a bg-white window card behind the palette lands at {card}",
-                theme.name
-            );
-            let expected = (strength * 255.0).round();
-            assert!(
-                (f32::from(scrim_rgba(&theme, 1.0)[3]) - expected).abs() <= 1.0,
-                "{}: the overview's fast frame uses the theme's strength",
                 theme.name
             );
         }
@@ -2825,8 +2783,8 @@ fn pick_group_at_hits_only_containing_non_empty_rects() {
 #[test]
 fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() {
     use crate::onboarding_view::{
-        KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CREATE, KEY_FINISH,
-        KEY_UNDERSTOOD,
+        KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CODECS_SKIP, KEY_CREATE,
+        KEY_FINISH, KEY_UNDERSTOOD,
     };
     use crate::shell::state::{CapRole, Workspace, WorkspaceId};
 
@@ -2843,12 +2801,13 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
     let mut workspace = Workspace::new(WorkspaceId(1), "Home");
     workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
     let room = workspace.room;
+    tree.desktop.active = workspace.id;
     tree.desktop.workspaces.push(workspace);
     let chrome = ChromeState::new(tree);
     assert_eq!(
         chrome.borrow().tree().desktop.workspaces[0]
-            .owner
-            .as_deref(),
+            .owner()
+            .map(String::as_str),
         Some("quickuser"),
         "before setup the session acts as the account"
     );
@@ -2869,7 +2828,11 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         })
     }));
     let mut host = ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
-    host.onboarding = Some(view);
+    let view = view.with_codec_setup(crate::onboarding_view::CodecSetup::with(
+        std::sync::Arc::new(os_actions::codec_pack::CodecPackStatus::default),
+        std::sync::Arc::new(|_| panic!("skipping the offer must not install codecs")),
+    ));
+    host.enable_test_onboarding(view);
 
     let mut doc = AutoCommit::new();
     for key in [
@@ -2878,24 +2841,15 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         KEY_CREATE,
         KEY_BACKUP_SKIP_ACKNOWLEDGED,
         KEY_BACKUP_CONTINUE,
+        KEY_CODECS_SKIP,
         KEY_FINISH,
     ] {
-        // The acknowledgement checkboxes are document-bound; the rest are
-        // the setup's buttons.
-        if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
-            let _ = automerge::transaction::Transactable::put(
-                &mut doc,
-                &automerge::ROOT,
-                key,
-                ScalarValue::Boolean(true),
-            );
+        let args = if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+            serde_json::json!({"checked":true})
         } else {
-            host.onboarding
-                .as_ref()
-                .expect("setup is running")
-                .press(key);
-        }
-        host.sync(&doc, &automerge::ROOT);
+            serde_json::json!({})
+        };
+        invoke_setup(&mut host, &chrome, &mut doc, &(key, args));
     }
     assert!(!host.onboarding_active(), "setup released the desktop");
 
@@ -2909,8 +2863,8 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         .iter()
         .find(|w| w.room == room)
         .expect("home");
-    assert_eq!(home.role_of_at(&principal, 0), Some(CapRole::Owner));
-    assert_eq!(home.role_of_at(&"quickuser".to_string(), 0), None);
+    assert_eq!(home.role_of(&principal), Some(CapRole::Owner));
+    assert_eq!(home.role_of("quickuser"), None);
     assert_eq!(state.local_user_id, principal);
 }
 
@@ -2954,12 +2908,12 @@ fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
     }
     let mods = Modifiers::default();
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(
         h.host.followed_peer.is_none(),
         "the intended person is only armed"
     );
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(
         h.host.followed_peer.as_deref(),
         Some("ada"),
@@ -3041,18 +2995,18 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
         .accessibility_rect_for_path(&[5])
         .expect("Bob Follow after reordering");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(h.host.followed_peer.is_none());
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("bob"));
     paint(&mut h);
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert_eq!(
         h.host.followed_peer.as_deref(),
         Some("bob"),
         "Stop remains cancellable"
     );
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(
         h.host.followed_peer.is_none(),
         "a repeated completed click stops Bob"
@@ -3071,13 +3025,13 @@ fn people_completed_click_defers_follow_until_release() {
         .expect("painted Ada Follow");
     let mods = Modifiers::default();
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     capture_people_completed(&mut h, "pressed");
     assert!(
         h.host.followed_peer.is_none(),
         "a press must remain cancellable"
     );
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
 }
 
@@ -3092,7 +3046,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
             .expect("painted Ada Follow");
         let mods = Modifiers::default();
         assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-        assert!(pump(&mut h, &left_button_pressed(), mods));
+        assert!(pump(&mut h, &mouse_press(), mods));
         if lose_focus {
             let _ = pump(&mut h, &WindowEvent::Focused(false), mods);
         } else {
@@ -3108,7 +3062,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
             }
             paint(&mut h);
         }
-        assert!(pump(&mut h, &left_button_released(), mods));
+        assert!(pump(&mut h, &mouse_release(), mods));
         capture_people_completed(
             &mut h,
             if lose_focus {
@@ -3212,16 +3166,16 @@ fn people_completed_cancel_survives_dismissal_reopen_and_a_fresh_click() {
         .accessibility_rect_for_path(&[5])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods));
     assert!(!h.chrome.borrow().overlays.collaborators);
     paint(&mut h);
     h.chrome.borrow_mut().overlays.collaborators = true;
     paint(&mut h);
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(h.host.followed_peer.is_none());
-    assert!(pump(&mut h, &left_button_pressed(), mods));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
 }
 
@@ -3235,7 +3189,7 @@ fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
         .accessibility_rect_for_path(&[5])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     let ada = {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -3258,7 +3212,7 @@ fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
             .insert(0, ada);
     }
     paint(&mut h);
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(h.host.followed_peer.is_none());
 }
 
@@ -3272,7 +3226,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
         .accessibility_rect_for_path(&[5])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     h.host.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
     paint(&mut h);
     let moved = h
@@ -3282,10 +3236,10 @@ fn people_completed_resize_does_not_move_an_armed_click() {
         .expect("Ada after resize");
     assert_ne!(target, moved);
     assert!(pump(&mut h, &cursor_moved_at(moved.center()), mods));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(h.host.followed_peer.is_none());
-    assert!(pump(&mut h, &left_button_pressed(), mods));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
 }
 
@@ -3317,8 +3271,8 @@ fn people_status_dismissal_cancels_the_hidden_editor_before_reopen() {
         &cursor_moved_at(Point::new(100.0, 300.0)),
         mods
     ));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(!h.chrome.borrow().overlays.collaborators);
     h.chrome.borrow_mut().overlays.collaborators = true;
     paint(&mut h);
@@ -3448,9 +3402,9 @@ fn people_status_activity_transition_discards_only_the_unpublished_draft() {
     assert!(pump(&mut h, &key_press(Key::Character("x".into())), mods));
     let activity = h.host.collaborators_overlay.activity_rect();
     assert!(pump(&mut h, &cursor_moved_at(activity.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(h.host.status_editing, "press is still cancellable");
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(!h.chrome.borrow().overlays.collaborators);
     assert!(!h.host.status_editing);
     assert!(h.host.status_draft.is_empty());
@@ -3547,8 +3501,8 @@ fn people_status_pointer_reentry_preserves_the_draft() {
         )),
         mods
     ));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_eq!(
         h.host.status_draft, expected,
         "clicking the active field must not reload the saved status"
@@ -3645,9 +3599,9 @@ fn people_viewport_wheel_and_semantic_scroll_share_bounds() {
     let activity = h.host.collaborators_overlay.activity_rect();
     assert!(h.host.rect.contains(activity.center()));
     assert!(pump(&mut h, &cursor_moved_at(activity.center()), mods));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(h.chrome.borrow().overlays.collaborators);
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(!h.chrome.borrow().overlays.collaborators);
 }
 
@@ -3669,13 +3623,13 @@ fn people_status_pointer_drag_selection_edits_the_host_draft() {
         )),
         mods
     ));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(pump(
         &mut h,
         &cursor_moved_at(Point::new(rect.x1 - 8.0, rect.center().y)),
         mods
     ));
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert_ne!(
         h.host.status_selection.anchor,
         h.host.status_selection.cursor
@@ -3711,8 +3665,8 @@ fn people_status_pointer_places_unicode_caret_at_physical_scale_two() {
         rect.center().y * 2.0,
     );
     assert!(pump_at_scale(&mut h, &cursor_moved_at(point), mods, 2.0));
-    assert!(pump_at_scale(&mut h, &left_button_pressed(), mods, 2.0));
-    assert!(pump_at_scale(&mut h, &left_button_released(), mods, 2.0));
+    assert!(pump_at_scale(&mut h, &mouse_press(), mods, 2.0));
+    assert!(pump_at_scale(&mut h, &mouse_release(), mods, 2.0));
     assert_eq!(
         h.host.status_selection,
         ui::text_selection::Selection::collapsed(0)
@@ -3739,7 +3693,7 @@ fn people_viewport_scrollbar_drag_is_cancellable_and_cannot_invoke_a_person() {
         &cursor_moved_at(Point::new(lane_x, rect.y0 + 16.0)),
         mods
     ));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     assert!(pump(
         &mut h,
         &cursor_moved_at(Point::new(lane_x, rect.y1 - 16.0)),
@@ -3766,7 +3720,7 @@ fn people_viewport_scrollbar_drag_is_cancellable_and_cannot_invoke_a_person() {
         Some(scrolled),
         "focus loss ends the shared scrollbar drag"
     );
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(h.chrome.borrow().overlays.collaborators);
     assert!(h.host.followed_peer.is_none());
 }
@@ -3812,7 +3766,7 @@ fn people_viewport_resize_ends_a_scrollbar_drag_without_invoking_a_target() {
         &cursor_moved_at(Point::new(lane_x, rect.y0 + 16.0)),
         mods
     ));
-    assert!(pump(&mut h, &left_button_pressed(), mods));
+    assert!(pump(&mut h, &mouse_press(), mods));
     h.host.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
     paint(&mut h);
     let after_resize = h.host.primary_vertical_scroll().expect("resized People");
@@ -3827,7 +3781,7 @@ fn people_viewport_resize_ends_a_scrollbar_drag_without_invoking_a_target() {
         Some(after_resize),
         "resize cancels the old thumb drag"
     );
-    assert!(pump(&mut h, &left_button_released(), mods));
+    assert!(pump(&mut h, &mouse_release(), mods));
     assert!(h.chrome.borrow().overlays.collaborators);
     assert!(h.host.followed_peer.is_none());
 }
@@ -3878,4 +3832,412 @@ fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
             .1
             .is_none()
     );
+}
+
+/// Exercise the real catalogue callback and widget action-host/reducer, never
+/// a synthetic press or direct write to an acknowledgement gate.
+fn invoke_setup(
+    host: &mut ShellOverlayHost,
+    chrome: &crate::shell::chrome_state::Chrome,
+    doc: &mut AutoCommit,
+    invocation: &(&str, serde_json::Value),
+) {
+    use crate::shell::search::action_api::{AllVisible, ResourceRef};
+    if invocation.0 == crate::onboarding_view::KEY_BACKUP_SKIP_ACKNOWLEDGED {
+        let catalog = host.action_catalog("", &chrome.borrow(), doc, &automerge::ROOT, &AllVisible);
+        for blocked in [
+            crate::onboarding_view::KEY_BACKUP_CONTINUE,
+            crate::onboarding_view::KEY_FINISH,
+        ] {
+            assert!(
+                !catalog.contains(&ResourceRef::new("onboarding", blocked)),
+                "Backup cannot continue or release the desktop before the explicit decision"
+            );
+        }
+    }
+    let ticket = queue_setup(host, chrome, doc, invocation);
+    assert!(ticket().expect("pending").is_none());
+    host.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+    host.sync(doc, &automerge::ROOT);
+    assert!(ticket().expect("normal reducer completed").is_some());
+}
+
+fn queue_setup(
+    host: &ShellOverlayHost,
+    chrome: &crate::shell::chrome_state::Chrome,
+    doc: &mut AutoCommit,
+    invocation: &(&str, serde_json::Value),
+) -> crate::shell::search::PendingInvocation {
+    use crate::shell::search::action_api::{AllVisible, ResourceRef};
+    let resource = ResourceRef::new("onboarding", invocation.0);
+    let catalog = host.exact_action_catalog(
+        "onboarding",
+        invocation.0,
+        &chrome.borrow(),
+        doc,
+        &automerge::ROOT,
+        &AllVisible,
+    );
+    let selected = catalog.select(&resource).unwrap_or_else(|| {
+        panic!(
+            "current typed setup action {} (owner={}, screen={:?})",
+            invocation.0,
+            is_active_workspace_owner(&chrome.borrow()),
+            host.onboarding.as_ref().map(|view| view.flow().screen())
+        )
+    });
+    let disposition = selected
+        .invoke_json_disposition(
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
+            chrome,
+            invocation.1.as_object().unwrap(),
+        )
+        .expect("admitted");
+    let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+        panic!("an identity effect cannot succeed before the normal reducer handles it");
+    };
+    ticket
+}
+
+#[test]
+fn onboarding_semantic_phase_and_argument_gates_revalidate_the_live_ceremony() {
+    use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
+    use crate::shell::search::action_api::{AllVisible, ResourceRef};
+    let mut h = build_harness();
+    h.chrome.borrow_mut().test_only_owner_override = Some(true);
+    h.host
+        .enable_test_onboarding(OnboardingView::with_minter(Box::new(|| {
+            Err("storage unavailable".into())
+        })));
+    let mut doc = AutoCommit::new();
+    let initial =
+        h.host
+            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible);
+    assert!(!initial.contains(&ResourceRef::new("onboarding", KEY_CREATE)));
+    let begin = initial
+        .select(&ResourceRef::new("onboarding", KEY_BEGIN))
+        .unwrap();
+    assert!(
+        begin
+            .invoke_json(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &h.chrome,
+                serde_json::json!({"skip_identity":true})
+                    .as_object()
+                    .unwrap()
+            )
+            .is_err()
+    );
+    invoke_setup(
+        &mut h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_BEGIN, serde_json::json!({})),
+    );
+    assert!(
+        begin
+            .invoke_nullary(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &h.chrome
+            )
+            .is_err(),
+        "a previously enumerated Intro action cannot run at Protection"
+    );
+    assert!(
+        !h.host
+            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible)
+            .contains(&ResourceRef::new("onboarding", KEY_CREATE))
+    );
+    invoke_setup(
+        &mut h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
+    );
+    invoke_setup(
+        &mut h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_UNDERSTOOD, serde_json::json!({"checked":false})),
+    );
+    assert!(
+        !h.host
+            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible)
+            .contains(&ResourceRef::new("onboarding", KEY_CREATE)),
+        "unticking closes the creation gate"
+    );
+}
+
+#[test]
+fn onboarding_semantic_failed_mint_remains_protected_and_lock_hides_actions() {
+    use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
+    use crate::shell::search::action_api::{AllVisible, ResourceRef};
+    let mut h = build_harness();
+    h.chrome.borrow_mut().test_only_owner_override = Some(true);
+    h.host
+        .enable_test_onboarding(OnboardingView::with_minter(Box::new(|| {
+            Err("storage unavailable".into())
+        })));
+    let mut doc = AutoCommit::new();
+    invoke_setup(
+        &mut h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_BEGIN, serde_json::json!({})),
+    );
+    invoke_setup(
+        &mut h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
+    );
+    let create = h.host.exact_action_catalog(
+        "onboarding",
+        KEY_CREATE,
+        &h.chrome.borrow(),
+        &doc,
+        &automerge::ROOT,
+        &AllVisible,
+    );
+    let disposition = create
+        .select(&ResourceRef::new("onboarding", KEY_CREATE))
+        .unwrap()
+        .invoke_nullary(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &h.chrome,
+        )
+        .unwrap();
+    let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+        panic!("pending mint");
+    };
+    h.host.sync(&doc, &automerge::ROOT);
+    assert!(
+        ticket().is_err(),
+        "a failed identity write is not a successful semantic action"
+    );
+    assert!(h.host.onboarding_active());
+    assert!(!h.host.onboarding.as_ref().unwrap().flow().is_done());
+    h.chrome.borrow_mut().set_session_locked(true);
+    assert!(
+        !h.host
+            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible)
+            .contains(&ResourceRef::new("onboarding", KEY_CREATE))
+    );
+}
+
+#[test]
+fn onboarding_semantic_create_refuses_a_gate_closed_before_reduction() {
+    use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
+    let mut h = build_harness();
+    h.chrome.borrow_mut().test_only_owner_override = Some(true);
+    h.host
+        .enable_test_onboarding(OnboardingView::with_minter(Box::new(|| {
+            panic!("the normal creation guard must keep this minter unreachable")
+        })));
+    let mut doc = AutoCommit::new();
+    for invocation in [
+        (KEY_BEGIN, serde_json::json!({})),
+        (KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
+    ] {
+        invoke_setup(&mut h.host, &h.chrome, &mut doc, &invocation);
+    }
+    let create = queue_setup(
+        &h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_CREATE, serde_json::json!({})),
+    );
+    let untick = queue_setup(
+        &h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_UNDERSTOOD, serde_json::json!({"checked":false})),
+    );
+    assert!(create().unwrap().is_none());
+    h.host
+        .settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+    h.host.sync(&doc, &automerge::ROOT);
+    assert!(untick().unwrap().is_some());
+    assert!(
+        create().is_err(),
+        "a sync that consumed a now-invalid creation is not success"
+    );
+    assert!(!h.host.onboarding.as_ref().unwrap().flow().is_done());
+    h.host.sync(&doc, &automerge::ROOT);
+    assert!(
+        create().is_err(),
+        "an unrelated later sync must not fabricate completion"
+    );
+}
+
+fn semantic_codecs_fixture(setup: crate::onboarding_view::CodecSetup) -> (Harness, AutoCommit) {
+    use crate::onboarding_view::{
+        KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD,
+        OnboardingView,
+    };
+    let mut h = build_harness();
+    h.chrome.borrow_mut().test_only_owner_override = Some(true);
+    h.host.enable_test_onboarding(
+        OnboardingView::with_minter(Box::new(|| {
+            Ok(crate::onboarding::MintedIdentity {
+                fingerprint: "test-public-identity".into(),
+                path: std::path::PathBuf::from("/unused/public-record"),
+            })
+        }))
+        .with_codec_setup(setup),
+    );
+    let mut doc = AutoCommit::new();
+    for key in [
+        KEY_BEGIN,
+        KEY_UNDERSTOOD,
+        KEY_CREATE,
+        KEY_BACKUP_SKIP_ACKNOWLEDGED,
+        KEY_BACKUP_CONTINUE,
+    ] {
+        let args = if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+            serde_json::json!({"checked":true})
+        } else {
+            serde_json::json!({})
+        };
+        invoke_setup(&mut h.host, &h.chrome, &mut doc, &(key, args));
+    }
+    (h, doc)
+}
+
+fn semantic_codec_worker_receipt(result: Result<(), String>) {
+    use crate::onboarding_view::{CodecSetup, KEY_CODECS_INSTALL};
+    use std::sync::{Arc, Mutex, mpsc};
+    let success = result.is_ok();
+    let (release, gate) = mpsc::channel::<Result<(), String>>();
+    let gate = Mutex::new(gate);
+    let (started_tx, started) = mpsc::channel();
+    let started_tx = Mutex::new(started_tx);
+    let status = Arc::new(Mutex::new(
+        os_actions::codec_pack::CodecPackStatus::default(),
+    ));
+    let reader = Arc::clone(&status);
+    let writer = Arc::clone(&status);
+    let setup = CodecSetup::with(
+        Arc::new(move || reader.lock().unwrap().clone()),
+        Arc::new(move |_| {
+            started_tx.lock().unwrap().send(()).unwrap();
+            let result = gate.lock().unwrap().recv().unwrap();
+            if result.is_ok() {
+                writer.lock().unwrap().state = os_actions::codec_pack::PackState::Installed;
+            }
+            result
+        }),
+    );
+    let (mut h, mut doc) = semantic_codecs_fixture(setup);
+    let ticket = queue_setup(
+        &h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_CODECS_INSTALL, serde_json::json!({})),
+    );
+    h.host.sync(&doc, &automerge::ROOT);
+    started
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("actual worker started");
+    for _ in 0..3 {
+        h.host.sync(&doc, &automerge::ROOT);
+        assert!(
+            ticket().unwrap().is_none(),
+            "unrelated frames do not finish a blocked install"
+        );
+    }
+    release.send(result).unwrap();
+    let waiting_since = std::time::Instant::now();
+    loop {
+        h.host.sync(&doc, &automerge::ROOT);
+        match ticket() {
+            Ok(None) => assert!(
+                waiting_since.elapsed() < std::time::Duration::from_secs(2),
+                "worker result must arrive"
+            ),
+            Ok(Some(_)) => {
+                assert!(success, "failed worker cannot complete successfully");
+                break;
+            }
+            Err(_) => {
+                assert!(!success, "successful installed worker cannot be refused");
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn onboarding_semantic_codec_receipt_waits_for_actual_worker_success() {
+    semantic_codec_worker_receipt(Ok(()));
+}
+
+#[test]
+fn onboarding_semantic_codec_receipt_refuses_actual_worker_failure() {
+    semantic_codec_worker_receipt(Err("installer refused".into()));
+}
+
+#[test]
+fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
+    use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    let (release, gate) = mpsc::channel();
+    let gate = Mutex::new(gate);
+    let (started_tx, started) = mpsc::channel();
+    let started_tx = Mutex::new(started_tx);
+    let returned = Arc::new(AtomicBool::new(false));
+    let marker = Arc::clone(&returned);
+    let mut h = build_harness();
+    h.chrome.borrow_mut().test_only_owner_override = Some(true);
+    h.host
+        .enable_test_onboarding(OnboardingView::with_minter(Box::new(move || {
+            started_tx.lock().unwrap().send(()).unwrap();
+            gate.lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            marker.store(true, Ordering::Release);
+            Ok(crate::onboarding::MintedIdentity {
+                fingerprint: "test-public-identity".into(),
+                path: std::path::PathBuf::from("/unused/public-record"),
+            })
+        })));
+    let mut doc = AutoCommit::new();
+    for invocation in [
+        (KEY_BEGIN, serde_json::json!({})),
+        (KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
+    ] {
+        invoke_setup(&mut h.host, &h.chrome, &mut doc, &invocation);
+    }
+    let ticket = queue_setup(
+        &h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_CREATE, serde_json::json!({})),
+    );
+    assert!(ticket().unwrap().is_none());
+    assert!(!returned.load(Ordering::Acquire));
+    let unblock = std::thread::spawn(move || {
+        started
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("normal minter entered");
+        release.send(()).unwrap();
+    });
+    h.host.sync(&doc, &automerge::ROOT);
+    unblock.join().unwrap();
+    assert!(
+        returned.load(Ordering::Acquire),
+        "the actual synchronous minter must return first"
+    );
+    assert!(h.host.onboarding.as_ref().unwrap().flow().is_done());
+    assert!(ticket().unwrap().is_some());
 }

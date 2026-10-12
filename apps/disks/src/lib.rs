@@ -20,18 +20,14 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
 pub mod app;
-pub mod doc;
+pub mod locales;
 pub mod map;
 pub mod model;
 pub mod ops;

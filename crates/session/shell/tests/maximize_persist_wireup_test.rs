@@ -28,13 +28,11 @@ use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
-// `handle_event` / `build_layout` / `apply_layout` live on the `Widget`
-// trait — must be in scope at the call site.
-use ui::theme::Theme;
-use ui::widget::Widget;
-use vello::kurbo::Point;
+use winit::event::Modifiers;
 
-/// Builds a tiny self-contained taffy tree so `handle_event`'s
+use crate::support::host::{Layout, dispatch, lay_out};
+
+/// Lays out the strip-0 group on its own so `handle_event`'s
 /// `taffy.children(node_id)` has the (bar, content) children it expects.
 /// The event is at (9000, 9000), well outside any widget's rect, so only
 /// the drain block at the bottom of `handle_event` runs.
@@ -43,58 +41,11 @@ fn pump_no_op_event(
     strip_id: StripId,
     event: &winit::event::WindowEvent,
 ) {
-    use std::collections::HashMap;
-    use taffy::prelude::TaffyMaxContent;
-    use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
-
     let g = host
         .group_at_for_tests(strip_id, 0)
         .expect("strip-0 group-0 widget");
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(Style::default(), &[group_node])
-        .unwrap();
-    let map_for_measure = node_map.clone();
-    let mut tr = ui::text_render::TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(800.0),
-                height: AvailableSpace::Definite(600.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = map_for_measure.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .or_else(|_| taffy.compute_layout(root, taffy::Size::MAX_CONTENT))
-        .expect("layout must compute");
-    g.apply_layout(&taffy, group_node, Point::ZERO);
-
-    let mut state = automerge::AutoCommit::new();
-    let root_id = automerge::ROOT;
-    let mut handled = false;
-    let mut focus_target: Option<NodeId> = None;
-    g.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: ui::widget::Edits::lend(&mut state),
-            path: &root_id,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: group_node,
-            taffy: &taffy,
-        },
-    );
+    let Layout { taffy, child_node } = lay_out(g, 800.0, 600.0);
+    dispatch(g, &taffy, child_node, Modifiers::default(), event);
 }
 
 /// One-workspace, one-strip, one-group tree with a single tab — no
@@ -159,9 +110,6 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
 fn shell_tick_persists_maximize_only_when_a_click_fired() {
     // Phase `shell_tick_writes_maximize_click_through_to_persisted_state`.
     {
-        use winit::dpi::PhysicalPosition;
-        use winit::event::WindowEvent;
-
         let (mut tree, strip_id, group_id) = single_group_tree();
         let state_dir = tempfile::tempdir().expect("state directory");
         let state_path = state_dir.path().join("state.json");
@@ -196,10 +144,7 @@ fn shell_tick_persists_maximize_only_when_a_click_fired() {
         }
         // The drain runs inside `WindowGroup::handle_event`, so the widget tree
         // needs an event to drive it.
-        let moved = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(9000.0, 9000.0),
-        };
+        let moved = ui::synthetic_input::cursor_moved(9000.0, 9000.0);
         pump_no_op_event(&mut host, strip_id, &moved);
         {
             let g = host

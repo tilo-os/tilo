@@ -20,13 +20,15 @@
 use std::fmt::Write as _;
 
 use automerge::AutoCommit;
+use ui::tilo_resource::Resource as _;
 
-use crate::doc::SlidesDoc;
 use crate::model::{Deck, ElementKind};
 
 /// The outline of the deck in `doc`, or `None` when it holds no deck.
 pub fn of_document(doc: &AutoCommit) -> Option<String> {
-    SlidesDoc::load(doc).map(|deck| of_deck(&deck))
+    crate::deck::Deck::read(doc)
+        .ok()
+        .map(|deck| of_deck(&crate::deck::mirror(&deck)))
 }
 
 pub fn of_deck(deck: &Deck) -> String {
@@ -79,7 +81,11 @@ mod tests {
 
     #[test]
     fn titles_bodies_shapes_and_notes_read_in_deck_order_with_their_ids() {
-        let mut cover = authored_slide(Some("Product Launch"), Some("October 2026"), Some("title"));
+        let mut cover = authored_slide(
+            Some("Product Launch"),
+            Some("October 2026"),
+            Some(crate::model::Layout::Title),
+        );
         cover.notes = "Welcome everyone".into();
         let mut agenda = authored_slide(Some("Agenda"), Some("Goals\nTimeline"), None);
         agenda

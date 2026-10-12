@@ -111,11 +111,17 @@ fn copy_identity(path: &Path) -> Option<CopyIdentity> {
 /// answer unless the copy is recent enough that a second write could share
 /// both; then its contents do.
 fn copy_changed(path: &Path, state: &State) -> bool {
-    let identity = copy_identity(path);
+    identity_says_changed(copy_identity(path), state).unwrap_or_else(|| load_at(path) != state.copy)
+}
+
+/// What the copy's size and time alone say about whether it is not what
+/// `state` last wrote or read: `None` when it is recent enough that only its
+/// contents can tell.
+fn identity_says_changed(identity: Option<CopyIdentity>, state: &State) -> Option<bool> {
     // A failed copy rewrite forgets its identity. If the obstruction is
     // removed, both identities can be absent; refresh must still repair it.
     if identity != state.copy_identity || identity.is_none() {
-        return true;
+        return Some(true);
     }
     let recent = identity.is_some_and(|identity| {
         identity
@@ -126,7 +132,7 @@ fn copy_changed(path: &Path, state: &State) -> bool {
                     < modified.as_millis().saturating_add(SAME_TICK.as_millis())
             })
     });
-    recent && load_at(path) != state.copy
+    (!recent).then_some(false)
 }
 
 struct State {
@@ -304,14 +310,30 @@ impl SessionSettings {
         &self.paths
     }
 
-    /// The source installed for ordinary host event-loop readers.
+    /// The source installed for ordinary host event-loop readers. Its worker
+    /// wakes only when read; another process's write to the copy reaches it
+    /// through the host's watch of the copy calling [`Self::refresh`].
     ///
     /// # Errors
     /// Returns an error if its refresh worker cannot start.
     pub fn host_view(
         self: &std::sync::Arc<Self>,
     ) -> std::io::Result<std::sync::Arc<dyn SettingsSource>> {
-        view::start(self)
+        view::start(self, None)
+    }
+
+    /// [`Self::host_view`] for a host that could not watch the copy: the
+    /// view takes in another process's write to it every `interval` as well
+    /// as on each read, so readers that only wait for
+    /// [`SettingsSource::changes`] still hear of it.
+    ///
+    /// # Errors
+    /// Returns an error if its refresh worker cannot start.
+    pub fn host_view_polling_copy(
+        self: &std::sync::Arc<Self>,
+        interval: std::time::Duration,
+    ) -> std::io::Result<std::sync::Arc<dyn SettingsSource>> {
+        view::start(self, Some(interval))
     }
 
     fn publish_committed(&self, state: &State) {
@@ -351,6 +373,22 @@ impl SessionSettings {
             // tries again.
             let _ = write_copy(&self.paths, &mut state);
         }
+    }
+
+    /// Whether [`Self::refresh`] may find another process's write: the
+    /// copy's size or time is not what this source last wrote or read, or it
+    /// is too recent for them to tell. One `stat`, no storage lock: a state
+    /// held by a writer answers yes and leaves the deciding to `refresh`. A
+    /// reader asks this before waking a refresh worker, so reads of an
+    /// unchanged copy wake nobody.
+    pub(super) fn copy_may_have_changed(&self) -> bool {
+        let identity = copy_identity(&self.paths.copy);
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return true,
+        };
+        identity_says_changed(identity, &state).unwrap_or(true)
     }
 
     /// With the copy locked: apply what another process wrote to it.
@@ -836,6 +874,145 @@ mod tests {
         assert_eq!(open(dir.path()).load(), document);
     }
 
+    /// A view and a channel that hears each time its change signal rings.
+    fn ringing_view(
+        view: &std::sync::Arc<dyn SettingsSource>,
+    ) -> (
+        std::sync::Arc<crate::Listener>,
+        std::sync::mpsc::Receiver<()>,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = std::sync::Mutex::new(sender);
+        let listener: std::sync::Arc<crate::Listener> = std::sync::Arc::new(move || {
+            let _ = sender.lock().unwrap().send(());
+        });
+        view.changes().listen(&listener);
+        (listener, receiver)
+    }
+
+    #[test]
+    fn a_host_view_looks_at_the_copy_only_when_read() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        let view = session.host_view().unwrap();
+        let (_listener, rings) = ringing_view(&view);
+        crate::update_section_at(
+            &session.paths.copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        // No timer: the host's watch of the copy (or a read) takes the write
+        // in, so an idle view costs no wakeups. 1.5 s outlasts the 1 s
+        // stamp poll a reader used to drive.
+        assert!(
+            rings.recv_timeout(Duration::from_millis(1500)).is_err(),
+            "an unread view looked at the copy on its own"
+        );
+        let _ = view.revision();
+        rings.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(view.load()["appearance"]["theme"], json!("Light"));
+    }
+
+    /// Age the copy past [`SAME_TICK`] and take that in, so its size and
+    /// time alone say it is unchanged, as for a copy last written a while ago.
+    fn settle_copy(session: &SessionSettings) {
+        let an_hour_ago = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(3600))
+            .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&session.paths.copy)
+            .unwrap()
+            .set_modified(an_hour_ago)
+            .unwrap();
+        session.refresh();
+    }
+
+    #[test]
+    fn a_settled_copy_needs_no_look_until_another_process_writes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = open(dir.path());
+        assert!(
+            session.copy_may_have_changed(),
+            "a copy written within the file system's clock tick needs its contents read"
+        );
+        settle_copy(&session);
+        assert!(!session.copy_may_have_changed());
+        crate::update_section_at(
+            &session.paths.copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        assert!(session.copy_may_have_changed());
+        session.refresh();
+        assert_eq!(session.load()["appearance"]["theme"], json!("Light"));
+    }
+
+    /// Reads of an unchanged copy leave the view's refresh worker asleep:
+    /// an idle desktop reads settings at each clock-minute repaint, and
+    /// every read used to wake it (8 to 21 wakeups in one repaint).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reads_of_an_unchanged_copy_leave_the_refresh_worker_asleep() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        settle_copy(&session);
+        let (view, worker) =
+            tilo_test_env::idle::spawned_thread("tilo-settings-r", || session.host_view().unwrap());
+        let (_listener, rings) = ringing_view(&view);
+        std::thread::sleep(Duration::from_millis(50));
+        let before = tilo_test_env::idle::context_switches(&worker);
+        for _ in 0..50 {
+            let _ = (view.load(), view.revision());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let woke = tilo_test_env::idle::context_switches(&worker).saturating_sub(before);
+        assert_eq!(
+            woke, 0,
+            "50 reads of an unchanged copy woke the worker {woke} times"
+        );
+        crate::update_section_at(
+            &session.paths.copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        let _ = view.revision();
+        rings.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        assert_eq!(view.load()["appearance"]["theme"], json!("Light"));
+    }
+
+    #[test]
+    fn a_polling_host_view_takes_in_an_unwatched_copy_write_unread() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(open(dir.path()));
+        let view = session
+            .host_view_polling_copy(Duration::from_millis(50))
+            .unwrap();
+        let (_listener, rings) = ringing_view(&view);
+        crate::update_section_at(
+            &session.paths.copy,
+            "appearance",
+            object(json!({"theme": "Light"})),
+        )
+        .unwrap();
+        // Nothing reads the view: its own timer finds the write.
+        rings.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        assert_eq!(session.load()["appearance"]["theme"], json!("Light"));
+        drop(view);
+    }
+
     #[test]
     fn a_refused_record_write_never_replaces_the_host_committed_view() {
         use std::sync::Arc;
@@ -1094,14 +1271,14 @@ mod tests {
         crate::update_section_at(
             &copy,
             "input",
-            object(json!({"natural_scroll": true, "touchpad_enabled": false})),
+            object(json!({"mouse_natural_scroll": true, "touchpad_enabled": false})),
         )
         .unwrap();
         let session = open(dir.path());
         let paths = session.paths().clone();
         assert_eq!(
             Value::Object(load_at(&paths.person)),
-            json!({"input": {"natural_scroll": true}})
+            json!({"input": {"mouse_natural_scroll": true}})
         );
         assert_eq!(
             Value::Object(load_at(&paths.device)),
@@ -1121,7 +1298,7 @@ mod tests {
         let session = open(dir.path());
         let expected = json!({
             "appearance": {"mode": "light"},
-            "input": {"natural_scroll": true, "touchpad_enabled": false}
+            "input": {"mouse_natural_scroll": true, "touchpad_enabled": false}
         });
         assert_eq!(Value::Object(session.load()), expected);
         assert_eq!(

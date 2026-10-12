@@ -431,150 +431,90 @@ pub trait VmDelegate: Send + Sync {
     }
 }
 
-impl<T: VmDelegate + ?Sized> VmDelegate for Box<T> {
-    fn availability(&self) -> VmAvailability {
-        (**self).availability()
-    }
+/// Smart pointers to a delegate are delegates, forwarding every method so
+/// wrappers never fall back to a default implementation.
+macro_rules! forward_vm_delegate {
+    ($($pointer:ident),*) => {$(
+        impl<T: VmDelegate + ?Sized> VmDelegate for $pointer<T> {
+        fn availability(&self) -> VmAvailability {
+            (**self).availability()
+        }
 
-    fn inventory(&self) -> VmInventory {
-        (**self).inventory()
-    }
+        fn inventory(&self) -> VmInventory {
+            (**self).inventory()
+        }
 
-    fn install_from_portal(
-        &self,
-        workspace_id: &str,
-        input: VmInstallerInput,
-        source: File,
-    ) -> Result<VmInstallation, windows_vm::LaunchError> {
-        (**self).install_from_portal(workspace_id, input, source)
-    }
+        fn install_from_portal(
+            &self,
+            workspace_id: &str,
+            input: VmInstallerInput,
+            source: File,
+        ) -> Result<VmInstallation, windows_vm::LaunchError> {
+            (**self).install_from_portal(workspace_id, input, source)
+        }
 
-    fn installation_status(&self, workspace_id: &str) -> Option<VmInstallation> {
-        (**self).installation_status(workspace_id)
-    }
+        fn installation_status(&self, workspace_id: &str) -> Option<VmInstallation> {
+            (**self).installation_status(workspace_id)
+        }
 
-    fn refresh_installation_status(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
-        (**self).refresh_installation_status(workspace_id)
-    }
+        fn refresh_installation_status(
+            &self,
+            workspace_id: &str,
+        ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
+            (**self).refresh_installation_status(workspace_id)
+        }
 
-    fn publish_install_candidate(
-        &self,
-        workspace_id: &str,
-        entry_id: &str,
-    ) -> Result<VmCandidatePublication, windows_vm::LaunchError> {
-        (**self).publish_install_candidate(workspace_id, entry_id)
-    }
+        fn publish_install_candidate(
+            &self,
+            workspace_id: &str,
+            entry_id: &str,
+        ) -> Result<VmCandidatePublication, windows_vm::LaunchError> {
+            (**self).publish_install_candidate(workspace_id, entry_id)
+        }
 
-    fn uninstallation_status(&self, workspace_id: &str) -> Option<VmUninstallation> {
-        (**self).uninstallation_status(workspace_id)
-    }
+        fn uninstallation_status(&self, workspace_id: &str) -> Option<VmUninstallation> {
+            (**self).uninstallation_status(workspace_id)
+        }
 
-    fn refresh_uninstallation_status(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Option<VmUninstallation>, windows_vm::LaunchError> {
-        (**self).refresh_uninstallation_status(workspace_id)
-    }
+        fn refresh_uninstallation_status(
+            &self,
+            workspace_id: &str,
+        ) -> Result<Option<VmUninstallation>, windows_vm::LaunchError> {
+            (**self).refresh_uninstallation_status(workspace_id)
+        }
 
-    fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
-        (**self).remove_published_application(entry_id)
-    }
+        fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
+            (**self).remove_published_application(entry_id)
+        }
 
-    fn uninstall_published_application(
-        &self,
-        workspace_id: &str,
-        entry_id: &str,
-    ) -> Result<VmUninstallation, windows_vm::LaunchError> {
-        (**self).uninstall_published_application(workspace_id, entry_id)
-    }
+        fn uninstall_published_application(
+            &self,
+            workspace_id: &str,
+            entry_id: &str,
+        ) -> Result<VmUninstallation, windows_vm::LaunchError> {
+            (**self).uninstall_published_application(workspace_id, entry_id)
+        }
 
-    fn launch(
-        &self,
-        request: VmRouteRequest<'_>,
-    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
-        (**self).launch(request)
-    }
+        fn launch(
+            &self,
+            request: VmRouteRequest<'_>,
+        ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+            (**self).launch(request)
+        }
 
-    fn launch_with_portal_file(
-        &self,
-        request: VmRouteRequest<'_>,
-        source: File,
-        access: windows_vm::PortalDocumentAccess,
-    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
-        (**self).launch_with_portal_file(request, source, access)
+        fn launch_with_portal_file(
+            &self,
+            request: VmRouteRequest<'_>,
+            source: File,
+            access: windows_vm::PortalDocumentAccess,
+        ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
+            (**self).launch_with_portal_file(request, source, access)
+        }
     }
+    )*};
 }
 
-impl<T: VmDelegate + ?Sized> VmDelegate for Arc<T> {
-    fn availability(&self) -> VmAvailability {
-        (**self).availability()
-    }
-
-    fn inventory(&self) -> VmInventory {
-        (**self).inventory()
-    }
-
-    fn install_from_portal(
-        &self,
-        workspace_id: &str,
-        input: VmInstallerInput,
-        source: File,
-    ) -> Result<VmInstallation, windows_vm::LaunchError> {
-        (**self).install_from_portal(workspace_id, input, source)
-    }
-
-    fn installation_status(&self, workspace_id: &str) -> Option<VmInstallation> {
-        (**self).installation_status(workspace_id)
-    }
-
-    fn refresh_installation_status(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
-        (**self).refresh_installation_status(workspace_id)
-    }
-
-    fn publish_install_candidate(
-        &self,
-        workspace_id: &str,
-        entry_id: &str,
-    ) -> Result<VmCandidatePublication, windows_vm::LaunchError> {
-        (**self).publish_install_candidate(workspace_id, entry_id)
-    }
-
-    fn uninstallation_status(&self, workspace_id: &str) -> Option<VmUninstallation> {
-        (**self).uninstallation_status(workspace_id)
-    }
-
-    fn refresh_uninstallation_status(
-        &self,
-        workspace_id: &str,
-    ) -> Result<Option<VmUninstallation>, windows_vm::LaunchError> {
-        (**self).refresh_uninstallation_status(workspace_id)
-    }
-
-    fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
-        (**self).remove_published_application(entry_id)
-    }
-
-    fn uninstall_published_application(
-        &self,
-        workspace_id: &str,
-        entry_id: &str,
-    ) -> Result<VmUninstallation, windows_vm::LaunchError> {
-        (**self).uninstall_published_application(workspace_id, entry_id)
-    }
-
-    fn launch(
-        &self,
-        request: VmRouteRequest<'_>,
-    ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
-        (**self).launch(request)
-    }
-}
+forward_vm_delegate!(Box, Arc);
 
 /// Fail-closed adapter used until the privileged authenticated guest bridge is
 /// available in the compositor session. The protocol exposes this state as a

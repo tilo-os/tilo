@@ -120,6 +120,11 @@ pub enum Command {
     /// Manage slots: your user, session and layer stack inside a VM.
     #[command(subcommand)]
     Slot(SlotCommand),
+    /// Import an exact same-run layer artifact without invoking Cargo or a builder.
+    #[command(
+        after_help = "Examples:\n  tilo-vm swap-artifact shell --slot review-a --receipt layers/manifest.json --source <commit> --builder-image <immutable-image> --run-id <workflow-api-id> --run-attempt 1 --receipt-sha256 <upstream-manifest-sha256>\n\nSupply expected identities from the authenticated producer job. The daemon retains normal signed cohort validation; artifact failures never fall back to a build."
+    )]
+    SwapArtifact(ArtifactSwap),
     /// Put a build of a component (or an app) into a slot and restart what it needs.
     #[command(
         after_help = "Examples:\n  tilo-vm swap shell                      # your slot, built in the VM from this worktree\n  tilo-vm swap shell --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap shell --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --slot vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
@@ -293,6 +298,34 @@ pub enum Command {
         #[arg(long)]
         keep_targets: Option<u32>,
     },
+}
+
+/// The expected identities come from the authenticated upstream job, not the downloaded receipt.
+#[derive(Debug, Args)]
+pub struct ArtifactSwap {
+    /// Session component to activate; apps+runtime requires the complete same-run cohort.
+    pub component: String,
+    /// The slot to update (default: your slot).
+    #[arg(long)]
+    pub slot: Option<String>,
+    /// Downloaded v1 artifact manifest; payload paths are relative to its directory.
+    #[arg(long)]
+    pub receipt: PathBuf,
+    /// Exact producing source commit, independently pinned by the upstream job.
+    #[arg(long)]
+    pub source: String,
+    /// Immutable producing builder image reference, independently pinned upstream.
+    #[arg(long)]
+    pub builder_image: String,
+    /// Producing Forgejo workflow API run ID, not its web run number.
+    #[arg(long)]
+    pub run_id: u64,
+    /// Producing workflow attempt, independently pinned upstream.
+    #[arg(long)]
+    pub run_attempt: u32,
+    /// SHA256 of the exact raw manifest bytes, supplied by the authenticated upstream job.
+    #[arg(long)]
+    pub receipt_sha256: String,
 }
 
 #[derive(Debug, Subcommand)]

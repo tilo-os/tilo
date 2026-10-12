@@ -12,6 +12,8 @@ name = "tilo_egress"
 path = "src/lib.rs"
 
 [dependencies]
+# The DNS stub's stop signal: an eventfd its threads block on with their socket.
+bounded-command = { path = "../../system/bounded-command" }
 # The grant grammar and the policy over it, shared with the launcher's gate.
 collab-types = { path = "../../collab/collab-types" }
 libc.workspace = true
@@ -22,6 +24,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [[test]]
 name = "it"

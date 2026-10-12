@@ -209,13 +209,15 @@ impl ShellNetwork {
         let Ok(command) = serde_json::to_string(&bound) else {
             return;
         };
-        let answer = self.invoke_governor(
-            room,
-            tilo_desktop_model::commands::APP_ID,
-            tilo_desktop_model::commands::RESOURCE,
-            tilo_desktop_model::commands::ACTION,
-            Some(serde_json::json!({ "command": command })),
-        );
+        let answer = self.claim_namespace_at_host(room, salt).unwrap_or_else(|| {
+            self.invoke_governor(
+                room,
+                tilo_desktop_model::commands::APP_ID,
+                tilo_desktop_model::commands::RESOURCE,
+                tilo_desktop_model::commands::ACTION,
+                Some(serde_json::json!({ "command": command })),
+            )
+        });
         let Some(runtime) = self.runtime.as_ref() else {
             return;
         };
@@ -348,12 +350,13 @@ mod tests {
         }
     }
 
-    /// A device host forwards a viewer's input with the wire vocabulary and
-    /// the governor's handle; both must be what this session decodes.
+    /// A device host forwards a viewer's input with the relay's legacy-window
+    /// vocabulary and the governor's handle; both must be what this session
+    /// decodes.
     #[test]
     fn viewer_input_from_a_device_host_decodes_as_remote_input() {
         use crate::network::streaming::InputEvent as Session;
-        use tilo_delivery_protocol::delivery_v3::live_wire::legacy_window::InputEvent as Wire;
+        use tilo_relay_protocol::legacy_window::InputEvent as Wire;
         let pairs = [
             (
                 Session::PointerMotion { x: 1.5, y: -2.0 },

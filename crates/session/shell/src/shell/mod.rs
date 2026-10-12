@@ -7,7 +7,6 @@
 //! and recordings with `cargo run --bin shots`. `--mode hosted` runs the shell
 //! in a window inside an existing X11/Wayland session.
 
-pub mod actions;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;
@@ -20,6 +19,7 @@ pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
 pub(crate) mod broker_services;
+pub use broker_services::decide_receipt_against_surfaces;
 pub mod capture_protection;
 pub(crate) mod capture_surface;
 pub mod catalogue;
@@ -33,13 +33,11 @@ pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;
 pub mod collab_history;
-pub mod collab_mls_authority;
 pub mod collab_outbound;
 pub mod collab_presence;
 pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
-pub mod cursor_interp;
 pub mod desktop_backdrop;
 pub(crate) mod desktop_commands;
 #[cfg(target_os = "linux")]
@@ -72,6 +70,7 @@ pub mod gpu_frames;
 pub mod hdr_display;
 pub mod hdr_surface;
 pub mod hdr_tonemap;
+pub mod heap_trim;
 pub mod history_narrative;
 pub mod host_apps;
 pub mod host_shell_allow;
@@ -80,6 +79,7 @@ pub mod i18n;
 pub mod identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
+pub(crate) mod invite_policy;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub(crate) mod launch_readiness;
@@ -91,6 +91,8 @@ mod local_person;
 pub mod magnifier;
 pub mod media_keys;
 pub(crate) mod membership;
+pub mod memory_report;
+pub mod mls_vault;
 pub mod mpris;
 pub(crate) mod native_media;
 pub(crate) mod native_workspace_owner;
@@ -135,11 +137,13 @@ pub mod remote_use;
 pub mod render;
 pub mod room_activity;
 pub mod room_records;
+pub mod scanout_candidate;
 pub mod screenshot_send;
 pub mod search;
 pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
+pub(crate) mod shared_display_actions;
 pub mod shell_narrator;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
@@ -600,17 +604,6 @@ pub fn build_tilo_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
     root
 }
 
-/// Lets the caller expose the peer-sync palette commands (`/invite`,
-/// `/connect`) for a network-enabled session. [`build_tilo_root`] keeps
-/// the zero-arg shape so call-sites that don't care don't have to thread it.
-pub fn build_tilo_root_with_options(
-    tree: &WorkspaceTree,
-    enable_peer_sync: bool,
-) -> Box<dyn Widget> {
-    let (host, _chrome) = build_tilo_overlay_host_with_options(tree, enable_peer_sync);
-    Box::new(host) as Box<dyn Widget>
-}
-
 /// Also returns the shared chrome handle, so integration tests can observe
 /// overlay toggles without drilling through the widget tree.
 pub fn build_tilo_root_with_chrome(
@@ -981,11 +974,12 @@ pub fn mount_in_process(
             |context| {
                 // Only a real session's terminals open sessions; a test's or
                 // a capture's show a terminal with none.
-                context.lend(if inputs.opens_sessions() {
-                    terminal::HostedProcessServices::default()
+                if inputs.opens_sessions() {
+                    // Discovery and connect belong to the open worker, too.
+                    context.lend(terminal::HostedSessionSource);
                 } else {
-                    terminal::HostedProcessServices::unavailable()
-                });
+                    context.lend(terminal::HostedProcessServices::unavailable());
+                }
             },
         ),
         ShellKind::FileExplorer => {
@@ -1468,3 +1462,16 @@ mod legacy_files_opener_regressions {
         );
     }
 }
+
+/// Install immutable trusted project check configuration before session admission.
+///
+/// # Errors
+/// Refuses malformed, ambiguous, non-private or unsupported host definitions.
+#[cfg(target_os = "linux")]
+pub fn install_approved_checks_from_args(
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
+    broker_services::approved_checks::install_from_args(arguments)
+}
+
+pub(crate) mod morning_sources;

@@ -168,10 +168,6 @@ impl<'a> BadgeFace<'a> {
         }
     }
 
-    /// The side of a badge dot in `theme`.
-    pub fn dot_size(theme: &Theme) -> f64 {
-        BadgeMetrics::of(theme).dot
-    }
     #[must_use]
     pub fn style(mut self, style: ChipStyle) -> Self {
         self.style = style;
@@ -337,7 +333,7 @@ impl Widget for Badge {
         let (width, height) = match &self.content {
             BadgeContent::Dot | BadgeContent::Modified => (metrics.dot, metrics.dot),
             BadgeContent::Count(0) => (0.0, 0.0),
-            // `auto`: measured in `measure`, pinned in `adjust_layout_with_measure`.
+            // `auto`: measured in `measure`, pinned in `adjust_layout_style`.
             _ => (-1.0, metrics.height),
         };
         if self.metrics.as_ref() != Some(&metrics) {
@@ -351,7 +347,7 @@ impl Widget for Badge {
             clippy::cast_possible_truncation,
             reason = "bounded logical-pixel layout size; f32 precision is sufficient"
         )]
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: if width < 0.0 {
                     Dimension::auto()
@@ -363,13 +359,12 @@ impl Widget for Badge {
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     /// A text or count badge is as wide as its measured label.
-    fn adjust_layout_with_measure(
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,

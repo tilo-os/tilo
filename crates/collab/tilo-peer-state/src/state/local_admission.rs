@@ -36,7 +36,11 @@ impl StatePeer {
     /// # Errors
     ///
     /// Returns a message when the write is refused, deferred, incomplete or
-    /// a duplicate, or leaves no exact admission evidence.
+    /// rejected (`not newly admitted`), when its signed sequence is at or
+    /// below the author's replay floor on the route (`signed sequence is
+    /// stale`), or when it leaves no exact admission evidence. None of these
+    /// waits for an asynchronous receipt: the evidence is the exact admission
+    /// index entry written by this same synchronous call.
     pub fn admit_new_local_document(
         &mut self,
         app: &str,
@@ -86,7 +90,10 @@ impl StatePeer {
             return Err("native local document signed sequence is stale".into());
         }
         if outcome.deferred || outcome.incomplete.is_some() || outcome.rejected != 0 {
-            return Err("native local document lacks a newly admitted exact receipt".into());
+            return Err(
+                "native local document was deferred, incomplete or rejected, not newly admitted"
+                    .into(),
+            );
         }
         let admissions = self.admissions_since(&before).map_err(|e| e.to_string())?;
         if !admissions.iter().any(|entry| {

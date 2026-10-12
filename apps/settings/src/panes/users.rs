@@ -368,6 +368,10 @@ fn identities_for_display() -> (Vec<IdentitySummary>, Option<DiskIdentityAdmin>)
 pub struct UsersArea {
     cx: PaneCx,
     model: OnceCell<Shared<UsersModel>>,
+    /// The device's accounts, read off the UI thread after the window's
+    /// first frame ([`Self::start_read`]); `None` stands for the samples a
+    /// screenshot shows.
+    read: crate::device_read::DeviceRead<Option<UsersRead>>,
 }
 
 impl UsersArea {
@@ -375,19 +379,45 @@ impl UsersArea {
         Self {
             cx: cx.clone(),
             model: OnceCell::new(),
+            read: crate::device_read::DeviceRead::default(),
         }
     }
 
     /// The model: this device's accounts, or sample ones for a screenshot.
     pub fn model(&self) -> &Shared<UsersModel> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                UsersModel::of_device(self.cx.clone())
-            } else {
-                UsersModel::sample(self.cx.clone())
+            let read = self
+                .read
+                .take()
+                .unwrap_or_else(|| self.cx.reaches_devices().then(UsersRead::of_device));
+            let model = match read {
+                Some(read) => UsersModel::from_read(self.cx.clone(), read),
+                None => UsersModel::sample(self.cx.clone()),
             };
             Rc::new(std::cell::RefCell::new(model))
         })
+    }
+
+    /// Read the device's accounts off the UI thread; `false` when they have
+    /// been read or are being read.
+    pub(crate) fn start_read(&self) -> bool {
+        if self.is_open() {
+            return false;
+        }
+        let device = self.cx.reaches_devices();
+        self.read.start(move || device.then(UsersRead::of_device))
+    }
+
+    /// Whether the read [`Self::start_read`] started has ended.
+    pub(crate) fn read_finished(&self) -> bool {
+        self.read.is_finished()
+    }
+
+    /// Whether the area has read what its rows show: its pane was shown,
+    /// an effect or a row lookup reached it, or the window read it after
+    /// its first frame ([`crate::effects::LIVE_AREAS`]).
+    pub(crate) fn is_open(&self) -> bool {
+        self.model.get().is_some()
     }
 
     /// One row per account other than the signed-in one, and per identity.
@@ -495,10 +525,35 @@ pub struct UsersModel {
     changed: bool,
 }
 
-impl UsersModel {
-    fn of_device(cx: PaneCx) -> Self {
+/// What the users area reads of the device: its login accounts (one
+/// `AccountsService` call per person for automatic login) and the person's
+/// identities. Plain data, so it is read off the UI thread.
+struct UsersRead {
+    identities: Vec<IdentitySummary>,
+    identity_admin: Option<DiskIdentityAdmin>,
+    users: Result<Vec<DeviceUser>, String>,
+}
+
+impl UsersRead {
+    fn of_device() -> Self {
         let (identities, identity_admin) = identities_for_display();
-        let (users, users_error) = users_and_error(read_users());
+        Self {
+            identities,
+            identity_admin,
+            users: read_users(),
+        }
+    }
+}
+
+impl UsersModel {
+    /// The model over what `read` found on this device.
+    fn from_read(cx: PaneCx, read: UsersRead) -> Self {
+        let UsersRead {
+            identities,
+            identity_admin,
+            users,
+        } = read;
+        let (users, users_error) = users_and_error(users);
         Self {
             cx,
             users,
@@ -628,18 +683,18 @@ impl UsersModel {
             .with_kind(TextInputKind::Name)
             .with_id("users.form.full_name")
             .with_external_buffer(Arc::clone(&self.form.full_name))
-            .with_placeholder(&t("settings-users-placeholder-full-name"));
+            .with_placeholder(t("settings-users-placeholder-full-name"));
         let user = TextInput::local()
             .with_kind(TextInputKind::Username)
             .with_id("users.form.username")
             .with_external_buffer(Arc::clone(&self.form.username))
-            .with_placeholder(&t("settings-users-placeholder-username"));
+            .with_placeholder(t("settings-users-placeholder-username"));
         let password = TextInput::local()
             .with_kind(TextInputKind::Password)
             .with_id("users.form.password")
             .with_external_buffer(Arc::clone(&self.form.password))
             .with_secret(true)
-            .with_placeholder(&t("settings-users-placeholder-password"));
+            .with_placeholder(t("settings-users-placeholder-password"));
         let username = Arc::clone(&self.form.username);
         let full_name = Arc::clone(&self.form.full_name);
         let create = self.cx.bind(

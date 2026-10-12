@@ -69,7 +69,7 @@ pub(super) async fn run(device: &Device, target: &mut Mounted) {
         "one read deadline must preserve the original authenticated root"
     );
     let expected = format!("{BODY}// committed after the original read deadline\n");
-    commit_edit(device, &owner, &expected);
+    commit_edit(device, &owner, BODY, &expected);
     assert!(has_committed_body(&owner, &expected));
     tilo_test_env::within(
         "the same mounted Code owner after read generation renewal",
