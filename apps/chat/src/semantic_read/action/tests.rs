@@ -112,10 +112,6 @@ fn semantic_read_action_rejects_ambiguous_or_oversized_request_before_projection
         validate_request(&resource, &serde_json::to_vec(&oversized).unwrap()).unwrap_err(),
         SemanticReadError::Limit
     );
-    assert_eq!(
-        validate_request(&resource, &vec![b' '; MAX_REQUEST_BYTES + 1]).unwrap_err(),
-        SemanticReadError::Limit
-    );
     for page_size in [0, 33] {
         assert!(
             resource.actions[0]

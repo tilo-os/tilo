@@ -235,11 +235,6 @@ impl ResourceKind {
         self.read(&doc)
     }
 
-    /// [`Self::holds`] for a saved document.
-    pub fn holds_saved(&self, bytes: &[u8]) -> bool {
-        self.read_saved(bytes).is_ok()
-    }
-
     /// The heads of a saved document; `None` when `bytes` are no document.
     pub fn saved_heads(bytes: &[u8]) -> Option<Vec<automerge::ChangeHash>> {
         Doc::load(bytes).ok().map(|mut doc| doc.get_heads())

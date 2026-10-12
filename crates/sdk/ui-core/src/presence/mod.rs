@@ -14,6 +14,8 @@ pub use interaction::{
     TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
+#[cfg(feature = "native")]
+pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
 /// Shared with the other widgets that frame a label in fixed-pixel insets
 /// (the capture studio's docked recorder), so one rule decides how much

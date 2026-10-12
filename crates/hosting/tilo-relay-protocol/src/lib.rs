@@ -63,7 +63,8 @@ pub use auth::{AuthError, AuthenticatedPeer, PeerRole};
 pub use config::{ConfigError, EnvironmentsConfig, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use home_peer::{
     HomePeerRegistration, RELAY_OFFERS_FILE, RelayEnvironments, RelayOffer, RelayOffers,
-    home_peer_registry_path, valid_home_peer_label,
+    home_peer_registry_path, personal_device_peer_path, remember_personal_device,
+    valid_home_peer_label,
 };
 pub use mesh::{
     ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, PowerAvailability,
