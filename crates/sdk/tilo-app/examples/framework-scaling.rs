@@ -47,9 +47,13 @@
 //! offscreen GPU target as a window presents it, with and without copying
 //! what a scroll keeps on screen (`ui::scroll_copy`): pixels repainted and
 //! copied per frame, frames repainted whole, CPU and GPU time per frame. The
-//! last frame must equal a full render, or the run fails. Each run also
-//! prints a `FRAMEWORK-SCROLL` line for `tools/perf/adapters.py
-//! framework-scroll` (`render.framework_scroll.*` KPIs):
+//! last frame must equal a full render, or the run fails. The window is
+//! also scrolled with a collaborator's pointer resting over the list,
+//! painted over the widgets as a window paints it, with and without copies.
+//! Each run also prints a `FRAMEWORK-SCROLL` line (`-PEER` with the
+//! collaborator, `-HOSTED` shown in a host's scene) for
+//! `tools/perf/adapters.py framework-scroll` (`render.framework_scroll.*`
+//! KPIs):
 //!
 //! ```text
 //! cargo run --release -p tilo-app --features test-support \
@@ -538,18 +542,23 @@ fn covered(rects: &[Rect], size: PhysicalSize<u32>) -> f64 {
     rows.iter().flatten().filter(|cell| **cell).count() as f64
 }
 
+/// Where a collaborator's pointer rests over the list, in logical pixels.
+const PEER_AT: [f32; 2] = [420.0, 360.0];
+
 /// Scroll the live window down [`SCROLL_FRAMES`] frames of `step` logical
 /// pixels each, the pointer over the list, through the host's input and
 /// frame path ([`tilo_app::App::surface_input`],
 /// [`tilo_app::App::surface_frame_with_damage`]), and present each frame on
 /// an offscreen GPU target as a window does: only where it changed, after
 /// copying what a scroll keeps on screen when `copying`
-/// ([`tilo_app::scroll_copy`]).
+/// ([`tilo_app::scroll_copy`]). With `peer`, a collaborator's pointer rests
+/// over the list, painted over the widgets as a window paints it
+/// ([`tilo_app::app::SurfaceDamage::painting_peers`]).
 #[allow(
     clippy::too_many_lines,
     reason = "one measured scroll loop: input, frame, damage, presentation and its parity check"
 )]
-fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool) -> Scrolling {
+fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool, peer: bool) -> Scrolling {
     use tilo_app::app::{AppSurface, SurfaceDamage};
     use tilo_app::offscreen::OffscreenRenderer;
     use tilo_app::winit::event::{MouseScrollDelta, TouchPhase};
@@ -559,7 +568,12 @@ fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool) -> Scrolling {
         SurfaceDamage::copying()
     } else {
         SurfaceDamage::default()
-    };
+    }
+    .painting_peers();
+    if peer {
+        app.presence_ctx_mut()
+            .upsert_remote_cursor("ada".into(), PEER_AT, Some("Ada Lovelace"));
+    }
     app.init_layout();
     let mut scene = tilo_app::advanced::Scene::new();
     app.surface_input(
@@ -872,6 +886,17 @@ fn hosted_scrolling(tile: &mut tilo_app::app::EmbeddedApp, step: f64, copying: b
     result
 }
 
+/// How the scrolled list is shown.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shown {
+    /// In a window of its own.
+    Window,
+    /// In a window of its own, a collaborator's pointer resting over it.
+    BesidePeer,
+    /// In a region of a host's scene, as the shell shows an in-process app.
+    Hosted,
+}
+
 /// The `scroll` mode: what one frame of continuous scrolling costs, at a
 /// whole and at a fractional step, in a window of its own and shown in a
 /// region of a host's scene as the shell shows an in-process app.
@@ -887,17 +912,22 @@ fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
     let mut checked: Option<(bool, usize)> = None;
     for &tasks in sizes {
         TASKS.store(tasks, Ordering::Relaxed);
-        for (hosted, step, copying) in [
-            (false, SCROLL_STEP, false),
-            (false, SCROLL_STEP, true),
-            (false, SCROLL_STEP + 0.5, true),
-            (true, SCROLL_STEP, false),
-            (true, SCROLL_STEP, true),
+        for (shown, step, copying) in [
+            (Shown::Window, SCROLL_STEP, false),
+            (Shown::Window, SCROLL_STEP, true),
+            (Shown::Window, SCROLL_STEP + 0.5, true),
+            (Shown::BesidePeer, SCROLL_STEP, false),
+            (Shown::BesidePeer, SCROLL_STEP, true),
+            (Shown::Hosted, SCROLL_STEP, false),
+            (Shown::Hosted, SCROLL_STEP, true),
         ] {
-            let s = if hosted {
-                drive_live_embedded::<Scaling, _>(|tile| hosted_scrolling(tile, step, copying))?
-            } else {
-                drive_live_window::<Scaling, _>(|app| scrolling(app, step, copying))?
+            let s = match shown {
+                Shown::Hosted => {
+                    drive_live_embedded::<Scaling, _>(|tile| hosted_scrolling(tile, step, copying))?
+                }
+                Shown::Window | Shown::BesidePeer => drive_live_window::<Scaling, _>(|app| {
+                    scrolling(app, step, copying, shown == Shown::BesidePeer)
+                })?,
             };
             let (missing_gpu, differing) = checked.unwrap_or_default();
             checked = Some((
@@ -908,11 +938,13 @@ fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
                 || ("n/a".to_owned(), "n/a".to_owned()),
                 |(presented, full)| (format!("{presented:.3} ms"), format!("{full:.3} ms")),
             );
-            let copies = match (hosted, copying) {
-                (false, true) => "yes",
-                (false, false) => "no",
-                (true, true) => "hosted",
-                (true, false) => "hosted, none",
+            let copies = match (shown, copying) {
+                (Shown::Window, true) => "yes",
+                (Shown::Window, false) => "no",
+                (Shown::BesidePeer, true) => "peer",
+                (Shown::BesidePeer, false) => "peer, none",
+                (Shown::Hosted, true) => "hosted",
+                (Shown::Hosted, false) => "hosted, none",
             };
             println!(
                 "{tasks:>5}  {step:>4}  {copies:>6}  {:>6}  {:>5}  {:>16.0}  {:>7.0}  \
@@ -927,10 +959,10 @@ fn scroll_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
                 s.why.unwrap_or("-"),
             );
             // For tools/perf/adapters.py.
-            let tag = if hosted {
-                "FRAMEWORK-SCROLL-HOSTED"
-            } else {
-                "FRAMEWORK-SCROLL"
+            let tag = match shown {
+                Shown::Window => "FRAMEWORK-SCROLL",
+                Shown::BesidePeer => "FRAMEWORK-SCROLL-PEER",
+                Shown::Hosted => "FRAMEWORK-SCROLL-HOSTED",
             };
             lines.push(format!(
                 "{tag} tasks={tasks} step={step} copying={copying} \

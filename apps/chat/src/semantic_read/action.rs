@@ -7,7 +7,8 @@ use tilo_actions::{
     ResultSpec,
 };
 use ui::semantic_document_read::{
-    MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
+    ReadPage, RegisteredSemanticReader, SemanticReadError, decode_cursor, decode_request,
+    encode_cursor,
 };
 
 pub const OPERATION_TYPE: &str = "chat.read";
@@ -28,11 +29,7 @@ struct Request {
 
 /// Shape validation only; no supplied heads or cursor confer authority.
 fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
-    if payload.len() > MAX_REQUEST_BYTES {
-        return Err(SemanticReadError::Limit);
-    }
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
     let named =
         ui::tilo_resource::items::item_of_resource::<crate::resource::Chat>(resource.id.as_str());
     if resource.kind != "chat.workspace.channels"
@@ -46,15 +43,9 @@ fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticR
     {
         return Err(SemanticReadError::InvalidRequest);
     }
-    if let Some(cursor) = request.cursor {
-        if cursor.len() > 1024 {
-            return Err(SemanticReadError::Limit);
-        }
-        let cursor: super::Cursor =
-            serde_json::from_str(&cursor).map_err(|_| SemanticReadError::InvalidRequest)?;
-        if cursor.channel != request.channel {
-            return Err(SemanticReadError::InvalidRequest);
-        }
+    let cursor: Option<super::Cursor> = decode_cursor(request.cursor.as_deref())?;
+    if cursor.is_some_and(|cursor| cursor.channel != request.channel) {
+        return Err(SemanticReadError::InvalidRequest);
     }
     Ok(())
 }
@@ -109,14 +100,8 @@ fn project(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<ReadPage, SemanticReadError> {
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    let cursor = request
-        .cursor
-        .as_deref()
-        .map(serde_json::from_str::<super::Cursor>)
-        .transpose()
-        .map_err(|_| SemanticReadError::InvalidRequest)?;
+    let request: Request = decode_request(payload)?;
+    let cursor: Option<super::Cursor> = decode_cursor(request.cursor.as_deref())?;
     let limits = tilo_doc::semantic_read::Limits {
         items: usize::from(request.page_size),
         ..tilo_doc::semantic_read::Limits::default()
@@ -137,15 +122,9 @@ fn project(
             })
         })
         .collect();
-    let next_cursor = page
-        .next
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|_| SemanticReadError::Limit)?;
     Ok(ReadPage {
         content: serde_json::json!({ "channel": page.channel, "messages": messages }),
-        next_cursor,
+        next_cursor: encode_cursor(page.next.as_ref())?,
     })
 }
 

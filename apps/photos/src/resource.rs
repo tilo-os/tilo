@@ -22,7 +22,7 @@ use ui::tilo_resource::effect::Answers;
 use ui::tilo_resource::{self, Derived, Effect as _, Id, Invoke, Refusal, resource};
 use ui::widget::Element;
 
-use crate::actions::{PhotosEffect, TimelineAnchor};
+use crate::actions::PhotosEffect;
 use crate::app::PhotosApp;
 use crate::model::{
     ImageAnalysis, LibraryPhoto, MAX_LABELS, OpenImage, PhotoLibrary, PhotoLocation, Rect01,
@@ -383,12 +383,6 @@ pub fn photo_of_resource(resource_id: &str) -> Option<String> {
 #[must_use]
 pub fn album_resource_id(album: &str) -> String {
     tilo_resource::items::item_resource_id::<PhotoLibrary>("albums", &Id::from_raw(album))
-}
-
-/// A view that opens the timeline at `anchor`.
-#[must_use]
-pub fn timeline_view(anchor: Option<TimelineAnchor>) -> PhotosEffect {
-    PhotosEffect::ViewTimeline { anchor }
 }
 
 /// Framework app: the photos widget is the surface over [`PhotoLibrary`].
