@@ -82,8 +82,9 @@ pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
     configured_shortcut_action, shortcut_action_label, shortcut_action_rows,
     shortcut_action_summary, shortcut_chord_from_event, shortcut_guide_chord,
-    shortcut_reference_columns, shortcut_reference_group_height, shortcut_reference_rows,
-    shortcut_reference_step,
+    SHORTCUT_NAVIGATION_STEP, shortcut_chord_keycaps, shortcut_guide_content_height,
+    shortcut_navigation_columns, shortcut_navigation_height, shortcut_reference_columns,
+    shortcut_reference_group_height, shortcut_reference_rows, shortcut_reference_step,
 };
 #[cfg(test)]
 use std::path::PathBuf;
@@ -494,6 +495,12 @@ pub struct ShellOverlayHost {
     shortcut_rebind: Option<settings_store::hardware::ShortcutAction>,
     shortcut_rebind_message: Option<String>,
     shortcut_guide_focus: Option<ShortcutGuideFocus>,
+    /// How far the keyboard guide's body is scrolled, in logical pixels.
+    /// Only non-zero when the window is shorter than the guide's content.
+    shortcut_guide_scroll: f64,
+    /// The scroll range measured by the last paint, so the wheel clamps to
+    /// what is actually there.
+    shortcut_guide_max_scroll: f64,
     desktop_controls: DesktopControlsSource,
     shortcut_help_drawn_rect: Rect,
     /// The effective shortcut table for this compositor session.  Input is
@@ -1239,7 +1246,7 @@ fn instant_capture(
 // helpers: name the conversion, scope the `#[allow]` to it alone, and
 // use the named function everywhere instead of a bare `as`.
 
-/// Same rationale as [`usize_to_f64_lossy`], for the millisecond
+/// Same rationale as [`f64_of_usize`], for the millisecond
 /// durations `Instant::elapsed().as_millis()` and this file's transition
 /// constants use.
 #[allow(
@@ -2337,6 +2344,8 @@ impl ShellOverlayHost {
             shortcut_rebind: None,
             shortcut_rebind_message: None,
             shortcut_guide_focus: None,
+            shortcut_guide_scroll: 0.0,
+            shortcut_guide_max_scroll: 0.0,
             shortcut_config: inputs.shortcut_config,
             shortcut_triggers: shortcut_triggers::ShortcutTriggerState::new(
                 inputs.shortcut_triggers,
@@ -12454,6 +12463,21 @@ impl ShellOverlayHost {
                     ..
                 }
         );
+        if let WindowEvent::MouseWheel { delta, .. } = event
+            && self.overlay_flags().shortcut_help
+        {
+            let dy: f64 = match *delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * 30.0,
+                winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
+            };
+            self.shortcut_guide_scroll =
+                (self.shortcut_guide_scroll + dy).clamp(0.0, self.shortcut_guide_max_scroll);
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            *handled = true;
+            return true;
+        }
         if is_absorbable_pointer
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
@@ -12728,6 +12752,9 @@ impl ShellOverlayHost {
     }
 
     fn move_shortcut_guide_focus(&mut self, backwards: bool) {
+        // Focus walks the editable pairs at the top of the body; bring them
+        // back into view rather than focusing something scrolled away.
+        self.shortcut_guide_scroll = 0.0;
         let controls = self.shortcut_guide_controls();
         let current = self
             .shortcut_guide_focus
@@ -21763,7 +21790,25 @@ impl ShellOverlayHost {
         // contains every documented action.
         let area = self.overlay_area();
         let width = (area.width() - 64.0).clamp(0.0, 960.0);
-        let height = (area.height() - 64.0).clamp(0.0, 600.0);
+        // The keyboard guide is exactly as tall as its content (header, body,
+        // bottom margin) and scrolls only when the window is shorter; the
+        // other modalities keep their fixed card.
+        let intrinsic = if matches!(
+            self.shortcut_help_modality(),
+            ui::InputModality::Keyboard | ui::InputModality::Pointer
+        ) {
+            let note_lines = 1
+                + usize::from(shortcut_action_summary(&self.shortcut_config).is_some())
+                + usize::from(self.desktop_controls.config().vim_mode);
+            98.0 + shortcut_guide_content_height(
+                width - 48.0,
+                SHORTCUT_GUIDE_ROWS.len(),
+                note_lines,
+            ) + 22.0
+        } else {
+            600.0
+        };
+        let height = (area.height() - 64.0).min(intrinsic).max(0.0);
         Rect::new(
             area.center().x - width / 2.0,
             area.center().y - height / 2.0,
@@ -22018,7 +22063,7 @@ impl ShellOverlayHost {
         text_renderer.draw_style(
             scene,
             &done_label,
-            colors.text_primary,
+            colors.intent.on_inverted,
             transform.pre_translate(
                 (
                     done.center().x - f64::from(done_w) / 2.0,
@@ -22041,10 +22086,9 @@ impl ShellOverlayHost {
             .interaction
             .controller
             .unwrap_or(ui::ControllerFamily::Generic);
-        let compact_panel = panel.height() <= 536.0;
         let body = Rect::new(
             panel.x0 + 24.0,
-            panel.y0 + if compact_panel { 88.0 } else { 98.0 },
+            panel.y0 + 98.0,
             panel.x1 - 24.0,
             panel.y1 - 22.0,
         );
@@ -22155,7 +22199,7 @@ impl ShellOverlayHost {
                     ),
                     ("guide-row-quick-settings", one(ControllerButton::Guide)),
                 ];
-                let row_step = if compact_panel { 48.0 } else { 54.0 };
+                let row_step = if panel.height() <= 536.0 { 48.0 } else { 54.0 };
                 let per_column = rows.len().div_ceil(2);
                 for (index, (label, (first, second))) in rows.iter().enumerate() {
                     let column = index.checked_div(per_column).unwrap_or(0);
@@ -22270,9 +22314,33 @@ impl ShellOverlayHost {
                     KeyboardBinding::new(modifiers, key)
                 };
                 let rows = SHORTCUT_GUIDE_ROWS;
-                let compact = body.height() < 450.0;
-                let navigation_step = if compact { 41.0 } else { 44.0 };
-                let navigation_height = if compact { 154.0 } else { 168.0 };
+                let references = shortcut_reference_rows(shortcuts);
+                let summary = shortcut_action_summary(shortcuts);
+                let vim_mode = self.desktop_controls.config().vim_mode;
+                let note_lines = 1 + usize::from(summary.is_some()) + usize::from(vim_mode);
+                // Everything below is laid out in content coordinates and
+                // shifted by `scroll`; the body clips it. The panel is as
+                // tall as this content, so scrolling only exists when the
+                // window is shorter than the guide.
+                let content_height =
+                    shortcut_guide_content_height(body.width(), rows.len(), note_lines);
+                self.shortcut_guide_max_scroll = (content_height - body.height()).max(0.0);
+                let scroll = self
+                    .shortcut_guide_scroll
+                    .clamp(0.0, self.shortcut_guide_max_scroll);
+                self.shortcut_guide_scroll = scroll;
+                let outer = transform;
+                let transform = outer.pre_translate((0.0, -scroll).into());
+                let visible = body.inflate(8.0, 0.0);
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    outer,
+                    &visible,
+                );
+                let nav_columns = shortcut_navigation_columns(body.width());
+                let navigation_height = shortcut_navigation_height(rows.len(), nav_columns);
                 let navigation_surface =
                     Rect::new(body.x0, body.y0, body.x1, body.y0 + navigation_height);
                 scene.fill(
@@ -22280,7 +22348,10 @@ impl ShellOverlayHost {
                     transform,
                     colors.neutral[1],
                     None,
-                    &RoundedRect::from_rect(navigation_surface, 14.0),
+                    &RoundedRect::from_rect(
+                        navigation_surface,
+                        f64::from(theme.tokens.radii.detail),
+                    ),
                 );
                 text_renderer.draw_style(
                     scene,
@@ -22293,12 +22364,20 @@ impl ShellOverlayHost {
                         .with_weight(TextWeight::Semibold),
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
-                    let column = index % 2;
-                    let row = index / 2;
-                    let column_width = (navigation_surface.width() - 36.0) / 2.0;
-                    let x =
-                        navigation_surface.x0 + 14.0 + f64_of_usize(column) * (column_width + 8.0);
-                    let y = navigation_surface.y0 + 31.0 + f64_of_usize(row) * navigation_step;
+                    let column = index % nav_columns;
+                    let row = index / nav_columns;
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "at most two navigation columns convert exactly"
+                    )]
+                    let column_width = (navigation_surface.width() - 28.0 - 8.0 * (nav_columns - 1) as f64)
+                        / nav_columns as f64;
+                    let x = navigation_surface.x0
+                        + 14.0
+                        + f64_of_usize(column) * (column_width + 8.0);
+                    let y = navigation_surface.y0
+                        + 31.0
+                        + f64_of_usize(row) * SHORTCUT_NAVIGATION_STEP;
                     text_renderer.draw_style(
                         scene,
                         &t(label),
@@ -22322,10 +22401,14 @@ impl ShellOverlayHost {
                     for (action, rect) in actions.into_iter().zip(hit_rects) {
                         let hit =
                             Rect::new(rect.x0 - 5.0, rect.y0 - 5.0, rect.x1 + 5.0, rect.y1 + 5.0);
+                        // Pointer hit-testing runs in screen space.
+                        let screen_hit = hit - vello::kurbo::Vec2::new(0.0, scroll);
                         let active = self.shortcut_rebind == Some(action);
                         let focused =
                             self.shortcut_guide_focus == Some(ShortcutGuideFocus::Binding(action));
-                        let hovered = self.last_cursor.is_some_and(|point| hit.contains(point));
+                        let hovered = self
+                            .last_cursor
+                            .is_some_and(|point| screen_hit.contains(point));
                         if active || focused || hovered {
                             scene.stroke(
                                 &Stroke::new(if active || focused { 2.0 } else { 1.0 }),
@@ -22335,7 +22418,9 @@ impl ShellOverlayHost {
                                 &RoundedRect::from_rect(hit, 8.0),
                             );
                         }
-                        self.shortcut_binding_rects.push((action, hit));
+                        if screen_hit.intersect(body).area() > 0.0 {
+                            self.shortcut_binding_rects.push((action, screen_hit));
+                        }
                     }
 
                     let reset = Rect::new(
@@ -22348,7 +22433,10 @@ impl ShellOverlayHost {
                         shortcuts.bindings.get(&action) != defaults.bindings.get(&action)
                     });
                     if changed {
-                        let hovered = self.last_cursor.is_some_and(|point| reset.contains(point));
+                        let screen_reset = reset - vello::kurbo::Vec2::new(0.0, scroll);
+                        let hovered = self
+                            .last_cursor
+                            .is_some_and(|point| screen_reset.contains(point));
                         let focused = self.shortcut_guide_focus
                             == Some(ShortcutGuideFocus::Reset(*previous, *next));
                         // A Control (HIG §9.1/§9.5): the shared lift floor
@@ -22389,7 +22477,10 @@ impl ShellOverlayHost {
                             None,
                             &reset_style,
                         );
-                        self.shortcut_reset_rects.push((*previous, *next, reset));
+                        if screen_reset.intersect(body).area() > 0.0 {
+                            self.shortcut_reset_rects
+                                .push((*previous, *next, screen_reset));
+                        }
                     }
                 }
                 let essentials_y = navigation_surface.y1 + 12.0;
@@ -22403,30 +22494,37 @@ impl ShellOverlayHost {
                         .text(TextRole::Caption)
                         .with_weight(TextWeight::Semibold),
                 );
-                let references = shortcut_reference_rows(shortcuts);
                 let reference_columns = shortcut_reference_columns(body.width());
-                let reference_step = shortcut_reference_step(compact);
+                let reference_step = shortcut_reference_step();
                 let reference_top = essentials_y + 18.0;
                 let reference_gap = 12.0;
                 let reference_width = (body.width()
                     - reference_gap * f64_of_usize(reference_columns.saturating_sub(1)))
                     / f64_of_usize(reference_columns);
-                let reference_height = shortcut_reference_group_height(compact);
+                let reference_height = shortcut_reference_group_height();
                 let group_titles = [
                     "guide-group-windows",
                     "guide-group-search",
                     "guide-group-capture",
                 ];
-                for (group_index, group_rows) in references.chunks(6).enumerate() {
-                    let x = body.x0 + f64_of_usize(group_index) * (reference_width + reference_gap);
-                    let group = Rect::new(
-                        x,
-                        reference_top,
-                        x + reference_width,
-                        reference_top + reference_height,
-                    );
-                    // A keycap is a detail inside the guide (`radii.detail`) on
-                    // the Control floor with its derived edge (HIG §9.5).
+                let chord_style = theme.text(TextRole::Caption);
+                let label_gap = f64::from(
+                    text_renderer
+                        .measure_style("Ag", None, &chord_style)
+                        .1,
+                ) + 4.0;
+                let mut groups_bottom = reference_top;
+                for (group_index, group_rows) in references
+                    .chunks(shortcuts::SHORTCUT_REFERENCE_GROUP_ROWS)
+                    .enumerate()
+                {
+                    let column = group_index % reference_columns;
+                    let band = group_index / reference_columns;
+                    let x = body.x0 + f64_of_usize(column) * (reference_width + reference_gap);
+                    let y = reference_top
+                        + f64_of_usize(band) * (reference_height + reference_gap);
+                    let group = Rect::new(x, y, x + reference_width, y + reference_height);
+                    groups_bottom = groups_bottom.max(group.y1);
                     ui::surface::card(
                         scene,
                         transform,
@@ -22434,11 +22532,7 @@ impl ShellOverlayHost {
                         f64::from(theme.tokens.radii.detail),
                         qs::control_fill(theme, false),
                     );
-                    #[expect(
-                        clippy::indexing_slicing,
-                        reason = "shortcut_reference_rows yields 18 rows, so chunks(6) gives exactly one group per title (pinned by shortcut_reference_columns_stay_semantically_grouped)"
-                    )]
-                    let group_title = group_titles[group_index];
+                    let group_title = group_titles.get(group_index).copied().unwrap_or_default();
                     text_renderer.draw_style(
                         scene,
                         &t(group_title),
@@ -22450,17 +22544,8 @@ impl ShellOverlayHost {
                             .with_weight(TextWeight::Semibold),
                     );
                     for (row_index, (label, chord)) in group_rows.iter().enumerate() {
-                        let entry_y = group.y0 + 29.0 + f64_of_usize(row_index) * reference_step;
-                        let chord_style = theme.text(TextRole::Caption);
-                        let (chord_width, chord_height) =
-                            text_renderer.measure_style(chord, None, &chord_style);
-                        let pill_height = f64::from(chord_height) + 6.0;
-                        let pill = Rect::new(
-                            group.x0 + 12.0,
-                            entry_y + 13.0,
-                            (group.x0 + 28.0 + f64::from(chord_width)).min(group.x1 - 12.0),
-                            entry_y + 13.0 + pill_height,
-                        );
+                        let entry_y =
+                            group.y0 + 29.0 + f64_of_usize(row_index) * reference_step;
                         text_renderer.draw_style(
                             scene,
                             label,
@@ -22469,64 +22554,79 @@ impl ShellOverlayHost {
                             Some(f32_of_f64(group.width() - 24.0)),
                             &chord_style,
                         );
-                        scene.fill(
-                            Fill::NonZero,
-                            transform,
-                            colors.neutral[2],
-                            None,
-                            &RoundedRect::from_rect(pill, 5.0),
-                        );
-                        text_renderer.draw_style(
-                            scene,
-                            chord,
-                            colors.text_primary,
-                            transform.pre_translate((pill.x0 + 6.0, pill.y0 + 3.0).into()),
-                            Some(f32_of_f64((pill.width() - 12.0).max(0.0))),
-                            &chord_style.clone().with_weight(TextWeight::Semibold),
-                        );
+                        // Real keycaps from the same component as the
+                        // navigation rows; alternatives are split by a slash.
+                        let mut cap_x = group.x0 + 12.0;
+                        let cap_y = entry_y + label_gap;
+                        for (alt_index, keys) in shortcut_chord_keycaps(chord).iter().enumerate() {
+                            if alt_index > 0 {
+                                text_renderer.draw_style(
+                                    scene,
+                                    "/",
+                                    colors.text_dim,
+                                    transform.pre_translate(
+                                        (cap_x + 6.0, cap_y + 4.0).into(),
+                                    ),
+                                    None,
+                                    &chord_style,
+                                );
+                                cap_x += 20.0;
+                            }
+                            cap_x += InputHint::paint_keycap_labels_at(
+                                scene,
+                                transform,
+                                Point::new(cap_x, cap_y),
+                                keys,
+                                text_renderer,
+                                theme,
+                            );
+                        }
                     }
                 }
-                let pointer_y = reference_top + reference_height + 4.0;
-                if pointer_y + 18.0 <= body.y1 {
-                    ui::surface::separator(
-                        scene,
-                        transform,
-                        body.x0,
-                        body.x1,
-                        pointer_y + 0.5,
-                        0.0,
-                        ui::chrome::ChromeRole::Panel.surface(theme),
-                    );
+                let pointer_y = groups_bottom + 4.0;
+                ui::surface::separator(
+                    scene,
+                    transform,
+                    body.x0,
+                    body.x1,
+                    pointer_y + 0.5,
+                    0.0,
+                    ui::chrome::ChromeRole::Panel.surface(theme),
+                );
+                let mut note_y = pointer_y + 14.0;
+                let mut note = |text: &str, scene: &mut Scene| {
                     text_renderer.draw_style(
                         scene,
-                        &t("guide-pointer"),
+                        text,
                         colors.text_primary,
-                        transform.pre_translate((body.x0, pointer_y + 14.0).into()),
-                        Some(f32_of_f64(body.width())),
+                        transform.pre_translate((body.x0, note_y).into()),
+                        Some(f64_to_f32_lossy(body.width())),
                         &theme.text(TextRole::Caption),
                     );
-                    if let Some(summary) = shortcut_action_summary(shortcuts)
-                        && pointer_y + 40.0 < body.y1
-                    {
-                        text_renderer.draw_style(
-                            scene,
-                            &summary,
-                            colors.text_primary,
-                            transform.pre_translate((body.x0, pointer_y + 32.0).into()),
-                            Some(f32_of_f64(body.width())),
-                            &theme.text(TextRole::Caption),
-                        );
-                    }
-                    if self.desktop_controls.config().vim_mode && pointer_y + 58.0 < body.y1 {
-                        text_renderer.draw_style(
-                            scene,
-                            &t("guide-vim-mode"),
-                            colors.text_primary,
-                            transform.pre_translate((body.x0, pointer_y + 50.0).into()),
-                            None,
-                            &theme.text(TextRole::Caption),
-                        );
-                    }
+                    note_y += 18.0;
+                };
+                note(&t("guide-pointer"), scene);
+                if let Some(summary) = &summary {
+                    note(summary, scene);
+                }
+                if vim_mode {
+                    note(&t("guide-vim-mode"), scene);
+                }
+                scene.pop_layer();
+                if self.shortcut_guide_max_scroll > 0.0 {
+                    // A scrollbar thumb on the panel's right inner edge, so
+                    // a clipped guide says it continues.
+                    let track = Rect::new(panel.x1 - 10.0, body.y0, panel.x1 - 6.0, body.y1);
+                    let thumb_h = (track.height() * body.height() / content_height).max(24.0);
+                    let thumb_y = track.y0
+                        + (track.height() - thumb_h) * scroll / self.shortcut_guide_max_scroll;
+                    scene.fill(
+                        Fill::NonZero,
+                        outer,
+                        colors.text_dim.multiply_alpha(0.5),
+                        None,
+                        &RoundedRect::new(track.x0, thumb_y, track.x1, thumb_y + thumb_h, 2.0),
+                    );
                 }
             }
         }
