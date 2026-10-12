@@ -168,9 +168,29 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     let record = namespace.record_id_for(ino).unwrap();
     let old = fs_protocol::FileVersionId(uuid::Uuid::from_u128(101));
     let current = fs_protocol::FileVersionId(uuid::Uuid::from_u128(102));
+    let workspace = uuid::Uuid::new_v4();
+    let device = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
     let actor = fs_protocol::FileActor {
-        person: fs_protocol::Ed25519PublicKey::from_bytes([1; 32]),
-        device: fs_protocol::Ed25519PublicKey::from_bytes([2; 32]),
+        person: fs_protocol::Ed25519PublicKey::from_bytes(
+            ed25519_dalek::SigningKey::from_bytes(&[1; 32])
+                .verifying_key()
+                .to_bytes(),
+        ),
+        device: fs_protocol::Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+    };
+    let publisher = || {
+        Arc::new(
+            fs::RecordPublisher::new(
+                Arc::new(
+                    fs::record_repository::RecordRepository::open(directory.path().join("records"))
+                        .unwrap(),
+                ),
+                workspace,
+                actor,
+                device.clone(),
+            )
+            .unwrap(),
+        )
     };
     let history =
         Arc::new(fs::FileHistoryStore::open(directory.path().join("history.json")).unwrap());
@@ -206,7 +226,6 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
     let namespace = Arc::new(Mutex::new(namespace));
     let hydrator = Arc::new(fs::Hydrator::new(endpoint.clone(), content));
     let heuristics = Arc::new(fs::Heuristics::new(hydrator.clone()));
-    let workspace = uuid::Uuid::new_v4();
     let journal = Arc::new(Mutex::new(
         fs::record_transaction::RecordTransactionJournal::open(
             directory.path().join("transactions"),
@@ -218,6 +237,8 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
             .with_history(history.clone(), actor)
             .unwrap()
             .with_checked_history_workspace(workspace)
+            .with_record_publisher(publisher())
+            .unwrap()
             .with_replacement_transactions(journal, directory.path().join("namespace.am"))
             .unwrap(),
     );
@@ -317,6 +338,8 @@ async fn framework_history_real_backend_uncertain_result_restore_undo_redo_and_r
         .with_history(reopened_history.clone(), actor)
         .unwrap()
         .with_checked_history_workspace(workspace)
+        .with_record_publisher(publisher())
+        .unwrap()
         .with_replacement_transactions(
             Arc::new(Mutex::new(
                 fs::record_transaction::RecordTransactionJournal::open(
@@ -576,7 +599,6 @@ fn framework_history_recovers_sessions_after_a_b_a() {
             record_id: record_a,
             selected_version: version_a,
             prior_revision: revision(200),
-            prior_reference: FileRestorePriorReferenceV1::ObservedRevision,
             restored_revision: revision(201),
             compensates: None,
         };
