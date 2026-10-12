@@ -37,7 +37,10 @@ class AppSdkWorkflow(unittest.TestCase):
         builder = job('builder')
         self.assertIn('linux_affected: ${{ steps.affected.outputs.linux_affected }}', builder)
         self.assertIn('echo linux_affected=true >> "$GITHUB_OUTPUT"', builder)
-        self.assertIn('--lane linux --github-output "$GITHUB_OUTPUT"', builder)
+        self.assertIn('affected: ${{ steps.affected.outputs.affected }}', builder)
+        self.assertIn('echo affected=true >> "$GITHUB_OUTPUT"', builder)
+        self.assertEqual(builder.count('python3 tools/ci/app_sdk_affected.py'), 1)
+        self.assertIn('--lane both --github-output "$GITHUB_OUTPUT"', builder)
 
     def test_pull_requests_and_pushes_share_one_path_list(self) -> None:
         def paths(event: str) -> list[str]:

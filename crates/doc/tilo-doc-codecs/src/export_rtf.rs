@@ -223,10 +223,7 @@ fn render_image(out: &mut String, block: &BlockView, indent_level: i64) {
     // Pixel embedding is out of scope; fall back to alt text so the
     // block isn't lost, or skip if there's no alt text.
     let alt = if block.text.is_empty() {
-        match block.attrs.get("alt") {
-            Some(AttrVal::Str(s)) => s.clone(),
-            _ => String::new(),
-        }
+        block.str_attr("alt").unwrap_or_default().to_owned()
     } else {
         block.text.clone()
     };

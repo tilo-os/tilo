@@ -1286,10 +1286,7 @@ fn render_table_run(
 /// import on its `first` cell (the columns only while they still number `ncols`), else one
 /// run of plain columns.
 fn push_table_open(body: &mut String, tid: &str, first: Option<&BlockView>, ncols: usize) {
-    let kept = |key: &str| match first.and_then(|c| c.attrs.get(key)) {
-        Some(AttrVal::Str(s)) => Some(s.as_str()),
-        _ => None,
-    };
+    let kept = |key: &str| first.and_then(|c| c.str_attr(key));
     let _ = write!(body, r#"<table:table table:name="{}""#, escape_attr(tid));
     if let Some(style) = kept(super::content::ODT_TABLE_STYLE) {
         let _ = write!(body, r#" table:style-name="{}""#, escape_attr(style));
