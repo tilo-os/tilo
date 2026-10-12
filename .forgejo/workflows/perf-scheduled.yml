@@ -108,7 +108,7 @@ jobs:
           if [[ $mode == ab ]]; then
             # tools/perf/ab.py GROUPS: every group that measures a build of
             # the repository (footprint measures published artifacts).
-            ab_known=(fs agent latency render wakeups hosting)
+            ab_known=(fs agent latency render wakeups search hosting)
             [[ -n ${KPIS:-} ]] || { echo "::error::mode ab needs kpis: one or more of ${ab_known[*]}"; exit 1; }
             [[ ${AB_ROUNDS:-} =~ ^[0-9]+$ && $AB_ROUNDS -ge 6 ]] || { echo "::error::ab_rounds must be a number of at least 6"; exit 1; }
             IFS=, read -r -a selected <<< "$KPIS"
