@@ -169,21 +169,58 @@ pub(super) struct Writer {
     )>,
 }
 
-struct HashWriter(blake3::Hasher);
-impl Write for HashWriter {
+/// One pretty-printing of an owner record: hashed for its digest and, when
+/// the state file is being written, copied out indented one level deeper,
+/// as the file embeds it. Wrapped in a [`LimitedWriter`] at
+/// [`tilo_joined_room::authority_limit`], the same pass is the record's
+/// `preflight_storage`, so a publication encodes its record once rather
+/// than once for each check.
+struct AuthorityWriter<'a> {
+    hash: blake3::Hasher,
+    embedded: Option<&'a mut Vec<u8>>,
+}
+impl Write for AuthorityWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.update(bytes);
+        self.hash.update(bytes);
+        if let Some(embedded) = self.embedded.as_deref_mut() {
+            // A pretty-printed newline is always structural: a newline in a
+            // string is escaped. So every line after the first is indented.
+            let mut lines = bytes.split(|byte| *byte == b'\n');
+            if let Some(first) = lines.next() {
+                embedded.extend_from_slice(first);
+            }
+            for line in lines {
+                embedded.extend_from_slice(b"\n  ");
+                embedded.extend_from_slice(line);
+            }
+        }
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
+/// Pretty-print `storage` once: refuse it as `preflight_storage` would, and
+/// return the digest of that JSON; append it to `embedded`, indented to sit
+/// one level inside the state file, when given.
+pub(crate) fn encode_authority(
+    storage: &NativeAuthorityStorage,
+    embedded: Option<&mut Vec<u8>>,
+) -> io::Result<[u8; 32]> {
+    let limit = tilo_joined_room::authority_limit(storage).map_err(io::Error::other)?;
+    let mut writer = LimitedWriter::new(
+        AuthorityWriter {
+            hash: blake3::Hasher::new(),
+            embedded,
+        },
+        limit,
+    );
+    serde_json::to_writer_pretty(&mut writer, storage).map_err(io::Error::other)?;
+    Ok(*writer.into_inner().hash.finalize().as_bytes())
+}
+/// The digest the writer expects of the record the state file holds.
 pub(super) fn digest(storage: &NativeAuthorityStorage) -> io::Result<[u8; 32]> {
-    tilo_joined_room::preflight_storage(storage).map_err(io::Error::other)?;
-    let mut hash = HashWriter(blake3::Hasher::new());
-    serde_json::to_writer(&mut hash, storage).map_err(io::Error::other)?;
-    Ok(*hash.0.finalize().as_bytes())
+    encode_authority(storage, None)
 }
 impl NativeStateRuntime {
     pub(crate) fn authority_witness(&self) -> NativeStateWitness {
@@ -248,6 +285,11 @@ impl NativeStateRuntime {
     pub(super) fn healthy(&self) -> bool {
         self.0.healthy.load(Ordering::Acquire)
     }
+    /// The digest of the record the writer last published or bound.
+    #[cfg(test)]
+    pub(super) fn expected_digest(&self) -> Option<[u8; 32]> {
+        self.0.writer.lock().expected
+    }
     /// Called only while the tree snapshot is held. `next` differs only for owner turns.
     /// Order of a snapshot of the tree among every other snapshot of it.
     /// Taken while the caller holds the tree, so a later sequence is never an
@@ -291,16 +333,17 @@ impl NativeStateRuntime {
         *written = sequence.0;
     }
 
+    /// Write `encoded`, the state file holding `next`, in place of the one
+    /// holding the record whose digest is `base`, unless a later snapshot
+    /// already reached the file. Refused when the file does not hold `base`.
     pub(crate) fn publish(
         &self,
         path: &Path,
-        base: &NativeAuthorityStorage,
+        base: [u8; 32],
         next: &NativeAuthorityStorage,
-        bytes: &[u8],
+        encoded: &crate::shell::persist::EncodedTree,
         sequence: StateSequence,
     ) -> io::Result<Publication> {
-        let base_digest = digest(base)?;
-        let next_digest = digest(next)?;
         let mut writer = self.0.writer.lock();
         if sequence.0 < writer.published {
             return Ok(Publication::Superseded);
@@ -310,17 +353,17 @@ impl NativeStateRuntime {
                 "native state writer is fenced after uncertain publication",
             ));
         }
-        writer.bind(path, base_digest)?;
-        if writer.expected != Some(base_digest) {
+        writer.bind(path, base)?;
+        if writer.expected != Some(base) {
             return Err(io::Error::other("stale native authority snapshot refused"));
         }
         match tilo_files::native::atomic::replace(
             path,
-            bytes,
+            &encoded.bytes,
             tilo_files::native::atomic::Privacy::OwnerOnly,
         ) {
             Ok(()) => {
-                writer.expected = Some(next_digest);
+                writer.expected = Some(encoded.authority);
                 writer.published = sequence.0;
                 Ok(Publication::Written)
             }
