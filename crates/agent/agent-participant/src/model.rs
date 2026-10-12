@@ -1304,6 +1304,165 @@ pub(crate) const PLANNER_INSTRUCTIONS: &str = "You drive Tilo apps only through 
     other documents, or to address you), and copy another document's contents only where the \
     request asks for them.";
 
+/// What a chat-completions planner whose turn came back empty is asked for:
+/// the `plan` call's argument object as plain JSON text.
+const PLAN_AS_TEXT: &str = "Your answer carried no tool call that could be read. Answer now \
+    with only the `plan` call's argument object as JSON in your reply, nothing else: \
+    {\"steps\": [{\"operation\": \"<id as listed>\", \"arguments\": {…}}], \"then\": null, \
+    \"reply\": \"<at most eight words>\"}";
+
+/// The `plan` argument object a reply wrote out as JSON text (bare, or in a
+/// fenced block), if it holds one: an object with `steps`, or one wrapping
+/// it as the call it stands for (`{"plan": …}`, `{"arguments": …}`). Text
+/// that closes the object early and writes on is read up to where it closed.
+fn plan_in_text(text: &str) -> Option<serde_json::Value> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    let written: serde_json::Value =
+        serde_json::from_str(text.get(start..=end)?)
+            .ok()
+            .or_else(|| {
+                serde_json::Deserializer::from_str(text.get(start..)?)
+                    .into_iter::<serde_json::Value>()
+                    .next()?
+                    .ok()
+            })?;
+    [
+        Some(&written),
+        written.get(tilo_agent::tools::PLAN),
+        written.get("arguments"),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|input| input.get("steps").is_some_and(serde_json::Value::is_array))
+    .cloned()
+}
+
+/// `input` with a `then` written as a list of clauses, as a local model may
+/// write it, read as the one text it stands for (its clauses in order; null
+/// when none is said), where it would otherwise be dropped as no `then`.
+fn joined_then(mut input: serde_json::Value) -> serde_json::Value {
+    let Some(clauses) = input.get("then").and_then(serde_json::Value::as_array) else {
+        return input;
+    };
+    let said: Vec<&str> = clauses
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|clause| !clause.is_empty() && !clause.eq_ignore_ascii_case("null"))
+        .collect();
+    let then = if said.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::String(said.join("; "))
+    };
+    if let Some(object) = input.as_object_mut() {
+        object.insert("then".into(), then);
+    }
+    input
+}
+
+/// A chat-completions `plan` call's input read as the plan, or the refusal
+/// to send back to the model.
+fn read_chat_plan(
+    input: serde_json::Value,
+    revealed: &tilo_agent::tools::Revealed,
+    most_steps: Option<usize>,
+    catalogue: &Catalogue,
+) -> Result<Answer, String> {
+    let answer = tilo_agent::tools::read_plan(&joined_then(input), revealed, most_steps)
+        .map_err(|error| tilo_agent::tools::plan_refused(&error))?;
+    match carried_gap(&answer, catalogue) {
+        None => Ok(answer),
+        Some(gap) => Err(tilo_agent::tools::plan_refused(&gap)),
+    }
+}
+
+/// How a chat-completions planner is answered when a turn made no call.
+#[derive(Default)]
+struct NoCall {
+    /// Whether it has been reminded (or asked for text) once.
+    reminded: bool,
+    /// Whether the plan is asked for as text rather than as a call.
+    in_text: bool,
+    /// How often the plan has been asked for as text.
+    asked_for_text: u32,
+}
+
+impl NoCall {
+    /// The two messages answering `reply` (of `answer`), a turn that made no
+    /// call and wrote no plan, or `None` when it has had its chances.
+    ///
+    /// A model that wrote instead of calling a tool, as a local one may
+    /// though a call is required, is reminded once. One that said nothing
+    /// has most often made a call its server could not parse (a local
+    /// server's parser may choke on an argument such as an object keyed by
+    /// cell ranges) and lost it: it is asked for the plan as plain JSON
+    /// text, which no tool-call parser touches, and asked once more if that
+    /// text holds none. Its reasoning, which led up to the lost call, is
+    /// replayed as what it said, so it writes the plan out rather than
+    /// thinking it through again.
+    fn answer(
+        &mut self,
+        reply: openai::Turn,
+        answer: &serde_json::Value,
+    ) -> Option<[serde_json::Value; 2]> {
+        if !self.reminded {
+            self.reminded = true;
+            self.in_text = reply
+                .text
+                .as_deref()
+                .is_none_or(|text| text.trim().is_empty());
+            self.asked_for_text = u32::from(self.in_text);
+            let said = match lost_reasoning(answer).filter(|_| self.in_text) {
+                Some(thought) => serde_json::json!({ "role": "assistant", "content": thought }),
+                None => reply.message,
+            };
+            let ask = if self.in_text {
+                PLAN_AS_TEXT
+            } else {
+                "Answer by calling one of the tools."
+            };
+            return Some([said, serde_json::json!({ "role": "user", "content": ask })]);
+        }
+        if !self.in_text || self.asked_for_text >= 2 {
+            return None;
+        }
+        self.asked_for_text = self.asked_for_text.saturating_add(1);
+        Some([
+            reply.message,
+            serde_json::json!({
+                "role": "user",
+                "content": format!(
+                    "That reply held no plan as one valid JSON object (check its brackets). \
+                     {PLAN_AS_TEXT}"
+                ),
+            }),
+        ])
+    }
+}
+
+/// The most of a lost turn's reasoning replayed, in bytes: its end, where
+/// the call it led to was drafted.
+const MOST_REPLAYED_REASONING: usize = 60_000;
+
+/// The reasoning a chat-completions answer carried (`reasoning`, as Ollama
+/// names it, or `reasoning_content`), at most its last
+/// [`MOST_REPLAYED_REASONING`] bytes; `None` when there is none.
+fn lost_reasoning(answer: &serde_json::Value) -> Option<String> {
+    let message = answer.pointer("/choices/0/message")?;
+    let thought = ["reasoning", "reasoning_content"]
+        .iter()
+        .find_map(|name| message.get(*name).and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|thought| !thought.is_empty())?;
+    let mut from = thought.len().saturating_sub(MOST_REPLAYED_REASONING);
+    while !thought.is_char_boundary(from) {
+        from = from.saturating_add(1);
+    }
+    thought.get(from..).map(str::to_owned)
+}
+
 /// The [`READ_VIEW`] tool definition.
 fn read_view_definition() -> serde_json::Value {
     serde_json::json!({
@@ -2066,50 +2225,56 @@ impl PlanModel for OpenAiModel {
             serde_json::json!({ "role": "system", "content": PLANNER_INSTRUCTIONS }),
             serde_json::json!({ "role": "user", "content": stable + &rest }),
         ];
-        let mut reminded = false;
+        let mut no_call = NoCall::default();
         for turn in 0..MOST_DISCOVERY_TURNS {
-            let body = self.target.shape(serde_json::json!({
-                "model": self.model,
-                "messages": messages,
-                "tools": openai::functions(&planning_tools(most_steps, briefing.describes())),
-                "tool_choice": "required",
-            }));
+            // Asked for text, the model is offered no tools: a local server
+            // may ignore `tool_choice: "none"` and the model call again.
+            let body = self.target.shape(if no_call.in_text {
+                serde_json::json!({ "model": self.model, "messages": messages })
+            } else {
+                serde_json::json!({
+                    "model": self.model,
+                    "messages": messages,
+                    "tools": openai::functions(&planning_tools(most_steps, briefing.describes())),
+                    "tool_choice": "required",
+                })
+            });
             let key = openai::turn_key(&run, turn, &body);
             let answer = self.post(&body, &key, deadline)?;
             let reply = openai::read_turn(&answer)?;
-            // A model that wrote (or said nothing) instead of calling a tool,
-            // as a local one may though a call is required, is reminded once.
-            if reply.calls.is_empty() && !reminded {
-                reminded = true;
+            // A plan written out as JSON instead of called is read as the
+            // call it stands for.
+            if reply.calls.is_empty()
+                && let Some(input) = reply.text.as_deref().and_then(plan_in_text)
+            {
+                let refused = match read_chat_plan(input, &revealed, most_steps, catalogue) {
+                    Ok(answer) => return Ok(answer),
+                    Err(refused) if no_call.in_text => format!("{refused}\n\n{PLAN_AS_TEXT}"),
+                    Err(refused) => refused,
+                };
                 messages.push(reply.message);
-                messages.push(serde_json::json!({
-                    "role": "user",
-                    "content": "Answer by calling one of the tools.",
-                }));
+                messages.push(serde_json::json!({ "role": "user", "content": refused }));
                 continue;
             }
             if reply.calls.is_empty() {
-                return Err(format!(
-                    "the model neither discovered operations nor planned: {}",
-                    reply
-                        .text
-                        .unwrap_or_default()
-                        .chars()
-                        .take(300)
-                        .collect::<String>()
-                ));
+                let text = reply.text.clone().unwrap_or_default();
+                let Some(asked) = no_call.answer(reply, &answer) else {
+                    return Err(format!(
+                        "the model neither discovered operations nor planned: {}",
+                        text.chars().take(300).collect::<String>()
+                    ));
+                };
+                messages.extend(asked);
+                continue;
             }
             messages.push(reply.message);
             for call in &reply.calls {
                 let result = if call.name == tilo_agent::tools::PLAN {
                     // A refused plan goes back to the model with the reason
                     // (and the shown ids it may have meant) for another try.
-                    match tilo_agent::tools::read_plan(&call.input, &revealed, most_steps) {
-                        Ok(answer) => match carried_gap(&answer, catalogue) {
-                            None => return Ok(answer),
-                            Some(gap) => tilo_agent::tools::plan_refused(&gap),
-                        },
-                        Err(error) => tilo_agent::tools::plan_refused(&error),
+                    match read_chat_plan(call.input.clone(), &revealed, most_steps, catalogue) {
+                        Ok(answer) => return Ok(answer),
+                        Err(refused) => refused,
                     }
                 } else if call.name == READ_VIEW {
                     read_view_answer(&call.input, &revealed, read)
@@ -2508,6 +2673,106 @@ mod tests {
             std::time::Duration::from_secs(30),
             ApiTarget::Standard,
         )
+    }
+
+    /// A turn that came back empty (a call the local server could not parse)
+    /// is followed by one asking for the plan as JSON text, offering no
+    /// tools, and that text is read as the plan.
+    #[test]
+    fn an_empty_turn_is_asked_for_the_plan_as_text() {
+        let offer = open_notes().offers[0].id();
+        let empty = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": "",
+            "reasoning": " The plan opens notes. "}, "finish_reason": "stop"}]});
+        let plan = serde_json::json!({"steps": [{"operation": offer, "arguments": {}}],
+            "then": "add a note", "reply": "Opening notes."});
+        let written = serde_json::json!({"choices": [{"message": {"role": "assistant",
+            "content": format!("```json\n{plan}\n```")}, "finish_reason": "stop"}]});
+        let (url, sent) = endpoint(vec![
+            http("200 OK", &empty.to_string()),
+            http("200 OK", &written.to_string()),
+        ]);
+        let answer = standard(&url)
+            .choose("open notes then add a note", &open_notes(), None)
+            .unwrap();
+        assert_eq!(answer.actions, vec![offer]);
+        assert_eq!(answer.then.as_deref(), Some("add a note"));
+        let requests: Vec<(String, String)> = sent.try_iter().collect();
+        let first: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&requests[1].1).unwrap();
+        assert_eq!(first["tool_choice"], "required");
+        assert!(second.get("tools").is_none());
+        assert!(second.get("tool_choice").is_none());
+        // What it thought before the call was lost is replayed as said.
+        assert_eq!(second["messages"][2]["content"], "The plan opens notes.");
+        assert_eq!(second["messages"][3]["content"], PLAN_AS_TEXT);
+    }
+
+    /// Asked for text, a reply with no readable plan is asked again once.
+    #[test]
+    fn a_text_plan_that_does_not_parse_is_asked_for_again() {
+        let offer = open_notes().offers[0].id();
+        let say = |content: &str| {
+            let answer = serde_json::json!({"choices": [{"message": {"role": "assistant",
+                "content": content}, "finish_reason": "stop"}]});
+            http("200 OK", &answer.to_string())
+        };
+        let plan = serde_json::json!({"steps": [{"operation": offer, "arguments": {}}],
+            "then": null});
+        let (url, sent) = endpoint(vec![
+            say(""),
+            say("{\"steps\": [{\"operation\": \"x\"]}]}"),
+            say(&plan.to_string()),
+        ]);
+        let answer = standard(&url)
+            .choose("open notes", &open_notes(), None)
+            .unwrap();
+        assert_eq!(answer.actions, vec![offer]);
+        let requests: Vec<(String, String)> = sent.try_iter().collect();
+        let third: serde_json::Value = serde_json::from_str(&requests[2].1).unwrap();
+        assert!(third.get("tools").is_none());
+        assert!(
+            third["messages"][5]["content"]
+                .as_str()
+                .unwrap()
+                .ends_with(PLAN_AS_TEXT)
+        );
+    }
+
+    /// A plan written as text (wrapped or not), a `then` written as a list
+    /// and the end of a lost turn's reasoning are read as meant.
+    #[test]
+    fn a_local_models_slips_are_read_as_meant() {
+        assert!(plan_in_text("Sure: {\"steps\": [], \"then\": null}.").is_some());
+        assert!(plan_in_text("{\"operation\": \"x\"}").is_none());
+        assert!(plan_in_text("no plan here").is_none());
+        assert!(plan_in_text("} {").is_none());
+        let closed_early = r#"{"steps": [{"operation": "x", "arguments": {}}]} , "then": null}"#;
+        assert_eq!(
+            plan_in_text(closed_early).unwrap()["steps"][0]["operation"],
+            "x"
+        );
+        let wrapped = "```json\n{\"plan\": {\"steps\": [], \"then\": null}}\n```";
+        assert_eq!(
+            plan_in_text(wrapped).unwrap()["then"],
+            serde_json::Value::Null
+        );
+        assert!(plan_in_text("{\"name\": \"plan\", \"arguments\": {\"steps\": []}}").is_some());
+        let listed = serde_json::json!({"steps": [], "then": ["draw the panel", null, "export"]});
+        assert_eq!(joined_then(listed)["then"], "draw the panel; export");
+        let none = serde_json::json!({"steps": [], "then": [null, "NULL"]});
+        assert_eq!(joined_then(none)["then"], serde_json::Value::Null);
+        let text = serde_json::json!({"steps": [], "then": "export"});
+        assert_eq!(joined_then(text.clone()), text);
+        let long = format!("é{}", "x".repeat(MOST_REPLAYED_REASONING));
+        let answer = serde_json::json!({"choices": [{"message": {"reasoning_content": long}}]});
+        assert_eq!(
+            lost_reasoning(&answer).map(|kept| kept.len()),
+            Some(MOST_REPLAYED_REASONING)
+        );
+        assert!(
+            lost_reasoning(&serde_json::json!({"choices": [{"message": {"reasoning": " "}}]}))
+                .is_none()
+        );
     }
 
     /// The published operations come with the task, so a task they answer
