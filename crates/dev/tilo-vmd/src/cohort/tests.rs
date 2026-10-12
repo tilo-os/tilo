@@ -302,103 +302,11 @@ fn verify_subject(root: &Path, case: &str) {
     ) {
         assert!(result.is_ok(), "{}", result.err().unwrap());
         let cohort = result.unwrap();
-        // The derived archive is the publisher's signed archive, byte for
-        // byte: complete, the same package id, trusted under the layer's pin.
-        let derived = fs::read(&cohort.packages.first().unwrap().archive).unwrap();
-        assert_eq!(derived, fs::read(root.join("work/signed.tapp")).unwrap());
-        let tapp =
-            tilo_app_package::tapp::read(derived.as_slice(), &mut tilo_app_package::DiscardBlobs)
-                .unwrap();
-        assert!(tapp.is_complete());
-        assert_eq!(
-            tapp.meta.id.to_hex(),
-            cohort.packages.first().unwrap().row.package_id_hex
-        );
+        assert_derived_archive(root, &cohort);
         if case == "valid" {
-            let session = crate::apply::Session {
-                slot: "device".into(),
-                unit: "session-3.scope".into(),
-                user: "owner".into(),
-                units: Vec::new(),
-                control_socket: PathBuf::from("/run/owner/control"),
-                stand_in: false,
-                login: None,
-            };
-            let row = &cohort.packages.first().unwrap().row;
-            for variant in ["selected", "wrong-root", "missing", "forged-held", "held"] {
-                let mut receipt = serde_json::json!({
-                    "id": row.id, "version": row.version, "root": row.package_id_hex,
-                    "runtime": row.runtime, "preserved": false, "pinned": true, "held": false,
-                });
-                match variant {
-                    "wrong-root" => receipt["root"] = "11".repeat(32).into(),
-                    "forged-held" => receipt["preserved"] = true.into(),
-                    "held" => {
-                        receipt["root"] = "22".repeat(32).into();
-                        receipt["preserved"] = true.into();
-                        receipt["held"] = true.into();
-                    }
-                    _ => {}
-                }
-                let output = if variant == "missing" {
-                    String::new()
-                } else {
-                    format!("cohort-selection: {receipt}\n")
-                };
-                let mut apply = crate::apply::RecordingApply::default();
-                apply.cohort_replies.push_back(output);
-                let selected = super::select(&mut apply, &session, &cohort);
-                if matches!(variant, "selected" | "held") {
-                    let actions = selected.unwrap();
-                    assert!(
-                        matches!(actions.as_slice(), [tilo_vm_protocol::CohortSelection { id, pinned: true, preserved, .. }]
-                        if id == &row.id && *preserved == (variant == "held"))
-                    );
-                } else {
-                    assert!(
-                        selected.is_err(),
-                        "{variant} must not acknowledge selection"
-                    );
-                }
-                assert_eq!(apply.calls.len(), 1);
-                assert!(
-                    apply
-                        .calls
-                        .first()
-                        .unwrap()
-                        .starts_with("install_cohort_app owner ")
-                );
-            }
+            assert_selection_receipts(&cohort);
         }
-        let mut provenance = tilo_vm_protocol::Provenance::local("apps+runtime");
-        provenance.cargo_profile = Some("thin-app".into());
-        provenance.cargo_lock_hash = Some("new graph".into());
-        provenance.target = Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
-        let base = tilo_vm_protocol::BaseInfo {
-            cargo_lock_hash: Some("old graph".into()),
-            target: provenance.target.clone(),
-            ..Default::default()
-        };
-        assert!(crate::daemon::abi_check(&provenance, &base, std::env::consts::ARCH).is_err());
-        assert!(
-            crate::daemon::abi_check_verified(
-                &provenance,
-                &base,
-                std::env::consts::ARCH,
-                Some(&cohort)
-            )
-            .is_ok()
-        );
-        provenance.target = Some("wrong-architecture".into());
-        assert!(
-            crate::daemon::abi_check_verified(
-                &provenance,
-                &base,
-                std::env::consts::ARCH,
-                Some(&cohort)
-            )
-            .is_err()
-        );
+        assert_cohort_abi(&cohort);
         drop(cohort);
         assert_eq!(
             fs::read_dir(&staging).unwrap().count(),
@@ -413,6 +321,100 @@ fn verify_subject(root: &Path, case: &str) {
             "a refused cohort left archives behind"
         );
     }
+}
+
+fn assert_derived_archive(root: &Path, cohort: &VerifiedCohort) {
+    // The derived archive is the publisher's signed archive, byte for
+    // byte: complete, the same package id, trusted under the layer's pin.
+    let derived = fs::read(&cohort.packages.first().unwrap().archive).unwrap();
+    assert_eq!(derived, fs::read(root.join("work/signed.tapp")).unwrap());
+    let tapp =
+        tilo_app_package::tapp::read(derived.as_slice(), &mut tilo_app_package::DiscardBlobs)
+            .unwrap();
+    assert!(tapp.is_complete());
+    assert_eq!(
+        tapp.meta.id.to_hex(),
+        cohort.packages.first().unwrap().row.package_id_hex
+    );
+}
+
+fn assert_selection_receipts(cohort: &VerifiedCohort) {
+    let session = crate::apply::Session {
+        slot: "device".into(),
+        unit: "session-3.scope".into(),
+        user: "owner".into(),
+        units: Vec::new(),
+        control_socket: PathBuf::from("/run/owner/control"),
+        stand_in: false,
+        login: None,
+    };
+    let row = &cohort.packages.first().unwrap().row;
+    for variant in ["selected", "wrong-root", "missing", "forged-held", "held"] {
+        let mut receipt = serde_json::json!({
+            "id": row.id, "version": row.version, "root": row.package_id_hex,
+            "runtime": row.runtime, "preserved": false, "pinned": true, "held": false,
+        });
+        match variant {
+            "wrong-root" => receipt["root"] = "11".repeat(32).into(),
+            "forged-held" => receipt["preserved"] = true.into(),
+            "held" => {
+                receipt["root"] = "22".repeat(32).into();
+                receipt["preserved"] = true.into();
+                receipt["held"] = true.into();
+            }
+            _ => {}
+        }
+        let output = if variant == "missing" {
+            String::new()
+        } else {
+            format!("cohort-selection: {receipt}\n")
+        };
+        let mut apply = crate::apply::RecordingApply::default();
+        apply.cohort_replies.push_back(output);
+        let selected = super::select(&mut apply, &session, cohort);
+        if matches!(variant, "selected" | "held") {
+            let actions = selected.unwrap();
+            assert!(
+                matches!(actions.as_slice(), [tilo_vm_protocol::CohortSelection { id, pinned: true, preserved, .. }]
+                if id == &row.id && *preserved == (variant == "held"))
+            );
+        } else {
+            assert!(
+                selected.is_err(),
+                "{variant} must not acknowledge selection"
+            );
+        }
+        assert_eq!(apply.calls.len(), 1);
+        assert!(
+            apply
+                .calls
+                .first()
+                .unwrap()
+                .starts_with("install_cohort_app owner ")
+        );
+    }
+}
+
+fn assert_cohort_abi(cohort: &VerifiedCohort) {
+    let mut provenance = tilo_vm_protocol::Provenance::local("apps+runtime");
+    provenance.cargo_profile = Some("thin-app".into());
+    provenance.cargo_lock_hash = Some("new graph".into());
+    provenance.target = Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
+    let base = tilo_vm_protocol::BaseInfo {
+        cargo_lock_hash: Some("old graph".into()),
+        target: provenance.target.clone(),
+        ..Default::default()
+    };
+    assert!(crate::daemon::abi_check(&provenance, &base, std::env::consts::ARCH).is_err());
+    assert!(
+        crate::daemon::abi_check_verified(&provenance, &base, std::env::consts::ARCH, Some(cohort))
+            .is_ok()
+    );
+    provenance.target = Some("wrong-architecture".into());
+    assert!(
+        crate::daemon::abi_check_verified(&provenance, &base, std::env::consts::ARCH, Some(cohort))
+            .is_err()
+    );
 }
 
 #[test]
