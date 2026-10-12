@@ -84,18 +84,13 @@ const HOST_IDENTITY_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
 /// This deliberately caps commands, rather than bytes, because the protocol
 /// already bounds its payloads at each broker boundary.
 const SDK_COMMAND_QUEUE: usize = 256;
-/// The share of the outbound command queue document traffic never takes, as
-/// a divisor of its capacity. Documents are bounded by their own byte budget,
-/// so a flood of small edits could otherwise fill every slot, and the next
-/// control command (a publication barrier, a join, an invocation result)
-/// would find the queue full, which fails the whole bridge. Only documents
-/// are refused as busy; control commands always have these slots.
-const SDK_CONTROL_HEADROOM_DIVISOR: usize = 16;
-
-/// Slots of `tx` reserved for control commands.
-fn control_headroom<T>(tx: &tokio_mpsc::Sender<T>) -> usize {
-    tx.max_capacity() / SDK_CONTROL_HEADROOM_DIVISOR
-}
+/// Queue slots document traffic never takes. Documents are bounded by their
+/// own byte budget, so a flood of small edits could otherwise fill every
+/// slot, and the next control command (a publication barrier, a join, an
+/// invocation result) would find the queue full, which fails the whole
+/// bridge. Only documents are refused as busy; control commands always have
+/// these slots.
+const SDK_CONTROL_HEADROOM: usize = 16;
 /// Maximum number of shovel-to-UI events waiting behind a busy event loop.
 const SDK_EVENT_QUEUE: usize = 256;
 /// Aggregate retained payload budget for each cross-thread queue. This is
@@ -1897,7 +1892,7 @@ fn try_enqueue_sdk_command(
             );
             return Err(TransportError::Busy);
         };
-        if tx.capacity() <= control_headroom(tx) {
+        if tx.capacity() <= SDK_CONTROL_HEADROOM {
             // Release before arming, or the reservation's own drop would
             // spend the wake on a retry that finds the queue still full.
             drop(reservation);
@@ -8593,11 +8588,9 @@ mod tests {
             }
         };
         assert_eq!(refusal, TransportError::Busy);
-        let headroom = control_headroom(&tx);
-        assert!(headroom > 0);
-        assert_eq!(admitted, SDK_COMMAND_QUEUE - headroom);
+        assert_eq!(admitted, SDK_COMMAND_QUEUE - SDK_CONTROL_HEADROOM);
         assert_eq!(rx.len(), admitted);
-        for _ in 0..headroom {
+        for _ in 0..SDK_CONTROL_HEADROOM {
             assert!(
                 enqueue_sdk_command(
                     &tx,
