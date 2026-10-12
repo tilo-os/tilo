@@ -1,6 +1,8 @@
 //! Exact admitted document data borrowed from a restored peer.
 use super::{BoundedPeerError, PeerRead, Route, SystemTime};
 use automerge::{AutoCommit, ChangeHash};
+mod history;
+pub use history::{PeerDocumentCapture, committed_document_revision};
 
 /// Current access failures are preserved separately from route absence.
 /// These are observations; the embedding owner authenticates caller and time.
@@ -11,6 +13,8 @@ pub enum PeerDocumentReadError {
     Missing,
     Encrypted,
     Incomplete,
+    Capacity,
+    Opening(String),
 }
 impl std::fmt::Display for PeerDocumentReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

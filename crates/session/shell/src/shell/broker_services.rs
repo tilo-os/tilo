@@ -33,6 +33,7 @@ pub(crate) struct NativeOwnerCommitService {
     tree: WorkspaceTreeHandle,
     owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 }
 impl NativeOwnerCommitService {
     pub(crate) fn new(
@@ -54,6 +55,7 @@ impl NativeOwnerCommitService {
             tree,
             owner,
             network,
+            history_keys: None,
         }
     }
     pub(crate) fn owner(&self) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
@@ -291,6 +293,13 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
     /// (`tilo_identity_host::policy_change`).
     fn announces_policy_changes(&self) -> bool {
         true
+    }
+    /// The room's agents whose delegation the room's governance verified for
+    /// exactly their device ([`super::state::WorkspaceTree::verified_agents`]).
+    fn history_agents(&self, room: &str) -> Vec<ui::history_source::RosterAgent> {
+        super::state::RoomId::parse(room)
+            .map(|room| self.0.read().verified_agents(room))
+            .unwrap_or_default()
     }
 }
 impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
@@ -1598,8 +1607,12 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
 fn native_document_reads(
     tree: &WorkspaceTreeHandle,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 ) -> Arc<dyn NativeDocumentReads> {
-    Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
+    Arc::new(NativeOwnerCommitService {
+        history_keys,
+        ..NativeOwnerCommitService::new(tree.clone(), network)
+    })
 }
 
 fn native_workspace_memberships(
@@ -1634,10 +1647,11 @@ fn native_resource_views(
 pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 ) -> HostServices {
     let committed_documents = membership
         .as_ref()
-        .map(|tree| native_document_reads(tree, network.clone()));
+        .map(|tree| native_document_reads(tree, network.clone(), history_keys));
     let workspace_memberships = membership
         .as_ref()
         .map(|tree| native_workspace_memberships(tree, network.clone()));
