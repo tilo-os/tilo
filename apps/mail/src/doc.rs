@@ -10,6 +10,8 @@
 //! │           └── "server" (Map) { read, starred, folder } as the server has them
 //! ├── "messages" (Map)  externally-ingested ids
 //! │     └── <id> (Map) { present, purged, account, locator, server_removed }
+//! ├── "local"   (Map)  messages held whole: delivered here or drafted
+//! │     └── <id> (Str) the message as JSON (`crate::local::LocalMessage`)
 //! └── "draft"   (Map)  the message currently being composed
 //!       ├── to, cc, bcc, subject, body, html_body, … (Str) as last saved
 //!       └── "rich_body" (Map) the body being written: qdoc rich text
@@ -24,7 +26,9 @@
 //!
 //! The immutable message corpus (headers/bodies/attachments) is *not* stored
 //! here — it's hydrated from the server (or the sample corpus) into the
-//! in-memory [`Mailbox`]. Navigation, search, selection, scroll position and
+//! in-memory [`Mailbox`]. The exception is mail that has no server: a message
+//! delivered into the mailbox without one (a seeded scenario, an import) and a
+//! draft written through the mailbox's actions are held whole under `local`. Navigation, search, selection, scroll position and
 //! editor formatting are deliberately device-local presentation state. Only
 //! domain mutations (flags/folders/labels/drafts) ride in the CRDT.
 
@@ -45,6 +49,8 @@ const RICH_BODY: &str = "rich_body";
 /// A message's flag entry key holding what its server has.
 const SERVER: &str = "server";
 const OUTBOX: &str = "outbox";
+/// Messages the document holds whole (`crate::local`).
+const LOCAL: &str = "local";
 
 pub struct MailDoc;
 
@@ -473,6 +479,93 @@ impl MailDoc {
                 (outgoing.id == id).then(|| (outgoing, read_str(doc, &entry, "failed")))
             })
             .collect()
+    }
+
+    // ---- messages the document holds whole ------------------------------
+    //
+    // Mail delivered without a server and drafts written through the
+    // mailbox's actions (`crate::local`), each as JSON under `local/<id>`.
+    // Their folder and flags are the ordinary `flags/<id>` entry.
+
+    /// Store `message` under its id, replacing what was stored there.
+    pub fn store_local(doc: &mut AutoCommit, message: &crate::local::LocalMessage) {
+        let Ok(json) = serde_json::to_string(message) else {
+            return;
+        };
+        let local = Self::map(doc, &ROOT, LOCAL);
+        ui::doc::put_if_changed(doc, &local, message.id.as_str(), json.as_str());
+    }
+
+    /// The message stored whole under `id`, unless it was purged.
+    pub fn local_message(doc: &AutoCommit, id: &str) -> Option<crate::local::LocalMessage> {
+        let Ok(Some((Value::Object(ObjType::Map), local))) = doc.get(&ROOT, LOCAL) else {
+            return None;
+        };
+        if Self::is_message_purged(doc, id) {
+            return None;
+        }
+        let message: crate::local::LocalMessage =
+            serde_json::from_str(&read_str(doc, &local, id)?).ok()?;
+        (message.id == id).then(|| message.bounded())
+    }
+
+    /// Whether anything was ever stored under `id`, purged or not.
+    pub fn has_local_entry(doc: &AutoCommit, id: &str) -> bool {
+        let Ok(Some((Value::Object(ObjType::Map), local))) = doc.get(&ROOT, LOCAL) else {
+            return false;
+        };
+        doc.get(&local, id).ok().flatten().is_some()
+    }
+
+    /// Every message stored whole that was not purged, with its flags, in
+    /// id order.
+    pub fn local_messages(doc: &AutoCommit) -> Vec<crate::local::Stored> {
+        let Ok(Some((Value::Object(ObjType::Map), local))) = doc.get(&ROOT, LOCAL) else {
+            return Vec::new();
+        };
+        let mut ids: Vec<String> = doc.keys(&local).collect();
+        ids.sort();
+        ids.into_iter()
+            .filter_map(|id| {
+                let message = Self::local_message(doc, &id)?;
+                Some(crate::local::Stored {
+                    flags: crate::local::Flags {
+                        folder: Self::get_folder_for(doc, &id).unwrap_or(Folder::Inbox),
+                        read: Self::get_read(doc, &id).unwrap_or(false),
+                        starred: Self::get_starred(doc, &id).unwrap_or(false),
+                        labels: Self::get_labels(doc, &id),
+                    },
+                    message,
+                })
+            })
+            .collect()
+    }
+
+    /// The stored message whose `Message-ID` is `message_id`.
+    pub fn local_by_message_id(
+        doc: &AutoCommit,
+        message_id: &str,
+    ) -> Option<crate::local::LocalMessage> {
+        let Ok(Some((Value::Object(ObjType::Map), local))) = doc.get(&ROOT, LOCAL) else {
+            return None;
+        };
+        let wanted = crate::local::bare_message_id(message_id);
+        doc.keys(&local)
+            .filter_map(|id| Self::local_message(doc, &id))
+            .find(|message| message.message_id == wanted)
+    }
+
+    /// Hydrate every stored message `mb` does not hold yet into it, so the
+    /// window lists and opens them like fetched mail.
+    pub fn hydrate_local(doc: &AutoCommit, mb: &mut Mailbox) {
+        for stored in Self::local_messages(doc) {
+            let Some(message) = stored.message.to_message(&stored.flags) else {
+                continue;
+            };
+            if mb.get(message.id).is_none_or(|held| *held != message) {
+                mb.insert(message);
+            }
+        }
     }
 
     // ---- known message registry -----------------------------------------

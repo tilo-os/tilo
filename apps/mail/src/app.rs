@@ -2682,6 +2682,9 @@ impl MailApp {
     fn hydrate_domain_state(&self, doc: &mut ui::widget::Edits<'_>) {
         {
             let mut st = self.shared.borrow_mut();
+            // Mail the document holds whole (delivered without a server, or
+            // drafted by a collaborator or an agent) joins the corpus.
+            MailDoc::hydrate_local(doc, &mut st.mailbox);
             MailDoc::apply_flags(doc, &mut st.mailbox);
         }
         // A persisted draft becomes a local Drafts projection, but does not
@@ -4050,6 +4053,11 @@ impl MailApp {
             MailEffect::Save { message, index } => {
                 self.attachment_to_save(&message, index)?;
                 Err("saving an attachment asks the host where to put it".into())
+            }
+            // Answered from the document by the surface before it reaches
+            // the window (`resource.rs`).
+            MailEffect::SearchMessages { .. } | MailEffect::ExportContent { .. } => {
+                Err("this effect reads the mailbox document".into())
             }
         }
     }

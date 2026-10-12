@@ -43,6 +43,20 @@ pub struct MailboxState {
     /// Messages sent and not yet delivered, with the reason the server
     /// refused one.
     pub outbox: Vec<(Outgoing, Option<String>)>,
+    /// Messages the document holds whole: delivered without a server, or
+    /// drafted through the mailbox's actions ([`crate::local`]).
+    pub local: Vec<crate::local::Stored>,
+}
+
+impl MailboxState {
+    /// How many messages the document knows only by their flags (a
+    /// server's mail, whose content stays on the devices that fetched it).
+    fn server_message_count(&self) -> usize {
+        self.messages
+            .iter()
+            .filter(|row| !self.local.iter().any(|held| held.message.id == row.id))
+            .count()
+    }
 }
 
 /// The mail mailbox resource.
@@ -63,11 +77,16 @@ impl Resource for Mail {
     fn read(doc: &Doc) -> Result<MailboxState, ModelError> {
         let draft = MailDoc::load_draft(doc);
         let has_draft = !draft.is_empty();
+        let local = MailDoc::local_messages(doc);
         let messages = MailDoc::list_message_flags(doc)
             .into_iter()
             .map(|flags| MessageRow {
+                subject: local
+                    .iter()
+                    .find(|held| held.message.id == flags.id)
+                    .map(|held| held.message.subject.clone())
+                    .unwrap_or_default(),
                 id: flags.id,
-                subject: String::new(),
                 folder: flags.folder,
                 read: flags.read,
                 starred: flags.starred,
@@ -83,7 +102,60 @@ impl Resource for Mail {
             has_draft_body: MailDoc::draft_body(doc).is_some(),
             server_updates: MailDoc::server_updates(doc),
             outbox: MailDoc::outbox(doc),
+            local,
         })
+    }
+
+    /// The mailbox reads as the messages it holds: with no item its folders
+    /// and messages, newest first, each with a snippet; `mail.folder:<key>`
+    /// one folder's; `mail.message:<id>` one message whole with its
+    /// conversation; `mail.thread:<id>` the whole conversation, oldest first.
+    const READABLE: bool = true;
+
+    fn read_content(
+        state: &MailboxState,
+        _doc: &Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        crate::local::read(
+            &state.local,
+            state.server_message_count(),
+            state.has_draft,
+            item,
+        )
+    }
+
+    /// A delivery or a draft answers with the message it made, or that it
+    /// changed nothing.
+    fn answer(
+        _doc: &Doc,
+        action: &str,
+        changes: &[ui::automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        if !matches!(action, "deliver-message" | "draft-message" | "draft-reply") {
+            return None;
+        }
+        let made = changes.iter().find_map(|patch| {
+            let [(_, ui::automerge::Prop::Map(map))] = patch.path.as_slice() else {
+                return None;
+            };
+            match &patch.action {
+                ui::automerge::PatchAction::PutMap { key, .. } if map == "local" => {
+                    Some(key.clone())
+                }
+                _ => None,
+            }
+        });
+        // A message delivered before is left as it was.
+        Some(made.map_or_else(
+            || serde_json::json!({ "unchanged": "the mailbox already holds this message" }),
+            |id| {
+                serde_json::json!({
+                    "message": format!("mail.message:{id}"),
+                    "thread": format!("mail.thread:{id}"),
+                })
+            },
+        ))
     }
 
     fn initialize(_doc: &mut Doc) -> Result<(), ModelError> {
@@ -92,6 +164,10 @@ impl Resource for Mail {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the mailbox's declared actions, each read top to bottom beside its parameters"
+    )]
     fn declarations() -> Vec<ActionDecl<Self>> {
         let text = |name, description| ActionParam::required(name, ParamType::Text, description);
         let optional =
@@ -140,6 +216,129 @@ impl Resource for Mail {
                 },
             )
             .describe("Takes a message out of the outbox unsent."),
+            ActionDecl::new(
+                "deliver-message",
+                "Deliver message",
+                vec![
+                    text("from", "The sender, `Name <address>` or an address"),
+                    optional("to", "Recipients, comma-separated"),
+                    optional("cc", "Copy recipients, comma-separated"),
+                    text("subject", "The subject"),
+                    text("body", "The message, as plain text"),
+                    optional(
+                        "date",
+                        "When it was sent: RFC 3339 (2026-10-11T09:30:00Z) or RFC 2822; now when absent",
+                    ),
+                    optional(
+                        "folder",
+                        "The folder it arrives in: inbox (default), archive, junk, sent, drafts or trash",
+                    ),
+                    ActionParam::optional(
+                        "read",
+                        ParamType::Boolean,
+                        "Whether it arrives already read (default false)",
+                    ),
+                    optional(
+                        "in_reply_to",
+                        "The message it answers: a message id, mail.message:<id> or a Message-ID",
+                    ),
+                    optional(
+                        "thread",
+                        "A conversation key every message of one conversation shares",
+                    ),
+                    optional("message_id", "Its Message-ID; derived from its content when absent"),
+                    optional("id", "Its mailbox id (a UUID); derived from its Message-ID when absent"),
+                ],
+                |args, now_ms| build_delivery(args, now_ms).map(MailAction::Deliver),
+            )
+            .describe(
+                "Adds a message to the mailbox as if it had arrived, with no mail server or \
+                 account: a seeded scenario, an import, an injected event. Delivering the same \
+                 message again changes nothing.",
+            )
+            .answering(),
+            ActionDecl::new(
+                "draft-message",
+                "Draft message",
+                vec![
+                    text("to", "Recipients, comma-separated"),
+                    optional("cc", "Copy recipients, comma-separated"),
+                    text("subject", "The subject"),
+                    text("body", "The message, as plain text"),
+                    optional("from", "The address it is written from"),
+                    optional(
+                        "in_reply_to",
+                        "The message it answers: a message id, mail.message:<id> or a Message-ID",
+                    ),
+                    optional("id", "A draft's id, to revise that draft"),
+                ],
+                |args, now_ms| {
+                    let field = |name| args.text(name).unwrap_or_default().to_owned();
+                    let id = draft_id(args);
+                    Ok(MailAction::SaveDraftMessage(
+                        crate::local::LocalMessage {
+                            message_id: crate::local::derived_message_id(&[&id, "draft"]),
+                            id,
+                            from: field("from"),
+                            to: field("to"),
+                            cc: field("cc"),
+                            subject: field("subject"),
+                            body: field("body"),
+                            date: crate::local::format_date(now_ms.div_euclid(1000)),
+                            timestamp_min: now_ms.div_euclid(60_000),
+                            in_reply_to: args
+                                .text("in_reply_to")
+                                .map(str::to_owned)
+                                .filter(|parent| !parent.trim().is_empty()),
+                            thread: None,
+                        }
+                        .bounded(),
+                    ))
+                },
+            )
+            .describe(
+                "Writes a message into Drafts, or revises the draft whose id is given. Nothing is \
+                 sent: the draft waits for a person to review and send it.",
+            )
+            .answering(),
+            ActionDecl::new(
+                "draft-reply",
+                "Draft reply",
+                vec![
+                    text(
+                        "message",
+                        "The message answered: its id, mail.message:<id> or Message-ID",
+                    ),
+                    text("body", "The reply, as plain text; the original is quoted below it"),
+                    ActionParam::optional(
+                        "reply_all",
+                        ParamType::Boolean,
+                        "Also to everyone else the message went to (default false)",
+                    ),
+                    optional(
+                        "from",
+                        "The address it is written from; the message's first recipient when absent",
+                    ),
+                    optional("id", "A reply draft's id, to revise that draft"),
+                ],
+                |args, now_ms| {
+                    Ok(MailAction::DraftReply(crate::actions::ReplyDraft {
+                        id: draft_id(args),
+                        message: args.text("message").unwrap_or_default().to_owned(),
+                        body: args.text("body").unwrap_or_default().to_owned(),
+                        all: args.boolean("reply_all").unwrap_or(false),
+                        from: args.text("from").map(str::to_owned),
+                        date: crate::local::format_date(now_ms.div_euclid(1000)),
+                        timestamp_min: now_ms.div_euclid(60_000),
+                    }))
+                },
+            )
+            .describe(
+                "Writes a reply into Drafts: to the sender (and with reply_all the other \
+                 recipients), under `Re:` the subject, in the message's conversation, quoting it. \
+                 Nothing is sent.",
+            )
+            .answering(),
         ]
     }
 
@@ -202,6 +401,91 @@ impl Resource for Mail {
     }
 }
 
+/// The id a draft is written under: the one given, to revise it, else a
+/// new one.
+fn draft_id(args: &tilo_actions::ActionArgs) -> String {
+    args.text("id")
+        .map(|id| id.trim().trim_start_matches("mail.message:").to_owned())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+}
+
+/// The delivery `deliver-message` was given, authored at `now_ms`. Its ids
+/// are derived from what it says, so the same seed names the same message
+/// every time.
+fn build_delivery(
+    args: &tilo_actions::ActionArgs,
+    now_ms: i64,
+) -> Result<crate::actions::Delivery, String> {
+    use crate::local::{
+        LocalMessage, bare_message_id, derived_message_id, format_date, parse_date,
+    };
+    let field = |name| args.text(name).unwrap_or_default().trim().to_owned();
+    let seconds = match args.text("date").map(str::trim).filter(|d| !d.is_empty()) {
+        Some(date) => parse_date(date).ok_or_else(|| {
+            format!("`{date}` is not a date: write 2026-10-11T09:30:00Z or an RFC 2822 date")
+        })?,
+        None => now_ms.div_euclid(1000),
+    };
+    let folder = match args.text("folder").map(str::trim).filter(|f| !f.is_empty()) {
+        Some(key) => {
+            let key = key.strip_prefix("mail.folder:").unwrap_or(key);
+            Folder::from_key(&key.to_ascii_lowercase())
+                .filter(|folder| *folder != Folder::Starred)
+                .ok_or_else(|| {
+                    format!("no folder `{key}`: inbox, archive, junk, sent, drafts or trash")
+                })?
+        }
+        None => Folder::Inbox,
+    };
+    if !field("from").contains('@') {
+        return Err("`from` needs an email address".into());
+    }
+    let date = format_date(seconds);
+    let message_id = match args.text("message_id").map(bare_message_id) {
+        Some(given) if !given.is_empty() => given,
+        _ => derived_message_id(&[
+            &field("from"),
+            &field("to"),
+            &field("subject"),
+            &date,
+            &field("body"),
+            folder.as_key(),
+        ]),
+    };
+    let id = match args.text("id").map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => id
+            .trim_start_matches("mail.message:")
+            .parse::<uuid::Uuid>()
+            .map_err(|_| format!("`{id}` is not a message id: give a UUID, or leave it out"))?,
+        None => crate::transport::stable_message_id(&message_id),
+    };
+    Ok(crate::actions::Delivery {
+        message: LocalMessage {
+            id: id.to_string(),
+            message_id,
+            from: field("from"),
+            to: field("to"),
+            cc: field("cc"),
+            subject: field("subject"),
+            body: args.text("body").unwrap_or_default().to_owned(),
+            date,
+            timestamp_min: seconds.div_euclid(60),
+            in_reply_to: args
+                .text("in_reply_to")
+                .map(str::to_owned)
+                .filter(|parent| !parent.trim().is_empty()),
+            thread: args
+                .text("thread")
+                .map(str::to_owned)
+                .filter(|thread| !thread.trim().is_empty()),
+        }
+        .bounded(),
+        folder: folder.as_key().to_owned(),
+        read: args.boolean("read").unwrap_or(false),
+    })
+}
+
 /// Where the draft body is published, beside the draft it belongs to.
 const DRAFT_BODY_ID: &str = "mail.draft:current/body";
 
@@ -216,6 +500,32 @@ fn publish_draft_body() -> PublishedResource {
 /// [`publish_draft_body`] publishes.
 pub(crate) fn draft_body_dispatcher(dispatcher: &Dispatcher<Mail>) -> Dispatcher<RichText> {
     dispatcher.child::<RichText>(DRAFT_BODY_ID, MailAction::EditDraftBody)
+}
+
+/// Keep the messages `export-content` names, as `format`, in this window's
+/// content store, and answer with their content address.
+fn export_content(
+    stored: &[crate::local::Stored],
+    format: &str,
+    folder: Option<&str>,
+    message: Option<&str>,
+    thread: Option<&str>,
+) -> EffectAnswer {
+    let chosen = crate::local::export_scope(stored, folder, message, thread)?;
+    let title = match (message, thread, folder) {
+        (Some(_), _, _) => "Message".to_owned(),
+        (None, Some(_), _) => "Conversation".to_owned(),
+        (None, None, Some(folder)) => Folder::from_key(folder.trim_start_matches("mail.folder:"))
+            .map_or_else(|| "Mailbox".to_owned(), |folder| folder.title().to_owned()),
+        (None, None, None) => "Mailbox".to_owned(),
+    };
+    let bytes = crate::local::export(format, &title, &chosen)?;
+    let content = ui::tilo_resource::content::current()
+        .ok_or("this window keeps no content to export into")?;
+    let hash = content
+        .put(&bytes)
+        .map_err(|error| format!("the export could not be kept: {error}"))?;
+    Effected::content(&hash)
 }
 
 /// Hosted-only extras that are not document state: an in-flight send.
@@ -415,6 +725,31 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
     }
 
     fn effect(&mut self, effect: MailEffect, cx: &mut EffectCx<Mail, Self>) -> EffectAnswer {
+        // Searching and exporting read the messages the document holds, the
+        // same in every window and in an agent's headless one.
+        match &effect {
+            MailEffect::SearchMessages { query, folder } => {
+                let state = cx.live().get();
+                return crate::local::search(&state.local, query, folder.as_deref())
+                    .map(Effected::value);
+            }
+            MailEffect::ExportContent {
+                format,
+                folder,
+                message,
+                thread,
+            } => {
+                let state = cx.live().get();
+                return export_content(
+                    &state.local,
+                    format,
+                    folder.as_deref(),
+                    message.as_deref(),
+                    thread.as_deref(),
+                );
+            }
+            _ => {}
+        }
         if let MailEffect::Save { message, index } = &effect {
             let (name, bytes) = self.attachment_to_save(message, *index)?;
             let resource = format!("mail.attachment:{message}:{index}");
@@ -633,6 +968,92 @@ mod tests {
             .is_err(),
             "a message without a recipient is refused"
         );
+    }
+
+    /// Mail delivered with no server or account is held whole in the
+    /// document: the mailbox's `read` lists it, a reply drafted to it lands
+    /// in Drafts, the window's corpus shows it, and undo takes the draft back.
+    #[test]
+    fn delivered_mail_is_read_answered_in_drafts_and_shown() {
+        use ui::framework::testing::TestApp;
+
+        let mut app = TestApp::<MailShell>::new().unwrap();
+        let surface = app.agent_surface().to_string();
+        for action in [
+            "deliver-message",
+            "draft-message",
+            "draft-reply",
+            "search-messages",
+            "export-content",
+            "\"read\"",
+        ] {
+            assert!(surface.contains(action), "{action}: {surface}");
+        }
+        let delivered = app
+            .call(
+                "deliver-message",
+                serde_json::json!({
+                    "from": "Ada <ada@example.test>",
+                    "to": "me@example.test",
+                    "subject": "Lunch?",
+                    "body": "Noon at the usual place?",
+                    "date": "2026-10-11T09:00:00Z",
+                }),
+            )
+            .unwrap()
+            .expect("a delivery answers with the message");
+        let item = delivered["message"].as_str().unwrap().to_owned();
+        let id = item.trim_start_matches("mail.message:").to_owned();
+        let state = app.state();
+        assert_eq!(state.local.len(), 1);
+        assert!(
+            state
+                .messages
+                .iter()
+                .any(|row| row.id == id && row.subject == "Lunch?" && row.folder == Folder::Inbox),
+            "every message action reaches it"
+        );
+        let listing = app.call("read", serde_json::json!({})).unwrap().unwrap();
+        assert_eq!(
+            listing["messages"][0]["snippet"],
+            "Noon at the usual place?"
+        );
+
+        app.call(
+            "draft-reply",
+            serde_json::json!({ "message": item, "body": "Yes!" }),
+        )
+        .unwrap();
+        let drafts = app
+            .call("read", serde_json::json!({ "item": "mail.folder:drafts" }))
+            .unwrap()
+            .unwrap();
+        assert_eq!(drafts["messages"][0]["subject"], "Re: Lunch?", "{drafts}");
+        assert_eq!(drafts["messages"][0]["to"], "Ada <ada@example.test>");
+        assert!(app.state().outbox.is_empty(), "a draft is not sent");
+
+        // The window's corpus takes it in like fetched mail.
+        let mut corpus = crate::sample::sample_mailbox();
+        app.read_document(|doc| MailDoc::hydrate_local(doc, &mut corpus));
+        let shown = corpus.get(id.parse().unwrap()).expect("hydrated");
+        assert_eq!(shown.subject, "Lunch?");
+        assert_eq!(shown.from.email, "ada@example.test");
+
+        assert!(app.undo(), "a drafted reply is an undo step");
+        assert_eq!(app.state().local.len(), 1);
+        // Delivering the same seed again changes nothing.
+        app.call(
+            "deliver-message",
+            serde_json::json!({
+                "from": "Ada <ada@example.test>",
+                "to": "me@example.test",
+                "subject": "Lunch?",
+                "body": "Noon at the usual place?",
+                "date": "2026-10-11T09:00:00Z",
+            }),
+        )
+        .unwrap();
+        assert_eq!(app.state().local.len(), 1);
     }
 
     mod captures {

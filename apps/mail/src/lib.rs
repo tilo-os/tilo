@@ -62,6 +62,7 @@ pub mod header;
 pub mod html_mail;
 pub mod i18n;
 pub mod list;
+pub mod local;
 pub mod model;
 pub mod oauth;
 pub mod reader;

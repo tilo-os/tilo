@@ -40,6 +40,16 @@ pub fn component_apps() -> Vec<&'static ApplicationDefinition> {
     crate::web_apps::web_apps()
 }
 
+/// Apps an agent's confined worker can hold though a browser page cannot
+/// mount them, because what keeps them off the web is a device's network
+/// or accounts, which an agent's record never reaches: Mail, whose records
+/// hold the mail delivered into them and the drafts written there, and
+/// which sends nothing from a worker (its account engine is not built in).
+#[must_use]
+pub fn agent_only_apps() -> Vec<&'static ApplicationDefinition> {
+    vec![mail::definition()]
+}
+
 impl AppCatalogue {
     /// `apps`.
     #[must_use]
@@ -47,10 +57,12 @@ impl AppCatalogue {
         Self { apps }
     }
 
-    /// [`component_apps`].
+    /// [`component_apps`] and [`agent_only_apps`].
     #[must_use]
     pub fn native() -> Self {
-        Self::new(component_apps())
+        let mut apps = component_apps();
+        apps.extend(agent_only_apps());
+        Self::new(apps)
     }
 
     /// The definition of `app_id`.

@@ -51,6 +51,7 @@ use tilo_actions::{
 
 use crate::attachment_store;
 use crate::doc::MailDoc;
+pub use crate::local::LocalMessage;
 use crate::model::{Draft, DraftAttachment, Folder};
 
 /// Registry `type_id` for every Mail action.
@@ -182,6 +183,34 @@ pub enum MailEffect {
     /// device.
     #[effect(row, job, cancellable)]
     Save { message: String, index: usize },
+    /// Search messages
+    ///
+    /// The messages the mailbox holds whose sender, recipients, subject or
+    /// body contain every word of the query (any case), newest first, each
+    /// with its item id for `read`. Changes nothing.
+    #[effect(view, returns, permission = "read")]
+    SearchMessages {
+        #[param("Words every match contains")]
+        query: String,
+        #[param("Only this folder: inbox, sent, drafts, archive, junk or trash")]
+        folder: Option<String>,
+    },
+    /// Export messages as content
+    ///
+    /// Keeps the mailbox's messages — all of them, one folder, one message or
+    /// one conversation — in the content store in a format, with no file to
+    /// write: the caller reads the bytes by the content address it answers.
+    #[effect(content, permission = "read")]
+    ExportContent {
+        #[param("The format to export", choices = ["md", "json", "mbox", "eml"])]
+        format: String,
+        #[param("Only this folder: inbox, sent, drafts, archive, junk or trash")]
+        folder: Option<String>,
+        #[param("Only this message (its id or mail.message:<id>); an eml export names one")]
+        message: Option<String>,
+        #[param("Only the conversation of this message (its id or mail.message:<id>)")]
+        thread: Option<String>,
+    },
 }
 
 /// What invoking `effect` where it is bound sends its handler.
@@ -392,6 +421,46 @@ pub enum MailAction {
     /// The account's server refused the message; it stays in the outbox
     /// with the reason, and is not tried again.
     SendFailed { id: String, reason: String },
+    /// A message arrives without a mail server: it is held whole in the
+    /// document ([`crate::local`]), in its folder. One already held is left
+    /// as it is.
+    Deliver(Delivery),
+    /// Write a draft held whole in Drafts, or revise the draft of the same
+    /// id. Nothing is sent.
+    SaveDraftMessage(LocalMessage),
+    /// Write a draft in Drafts answering a message the document holds: to
+    /// its sender (and with `all` its other recipients), under its subject,
+    /// quoting it. Nothing is sent.
+    DraftReply(ReplyDraft),
+}
+
+/// A message delivered into the mailbox without a mail server, the folder
+/// it arrives in and whether it arrives read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Delivery {
+    pub message: LocalMessage,
+    pub folder: String,
+    #[serde(default)]
+    pub read: bool,
+}
+
+/// A reply drafted to a message the document holds; the recipients, subject
+/// and quote are taken from that message when it applies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplyDraft {
+    /// The draft's id (a UUID); a later reply of the same id revises it.
+    pub id: String,
+    /// The message answered: its id, `mail.message:<id>` or `Message-ID`.
+    pub message: String,
+    pub body: String,
+    #[serde(default)]
+    pub all: bool,
+    /// The address it is written from; the answered message's first
+    /// recipient when absent.
+    #[serde(default)]
+    pub from: Option<String>,
+    pub date: String,
+    pub timestamp_min: i64,
 }
 
 /// A message waiting in the outbox: the account it is sent from (by its
@@ -747,6 +816,12 @@ impl Action for MailAction {
                     );
                 }
             }
+            MailAction::Deliver(delivery) => deliver(doc, delivery)?,
+            MailAction::SaveDraftMessage(draft) => save_draft_message(doc, draft.bounded())?,
+            MailAction::DraftReply(reply) => {
+                let draft = reply_draft(doc, reply)?;
+                save_draft_message(doc, draft)?;
+            }
         }
         Ok(())
     }
@@ -763,10 +838,147 @@ impl Action for MailAction {
             MailAction::IngestBaselines { .. }
             | MailAction::ServerApplied(_)
             | MailAction::Delivered { .. }
-            | MailAction::SendFailed { .. } => tilo_actions::ChangeKind::External,
+            | MailAction::SendFailed { .. }
+            | MailAction::Deliver(_) => tilo_actions::ChangeKind::External,
             _ => tilo_actions::ChangeKind::Content,
         }
     }
+}
+
+/// Strip a `mail.message:` prefix from a message reference.
+fn message_ref(reference: &str) -> &str {
+    let reference = reference.trim();
+    reference
+        .strip_prefix("mail.message:")
+        .or_else(|| reference.strip_prefix("mail.thread:"))
+        .unwrap_or(reference)
+}
+
+/// The message the document holds that `reference` names: by id,
+/// `mail.message:<id>` or `Message-ID`.
+fn held_message(doc: &Doc, reference: &str) -> Option<LocalMessage> {
+    MailDoc::local_message(doc, message_ref(reference))
+        .or_else(|| MailDoc::local_by_message_id(doc, reference))
+}
+
+/// Resolve what `message` answers: a parent the document holds is named by
+/// its `Message-ID` and lends the message its conversation; an unknown
+/// parent's `Message-ID` starts the conversation.
+fn link_parent(doc: &Doc, message: &mut LocalMessage) {
+    let Some(parent) = message.in_reply_to.clone() else {
+        return;
+    };
+    match held_message(doc, &parent) {
+        Some(held) => {
+            message.in_reply_to = Some(held.message_id.clone());
+            if message.thread.is_none() {
+                message.thread = Some(held.thread_key().to_owned());
+            }
+        }
+        None => {
+            if message.thread.is_none() {
+                message.thread = Some(parent);
+            }
+        }
+    }
+}
+
+/// Hold `message` whole in `folder`, registered as a message every message
+/// action applies to. Flags it already has are kept.
+fn hold(doc: &mut Doc, message: &LocalMessage, folder: Folder, read: bool) {
+    MailDoc::store_local(doc, message);
+    MailDoc::ingest_baseline(
+        doc,
+        &IngestBaseline {
+            id: message.id.clone(),
+            read: Some(read),
+            starred: Some(false),
+            folder: Some(folder.as_key().to_owned()),
+            account: None,
+            locator: None,
+        },
+    );
+}
+
+/// Backs [`MailAction::Deliver`].
+fn deliver(doc: &mut Doc, delivery: &Delivery) -> Result<(), ActionError> {
+    let mut message = delivery.message.bounded();
+    if !message.is_valid() || message.from.is_empty() {
+        return Err(ActionError::Refused(
+            "a delivered message needs an id, a Message-ID and a sender".into(),
+        ));
+    }
+    // An unknown folder key is a no-op, as for a move.
+    let Some(folder) = Folder::from_key(&delivery.folder) else {
+        return Ok(());
+    };
+    // Delivered once: a repeated seed or a replay changes nothing, and a
+    // purged message is not brought back.
+    if MailDoc::has_local_entry(doc, &message.id) || MailDoc::is_present_message(doc, &message.id) {
+        return Ok(());
+    }
+    link_parent(doc, &mut message);
+    hold(doc, &message, folder, delivery.read);
+    Ok(())
+}
+
+/// Backs [`MailAction::SaveDraftMessage`]: `draft`, already bounded, in
+/// Drafts; one of the same id is revised only while it is a draft.
+fn save_draft_message(doc: &mut Doc, mut draft: LocalMessage) -> Result<(), ActionError> {
+    if !draft.is_valid() {
+        return Err(ActionError::Refused(
+            "a draft needs an id and a Message-ID".into(),
+        ));
+    }
+    if MailDoc::has_local_entry(doc, &draft.id)
+        && (MailDoc::local_message(doc, &draft.id).is_none()
+            || MailDoc::get_folder_for(doc, &draft.id) != Some(Folder::Drafts))
+    {
+        return Err(ActionError::Refused(
+            "only a message still in Drafts can be revised".into(),
+        ));
+    }
+    link_parent(doc, &mut draft);
+    hold(doc, &draft, Folder::Drafts, true);
+    Ok(())
+}
+
+/// The draft [`MailAction::DraftReply`] writes, from the message it answers.
+fn reply_draft(doc: &Doc, reply: &ReplyDraft) -> Result<LocalMessage, ActionError> {
+    let original = held_message(doc, &reply.message).ok_or_else(|| {
+        ActionError::Refused(format!(
+            "no message `{}` to reply to; read the mailbox for the messages it holds",
+            reply.message.trim()
+        ))
+    })?;
+    let from = reply
+        .from
+        .as_deref()
+        .map(str::trim)
+        .filter(|from| !from.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            crate::transport::parse_addr_list(&original.to)
+                .into_iter()
+                .next()
+                .map(|addr| addr.rfc5322())
+        })
+        .unwrap_or_default();
+    let (to, cc) = crate::local::reply_recipients(&original, reply.all, &from);
+    Ok(LocalMessage {
+        id: reply.id.clone(),
+        message_id: crate::local::derived_message_id(&[&reply.id, "draft"]),
+        from,
+        to,
+        cc,
+        subject: crate::local::reply_subject(&original.subject),
+        body: crate::local::reply_body(&reply.body, &original),
+        date: reply.date.clone(),
+        timestamp_min: reply.timestamp_min,
+        in_reply_to: Some(original.message_id.clone()),
+        thread: Some(original.thread_key().to_owned()),
+    }
+    .bounded())
 }
 
 /// Register Mail's action decoder for palette execution + remote replay.

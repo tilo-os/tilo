@@ -59,6 +59,10 @@ video-player = { path = "../../../apps/video-player" }
 weather = { path = "../../../apps/weather" }
 word-processor = { path = "../../../apps/word-processor" }
 # generated apps: end
+# Apps an agent's worker holds that a browser page cannot mount
+# (`apps::agent_only_apps`). Mail without `live`: no IMAP/SMTP engine or TLS
+# stack in an app worker, which reaches no network anyway.
+mail = { path = "../../../apps/mail", default-features = false }
 # The certified relay session (iroh for a host-side agent) and its live
 # plane; the same code a browser page runs.
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer", features = ["toolkit"] }
