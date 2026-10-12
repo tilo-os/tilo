@@ -150,7 +150,7 @@ mod platform {
             }
             let base = tilo_paths::env_dir("XDG_CACHE_HOME").or_else(tilo_paths::cache_dir)?;
             let directory = base.join("tilo").join("dx12-shaders");
-            private_fs::directory(&directory).ok()?;
+            tilo_files::native::private::directory(&directory).ok()?;
             // One bounded file per app, so updates replace stale revisions and
             // unrelated applications cannot grow this file indefinitely.
             let exe = std::env::current_exe().ok()?;
@@ -209,7 +209,7 @@ mod platform {
                     let Some(bytes) = encode(&compiler.identity, &entries) else {
                         return;
                     };
-                    if let Err(error) = private_fs::write_atomic(&path, &bytes) {
+                    if let Err(error) = tilo_files::native::private::write_atomic(&path, &bytes) {
                         tracing::debug!(%error, "DX12 shader cache persistence unavailable");
                     }
                 });
@@ -236,7 +236,7 @@ mod platform {
     }
 
     fn read_entries(path: &Path, identity: &[u8; 32]) -> Option<Vec<Entry>> {
-        let file = private_fs::read(path).ok()?;
+        let file = tilo_files::native::private::read(path).ok()?;
         if file.metadata().ok()?.len() > LIMIT as u64 {
             return None;
         }
