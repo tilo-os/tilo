@@ -21,6 +21,8 @@
 //! Exit codes: `0` on `Ok`/`Targets`/`State`, `1` on `Err` (echoing
 //! `err.code`/`err.message` to stderr), `2` on argv / I/O / parse failures.
 
+mod history;
+
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -117,6 +119,7 @@ fn error_hint(code: &str) -> Option<&'static str> {
 /// post-response printout.
 #[derive(Debug, Clone, PartialEq)]
 enum Command {
+    History(history::Request),
     ListTargets,
     Click {
         name: String,
@@ -226,7 +229,8 @@ impl Command {
     const fn is_semantic(&self) -> bool {
         matches!(
             self,
-            Self::StateDump { .. }
+            Self::History(_)
+                | Self::StateDump { .. }
                 | Self::Windows { .. }
                 | Self::ActionsList { .. }
                 | Self::ActionsInvoke { .. }
@@ -372,6 +376,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
         "state-dump" | "windows" => parse_state_read(op, &mut iter)?,
         "actions" => parse_actions_command(&mut iter)?,
         "read" => parse_read(&mut iter)?,
+        "history" => Command::History(history::parse(&mut iter.cloned())?),
         "raw" => {
             let json = iter.next().ok_or_else(|| {
                 ParseError::Usage("raw '<json>' requires the JSON payload".to_string())
@@ -1176,6 +1181,7 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         }
         Command::StateDump { .. } => json!({ "op": "state_dump" }),
         Command::Windows { .. } => json!({ "op": "windows" }),
+        Command::History(_) => json!({ "op": "actions_enumerate", "query": "" }),
         Command::Read { .. } => json!({ "op": "actions_enumerate", "query": "read" }),
         Command::ActionsList {
             query,
@@ -1397,7 +1403,7 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // Plain Ok response — emit the canonical "ok" string.
             println!("ok");
         }
-        Command::Read { .. } | Command::ActionsSession => {
+        Command::History(_) | Command::Read { .. } | Command::ActionsSession => {
             // Answered by `run_read` and `run_session`, which own their
             // round trips.
             println!("{response}");
@@ -1453,6 +1459,9 @@ fn print_windows(response: &serde_json::Value, json: bool) {
 /// Print the CLI usage banner to stdout. Mirrors the module-level
 /// docstring's subcommand table.
 fn print_usage() {
+    println!(
+        "History (native published actions only; JSON output):\n  history log|read|diff|review|restore|checkpoint\n    --application APP --room ROOM --record RECORD --resource RESOURCE\n    OR --provider PROVIDER --id ID (exact discovered action for this verb)\n    --args-json OBJECT (log: last; read: item/version; diff: from/to;\n                        review: version/paths; checkpoint: name)\n  history restore TARGET --review-file FILE (stdout of successful review)\n  history status --invocation-id UINT\nExit 0 succeeded, 1 refused/failed/cancelled, 2 usage/connection, 3 pending.\nRequires catalog hierarchy, pagination and native checked restore protocol.\nNo guest admin socket access; no git replacement. See docs/history-cli.md.\n"
+    );
     println!(
         "tilo-control — drive a running Tilo desktop\n\
          \n\
@@ -1645,6 +1654,10 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         };
+    }
+
+    if let Command::History(request) = &invocation.command {
+        return ExitCode::from(history::run(&mut stream, request));
     }
 
     if let Command::Read { app, item, json } = &invocation.command {
