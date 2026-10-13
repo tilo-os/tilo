@@ -410,19 +410,23 @@ installer-preview-destination-intro = Where would you like to install it?
 
 installer-preview-computer-title = On this computer
 
-installer-preview-computer-body = Use Tilo as your operating system, alongside your current one.
+installer-preview-computer-body = Add Tilo, the system that runs your apps, alongside your current system. You’ll review the disk changes before installing.
 
-installer-preview-computer-usb-body = Prepare a USB installer to install Tilo on this computer, alongside your current system.
+installer-preview-computer-usb-body = Make a USB installer, then restart this computer from it to add Tilo alongside your current system. You’ll need a USB drive you can erase.
 
 installer-preview-another-title = On another computer
 
-installer-preview-another-body = Prepare a USB installer to take Tilo to another device.
+installer-preview-another-body = Make a USB installer to take to another computer. You’ll need a USB drive you can erase; the other computer must be able to start from it.
 
 installer-preview-desktop-title = As a desktop
 
 installer-preview-desktop-body = Use the Tilo desktop with your existing Linux system.
 
 installer-preview-migration-heading = Bring your things, or start fresh?
+
+installer-preview-migration-intro = First we’ll set up your name and identity. Then you can choose what to bring and approve access. Nothing is installed at this step.
+
+installer-preview-migrate-portable-body = Bring selected files, supported apps and accounts to the other computer. Your originals stay here. For large files, you may need to restart this computer from the USB drive to copy them before taking it away.
 
 installer-preview-migrate-title = Migrate from this computer
 
@@ -687,7 +691,7 @@ installer-accounts-source-label = { $service }: { $account }
 
 installer-accounts-source-identity = { $account } ({ $identity })
 
-installer-accounts-intro = Choose accounts to use in Tilo.
+installer-accounts-intro = Connect the services you want in Tilo. This is optional; after setup, open Settings → External accounts to connect them.
 
 installer-accounts-add-heading = Add an account
 
@@ -983,7 +987,7 @@ installer-preview-files-shared-title = Your files
 
 installer-preview-files-shared-body = Use the same files in both systems. Edits appear in both.
 
-installer-preview-migrate-shared-body = Use your existing files in Tilo and bring supported apps and accounts. Setup leaves your files in place; later edits to shared files appear in both systems.
+installer-preview-migrate-shared-body = Use the same files in both systems; edits appear in both. Keep the disk partition holding your originals. Sharing is not a backup, and apps and setup still need extra space.
 
 installer-preview-review-shared = Use your existing files in both systems. Edits appear in both. Bring the apps and accounts you selected.
 
