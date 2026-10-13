@@ -1,9 +1,11 @@
-//! A minimal `wl_shm` client that redraws its whole window on every key press.
+//! A minimal `wl_shm` client that answers every key press with one commit.
 //!
-//! It is the app side of `scripts/perf/headless_key_latency.py`: a window whose
-//! answer to a key is one full-surface commit, the way a terminal or a
-//! text editor answers a character. It draws at once, without waiting for a
-//! frame callback, so the compositor's own scheduling is what the harness
+//! It is the app side of `scripts/perf/headless_key_latency.py`. Each key types
+//! one cell of a text grid. With `--damage full` (the default) the commit damages
+//! the whole surface, as a client that redraws its grid would; with
+//! `--damage line` it damages only the text line the cell is on, as a terminal
+//! or a text editor reports a typed character. It draws at once, without waiting
+//! for a frame callback, so the compositor's own scheduling is what the harness
 //! measures. It prints `READY <width>x<height>` once its first frame is
 //! committed and exits when the window is closed.
 
@@ -12,7 +14,10 @@
     clippy::expect_used,
     clippy::print_stdout,
     clippy::too_many_lines,
-    reason = "a measurement tool: a failed protocol step must stop the run, and stdout is its interface"
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "a measurement tool: a failed protocol step or a bad argument must stop the run, its grid arithmetic stays within the configured surface, and stdout is its interface"
 )]
 
 use smithay_client_toolkit::{
@@ -58,13 +63,39 @@ struct Client {
     height: u32,
     configured: bool,
     exit: bool,
-    draws: u32,
+    /// Cells typed so far; the buffer always shows exactly these.
+    typed: u32,
+    damage: Damage,
 }
 
+/// What a commit reports as changed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Damage {
+    Full,
+    Line,
+}
+
+/// One typed cell of the grid, in buffer pixels: a text line is `CELL_H` high.
+const CELL_W: u32 = 10;
+const CELL_H: u32 = 20;
+const BACKGROUND: [u8; 4] = [0x20, 0x20, 0x20, 0xFF];
+const INK: [u8; 4] = [0xE0, 0xE0, 0xE0, 0xFF];
+
 fn main() {
-    let app_id = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "so.tilo.latency-client".to_owned());
+    let mut app_id = "so.tilo.latency-client".to_owned();
+    let mut damage = Damage::Full;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--damage" {
+            damage = match args.next().as_deref() {
+                Some("line") => Damage::Line,
+                Some("full") => Damage::Full,
+                other => panic!("--damage takes `line` or `full`, not {other:?}"),
+            };
+        } else {
+            app_id = arg;
+        }
+    }
     let conn = Connection::connect_to_env().expect("no Wayland compositor to connect to");
     let (globals, mut queue) = registry_queue_init(&conn).expect("registry");
     let qh = queue.handle();
@@ -90,7 +121,8 @@ fn main() {
         height: 256,
         configured: false,
         exit: false,
-        draws: 0,
+        typed: 0,
+        damage,
     };
     while !client.exit {
         queue.blocking_dispatch(&mut client).expect("dispatch");
@@ -98,15 +130,32 @@ fn main() {
 }
 
 impl Client {
-    /// Fill the whole window with a colour that changes every draw, damage it
-    /// all and commit, as a text surface that redraws its grid would.
-    fn draw(&mut self, qh: &QueueHandle<Self>) {
+    /// The grid cell the `index`th typed key fills, as `(column, line)`.
+    fn cell(&self, index: u32) -> (u32, u32) {
+        let columns = (self.width / CELL_W).max(1);
+        let lines = (self.height / CELL_H).max(1);
+        (index % columns, (index / columns) % lines)
+    }
+
+    /// Draw the grid with `self.typed` cells into a free buffer and commit it,
+    /// damaging the whole surface or only the line of the newest cell. Every
+    /// buffer is drawn whole, so whichever one the pool hands out shows the
+    /// same grid; only the reported damage differs between the modes.
+    fn draw(&mut self, qh: &QueueHandle<Self>, key: bool) {
         let (width, height) = (self.width, self.height);
         let stride = i32::try_from(width.saturating_mul(4)).expect("stride");
         let (w, h) = (
             i32::try_from(width).expect("w"),
             i32::try_from(height).expect("h"),
         );
+        if key {
+            self.typed = self.typed.wrapping_add(1);
+        }
+        // A full grid starts over on an empty screen, as a cleared terminal would.
+        let columns = (width / CELL_W).max(1);
+        let lines = (height / CELL_H).max(1);
+        let shown = self.typed % columns.saturating_mul(lines).max(1);
+        let newest = self.cell(self.typed.saturating_sub(1));
         let buffer = self.buffer.get_or_insert_with(|| {
             self.pool
                 .create_buffer(w, h, stride, wl_shm::Format::Argb8888)
@@ -124,16 +173,29 @@ impl Client {
             *buffer = second;
             canvas
         };
-        self.draws = self.draws.wrapping_add(1);
-        let shade = u8::try_from(self.draws % 200)
-            .unwrap_or(0)
-            .saturating_add(30);
-        let pixel = [shade, 0x30, 0x20, 0xFF];
         for chunk in canvas.chunks_exact_mut(4) {
-            chunk.copy_from_slice(&pixel);
+            chunk.copy_from_slice(&BACKGROUND);
+        }
+        let row_bytes = usize::try_from(width).expect("width") * 4;
+        for index in 0..shown {
+            let (column, line) = (index % columns, index / columns);
+            // The ink of a cell: inset by one pixel so cells stay apart.
+            for y in line * CELL_H + 2..(line + 1) * CELL_H - 2 {
+                let start = usize::try_from(y).expect("y") * row_bytes
+                    + usize::try_from(column * CELL_W + 1).expect("x") * 4;
+                let end = start + usize::try_from(CELL_W - 2).expect("cell") * 4;
+                for chunk in canvas[start..end].chunks_exact_mut(4) {
+                    chunk.copy_from_slice(&INK);
+                }
+            }
         }
         let surface = self.window.wl_surface();
-        surface.damage_buffer(0, 0, w, h);
+        if key && self.damage == Damage::Line && shown != 0 {
+            let line_y = i32::try_from(newest.1 * CELL_H).expect("line");
+            surface.damage_buffer(0, line_y, w, i32::try_from(CELL_H).expect("cell"));
+        } else {
+            surface.damage_buffer(0, 0, w, h);
+        }
         surface.frame(qh, surface.clone());
         buffer.attach_to(surface).expect("attach");
         self.window.commit();
@@ -207,7 +269,7 @@ impl WindowHandler for Client {
             .new_size
             .1
             .map_or(self.height, std::num::NonZeroU32::get);
-        self.draw(qh);
+        self.draw(qh, false);
         if !self.configured {
             self.configured = true;
             println!("READY {}x{}", self.width, self.height);
@@ -281,7 +343,7 @@ impl KeyboardHandler for Client {
         _: u32,
         _: KeyEvent,
     ) {
-        self.draw(qh);
+        self.draw(qh, true);
     }
     fn repeat_key(
         &mut self,
