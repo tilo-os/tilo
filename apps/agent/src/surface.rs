@@ -91,9 +91,11 @@ pub fn opens(address: &ActionAddress) -> Option<&str> {
 pub struct Offer {
     /// The app that published it, by namespace.
     pub app: String,
-    /// Exact live publisher selected by the broker catalogue. `None` only
-    /// for the agent's local editorial/open helper offers.
+    /// Exact live publisher selected by the broker catalogue. A closed
+    /// application instead carries `broker_provider`, never publisher zero.
     pub broker_peer_id: Option<u64>,
+    /// Stable application/retained route, independent of a live connection.
+    pub broker_provider: Option<String>,
     pub descriptor: ActionDescriptor,
 }
 
@@ -101,6 +103,10 @@ impl Offer {
     /// The address, in the one-string form an answer names it by.
     pub fn id(&self) -> String {
         let address = encode_address(&self.descriptor.address);
+        if let Some(provider) = &self.broker_provider {
+            let provider = provider.replace('%', "%25").replace(':', "%3A");
+            return format!("broker:{provider}:{address}");
+        }
         self.broker_peer_id.map_or_else(
             || address.clone(),
             |peer| format!("broker:{peer}:{address}"),
@@ -271,11 +277,11 @@ impl BrokerCatalogue for Vec<ui::collaboration::BrokerActionSurface> {
     }
 }
 
-/// Offers from the broker's pushed surface directory: only live surfaces.
+/// Offers from the broker's pushed directory, including inert closed-app routes.
 fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Offer> {
     surfaces
         .iter()
-        .filter(|surface| surface.live)
+        .filter(|surface| surface.live || surface.provider.is_some())
         .flat_map(|surface| {
             surface.actions.iter().map(|action| {
                 let input = if action.input.kind == "text" {
@@ -293,7 +299,8 @@ fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Of
                 };
                 Offer {
                     app: surface.app_id.clone(),
-                    broker_peer_id: Some(surface.peer_id),
+                    broker_peer_id: surface.provider.is_none().then_some(surface.peer_id),
+                    broker_provider: surface.provider.clone(),
                     descriptor: ActionDescriptor {
                         semantic_identity: action.semantic_identity.clone(),
                         address: ActionAddress::new(&action.resource, &action.action),
@@ -319,20 +326,22 @@ fn catalogue_page_offers(catalogue: &tilo_actions::remote::CataloguePage) -> Vec
         .rows
         .iter()
         .filter_map(|entry| {
-            // A live application's actions name its broker connection; the
-            // workspace's own actions (governance, opening applications)
-            // keep the reserved publisher zero.
-            let peer = if let Ok(peer) = entry.provider.parse::<u64>() {
-                peer
-            } else {
-                tilo_actions::remote::workspace_provider_room(&entry.provider)?;
-                0
-            };
+            // A live action names a connection. Closed applications and
+            // workspace actions retain their explicit stable route instead.
+            let peer = entry.provider.parse::<u64>().ok();
+            if peer.is_none()
+                && tilo_actions::remote::workspace_provider_room(&entry.provider).is_none()
+                && !entry.provider.starts_with("launch:")
+                && tilo_actions::remote::application_provider(&entry.provider).is_none()
+            {
+                return None;
+            }
             let mut descriptor = entry.action.clone()?;
             descriptor.locus = tilo_actions::ExecutionLocus::ServerPreferred;
             Some(Offer {
                 app: entry.app_id.clone(),
-                broker_peer_id: Some(peer),
+                broker_peer_id: peer,
+                broker_provider: peer.is_none().then(|| entry.provider.clone()),
                 descriptor,
             })
         })
@@ -837,6 +846,48 @@ mod tests {
     use tilo_actions::door::ActionAddress;
 
     #[test]
+    fn closed_routes_remain_distinct_without_inventing_a_publisher() {
+        let make = |record: &str| {
+            serde_json::from_value::<ui::collaboration::BrokerActionSurface>(serde_json::json!({
+                "peer_id": 0,
+                "provider": format!("launch:room:so.tilo.notes:{record}"),
+                "app_id": "so.tilo.notes",
+                "cluster_id": "room",
+                "record_id": record,
+                "live": false,
+                "actions": [{
+                    "resource": "notes.document",
+                    "resource_kind": "notes.document",
+                    "resource_label": "Notes",
+                    "action": "rename",
+                    "action_label": "Rename",
+                    "description": null,
+                    "operation_kind": tilo_actions::OperationKind::Document,
+                    "params": [],
+                    "contract": tilo_actions::ActionContract::default(),
+                    "input": {"kind": "none"},
+                }],
+            }))
+            .unwrap()
+        };
+        let offers = broker_offers(&vec![make("first"), make("second")]);
+        assert_eq!(offers.len(), 2);
+        assert_ne!(offers[0].id(), offers[1].id());
+        for (offer, record) in offers.iter().zip(["first", "second"]) {
+            assert_eq!(
+                offer.broker_peer_id, None,
+                "an inert route has no publisher authority"
+            );
+            assert_eq!(
+                offer.broker_provider.as_deref(),
+                Some(format!("launch:room:so.tilo.notes:{record}").as_str())
+            );
+            assert_eq!(decode_address(&offer.id()), Some(offer.address().clone()));
+            assert_eq!(find(&offers, &offer.id()), Some(offer));
+        }
+    }
+
+    #[test]
     fn offer_addresses_round_trip_and_stay_distinct_per_publisher() {
         // Case `an_address_with_a_path_in_it_round_trips`.
         {
@@ -897,6 +948,7 @@ mod tests {
             let offer = Offer {
                 app: "so.tilo.diffmerge".into(),
                 broker_peer_id: Some(0),
+                broker_provider: None,
                 descriptor: ActionDescriptor {
                     semantic_identity: None,
                     address,
@@ -1092,6 +1144,7 @@ mod tests {
         Offer {
             app: app.to_string(),
             broker_peer_id: None,
+            broker_provider: None,
             descriptor: ActionDescriptor {
                 semantic_identity: None,
                 address: ActionAddress::new(resource, action),

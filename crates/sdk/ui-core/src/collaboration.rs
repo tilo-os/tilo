@@ -473,6 +473,8 @@ pub enum CollabRequest {
         run_id: u64,
         lease: String,
         peer_id: u64,
+        /// Stable catalogue provider for a closed app; never a publisher identity.
+        provider: String,
         resource: String,
         action: String,
         arguments: serde_json::Map<String, serde_json::Value>,
@@ -530,6 +532,9 @@ pub use runtime_collab::{ExportedAction, ExportedInput};
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct BrokerActionSurface {
     pub peer_id: u64,
+    /// Stable route for retained offers; not a connection or trusted publisher.
+    #[serde(default)]
+    pub provider: Option<String>,
     pub app_id: String,
     pub cluster_id: String,
     pub record_id: String,

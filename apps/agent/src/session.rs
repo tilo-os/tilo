@@ -32,6 +32,7 @@ const FOLLOW_MOST_WAIT: Duration = Duration::from_millis(50);
 struct TaskAction {
     app: String,
     peer_id: u64,
+    provider: String,
     resource: String,
     resource_kind: String,
     resource_label: String,
@@ -156,9 +157,11 @@ fn task_action_from_offer(
     offer: &surface::Offer,
     arguments: serde_json::Map<String, serde_json::Value>,
 ) -> Result<TaskAction, String> {
-    let peer_id = offer
-        .broker_peer_id
-        .ok_or_else(|| "Tasks cannot invoke a local-only action".to_string())?;
+    let peer_id = match (offer.broker_peer_id, offer.broker_provider.as_ref()) {
+        (Some(peer), _) => peer,
+        (None, Some(_)) => 0,
+        (None, None) => return Err("Tasks cannot invoke a local-only action".into()),
+    };
     if !matches!(
         offer.descriptor.contract.confirmation,
         tilo_actions::ConfirmationPolicy::None
@@ -172,6 +175,7 @@ fn task_action_from_offer(
     Ok(TaskAction {
         app: offer.app.clone(),
         peer_id,
+        provider: offer.broker_provider.clone().unwrap_or_default(),
         resource: offer.descriptor.address.resource.clone(),
         resource_kind: offer.descriptor.resource_kind.clone(),
         resource_label: offer.descriptor.resource_label.clone(),
@@ -710,6 +714,7 @@ impl Session {
             run_id: run.run_id,
             lease: self.task_lease(run),
             peer_id: action.peer_id,
+            provider: action.provider.clone(),
             resource: action.resource.clone(),
             action: action.action.clone(),
             arguments: arguments.clone(),
@@ -1372,6 +1377,7 @@ mod tests {
                 let action = TaskAction {
                     app: "app".into(),
                     peer_id: 2,
+                    provider: String::new(),
                     resource: "resource".into(),
                     resource_kind: "item".into(),
                     resource_label: "Resource".into(),

@@ -1276,7 +1276,10 @@ impl ChatApp {
                 self.right_flap.snap(true);
                 self.call = CallState::default();
             }
-            "agent-task" | "agent-task-compact" => {
+            "agent-task"
+            | "agent-task-compact"
+            | "agent-task-queued"
+            | "agent-task-queued-compact" => {
                 let mut presence = PresenceCtx::empty();
                 let agent = ui::permissions::UserId("agent:scribe".into());
                 presence.set_display_name(agent.clone(), "Scribe");
@@ -1284,7 +1287,12 @@ impl ChatApp {
                 self.capture_agent_presence = Some(presence);
                 self.room_agents = vec!["scribe".into()];
                 self.room_names.insert("scribe".into(), "Scribe".into());
-                self.agent_tasks.stage_capture(&self.active_ws, "scribe");
+                if scenario.starts_with("agent-task-queued") {
+                    self.agent_tasks
+                        .stage_queued_capture(&self.active_ws, "scribe");
+                } else {
+                    self.agent_tasks.stage_capture(&self.active_ws, "scribe");
+                }
                 self.open_agent_conversation("scribe");
                 self.set_direct_agent_intent(AgentComposerIntent::Steer);
                 self.left_flap.snap(false);
@@ -1585,7 +1593,42 @@ impl ChatApp {
             .pin_handoff_for_visual_review(handoff_phase);
     }
 
+    fn conversation_accessibility(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, Role};
+
+        let conversation = self
+            .messages
+            .iter()
+            .filter(|message| {
+                if self.thread_is_page() {
+                    Some(&message.id) == self.thread_open.as_ref()
+                        || message.parent.as_ref() == self.thread_open.as_ref()
+                } else {
+                    message.parent.is_none() || message.parent.as_ref() == self.thread_open.as_ref()
+                }
+            })
+            .map(|message| {
+                let author = self.user_name(&message.author);
+                let node = AccessNode::new(Role::ListItem)
+                    .with_name(format!("{author}: {}", message.text))
+                    .with_hashed_key((&message.id, "message"));
+                if let Some(work) = &message.work {
+                    node.with_description(crate::render_chat::agent_work_accessible_description(
+                        work,
+                    ))
+                } else {
+                    node
+                }
+            })
+            .collect();
+        AccessNode::new(Role::List)
+            .with_name("Messages")
+            .with_children(conversation)
+            .with_hashed_key("message-list")
+    }
+
     // --- model lookups ----------------------------------------------------
+    #[cfg(test)]
     pub(crate) fn user(&self, id: &str) -> Option<&User> {
         self.users.iter().find(|u| u.id == id)
     }
@@ -2039,6 +2082,11 @@ impl ChatApp {
     /// about a third's name is a difference nobody can settle. So the room
     /// answers, and a peer only ever supplies its id.
     pub fn display_name(&self, id: &str) -> String {
+        if let Some(agent) = id.strip_prefix("agent:")
+            && self.room_agents.iter().any(|known| known == agent)
+        {
+            return self.agent_display_name(agent);
+        }
         if let Some(n) = self.room_names.get(id)
             && !n.trim().is_empty()
         {
@@ -2089,6 +2137,14 @@ impl ChatApp {
         // id it resolved at startup, and those are still its own.
         if self.is_me(id) {
             return "You".to_string();
+        }
+        if let Some(agent) = id.strip_prefix("agent:")
+            && self.room_agents.iter().any(|known| known == agent)
+        {
+            return crate::i18n::t_args(
+                "chat-agent-task-author",
+                &[("name", self.agent_display_name(agent).into())],
+            );
         }
         if let Some(agent) = self.agent_authors.get(id) {
             return format!("{agent} (agent)");
@@ -4349,42 +4405,25 @@ impl Widget for ChatApp {
             })
             .collect();
 
-        let conversation = self
-            .messages
-            .iter()
-            .filter(|message| {
-                if self.thread_is_page() {
-                    Some(&message.id) == self.thread_open.as_ref()
-                        || message.parent.as_ref() == self.thread_open.as_ref()
-                } else {
-                    message.parent.is_none() || message.parent.as_ref() == self.thread_open.as_ref()
-                }
-            })
-            .map(|message| {
-                let author = self
-                    .user(&message.author)
-                    .map_or("Unknown person", |user| user.name.as_str());
-                let node = AccessNode::new(Role::ListItem)
-                    .with_name(format!("{author}: {}", message.text))
-                    .with_hashed_key((&message.id, "message"));
-                if let Some(work) = &message.work {
-                    node.with_description(crate::render_chat::agent_work_accessible_description(
-                        work,
-                    ))
-                } else {
-                    node
-                }
-            })
-            .collect();
-        let conversation = AccessNode::new(Role::List)
-            .with_name("Messages")
-            .with_children(conversation)
-            .with_hashed_key("message-list");
-
+        let conversation = self.conversation_accessibility();
         let mut children: Vec<AccessNode> = controls;
         children.extend(self.left_flap.resize_accessibility());
         children.extend(self.right_flap.resize_accessibility());
-        if let Some(channel) = self.channel(&self.active_channel) {
+        if let Some(agent) = self.direct_agent.as_deref() {
+            let mut heading = AccessNode::new(Role::Heading { level: 1 })
+                .with_name(self.header_identity_text().name)
+                .with_bounds(self.header_rect())
+                .with_hashed_key(("agent-conversation-heading", agent));
+            if let Some(tasks) = self.direct_agent_tasks() {
+                let lines = crate::render_chat::agent_task_status_lines(tasks);
+                let description = lines.receipt.map_or_else(
+                    || lines.primary.clone(),
+                    |receipt| format!("{}\n{receipt}", lines.primary),
+                );
+                heading = heading.with_description(description);
+            }
+            children.push(heading);
+        } else if let Some(channel) = self.channel(&self.active_channel) {
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
                 .with_name(channel.kind.label(&channel.name))
                 .with_bounds(self.header_rect())

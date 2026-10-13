@@ -52,9 +52,45 @@ impl LocalCaller {
         owner.validate()?;
         Ok(owner)
     }
-    fn owner(&self) -> InvocationOwner {
+    pub(super) fn owner(&self) -> InvocationOwner {
         self.owner.clone()
     }
+    /// Check the exact host action against the live authenticated connection,
+    /// including its device ceiling. Call inside the owner's serialized admission.
+    pub(super) fn authorize_host_action(
+        &self,
+        state: &CapnpBrokerState,
+        room: &str,
+        requirement: &crate::services::NativeTaskActionRequirement,
+    ) -> Result<Vec<tilo_action_policy::GrantId>, String> {
+        let actor = self.current(state)?.broker_actor();
+        let now = state.checked_policy_time(Some(&self.time))?.1 / 1_000_000_000;
+        let spent = state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .decide_in_room(room, |workspace| {
+                let workspace = workspace.ok_or("workspace no longer hosted")?;
+                let (answer, spent) = actor.action_verdict_in(
+                    workspace,
+                    &requirement.app,
+                    (
+                        &requirement.resource_kind,
+                        &requirement.resource,
+                        &requirement.action,
+                    ),
+                    &requirement.need,
+                    now,
+                );
+                if !answer.admits(actor.direct()) {
+                    return Err("caller no longer authorized for invocation".to_string());
+                }
+                Ok(spent)
+            })??;
+        state.checked_policy_time(Some(&self.time))?;
+        Ok(spent)
+    }
+
     pub(super) fn authorize_retained_task(
         &self,
         state: &CapnpBrokerState,
@@ -117,7 +153,7 @@ impl LocalCaller {
             need,
         })
     }
-    fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
+    pub(super) fn current(&self, state: &CapnpBrokerState) -> Result<AdmittedJoinIdentity, String> {
         if !state.is_accepting() {
             return Err("invocation broker retired".into());
         }

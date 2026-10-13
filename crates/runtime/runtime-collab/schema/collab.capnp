@@ -290,7 +290,8 @@ interface ChannelHandle {
   invokeTaskAction @30 (runId :UInt64, lease :Text, peerId :UInt64,
                         resource :Text, action :Text, argument :Text,
                         hasArgument :Bool, confirmationJson :Text,
-                        invocation :Text, waitMs :UInt32, seenJson :Text)
+                        invocation :Text, waitMs :UInt32, seenJson :Text,
+                        provider :Text)
       -> (id :UInt64, updateJson :Text);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
