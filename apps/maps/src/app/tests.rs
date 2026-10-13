@@ -787,8 +787,98 @@ fn place_search_matches_ranks_and_labels_results() {
 
 // --- Platform search ---------------------------------------------------
 
+/// The platform search reaches a running window: its query asks the
+/// geocoder, the places that come back are found beside the map's own, and
+/// picking a hit opens it through the row it names.
+#[test]
+fn the_platform_search_finds_and_opens_places_in_a_window() {
+    use ui::search::SearchQuery;
+
+    let mut app = ui::framework::testing::TestApp::<crate::MapsShell>::new().unwrap();
+    // Hermetic: the geocoder is out of reach, its answer is handed in below.
+    app.with_surface(|maps: &mut MapsApp| maps.online = false)
+        .unwrap();
+    let mut cafe = crate::model::Place::new(
+        "cafe-glueck",
+        "Café Glück",
+        Category::Cafe,
+        "Munich",
+        LatLon::new(48.137, 11.575),
+    );
+    cafe.saved = true;
+    app.invoke(crate::workspace::Workspace::ACCEPT_PLACES.with(vec![cafe]))
+        .unwrap();
+    app.settle();
+    let providers = ui::search::capability::search_providers(app.harness().root_widget());
+    assert_eq!(providers.len(), 1, "the platform owns Maps search");
+    let search = &providers[0];
+    let hits = |query: &str| {
+        search
+            .search_page(&SearchQuery::new(query), None, 50, 50)
+            .results
+    };
+
+    // A saved café is found by a word for what it is, and opens.
+    let cafe = hits("coffee")
+        .into_iter()
+        .find(|hit| hit.title == "Café Glück")
+        .expect("a keyword finds the saved café");
+    assert_eq!(cafe.kind, "Saved places");
+    assert!(
+        search
+            .search_scopes()
+            .iter()
+            .any(|scope| scope.anchor == crate::place_search::SAVED_SCOPE),
+        "the search narrows to the saved places"
+    );
+    let saved = SearchQuery::new("coffee").within(crate::place_search::SAVED_SCOPE);
+    assert_eq!(search.search_page(&saved, None, 50, 50).results.len(), 1);
+    let address = cafe.action_address().expect("the hit opens its row");
+    app.call_on(&address.resource, &address.action, serde_json::json!({}))
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        app.with_surface(|maps: &mut MapsApp| maps.model.selected.clone()),
+        Some(Some("cafe-glueck".to_owned()))
+    );
+
+    // The window hands the query on; the geocoder's answer is found by it.
+    search.search_page(&SearchQuery::new("Theatiner"), None, 50, 50);
+    app.settle();
+    app.with_surface(|maps: &mut MapsApp| {
+        maps.place_search.answer(
+            "Theatiner",
+            vec![crate::model::Place::new(
+                "osm-w-1",
+                "Theatinerstraße 18",
+                Category::Shop,
+                "18, Theatinerstraße, München",
+                LatLon::new(48.141, 11.577),
+            )],
+        );
+    })
+    .unwrap();
+    app.settle();
+    let providers = ui::search::capability::search_providers(app.harness().root_widget());
+    let found = providers[0]
+        .search_page(&SearchQuery::new("Theatiner"), None, 50, 50)
+        .results
+        .into_iter()
+        .find(|hit| hit.kind == "Addresses and places")
+        .expect("the geocoded place is found by its query");
+    assert_eq!(found.title, "Theatinerstraße 18");
+    let address = found.action_address().expect("the hit opens its row");
+    app.call_on(&address.resource, &address.action, serde_json::json!({}))
+        .unwrap();
+    app.settle();
+    assert!(
+        app.state().places.iter().any(|place| place.id == "osm-w-1"),
+        "opening a found place takes it into the map"
+    );
+}
+
 /// Maps draws no search field: its search buttons open the platform search,
-/// its provider answers from what the map holds, a hit opens the place, and
+/// its entries answer from what the map holds, a hit opens the place, and
 /// the recent searches dispatch canonical actions.
 #[test]
 #[allow(
@@ -851,55 +941,54 @@ fn platform_search_opens_finds_and_activates_places() {
         assert!(matches!(topmost, Some(Hit::OpenSearch)));
     }
 
-    // Phase `the_provider_finds_saved_places_pois_and_recents`.
+    // Phase `the_window_search_finds_saved_places_pois_and_recents`.
     {
-        use ui::search::SearchProvider as _;
-        use ui::search::SearchQuery;
+        use ui::search::{SearchProvider as _, SearchQuery};
 
         let mut a = app_at(1280.0, 720.0);
         a.pois = vec![crate::model::Poi {
             category: Category::Bar,
             ..demo_poi("bar1", a.model.center.lat, a.model.center.lon)
         }];
-        let provider = a.place_search.provider(a.local_places());
-        let recents = provider.search_page(&SearchQuery::new(""), None, 10, 10);
-        assert!(
-            recents
+        let source = ui::framework::testing::search_source::<crate::workspace::Workspace>(
+            a.place_search_entries(),
+        );
+        let hits = |query: &str| {
+            source
+                .search_page(&SearchQuery::new(query), None, 50, 50)
                 .results
+        };
+        assert!(
+            hits("Marienplatz")
                 .iter()
                 .any(|hit| hit.title == "Marienplatz" && hit.kind == "Recent searches"),
-            "an empty query lists the recent searches"
+            "the recent searches are found"
         );
-        let coffee = provider.search_page(&SearchQuery::new("coffee"), None, 10, 10);
+        let coffee = hits("coffee");
+        let cafe = coffee
+            .iter()
+            .find(|hit| hit.title == "Café Glück" && hit.kind == "Saved places")
+            .expect("a keyword finds a saved café");
+        assert!(hits("beer").iter().any(|hit| hit.kind == "Nearby"));
+        a.queue_place_search(&SearchQuery::new("coffee"));
         assert!(
-            coffee
-                .results
-                .iter()
-                .any(|hit| hit.title == "Café Glück" && hit.kind == "Saved places"),
-            "a keyword finds a saved café"
-        );
-        assert!(coffee.pending.is_none(), "an offline map asks no geocoder");
-        let beer = provider.search_page(&SearchQuery::new("beer"), None, 10, 10);
-        assert!(beer.results.iter().any(|hit| hit.kind == "Nearby"));
-        assert!(
-            provider
-                .search_scopes()
-                .iter()
-                .any(|scope| scope.label == "Saved places")
+            a.place_search.take_query().is_none(),
+            "an offline map asks no geocoder"
         );
 
-        // A hit opens the place exactly as a click in the panel: the
-        // window's opener runs the effect for its anchor.
-        let anchor = coffee
-            .results
-            .iter()
-            .find(|hit| hit.title == "Café Glück")
-            .expect("café hit")
-            .action_id
-            .clone();
-        assert_eq!(anchor, "maps.place:cafe-glueck");
+        // A hit opens the place exactly as a click in the panel: it runs
+        // the effect its row offers.
+        let address = cafe.action_address().expect("the hit opens its row");
         assert_eq!(
-            crate::place_search::PlaceHit::opened(&anchor),
+            (address.resource.as_str(), address.action.as_str()),
+            ("maps.place:cafe-glueck", "open-place")
+        );
+        assert!(
+            ui::search::scope_contains(crate::place_search::SAVED_SCOPE, &cafe.anchor()),
+            "a saved place lies in the saved places"
+        );
+        assert_eq!(
+            crate::place_search::PlaceHit::opened("maps.place:cafe-glueck"),
             Some(crate::resource::MapsEffect::OpenPlace {
                 place: "cafe-glueck".into()
             })
