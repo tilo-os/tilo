@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from fnmatch import fnmatchcase
@@ -9,6 +10,7 @@ from tools.policy.check_workflow_package_paths import (
     audit,
     dependency_directories,
     pattern_covers,
+    unmatched_patterns,
     workflow_path_blocks,
 )
 
@@ -99,6 +101,18 @@ jobs:
                 [str(item) for item in violations],
                 ['paths block 2 misses - "crates/shared/**"'],
             )
+        with self.subTest(phase='a pattern matching no tracked file is reported'):
+            text = "on:\n  push:\n    paths:\n      - apps/app/**\n      - apps/gone.rs\n      - '!apps/x'\n"
+            self.assertEqual(unmatched_patterns(text, ["apps/app/src/lib.rs"]), ["apps/gone.rs"])
+        with self.subTest(phase='every repository workflow trigger names a tracked file'):
+            files = subprocess.run(["git", "ls-files"], cwd=ROOT, text=True,
+                                   capture_output=True, check=True).stdout.split()
+            stale = [
+                f"{workflow.name}: {pattern}"
+                for workflow in sorted((ROOT / ".forgejo/workflows").glob("*.yml"))
+                for pattern in unmatched_patterns(workflow.read_text(encoding="utf-8"), files)
+            ]
+            self.assertEqual(stale, [])
         with self.subTest(phase='repository targeted workflows follow package closures'):
             from tools.policy.check_workflow_package_paths import load_metadata
 
