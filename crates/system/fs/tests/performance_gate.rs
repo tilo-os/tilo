@@ -55,17 +55,13 @@ const WARM_THUMBNAIL_SLO: Duration = Duration::from_millis(12); // p99 5.76, p50
 /// as a seek to the end of a video asks for. Reads verify only the chunk
 /// groups they return; before, each loaded and verified the whole
 /// attachment, which the first `real-fuse` run measured at 464.5 ms.
-/// The status ceiling is provisional until CI runs give a p99, and stays
+/// Provisional ceilings until CI runs give a p99. The status ceiling stays
 /// above one scheduler slice, as for `IDLE_SYNC_SLO`.
 const MEDIA_STATUS_SLO: Duration = Duration::from_millis(5); // first run 0.75
-/// The tail read is gated against the same run rather than an absolute
-/// ceiling: it may take at most this share of loading the whole attachment
-/// right after it, which a slow or contended runner slows alike. It reads
-/// and verifies a sixteenth of the attachment. On the first CI run it took
-/// 17.6 ms against the whole load's 464.5 ms (a 26th); three runs on a shared
-/// build host gave a 21st to a 34th. A read that loads and verifies the whole
-/// attachment again takes about as long as the whole load and fails. An
-/// absolute 40 ms ceiling failed a slow runner at 43.7 ms.
+const MEDIA_TAIL_READ_SLO: Duration = Duration::from_millis(40); // first run 17.6
+/// Also require the tail read to be no more than one eighth of loading the
+/// same blob whole in this run. This catches a whole-blob fallback even when
+/// both operations are fast, without replacing the absolute release limit.
 const MEDIA_TAIL_READ_SHARE_OF_WHOLE_LOAD: f64 = 1.0 / 8.0;
 
 /// Namespace changes behind the two writers of the idle anti-entropy pass.
@@ -131,16 +127,10 @@ fn report(name: &str, elapsed: Duration, ceiling: Duration) {
     );
 }
 
-/// Like [`report`], with the ceiling a share of a baseline measured in the
-/// same run.
+/// Additional same-run check after [`report`] enforces the absolute SLO.
 fn report_relative(name: &str, elapsed: Duration, baseline: (&str, Duration), share: f64) {
     let (baseline_name, baseline) = baseline;
     let ceiling = baseline.mul_f64(share);
-    eprintln!(
-        "PERF {name}: {:.3} ms (SLO <= {:.3} ms)",
-        elapsed.as_secs_f64() * 1_000.0,
-        ceiling.as_secs_f64() * 1_000.0
-    );
     eprintln!(
         "RATIO {name}: {:.4} of {baseline_name} (at most {share:.4})",
         elapsed.as_secs_f64() / baseline.as_secs_f64()
@@ -604,6 +594,11 @@ async fn document_media_cold_range_performance_gate() {
         "document-media-cold-64m-status",
         status_time,
         MEDIA_STATUS_SLO,
+    );
+    report(
+        "document-media-cold-64m-tail-4m-read",
+        tail_time,
+        MEDIA_TAIL_READ_SLO,
     );
     report_relative(
         "document-media-cold-64m-tail-4m-read",
