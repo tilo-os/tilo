@@ -32,7 +32,7 @@ use rustypipe::model::{
 use crate::backend::{
     AlbumHit, AlbumKind, AlbumPage, ArtistAlbum, ArtistHit, ArtistPage, BackendError, HomeContent,
     HomeItem, HomeItemKind, HomeSection, MusicBackend, PlaylistHit, PlaylistPage, ResolveOutcome,
-    ResolvedStream, SearchBundle, SearchKind, SearchOutcome, SearchTop, TrackHit,
+    ResolvedStream, SearchBundle, SearchOutcome, SearchTop, TrackHit,
 };
 
 /// No metadata or player request may monopolise Music's serial background
@@ -457,62 +457,6 @@ impl MusicBackend for RustyPipeBackend {
                     bundle.playlists.push(hit);
                 }
                 MusicItem::User(_) => {}
-            }
-        }
-        Ok(bundle)
-    }
-
-    fn search_more(&self, query: &str, kind: SearchKind) -> Result<SearchBundle, BackendError> {
-        let q = self.rp.query();
-        let mut bundle = SearchBundle::default();
-        match kind {
-            SearchKind::Songs => {
-                let res =
-                    self.block("song search", async { q.music_search_tracks(query).await })?;
-                bundle.tracks = res
-                    .items
-                    .items
-                    .into_iter()
-                    .take(SEARCH_RESULT_LIMIT)
-                    .map(map_track_item)
-                    .collect();
-            }
-            SearchKind::Albums => {
-                let res =
-                    self.block("album search", async { q.music_search_albums(query).await })?;
-                bundle.albums = res
-                    .items
-                    .items
-                    .into_iter()
-                    .take(SEARCH_RESULT_LIMIT)
-                    .map(map_album_hit)
-                    .collect();
-            }
-            SearchKind::Artists => {
-                let res = self.block("artist search", async {
-                    q.music_search_artists(query).await
-                })?;
-                bundle.artists = res
-                    .items
-                    .items
-                    .into_iter()
-                    .take(SEARCH_RESULT_LIMIT)
-                    .map(map_artist_hit)
-                    .collect();
-            }
-            SearchKind::Playlists => {
-                // Community playlists give the richest, most Spotify-like set of
-                // human-made playlists for a query.
-                let res = self.block("playlist search", async {
-                    q.music_search_playlists(query, true).await
-                })?;
-                bundle.playlists = res
-                    .items
-                    .items
-                    .into_iter()
-                    .take(SEARCH_RESULT_LIMIT)
-                    .map(map_playlist_hit)
-                    .collect();
             }
         }
         Ok(bundle)

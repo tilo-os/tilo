@@ -107,9 +107,6 @@ impl AppWidget for OwnerProbe {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("Q")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
     fn record_save_status(&mut self, _: crate::record::RecordSaveStatus) {
         self.seen.saves.set(self.seen.saves.get() + 1);
     }

@@ -535,14 +535,15 @@ impl QuickFS {
         if let Err(error) = rt.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
-        let mut durable = true;
-        if let Some(deferral) = deferral
+        let mut durable = if let Some(deferral) = deferral
             && let Err(error) = deferral.finish()
         {
             // The records wait for the history that describes them.
             eprintln!("history stays pending: {error}");
-            durable = false;
-        }
+            false
+        } else {
+            true
+        };
         if durable && let Some(publisher) = publisher {
             match publisher.commit_changeset() {
                 Ok(Some(changeset)) if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() => {

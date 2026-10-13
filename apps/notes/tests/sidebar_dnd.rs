@@ -5,11 +5,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -50,7 +45,6 @@ fn menu_open(app: &mut TestApp<NotesShell>) -> bool {
     surface(app, |notes| notes.sidebar_menu_open_for_test())
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn sidebar_drags_preview_cancel_and_reparent() {
     eprintln!("phase drag_previews_live_commits_only_on_drop");
@@ -138,7 +132,6 @@ fn sidebar_drags_preview_cancel_and_reparent() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn sidebar_context_menu_deletes_and_deep_copies_pages() {
     eprintln!("phase context_menu_delete_removes_the_page");

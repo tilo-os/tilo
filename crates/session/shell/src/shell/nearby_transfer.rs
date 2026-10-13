@@ -38,21 +38,6 @@ pub const MEDIA_LEASE: std::time::Duration = std::time::Duration::from_secs(12 *
 /// Completed media handoffs a receiver remembers before evicting the oldest.
 pub const MAX_CACHED_MEDIA: usize = 64;
 
-#[cfg(target_os = "linux")]
-const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-#[cfg(target_os = "linux")]
-const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-#[cfg(target_os = "linux")]
-const RESOLVE_BENEATH: u64 = 0x08;
-
-#[cfg(target_os = "linux")]
-#[repr(C)]
-struct OpenHow {
-    flags: u64,
-    mode: u64,
-    resolve: u64,
-}
-
 /// An already-open source capability rooted beneath one live Files grant.
 /// Deferred staging owns the descriptor and never reopens the app-provided
 /// absolute path.
@@ -218,7 +203,7 @@ impl SecureNearbySource {
                 root
             } else {
                 validate_relative(relative)?;
-                openat2_beneath(&root, relative, false)?
+                open_beneath(&root, relative, false)?
             }
         } else if metadata.is_file() && requested == grant {
             root
@@ -227,6 +212,35 @@ impl SecureNearbySource {
         };
         let source_metadata = file.metadata().map_err(display)?;
         if !source_metadata.is_file() && !source_metadata.is_dir() {
+            return Err(crate::shell::i18n::t("nearby-error-one-item"));
+        }
+        Ok(Self { file, name })
+    }
+
+    /// Pin a granted directory before a pending user selection can replace it.
+    pub(crate) fn anchor_directory(grant: &Path) -> Result<File, String> {
+        let canonical = fs::canonicalize(grant).map_err(display)?;
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(canonical)
+            .map_err(display)
+    }
+
+    /// Resolve a selection using the exact admitted directory descriptor.
+    pub(crate) fn open_in_directory(
+        root: &File,
+        grant: &Path,
+        requested: &Path,
+    ) -> Result<Self, String> {
+        let name = portable_name(requested)?;
+        let relative = requested
+            .strip_prefix(grant)
+            .map_err(|_| crate::shell::i18n::t("nearby-error-outside-grant"))?;
+        validate_relative(relative)?;
+        let file = open_beneath(root, relative, false)?;
+        let metadata = file.metadata().map_err(display)?;
+        if !metadata.is_file() {
             return Err(crate::shell::i18n::t("nearby-error-one-item"));
         }
         Ok(Self { file, name })
@@ -245,37 +259,8 @@ impl SecureNearbySource {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn openat2_beneath(root: &File, relative: &Path, directory: bool) -> Result<File, String> {
-    validate_relative(relative)?;
-    let path = CString::new(relative.as_os_str().as_bytes())
-        .map_err(|_| "Nearby Send path contains NUL".to_string())?;
-    let mut flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
-    if directory {
-        flags |= libc::O_DIRECTORY;
-    }
-    let how = OpenHow {
-        flags: u64::try_from(flags).map_err(display)?,
-        mode: 0,
-        resolve: RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
-    };
-    // SAFETY: `path` and `how` are valid for the duration of the syscall; a
-    // successful return is a new owned descriptor.
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            root.as_raw_fd(),
-            path.as_ptr(),
-            &raw const how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if fd < 0 {
-        return Err(io::Error::last_os_error().to_string());
-    }
-    let fd = i32::try_from(fd).map_err(display)?;
-    // SAFETY: `openat2` returned a fresh descriptor owned by this function.
-    Ok(unsafe { File::from_raw_fd(fd) })
+fn open_beneath(root: &File, relative: &Path, directory: bool) -> Result<File, String> {
+    tilo_files::native::nofollow::open_beneath(root, relative, directory).map_err(display)
 }
 
 /// What one transfer carries. Postcard encodes the variant index on the wire,
@@ -1535,7 +1520,7 @@ fn archive_open_folder(source: &File, destination: &Path) -> Result<(), String> 
     for (relative, is_directory) in entries {
         let relative = relative.as_path();
         validate_relative(relative)?;
-        let mut opened = openat2_beneath(source, relative, is_directory)?;
+        let mut opened = open_beneath(source, relative, is_directory)?;
         let metadata = opened.metadata().map_err(display)?;
         if !metadata.is_dir() && !metadata.is_file() {
             return Err(crate::shell::i18n::t("nearby-error-folder-special"));
@@ -2613,35 +2598,6 @@ mod tests {
     }
 }
 
-// Walk one component at a time relative to owned directory descriptors. The
-// validated path contains neither parent traversal nor absolute components,
-// and O_NOFOLLOW rejects a symlink at every step, including the final file.
-#[cfg(not(target_os = "linux"))]
-fn openat2_beneath(root: &File, relative: &Path, directory: bool) -> Result<File, String> {
-    validate_relative(relative)?;
-    let mut current = root.try_clone().map_err(display)?;
-    let mut parts = relative.components().peekable();
-    while let Some(Component::Normal(component)) = parts.next() {
-        let name = CString::new(component.as_bytes()).map_err(display)?;
-        let flags = libc::O_RDONLY
-            | libc::O_CLOEXEC
-            | libc::O_NOFOLLOW
-            | if directory || parts.peek().is_some() {
-                libc::O_DIRECTORY
-            } else {
-                0
-            };
-        // SAFETY: name is NUL terminated and current owns a live directory fd.
-        let fd = unsafe { libc::openat(current.as_raw_fd(), name.as_ptr(), flags) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error().to_string());
-        }
-        // SAFETY: openat returned a fresh owned descriptor.
-        current = unsafe { File::from_raw_fd(fd) };
-    }
-    Ok(current)
-}
-
 #[cfg(target_os = "macos")]
 fn capability_entries(root: &File) -> Result<Vec<(PathBuf, bool)>, String> {
     let mut entries = Vec::new();
@@ -2650,7 +2606,7 @@ fn capability_entries(root: &File) -> Result<Vec<(PathBuf, bool)>, String> {
         let directory = if relative.as_os_str().is_empty() {
             root.try_clone().map_err(display)?
         } else {
-            openat2_beneath(root, &relative, true)?
+            open_beneath(root, &relative, true)?
         };
         // fdopendir owns its descriptor; duplicate it without passing ownership
         // of the capability itself. Every directory is enumerated once.
@@ -2696,7 +2652,7 @@ fn capability_entries(root: &File) -> Result<Vec<(PathBuf, bool)>, String> {
                 continue;
             }
             let path = relative.join(std::ffi::OsStr::from_bytes(name));
-            let file = openat2_beneath(root, &path, false)?;
+            let file = open_beneath(root, &path, false)?;
             let metadata = file.metadata().map_err(display)?;
             if !metadata.is_dir() && !metadata.is_file() {
                 return Err("folder contains a link or special file".into());
@@ -2769,7 +2725,7 @@ fn ensure_capability_directory(root: &File, relative: &Path) -> Result<File, Str
         if result != 0 && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
             return Err(io::Error::last_os_error().to_string());
         }
-        current = openat2_beneath(&current, Path::new(component), true)?;
+        current = open_beneath(&current, Path::new(component), true)?;
     }
     Ok(current)
 }
@@ -2782,7 +2738,7 @@ fn extract_capability_archive(source: &Path, root: &File, name: &str) -> Result<
     if unsafe { libc::mkdirat(root.as_raw_fd(), temporary_c.as_ptr(), 0o700) } != 0 {
         return Err(io::Error::last_os_error().to_string());
     }
-    let directory = openat2_beneath(root, Path::new(&temporary), true)?;
+    let directory = open_beneath(root, Path::new(&temporary), true)?;
     let result = (|| {
         let file = OpenOptions::new()
             .read(true)
@@ -2854,7 +2810,7 @@ fn extract_capability_archive(source: &Path, root: &File, name: &str) -> Result<
                 if let Ok(parent) = if path.parent() == Some(Path::new("")) {
                     directory.try_clone().map_err(display)
                 } else {
-                    openat2_beneath(&directory, path.parent().unwrap(), true)
+                    open_beneath(&directory, path.parent().unwrap(), true)
                 } {
                     if let Some(leaf) = path
                         .file_name()

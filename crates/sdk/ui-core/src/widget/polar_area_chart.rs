@@ -22,14 +22,9 @@ use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, chart_leaf, handle_chart_event,
-    moved_index,
+    ChartInspection, ChartNavAction, InteractiveChart, chart_leaf, handle_chart_event, moved_index,
 };
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent polar presentation toggles are composable"
-)]
 #[derive(Clone, Debug)]
 pub struct PolarAreaStyle {
     pub max: Option<f64>,
@@ -78,12 +73,9 @@ pub struct PolarAreaChart {
     center_subtitle: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
+    inspection: ChartInspection<String>,
     sectors: Vec<Sector>,
-    hovered: Option<String>,
     activated: Option<String>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
 }
 
 impl PolarAreaChart {
@@ -96,12 +88,9 @@ impl PolarAreaChart {
             center_subtitle: String::new(),
             height: 320.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
+            inspection: ChartInspection::default(),
             sectors: Vec::new(),
-            hovered: None,
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
         }
     }
     #[must_use]
@@ -127,28 +116,27 @@ impl PolarAreaChart {
     }
     pub fn set_data(&mut self, data: Vec<ChartItem>) {
         self.data = data;
-        self.hovered = None;
+        self.inspection.hovered = None;
     }
     pub fn take_activated(&mut self) -> Option<String> {
         self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.hovered = self
+        self.inspection.hovered = self
             .data
             .iter()
             .any(|datum| datum.id == id && datum.value.is_finite() && datum.value >= 0.0)
             .then(|| id.to_owned());
-        self.keyboard_inspection = self.hovered.is_some();
+        self.inspection.keyboard = self.inspection.hovered.is_some();
         self.update_inspection_anchor();
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
 
     fn update_inspection_anchor(&mut self) {
-        let Some(id) = self.hovered.as_deref() else {
+        let Some(id) = self.inspection.hovered.as_deref() else {
             return;
         };
         let Some(sector) = self.sectors.iter().find(|sector| sector.id == id) else {
@@ -157,7 +145,7 @@ impl PolarAreaChart {
         let (center, _, _) = self.geometry();
         let angle = sector.start + sector.sweep / 2.0;
         let radius = sector.inner.midpoint(sector.outer);
-        self.pointer = Point::new(
+        self.inspection.pointer = Point::new(
             center.x + radius * angle.cos(),
             center.y + radius * angle.sin(),
         );
@@ -307,21 +295,15 @@ fn sector_path(
 }
 
 impl InteractiveChart for PolarAreaChart {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = String;
+    fn inspection(&mut self) -> &mut ChartInspection<String> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
-        self.hovered = self.hit(self.pointer).map(str::to_owned);
-    }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
+        self.inspection.hovered = self.hit(self.inspection.pointer).map(str::to_owned);
     }
     fn activate_hovered(&mut self) -> bool {
-        let Some(id) = &self.hovered else {
+        let Some(id) = &self.inspection.hovered else {
             return false;
         };
         self.activated = Some(id.clone());
@@ -335,14 +317,15 @@ impl InteractiveChart for PolarAreaChart {
             .map(|datum| datum.id.as_str())
             .collect::<Vec<_>>();
         let current = self
+            .inspection
             .hovered
             .as_deref()
             .and_then(|id| candidates.iter().position(|candidate| *candidate == id));
-        self.hovered = moved_index(current, candidates.len(), action)
+        self.inspection.hovered = moved_index(current, candidates.len(), action)
             .and_then(|index| candidates.get(index))
             .map(|id| (*id).to_owned());
         self.update_inspection_anchor();
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
@@ -410,7 +393,7 @@ impl Widget for PolarAreaChart {
             let sweep = slot - gap;
             let fraction = (datum.value / max).clamp(0.0, 1.0).powf(exponent);
             let mut radius = fraction.mul_add(outer - inner, inner);
-            let hovered = self.hovered.as_deref() == Some(&datum.id);
+            let hovered = self.inspection.hovered.as_deref() == Some(&datum.id);
             if hovered {
                 radius += self.style.hover_offset;
             }
@@ -451,10 +434,11 @@ impl Widget for PolarAreaChart {
             &self.center_title,
             &self.center_subtitle,
         );
-        if self.keyboard_inspection {
+        if self.inspection.keyboard {
             self.update_inspection_anchor();
         }
         if let Some(datum) = self
+            .inspection
             .hovered
             .as_deref()
             .and_then(|id| self.datum(id))
@@ -470,7 +454,7 @@ impl Widget for PolarAreaChart {
                 transform,
                 tr,
                 theme,
-                self.pointer,
+                self.inspection.pointer,
                 self.rect,
                 140.0,
                 (&datum.label, &detail),
@@ -499,10 +483,7 @@ impl Widget for PolarAreaChart {
                     } else {
                         d.detail.clone()
                     })
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect();
         Some(root)

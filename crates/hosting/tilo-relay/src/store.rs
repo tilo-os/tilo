@@ -149,7 +149,7 @@ pub(crate) fn count_listed_entry() {
 
 /// Directory entries the relay's workspace stores have listed to retain
 /// history in this process: what a commit's cost grows with when it lists a
-/// lineage instead of using the index of it (TIL-742). The hosting bench
+/// lineage instead of using the index of it. The hosting bench
 /// divides it by edits.
 #[must_use]
 pub fn listed_entries() -> u64 {

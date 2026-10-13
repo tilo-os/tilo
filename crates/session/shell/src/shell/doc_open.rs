@@ -1051,10 +1051,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn continuations_and_remote_references_resolve_without_source_paths() {
         fn continuation_uses_root_catalog_when_file_xattr_is_unavailable() {
             let root = tempfile::tempdir().unwrap();
@@ -1183,10 +1179,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn documents_open_in_the_declaring_package_or_refuse_with_a_reason() {
         /// Three formats, three owning packages. Asserted against the
         /// command the compositor executed and the events it queued, not
@@ -1699,10 +1691,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn file_explorer_opens_documents_in_their_owning_app_or_reports_none() {
         /// Driven through the explorer's own `open_entry` and the
         /// production route ([`crate::shell::install_document_opener`]) —

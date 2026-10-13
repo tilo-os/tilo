@@ -1181,11 +1181,7 @@ impl PhotosApp {
                     let mut node = AccessNode::new(Role::TreeItem)
                         .with_name(entry.label.clone())
                         .with_bounds(entry.rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            selected: entry.selected,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true).selected(entry.selected))
                         .with_action_target(entry.target.action_target());
                     if let Some(count) = entry.count {
                         node = node.with_description(count.to_string());
@@ -1209,10 +1205,7 @@ impl PhotosApp {
                     tr("photos-show-sidebar")
                 })
                 .with_bounds(self.chrome.toggle)
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                })
+                .with_state(AccessState::new().focusable(true))
                 .with_hashed_key("photos:sidebar-toggle")
                 .with_action_target("photos:sidebar:toggle"),
         );

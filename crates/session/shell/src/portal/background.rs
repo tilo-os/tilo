@@ -72,29 +72,7 @@ pub trait BackgroundService: Send + Sync {
     fn cancel_background(&self, _handle: &str) {}
 }
 
-#[derive(Clone)]
-pub struct BackgroundServiceHandle(Arc<dyn BackgroundService>);
-impl BackgroundServiceHandle {
-    pub fn new(service: Arc<dyn BackgroundService>) -> Self {
-        Self(service)
-    }
-    #[cfg(target_os = "linux")]
-    fn request_background(
-        &self,
-        request: BackgroundConsentRequest,
-        reply: oneshot::Sender<PortalResult<BackgroundConsent>>,
-    ) -> PortalResult<()> {
-        self.0.request_background(request, reply)
-    }
-    #[cfg(target_os = "linux")]
-    fn set_autostart(&self, app_id: &str, enabled: bool) -> PortalResult<bool> {
-        self.0.set_autostart(app_id, enabled)
-    }
-    #[cfg(target_os = "linux")]
-    fn cancel_background(&self, handle: &str) {
-        self.0.cancel_background(handle);
-    }
-}
+pub type BackgroundServiceHandle = Arc<dyn BackgroundService>;
 
 struct UnavailableBackgroundService;
 impl BackgroundService for UnavailableBackgroundService {
@@ -289,11 +267,7 @@ impl BackgroundBackend {
 
     #[cfg(target_os = "linux")]
     pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
-        Self::with_service_and_lifecycle(
-            ctx,
-            BackgroundServiceHandle::new(Arc::new(UnavailableBackgroundService)),
-            lifecycle,
-        )
+        Self::with_service_and_lifecycle(ctx, Arc::new(UnavailableBackgroundService), lifecycle)
     }
 
     #[cfg(target_os = "linux")]
@@ -643,7 +617,7 @@ mod tests {
                     )
                 },
                 apps: Arc::new(Mutex::new(HashMap::new())),
-                service: BackgroundServiceHandle::new(Arc::new(UnavailableBackgroundService)),
+                service: Arc::new(UnavailableBackgroundService),
                 lifecycle: PortalLifecycle::new(),
             };
             assert!(backend.set_app_state("org.example.App", ACTIVE));

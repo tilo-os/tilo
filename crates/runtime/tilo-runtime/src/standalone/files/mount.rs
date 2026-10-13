@@ -53,7 +53,7 @@ impl Mount {
         let persist = std::thread::Builder::new()
             .name("tilo-workspace-persist".into())
             .spawn(move || {
-                while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(INTERVAL) {
+                while stopped.recv_timeout(INTERVAL) == Err(mpsc::RecvTimeoutError::Timeout) {
                     save(&namespace);
                 }
                 save(&namespace);

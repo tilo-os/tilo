@@ -16,7 +16,6 @@
 
 use crate::widget::ModelPath;
 use std::collections::HashMap;
-use taffy::style_helpers::length;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -430,10 +429,7 @@ impl Widget for ColorSwatchPicker {
         let (w, h) = self.grid_size();
         let style = Style {
             flex_shrink: 0.0,
-            size: taffy::Size {
-                width: length(w),
-                height: length(h),
-            },
+            size: taffy::Size::from_lengths(w, h),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -480,8 +476,7 @@ impl Widget for ColorSwatchPicker {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 self.hovered = self
                     .swatch_rects
                     .iter()
@@ -593,23 +588,23 @@ impl Widget for ColorSwatchPicker {
                     // export their real logical-pixel rects for AT hit testing
                     // and overlay inspection just like the shared pointer path.
                     .with_bounds(self.swatch_rects.get(i).copied().unwrap_or(Rect::ZERO))
-                    .with_state(AccessState {
-                        focusable: true,
-                        selected: self.selected == Some(i),
-                        focused: self.focused && self.focus_index == i,
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(self.selected == Some(i))
+                            .focused(self.focused && self.focus_index == i),
+                    )
                     .with_position(i.saturating_add(1), count)
             })
             .collect();
         Some(
             AccessNode::new(Role::List)
                 .with_optional_value(value)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused()),
+                )
                 .with_children(items),
         )
     }
@@ -707,19 +702,9 @@ mod tests {
 
         dispatch(
             &mut picker,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(third.x, third.y),
-            },
+            &crate::synthetic_input::cursor_moved(third.x, third.y),
         );
-        dispatch(
-            &mut picker,
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
+        dispatch(&mut picker, &crate::synthetic_input::mouse_press());
         assert_eq!(*chosen.borrow(), vec![2]);
 
         // Showing a choice made elsewhere tells no one.
@@ -780,18 +765,11 @@ mod tests {
 
         dispatch(
             &mut picker,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
-            },
+            &crate::synthetic_input::cursor_moved(centre.x, centre.y),
         );
         assert!(dispatch(
             &mut picker,
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            }
+            &crate::synthetic_input::mouse_press()
         ));
         assert_eq!(picker.take_choice(), Some(2));
 

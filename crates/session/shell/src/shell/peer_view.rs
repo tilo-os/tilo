@@ -500,13 +500,7 @@ impl PeerView {
                 }
             };
             let blob = vello::peniko::Blob::new(std::sync::Arc::new(rgba));
-            self.cached_image = Some(vello::peniko::ImageData {
-                data: blob,
-                format: vello::peniko::ImageFormat::Rgba8,
-                alpha_type: vello::peniko::ImageAlphaType::Alpha,
-                width: frame.width,
-                height: frame.height,
-            });
+            self.cached_image = Some(ui::raster::rgba8(blob, frame.width, frame.height));
         }
         self.cached_image.as_ref()
     }
@@ -521,10 +515,7 @@ impl Widget for PeerView {
     ) -> NodeId {
         taffy.widget_leaf(
             taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
+                size: taffy::Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             node_map,
@@ -729,10 +720,6 @@ impl AppWidget for PeerView {
         // Stands in for "remote / peer surface" until a dedicated icon ships.
         IconDescriptor::Glyph("\u{f0ac}")
     }
-
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 
 #[cfg(test)]
@@ -921,11 +908,7 @@ mod tests {
             let mut view = PeerView::new(42, 9);
             let send =
                 |view: &mut PeerView, event: WindowEvent| ui::testing::dispatch(view, &event);
-            let wheel = || WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let wheel = || ui::synthetic_input::mouse_wheel(0.0, 1.0);
             let commit = || WindowEvent::Ime(winit::event::Ime::Commit("é".into()));
 
             // Neither reaches a window the pointer is not over or that has

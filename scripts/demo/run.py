@@ -253,26 +253,6 @@ SHIFTED_KEYS.update({
     "<": ",", ">": ".", "?": "/", "~": "`",
 })
 
-# Beat 9. The agent reads its instruction out of the document itself —
-# a paragraph addressed to it by name (`apps/agent/src/plan.rs`) — and
-# turns the run of bullets immediately above into a table. So the list
-# has to be there first, and it has to be worth reading: the failure
-# this replaces produced a table with nothing in it, which a transcript
-# asking only "is there a table" cannot tell from success.
-# `- ` at the start of a paragraph autoformats into a list item
-# (`word_processor.rs:2160`), and Enter continues the list, so one
-# prefix makes the whole run. It has to *be* a run of `list_item`
-# blocks: the agent converts those and nothing else
-# (`plan.rs::bullets_above`), and a run of plain paragraphs is what
-# produced a table with empty cells. The `: ` splits each line into two
-# columns (`plan.rs::split_cells`).
-AGENT_BULLETS = "\n- Doors: 18:00\nSound check: 18:30\nSeating: 240\n\n"
-AGENT_INSTRUCTION = "Claude: turn the bullets into a table\n"
-# One cell's text, looked for in the document afterwards. If the table
-# came out empty this is gone, and the claim fails instead of passing on
-# the existence of a grid.
-AGENT_BULLET_PROOF = "Sound check"
-
 # How long to wait for a change to cross between sessions.
 SYNC_TIMEOUT_S = 25.0
 # A document crossing is a longer chain than a room-index entry: publish,
@@ -3132,150 +3112,6 @@ class Registry:
         return False
 
 
-def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
-    """Put the caret in the page and type, the way a person would.
-
-    The word processor is a foreign client, so its insides are not in
-    the compositor's widget registry and there is no name to aim at.
-    Its *tile* has one, which is as close as the shell can get: click
-    into the middle of the page, then type.
-    """
-    surface = (wp or {}).get("surface_id")
-    stem = f"foreign-surface-{surface}"
-    named = next((n for n in s.target_names()
-                  if n == stem or n.startswith(stem + "[")), None)
-    rect = s.named_rect(named) if named else None
-    if not rect:
-        others = [n for n in s.target_names()
-                  if n.startswith("foreign-surface-")]
-        note(f"{s.name}: no laid-out tile for surface {surface}; "
-             f"laid out now: {others or 'none'}")
-        return False
-    bx, by, bw, bh = rect
-    s.click_at(bx + bw * 0.4, by + bh * 0.35)
-    s.settle(1.0)
-    # To the end of what is already there, rather than wherever the
-    # click happened to land. By this point the document has a sentence
-    # and an image in it, and a caret dropped into the middle of that
-    # writes the list into the middle of it — or replaces a selected
-    # image with the first character typed.
-    #
-    # A *held* Control, not the `modifiers` mask. That mask is the
-    # compositor's own, read by chrome; a client resolves keycodes
-    # through the seat's xkb state, which the mask never touches. So the
-    # `modifiers(ctrl=True)` this used to do sent a bare `End` — end of
-    # the *line*, not of the document — and did it silently, which is
-    # exactly the kind of thing that only shows up as a list typed into
-    # the middle of a paragraph.
-    s.key_down("Control")
-    s.key("End")
-    s.key_up("Control")
-    s.settle(0.5)
-    s.type_prose(text)
-    s.settle(1.0)
-    return True
-
-
-def agent_binary() -> str | None:
-    """`tilo-agent`, if it has been built.
-
-    A separate process rather than a compositor: the whole point of it
-    is that a participant can hold a document, a caret and a name in the
-    room's history without holding a screen. Absent is a supported
-    state — the beat says so and stops, rather than substituting
-    something that looks similar.
-    """
-    for profile in ("demo", "release", "debug"):
-        path = os.path.join(REPO, "target", profile, "tilo-agent")
-        if os.path.exists(path):
-            return path
-    return None
-
-
-def run_the_agent(agent: Session, room: str, shots: str,
-                  timeout: float = 120.0) -> bool | None:
-    """Let the agent join the document and carry out one instruction.
-
-    It connects to its own session's broker, which is how its edits
-    reach the other two: the same Iroh publish path carries every peer's edits
-    take. `--no-model` keeps the run reproducible and off the network —
-    the vocabulary is a keyword table, and an instruction must never
-    wait on a request.
-
-    Returns None when the binary is not built, so a caller can say that
-    rather than report a failure it did not observe.
-    """
-    binary = agent_binary()
-    if binary is None:
-        return None
-    log_path = os.path.join(shots, "agent.log")
-    with open(log_path, "w") as log:
-        # `--app` is named rather than left to its default, because the
-        # default is the whole reason this beat once filmed a file
-        # manager: with no address to narrow on, the broker's fan-out is
-        # room-wide, the agent is offered every document open in the room
-        # and takes whichever arrives first — and in one run that was the
-        # file explorer's, whose actor id (`files-2`) then refused to
-        # merge with the word processor's when that finally turned up.
-        #
-        # `--record` is the other half of that address and is deliberately
-        # *not* passed: it names the file a document was opened from, and
-        # this document has no file. It is the untitled document the app
-        # created when beat 5 launched it, so its record is empty, and
-        # `--record ""` would be a different address from "no record"
-        # rather than the same one. Staging a file to open instead would
-        # give this something to name — it needs a way to launch a
-        # packaged app *on* a path, which the applications action does
-        # not expose today.
-        proc = subprocess.Popen(
-            [binary, "--workspace", str(room), "--name", "Claude",
-             "--app", WORD_PROCESSOR,
-             "--socket", agent.collab_json_sock, "--no-model", "--once",
-             "--pace-ms", "250"],
-            stdout=log, stderr=subprocess.STDOUT, cwd=REPO,
-            preexec_fn=die_with_parent(enabled=not KEEP_SESSIONS))
-        if not KEEP_SESSIONS:
-            track(proc)
-        try:
-            code = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            note(f"the agent did not finish within {timeout:.0f}s; "
-                 f"see {log_path}")
-            # A bare timeout sends the next person to read a hung
-            # process. The usual cause is upstream of the agent and is
-            # visible in the session's own log: the broker computes an
-            # addressed channel key and then fans out room-wide anyway,
-            # so every app in the room answers the agent's handshake and
-            # it is offered a document from an app it did not ask for.
-            # Said here so it is diagnosed once rather than every time.
-            try:
-                with open(agent.log_path) as fh:
-                    session = fh.read()
-            except OSError:
-                session = ""
-            wide = [ln for ln in session.splitlines()
-                    if "room_wide=true" in ln and "addressed=" in ln]
-            others = [ln for ln in session.splitlines()
-                      if "recv Arrived" in ln
-                      and WORD_PROCESSOR not in ln.split("]")[0]]
-            if wide or others:
-                note("the broker fanned this session's collaboration "
-                     "traffic room-wide while carrying an addressed "
-                     "channel key, so apps the agent did not ask for "
-                     "answered its handshake:")
-                for ln in (wide[-1:] + others[-2:]):
-                    note(f"    {ln.strip()[:200]}")
-                note("that is a broker fix, not an agent or a demo one — "
-                     f"see {agent.log_path}")
-            return False
-    if code != 0:
-        with open(log_path) as fh:
-            tail = fh.read()[-400:]
-        note(f"tilo-agent exited {code}: {tail}")
-    return code == 0
-
-
 # --------------------------------------------------------------------
 # the demonstration
 # --------------------------------------------------------------------
@@ -4557,98 +4393,6 @@ def beat_nine(ada: Session, bob: Session, agent: Session,
           agent.input_ops, baseline)
     note("the address (provider, id) is the entire input to the invocation")
 
-    # The action above was a shell action, so it changed the shell: it
-    # opened a panel on the agent's own session. The document is reached
-    # the other way round, and the next step is that — not a lesser
-    # substitute for it.
-    #
-    # `tilo-agent` joins the room's collaboration broker as an ordinary
-    # CRDT peer and applies `WordProcessorAction` — the same variants the
-    # word processor's own toolbar dispatches — under its own `ActorId`,
-    # then broadcasts the result. So the exported action is the
-    # *vocabulary* and the CRDT is the *transport*: what arrives on the
-    # other two screens is the app's own operation, attributable to the
-    # participant that made it. And it holds no screen while it does —
-    # there is no winit, wgpu or vello anywhere in `apps/agent`.
-    note("what it just invoked was a shell action, so it moved the shell. "
-         "The document is reached as a participant: apps/agent applies "
-         "the word processor's own actions under its own actor and "
-         "broadcasts them, with no window of its own")
-
-    # A terminal used to be opened here, because opening a window was
-    # the only visible thing an agent could do by address. It ended the
-    # film on a `bash` prompt in a fourth window — a developer machine,
-    # in the last shot a viewer keeps, arguing against the strip the
-    # letter points at. What follows is the beat that was wanted
-    # instead: the agent changes the document the other two are looking
-    # at, and it is read back off somebody else's screen.
-    step("ada writes a list, and asks Claude for a table")
-    cut("ada")
-    if not type_into_the_document(ada, ada_wp, AGENT_BULLETS):
-        gap("nothing could be typed into ada's document, so there is "
-            "no list for the agent to act on")
-        return
-    ada.settle(1.0)
-    read_hold()
-    ada.type_prose(AGENT_INSTRUCTION)
-    ada.settle(1.5)
-    # What he asked for, in his own document, addressed to a participant
-    # by name. Nothing else in the film explains what is about to happen,
-    # so this frame has to be readable.
-    read_hold(READ_HOLD_S * 2)
-    ada.snapshot(os.path.join(shots, "11-instruction.png"))
-    note(f"the instruction is a line in the document: {AGENT_INSTRUCTION!r}")
-
-    step("the agent reads it and carries it out — with no window at all")
-    # The best fifteen seconds in the film when it works — a table
-    # assembling itself in a document nobody is touching — and the worst
-    # two minutes in it when it does not. Bounded accordingly.
-    with patience(15.0):
-        ran = run_the_agent(agent, host_ws["room"], shots)
-    if ran is None:
-        gap("tilo-agent is not built, so the agent could not act on the "
-            "document (cargo build -p agent --bin tilo-agent)")
-        return
-    claim("the agent carried out the instruction", ran, True)
-    claim("and no synthetic input reached its session to do it",
-          agent.input_ops, baseline)
-
-    step("and bob's own word processor is asked what it holds now")
-    # The payoff, read off the screen of somebody who did not make the
-    # change. The assertion is that the *content* survived into the
-    # table: a table with the rows empty is what this beat produced
-    # before, and it is indistinguishable from success in a transcript
-    # that only asks whether a table exists.
-    #
-    # Asked of bob's session and *filmed on ada's*. That a third
-    # participant's edit reached a fourth machine is the strongest form
-    # of the claim and is worth asserting; it is not worth a second
-    # excursion, because the same edit is arriving on the screen already
-    # on camera, in the document the audience has watched being written.
-    # An agent's work showing up in your document the way a colleague's
-    # does is the whole point, and it is a point about *your* screen.
-    reader = None
-    try:
-        reader = DocumentReader(bob.collab_json_sock, host_ws["room"],
-                                record=None)
-        # A question over a socket, with the camera on a screen it is not
-        # about. Nothing here is worth a minute of film in either
-        # direction.
-        with patience(3.0):
-            doc, carried = reader.await_document(AGENT_BULLET_PROOF,
-                                                 DOC_SYNC_TIMEOUT_S)
-    except OSError as e:
-        gap(f"bob's session has no JSON broker to ask ({e})")
-        doc, carried = None, False
-    finally:
-        if reader is not None:
-            reader.close()
-    if doc is not None:
-        claim("bob's document carries the rows the agent made, with the "
-              "text still in them", carried, True)
-    else:
-        gap("bob's app never answered, so what his screen holds was not "
-            "established")
     # The last shot of the film, so it is framed like one: even shares,
     # the strip scrolled back, and every window whole. An accumulation
     # of everything the run happened to open is the picture that argues
@@ -4660,8 +4404,8 @@ def beat_nine(ada: Session, bob: Session, agent: Session,
     # two other participants had just written into.
     frame_one_window(ada, WORD_PROCESSOR, prefer=ada_wp)
     read_hold(READ_HOLD_S * 2)
-    ada.snapshot(os.path.join(shots, "12-agent-table.png"))
-    bob.snapshot(os.path.join(shots, "12b-bob-agent-table.png"))
+    ada.snapshot(os.path.join(shots, "12-closing.png"))
+    bob.snapshot(os.path.join(shots, "12b-bob-closing.png"))
 
 
 def run(ada: Session, bob: Session, agent: Session, shots: str,

@@ -750,22 +750,6 @@ impl StatePeer {
         self.set_member(user_public_key, role.into(), false, key, now)
     }
 
-    /// Make a governed collaborator an administrator of the workspace: an
-    /// editor granted every governance action of the room (never its
-    /// governance key). [`Self::set_member_role`] demotes them again.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::set_member_role`].
-    pub fn set_member_administrator(
-        &mut self,
-        user_public_key: [u8; 32],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.set_member(user_public_key, Role::Editor, true, key, now)
-    }
-
     fn set_member(
         &mut self,
         user_public_key: [u8; 32],
@@ -898,48 +882,6 @@ impl StatePeer {
                 &map,
                 grant.id.as_str(),
                 automerge::ScalarValue::Bytes(serde_json::to_vec(grant).map_err(err)?),
-            )
-            .map_err(err)?;
-        }
-        doc.commit();
-        self.apply_governance_doc(doc, &before, key, now)
-    }
-
-    /// Write sandbox capabilities the governance writer decided for apps in
-    /// the room, keyed by their ids.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer, a capability
-    /// has no id, or governance cannot be updated.
-    pub fn put_governed_sandbox(
-        &mut self,
-        capabilities: &[collab_types::caps::CapOverride],
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
-        let mut doc = self
-            .core
-            .room_doc
-            .clone()
-            .ok_or("room governance missing")?;
-        let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
-        let map = match doc.get(ROOT, "sandbox").map_err(err)? {
-            Some((_, map)) => map,
-            None => doc.put_object(ROOT, "sandbox", ObjType::Map).map_err(err)?,
-        };
-        for capability in capabilities {
-            if capability.id.trim().is_empty() {
-                return Err("a sandbox capability needs an id".into());
-            }
-            doc.put(
-                &map,
-                capability.id.as_str(),
-                automerge::ScalarValue::Bytes(serde_json::to_vec(capability).map_err(err)?),
             )
             .map_err(err)?;
         }

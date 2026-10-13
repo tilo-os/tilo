@@ -49,7 +49,7 @@ pub mod windows_toasts {
     pub use crate::windows::{HostNotifications, ScheduledNotice, register_shortcut};
 }
 
-pub use caps::{Availability, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use tilo_clock::SystemTime;
 
 /// One user-visible notification.

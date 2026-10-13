@@ -142,7 +142,6 @@ struct SignInState {
     texted: Option<u64>,
 }
 
-#[allow(clippy::struct_excessive_bools, reason = "independent server switches")]
 struct State {
     options: Options,
     base: String,

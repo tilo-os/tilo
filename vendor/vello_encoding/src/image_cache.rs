@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(stats.resident, 1);
     }
 
-    /// TIL-731: a desktop that goes idle after a close draws only a few
+    /// #4104: a desktop that goes idle after a close draws only a few
     /// frames. Told the images went, the atlas comes all the way down in
     /// those, and a busy atlas still does not.
     #[test]

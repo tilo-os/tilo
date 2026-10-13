@@ -172,9 +172,9 @@ fn clock(at: NaiveDateTime) -> String {
 
 /// "Today", "Yesterday", or the weekday and date.
 pub fn day_label(day: NaiveDate, today: NaiveDate) -> String {
-    match (today - day).num_days() {
-        0 => "Today".into(),
-        1 => "Yesterday".into(),
+    let days = (day - today).num_days();
+    match ui::format::near_day(days) {
+        Some(near) if days <= 0 => near,
         _ => format!(
             "{} {} {}",
             ui::format::weekday_name(day.weekday().num_days_from_sunday() as usize),
@@ -313,7 +313,6 @@ fn health_status(health: Health) -> Option<ui::widget::RowStatus<'static>> {
     match health {
         Health::Ok => None,
         Health::Warning => Some(ui::widget::RowStatus::Warning),
-        Health::Error => Some(ui::widget::RowStatus::Error),
     }
 }
 

@@ -24,23 +24,7 @@ const MOSTLY: f64 = 0.75;
 /// The answer to `action`, which changed `doc` as `changes`.
 pub fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<Value> {
     match action {
-        "select" => {
-            let mut answer = json!({"selection": selection(&Artwork::from_doc(doc).ok()?)});
-            if let (Some(found), Some(fields)) =
-                (crate::subject::take_found(), answer.as_object_mut())
-            {
-                fields.insert(
-                    "found_by".into(),
-                    json!({
-                        "model": found.model,
-                        "load_ms": found.load_ms,
-                        "infer_ms": found.infer_ms,
-                        "refine_ms": found.refine_ms,
-                    }),
-                );
-            }
-            Some(answer)
-        }
+        "select" => Some(json!({"selection": selection(&Artwork::from_doc(doc).ok()?)})),
         "paint" | "draw" | "import-svg" | "use-selection" => {
             let added = added(changes);
             if added.is_empty() {

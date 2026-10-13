@@ -81,8 +81,7 @@ impl Store for TreeStore {
         // Everything but the documents: encoded once below, and installed
         // with the live documents moved into it only once it is published.
         let mut candidate = tree.clone_without_documents();
-        let mut bound = false;
-        if let Change::Room {
+        let bound = if let Change::Room {
             room,
             bind: Some(target),
             ..
@@ -98,8 +97,10 @@ impl Store for TreeStore {
             if candidate.room_of(target.workspace) != Some(room) {
                 return Err("enrollment local slot cannot be bound".into());
             }
-            bound = true;
-        }
+            true
+        } else {
+            false
+        };
         candidate.native_authority = next.clone();
         if let Change::Room { room, peer, .. } = change {
             candidate.project_native_room(room, peer);

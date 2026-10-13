@@ -109,7 +109,7 @@ let plot = CartesianPlot::new(vec![latency])
         CartesianAnnotation::x_band("deploy", 1.25, 1.5, accent)
             .labelled("Deployment"),
     ])
-    .styled(style)
+    .with_style(style)
     .titled("Request latency")
     .with_height(320.0);
 ```
@@ -349,15 +349,9 @@ optional color delegates it to the OS theme. Explicit data colors are useful
 when color has domain meaning; never copy surface or text colors out of a
 particular light/dark theme.
 
-Every chart accepts either `.styled(style)` or `.with_style(style)`, so both
-the chart-focused and toolkit-wide builder vocabularies are predictable. Most
-fixed-canvas charts expose `.with_height(...)`; `RangeChart` intentionally
-derives its height from row count and `RangeStyle::row_height`, keeping Gantt
+Every chart takes its style through `.with_style(style)`. Most fixed-canvas
+charts expose `.with_height(...)`; `RangeChart` intentionally derives its height from row count and `RangeStyle::row_height`, keeping Gantt
 rows readable as data changes.
-
-All chart widgets expose both `style()` and `style_mut()`. This makes live
-theme editors, compact-mode policies, and user preferences cheap to apply
-without replacing the retained widget or losing hover/selection identity.
 
 Tooltips, focus outlines, dim text, grids and surfaces always resolve from the
 current `Theme` during drawing. This keeps the same chart intentional in light,

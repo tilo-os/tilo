@@ -449,10 +449,6 @@ struct BodyWell {
 }
 
 impl Widget for BodyWell {
-    #[allow(
-        clippy::expect_used,
-        reason = "TaffyTree::new_leaf only fails on allocation, which aborts anyway"
-    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -467,18 +463,13 @@ impl Widget for BodyWell {
                 width: percent(1.0_f32),
                 height: taffy::Dimension::auto(),
             },
-            min_size: taffy::Size {
-                width: length(0.0_f32),
-                height: length(lines),
-            },
+            min_size: taffy::Size::from_lengths(0.0_f32, lines),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -517,9 +508,5 @@ impl Widget for BodyWell {
 
     fn name(&self) -> &'static str {
         "SnippetBody"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }

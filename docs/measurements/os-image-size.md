@@ -1,7 +1,7 @@
 # OS image size
 
 Every install downloads the OS image and every update pulls its changed
-layers, so its size is a KPI too (TIL-609). `tools/perf/image_size.py`
+layers, so its size is a KPI too. `tools/perf/image_size.py`
 measures one image without a container engine: it streams each layer from
 the registry, checks it against its digest and replays the layers with their
 whiteouts. It reports, in bytes:
@@ -41,20 +41,20 @@ measures main's newest image for both architectures and records
   the second night running. To land intended growth, dispatch Perf / scheduled
   on main with `kpis=footprint` and `accept=<KPI ids>` once the image has it.
 - **Ceiling.** Compressed bytes and unique content are held to an enforced
-  ceiling, set 5 % over the image TIL-609 measured and lowered by what each
+  ceiling, set 5 % over the image #4003 measured and lowered by what each
   later size change saved, so slow creep fails too. It may only be lowered,
   except by a change that says why in the same pull request; a change that
   shrinks the image lowers it by its measured saving and records the
   numbers under `docs/benchmarks/`. The KPI targets (3.5 GB compressed, 7 GB of content for
   x86_64) are written beside the ceilings. Windows compatibility is most of
-  the gap; TIL-711 moves it to a downloaded system extension.
+  the gap; shipping it as a downloaded system extension would close most of it.
 
 ## Content-based layers (rechunking)
 
 An update downloads every layer whose digest the device does not have. A
 Containerfile layer is a new blob whenever its instruction runs again, so
 with one layer per instruction an update between two commits that changed one
-app pulled about 78 % of the image (TIL-747). Release / OS therefore re-lays
+app pulled about 78 % of the image. Release / OS therefore re-lays
 every generic image it publishes out by content before anything consumes it
 ("Rechunk the image", `os/dev/rechunk-image.sh`):
 

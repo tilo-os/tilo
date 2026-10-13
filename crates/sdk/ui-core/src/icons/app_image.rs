@@ -141,7 +141,6 @@ pub fn draw_app_image(scene: &mut Scene, transform: Affine, rect: Rect, image: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vello::peniko::{Blob, ImageAlphaType, ImageFormat};
 
     struct Solid(&'static str, std::sync::Mutex<Vec<u32>>);
 
@@ -152,13 +151,7 @@ mod tests {
         fn pixels(&self, device_px: u32) -> Option<ImageData> {
             self.1.lock().unwrap().push(device_px);
             let len = usize::try_from(device_px * device_px * 4).unwrap();
-            Some(ImageData {
-                data: Blob::new(Arc::new(vec![255u8; len])),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: device_px,
-                height: device_px,
-            })
+            Some(crate::raster::rgba8(vec![255u8; len], device_px, device_px))
         }
     }
 

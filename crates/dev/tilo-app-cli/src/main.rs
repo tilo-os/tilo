@@ -154,7 +154,7 @@ enum AddCommand {
         title: Option<String>,
         /// Common screen shape to scaffold.
         #[arg(long, value_enum, default_value = "blank")]
-        template: ScreenTemplateArg,
+        template: tilo_app_cli::ScreenTemplate,
         /// Add a button on this existing screen that pushes the new screen.
         #[arg(long)]
         link_from: Option<String>,
@@ -190,7 +190,7 @@ enum AddCommand {
     Ci {
         /// The forge the repository is hosted on; Codeberg is forgejo.
         #[arg(long, value_enum)]
-        forge: ForgeArg,
+        forge: tilo_app_cli::ci::Forge,
         /// Linux runner label. Defaults to `ubuntu-latest`, or `docker` on
         /// Forgejo (`codeberg-small` on Codeberg).
         #[arg(long)]
@@ -211,7 +211,7 @@ enum AddCommand {
         name: String,
         /// Common component shape to scaffold.
         #[arg(long, value_enum, default_value = "display")]
-        template: ComponentTemplateArg,
+        template: tilo_app_cli::ComponentTemplate,
         /// Also insert the first display or form instance into this graph screen.
         #[arg(long)]
         mount: Option<String>,
@@ -620,16 +620,6 @@ impl TargetArg {
     }
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum BundleArg {
-    /// The desktop bundle for Tilo's own web apps, otherwise the app alone.
-    Auto,
-    /// The page runtime with only this app.
-    App,
-    /// Every web-capable Tilo app (inside a Tilo checkout).
-    Desktop,
-}
-
 #[derive(clap::Args)]
 struct TargetOptions {
     /// Optimized build.
@@ -637,7 +627,7 @@ struct TargetOptions {
     release: bool,
     /// Web only: which bundle to build.
     #[arg(long, value_enum, default_value = "auto")]
-    bundle: BundleArg,
+    bundle: tilo_app_cli::targets::WebBundle,
     /// Build even when a required capability's backend is only planned.
     #[arg(long)]
     allow_planned: bool,
@@ -657,11 +647,7 @@ impl TargetOptions {
         let mut request = tilo_app_cli::targets::TargetRequest::new(target);
         request.release = self.release;
         request.allow_planned = self.allow_planned;
-        request.bundle = match self.bundle {
-            BundleArg::Auto => tilo_app_cli::targets::WebBundle::Auto,
-            BundleArg::App => tilo_app_cli::targets::WebBundle::App,
-            BundleArg::Desktop => tilo_app_cli::targets::WebBundle::Desktop,
-        };
+        request.bundle = self.bundle;
         request.features.clone_from(&self.features);
         request.no_default_features = self.no_default_features;
         request
@@ -675,7 +661,7 @@ struct PlatformArgs {
     /// The system to build for: Tilo OS (the default), another Linux
     /// desktop, Windows, macOS, the web, or Android.
     #[arg(long, value_enum)]
-    platform: Option<PlatformArg>,
+    platform: Option<tilo_app_cli::PackagePlatform>,
 
     /// CPU architecture to build for. Defaults to the host's; `wasm32` is the
     /// web's only one. On Android, the device's for `run` and `dev`, else
@@ -691,13 +677,16 @@ impl PlatformArgs {
         tilo_app_cli::PackagePlatform,
         Option<tilo_app_cli::PackageArch>,
     )> {
-        platform_and_arch(self.platform.unwrap_or(PlatformArg::Tilo), self.arch)
+        platform_and_arch(
+            self.platform.unwrap_or(tilo_app_cli::PackagePlatform::Tilo),
+            self.arch,
+        )
     }
 
     /// `--platform android` for `--target android`, which names the same build.
     fn or_target(mut self, target: Option<TargetArg>) -> Self {
         if matches!(target, Some(TargetArg::Android)) {
-            self.platform = Some(PlatformArg::Android);
+            self.platform = Some(tilo_app_cli::PackagePlatform::Android);
         }
         self
     }
@@ -959,8 +948,8 @@ struct PackageArgs {
     /// Linux, Windows or macOS executable with the toolkit linked in, a
     /// WebAssembly side module of the browser's toolkit core, or a signed
     /// Android APK (and bundle).
-    #[arg(long, value_enum, default_value_t = PlatformArg::Tilo)]
-    platform: PlatformArg,
+    #[arg(long, value_enum, default_value_t = tilo_app_cli::PackagePlatform::Tilo)]
+    platform: tilo_app_cli::PackagePlatform,
 
     /// CPU architecture to build for. Defaults to the host's.
     #[arg(long, value_enum)]
@@ -1124,36 +1113,6 @@ impl TemplateArg {
             "the {retired} template is now the `{example}` example; run `tilo-app new NAME --from-example {example}`"
         )
     }
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum ScreenTemplateArg {
-    /// A localized title and starter body.
-    #[default]
-    Blank,
-    /// Labeled inputs, a checkbox, draft bindings, and a save action.
-    Form,
-    /// Labeled preferences, stable bindings, and a save action.
-    Settings,
-    /// Explanatory copy and a primary recovery action.
-    EmptyState,
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum ComponentTemplateArg {
-    /// Typed props rendered as an accessible heading and detail.
-    #[default]
-    Display,
-    /// Typed local state bound to labeled text and boolean controls.
-    Form,
-    /// Source-agnostic virtualized tree with typed configuration.
-    Tree,
-    /// Source-agnostic sparse variable-height list with retained delegates.
-    List,
-    /// Source-agnostic sparse table with app-defined columns and cells.
-    Table,
-    /// Styled text with polygon flow or a custom layout engine.
-    Text,
 }
 
 fn main() -> ExitCode {
@@ -1414,10 +1373,6 @@ fn run_locale(args: LocaleArgs) -> Result<Value> {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one dispatch over every artifact the command adds"
-)]
 fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
     let Some(command) = args.command else {
         anyhow::ensure!(
@@ -1453,12 +1408,7 @@ fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
             tilo_app_cli::AddArtifact::Screen {
                 name,
                 title,
-                template: match template {
-                    ScreenTemplateArg::Blank => tilo_app_cli::ScreenTemplate::Blank,
-                    ScreenTemplateArg::Form => tilo_app_cli::ScreenTemplate::Form,
-                    ScreenTemplateArg::Settings => tilo_app_cli::ScreenTemplate::Settings,
-                    ScreenTemplateArg::EmptyState => tilo_app_cli::ScreenTemplate::EmptyState,
-                },
+                template,
                 link_from,
             },
             options,
@@ -1484,7 +1434,6 @@ fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
             props,
             options,
         } => {
-            let template = component_template(template);
             let artifact = if let Some(screen) = mount {
                 let mut mount = match template {
                     tilo_app_cli::ComponentTemplate::Display => {
@@ -1525,24 +1474,12 @@ fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
     Ok(outcome.to_json())
 }
 
-fn component_template(template: ComponentTemplateArg) -> tilo_app_cli::ComponentTemplate {
-    match template {
-        ComponentTemplateArg::Display => tilo_app_cli::ComponentTemplate::Display,
-        ComponentTemplateArg::Form => tilo_app_cli::ComponentTemplate::Form,
-        ComponentTemplateArg::Tree => tilo_app_cli::ComponentTemplate::Tree,
-        ComponentTemplateArg::List => tilo_app_cli::ComponentTemplate::List,
-        ComponentTemplateArg::Table => tilo_app_cli::ComponentTemplate::Table,
-        ComponentTemplateArg::Text => tilo_app_cli::ComponentTemplate::Text,
-    }
-}
-
-fn run_add_ci(forge: ForgeArg, runs_on: Option<&str>, options: &AddOptions) -> Result<Value> {
+fn run_add_ci(
+    forge: tilo_app_cli::ci::Forge,
+    runs_on: Option<&str>,
+    options: &AddOptions,
+) -> Result<Value> {
     let start = options.app.clone().map_or_else(std::env::current_dir, Ok)?;
-    let forge = match forge {
-        ForgeArg::Github => tilo_app_cli::ci::Forge::Github,
-        ForgeArg::Forgejo => tilo_app_cli::ci::Forge::Forgejo,
-        ForgeArg::Gitea => tilo_app_cli::ci::Forge::Gitea,
-    };
     let outcome = tilo_app_cli::ci::add_ci(&start, forge, runs_on, options.force, options.dry_run)?;
     let verb = if outcome.written {
         "Created"
@@ -1712,16 +1649,6 @@ fn read_ui_node(source: NodeSourceArgs) -> Result<tilo_ui_graph::UiNode> {
     tilo_app_cli::parse_ui_node(&source)
 }
 
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum PlatformArg {
-    Tilo,
-    Linux,
-    Windows,
-    Macos,
-    Web,
-    Android,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum CheckPlatformArg {
     Tilo,
@@ -1732,13 +1659,6 @@ enum CheckPlatformArg {
     Android,
     /// Every platform above.
     All,
-}
-
-#[derive(Clone, Copy, clap::ValueEnum)]
-enum ForgeArg {
-    Github,
-    Forgejo,
-    Gitea,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -1753,13 +1673,13 @@ enum ArchArg {
 /// The platform and, for a native one, the architecture `--platform` and
 /// `--arch` name; `None` is the host's.
 fn platform_and_arch(
-    platform: PlatformArg,
+    platform: tilo_app_cli::PackagePlatform,
     arch: Option<ArchArg>,
 ) -> Result<(
     tilo_app_cli::PackagePlatform,
     Option<tilo_app_cli::PackageArch>,
 )> {
-    let web = matches!(platform, PlatformArg::Web);
+    let web = matches!(platform, tilo_app_cli::PackagePlatform::Web);
     match arch {
         Some(ArchArg::Wasm32) if !web => anyhow::bail!("--arch wasm32 is for --platform web"),
         Some(ArchArg::X86_64 | ArchArg::Aarch64) if web => {
@@ -1768,14 +1688,7 @@ fn platform_and_arch(
         _ => {}
     }
     Ok((
-        match platform {
-            PlatformArg::Tilo => tilo_app_cli::PackagePlatform::Tilo,
-            PlatformArg::Linux => tilo_app_cli::PackagePlatform::Linux,
-            PlatformArg::Windows => tilo_app_cli::PackagePlatform::Windows,
-            PlatformArg::Macos => tilo_app_cli::PackagePlatform::Macos,
-            PlatformArg::Web => tilo_app_cli::PackagePlatform::Web,
-            PlatformArg::Android => tilo_app_cli::PackagePlatform::Android,
-        },
+        platform,
         arch.and_then(|arch| match arch {
             ArchArg::X86_64 => Some(tilo_app_cli::PackageArch::X86_64),
             ArchArg::Aarch64 => Some(tilo_app_cli::PackageArch::Aarch64),
@@ -1890,7 +1803,7 @@ fn run_package(args: PackageArgs) -> Result<Value> {
     let android = args.target.as_deref() == Some("android");
     let (platform, arch) = platform_and_arch(
         if android {
-            PlatformArg::Android
+            tilo_app_cli::PackagePlatform::Android
         } else {
             args.platform
         },
@@ -2317,7 +2230,7 @@ fn run_app_task(args: AppTaskArgs, task: tilo_app_cli::AppTask) -> Result<Value>
 }
 
 fn run_doctor(args: DoctorArgs) -> Result<Value> {
-    if let Some(ToolchainArg::Android) = args.platform {
+    if matches!(args.platform, Some(ToolchainArg::Android)) {
         let report = tilo_app_cli::android::doctor();
         println!("{}", report.summary());
         if !report.is_ready() {
@@ -2524,7 +2437,7 @@ fn check_targets(path: &Path, args: &CheckArgs) -> Result<Value> {
         .iter()
         .any(|target| matches!(target, TargetArg::Android))
     {
-        let (_, arch) = platform_and_arch(PlatformArg::Android, args.arch)?;
+        let (_, arch) = platform_and_arch(tilo_app_cli::PackagePlatform::Android, args.arch)?;
         tilo_app_cli::android::clippy(path, arch.unwrap_or(tilo_app_cli::PackageArch::Aarch64))?;
     }
     Ok(
@@ -2549,13 +2462,13 @@ fn check_other_platforms(
                     .map(|_| ()),
             )
         } else if platform == tilo_app_cli::PackagePlatform::Android {
-            let (_, arch) = platform_and_arch(PlatformArg::Android, arch)?;
+            let (_, arch) = platform_and_arch(tilo_app_cli::PackagePlatform::Android, arch)?;
             let arch = arch.unwrap_or(tilo_app_cli::PackageArch::Aarch64);
             let label = format!("Clippy for android ({})", arch.android_abi());
             println!("[check] {label}");
             (label, tilo_app_cli::android::clippy(path, arch))
         } else {
-            let (_, arch) = platform_and_arch(PlatformArg::Tilo, arch)?;
+            let (_, arch) = platform_and_arch(tilo_app_cli::PackagePlatform::Tilo, arch)?;
             let Some(plan) = tilo_app_cli::plan_platform_clippy(path, platform, arch)? else {
                 continue;
             };
@@ -3059,11 +2972,10 @@ fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
                 profile: None,
             },
         )?;
-        Ok(report)
     } else {
         println!("{}", outcome.summary());
-        Ok(report)
     }
+    Ok(report)
 }
 
 fn list_templates() -> Value {
@@ -3311,7 +3223,7 @@ mod tests {
             };
             assert_eq!(name, "account-settings");
             assert_eq!(title.as_deref(), Some("Account"));
-            assert!(matches!(template, ScreenTemplateArg::Settings));
+            assert!(matches!(template, tilo_app_cli::ScreenTemplate::Settings));
             assert_eq!(link_from.as_deref(), Some("main"));
             assert_eq!(options.app, Some(PathBuf::from("apps/demo/src")));
             assert!(options.dry_run);
@@ -3342,7 +3254,7 @@ mod tests {
                 panic!("expected add component command");
             };
             assert_eq!(name, "profile-card");
-            assert!(matches!(template, ComponentTemplateArg::Form));
+            assert!(matches!(template, tilo_app_cli::ComponentTemplate::Form));
             assert_eq!(options.app, Some(PathBuf::from("apps/demo")));
             assert!(options.dry_run);
 
@@ -3359,7 +3271,7 @@ mod tests {
                 tree_component.command,
                 Command::Add(AddArgs {
                     command: Some(AddCommand::Component {
-                        template: ComponentTemplateArg::Tree,
+                        template: tilo_app_cli::ComponentTemplate::Tree,
                         ..
                     })
                 })
@@ -3443,7 +3355,7 @@ mod tests {
                 cli.command,
                 Command::Add(AddArgs {
                     command: Some(AddCommand::Component {
-                        template: ComponentTemplateArg::List,
+                        template: tilo_app_cli::ComponentTemplate::List,
                         ..
                     })
                 })
@@ -3466,7 +3378,7 @@ mod tests {
                 cli.command,
                 Command::Add(AddArgs {
                     command: Some(AddCommand::Component {
-                        template: ComponentTemplateArg::Table,
+                        template: tilo_app_cli::ComponentTemplate::Table,
                         ..
                     })
                 })
@@ -3489,7 +3401,7 @@ mod tests {
                 cli.command,
                 Command::Add(AddArgs {
                     command: Some(AddCommand::Component {
-                        template: ComponentTemplateArg::Text,
+                        template: tilo_app_cli::ComponentTemplate::Text,
                         ..
                     })
                 })
@@ -3906,7 +3818,10 @@ mod tests {
                     Command::Build(args) => args.platform,
                     _ => panic!("expected {command}"),
                 };
-                assert!(matches!(platform.platform, Some(PlatformArg::Linux)));
+                assert!(matches!(
+                    platform.platform,
+                    Some(tilo_app_cli::PackagePlatform::Linux)
+                ));
                 assert!(matches!(platform.arch, Some(ArchArg::Aarch64)));
             }
             for command in ["run", "build"] {
@@ -4302,7 +4217,11 @@ mod tests {
             (PackagePlatform::Android, None)
         );
         assert!(
-            platform_and_arch(PlatformArg::Android, Some(ArchArg::Wasm32)).is_err(),
+            platform_and_arch(
+                tilo_app_cli::PackagePlatform::Android,
+                Some(ArchArg::Wasm32)
+            )
+            .is_err(),
             "wasm32 is the web's architecture, not Android's"
         );
 
@@ -4319,7 +4238,10 @@ mod tests {
         let Command::Package(package) = package.command else {
             panic!("expected package command");
         };
-        assert!(matches!(package.platform, PlatformArg::Android));
+        assert!(matches!(
+            package.platform,
+            tilo_app_cli::PackagePlatform::Android
+        ));
         assert_eq!(
             package.android.keystore,
             Some(PathBuf::from("release.keystore"))

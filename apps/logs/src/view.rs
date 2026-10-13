@@ -510,10 +510,7 @@ impl Widget for JournalPane {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
                 flex_grow: 1.0,
-                size: Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
+                size: Size::from_percent(1.0_f32, 1.0_f32),
                 ..Default::default()
             },
             &children,
@@ -626,12 +623,6 @@ impl Widget for JournalPane {
         children
     }
 
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        for child in self.children() {
-            visitor(child);
-        }
-    }
-
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let shows_filters = self.shows_filters();
         let body: &mut dyn Widget = match &mut self.placeholder {
@@ -650,14 +641,6 @@ impl Widget for JournalPane {
 
     fn wants_pointer_capture(&self) -> bool {
         self.children().iter().any(|c| c.wants_pointer_capture())
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.update(state, path);
-        }
-        changed
     }
 
     fn is_layout_dirty(&self) -> bool {
