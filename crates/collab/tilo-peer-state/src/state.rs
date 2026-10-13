@@ -1965,7 +1965,7 @@ impl StatePeer {
                 let pinned = hex::encode(self.core.authority.device_public_key);
                 let from = hex::encode(source);
                 // The one room admission the shell's workspace tree runs too.
-                let room::AdmittedRoom { candidate, media } = room::admit_room_changes(
+                let admitted = room::admit_room_changes(
                     room::RoomAdmission {
                         before: self.core.room_doc.as_deref(),
                         room: &self.core.room,
@@ -1978,8 +1978,23 @@ impl StatePeer {
                         caps_now: now_secs(now),
                     },
                     &changes,
-                )
-                .map_err(err)?;
+                );
+                let room::AdmittedRoom { candidate, media } = match admitted {
+                    Err(room::RoomRefusal::MissingDependencies)
+                        if source == self.core.authority.device_public_key =>
+                    {
+                        return self.defer(
+                            source,
+                            NeighbourMsg::SyncResp {
+                                changes,
+                                room: received,
+                            },
+                            retained_replay,
+                            MissingPrerequisite::CausalDependencies,
+                        );
+                    }
+                    result => result.map_err(err)?,
+                };
                 // Receipts this peer admitted earlier stay immutable even once
                 // the room document omits them.
                 let mut receipts = self.core.receipts.clone();
@@ -3576,6 +3591,14 @@ impl StatePeer {
                     .map_err(err)
             })
             .transpose()?;
+        if peer
+            .core
+            .room_doc
+            .as_deref()
+            .is_some_and(|room| !room.get_missing_deps(&[]).is_empty())
+        {
+            return Err("durable room has unresolved governance dependencies".into());
+        }
         for document in durable.documents {
             check_governed_snapshot(
                 peer.core.room_doc.as_deref(),

@@ -13,8 +13,9 @@ consent uses the visible prompt's actual one-shot control. Only generated 700 Hz
 and 1100 Hz sources and null outputs are allowed; unexpected audio devices fail.
 No hardware microphone, video capture or external account is used. Throwaway
 identities, invitations, publisher pins and processes are removed on exit.
-Forked private D-Bus helpers are stopped through pidfds only after matching both
-this run's exact HOME and runtime directory. `--cleanup-proof` runs a separate,
+Foreground private D-Bus daemons are tracked as exact fixture children and
+stopped through pidfds after verifying their parent and process name.
+`--cleanup-proof` runs a separate,
 short real-daemon check: the owned bus exits and an adjacent private bus survives.
 Its receipt remains `qualified: false`, with `mode: cleanup-proof`, because it
 proves cleanup rather than the native pair journey.
@@ -50,6 +51,12 @@ environment already owns the complete fixture lifetime.
 The disposable environment needs PipeWire utilities, WirePlumber, GStreamer
 `opusenc`/`opusdec`, and a matching server payload under `--pipewire`: `usr/bin/pipewire`,
 `usr/share/pipewire` and `usr/lib64/gstreamer-1.0/libgstpipewire.so`. The fixture
+also accepts matching `pw-cat` and `pw-dump` utilities under the payload's
+`usr/bin`. Each peer uses a foreground private D-Bus daemon tracked as an exact
+fixture child; cleanup never scans unrelated processes. The cleanup proof
+requires the owned bus to exit while an adjacent test bus survives.
+All native journey modes use the same read-only canonical OS font namespace.
+The fixture
 starts its own socket and session manager per peer; it never connects to the
 operator's audio server. SDK package assembly is sequential and uses four jobs.
 The output directory must be new. When running remotely, retrieve only
@@ -58,6 +65,37 @@ from the owned task directory. Never transfer `bootstrap.json` or private identi
 Each throwaway profile uses the existing sealed headless secret store at its
 own private `TILO_SECRETS_DIR`. MLS remains mandatory; there is no plaintext
 fallback when a headless environment has no Secret Service session.
+
+## Distinct-person resource and reconnect proof
+
+`--two-person-reconnect-proof` runs without an audio payload. Both ordinary
+signed native apps must present, create and converge channels, read isolated
+conversation histories, and preserve a typed shared-resource reference. Bob
+opens only after Alice's initial commit; both then make concurrent edits. The
+fixture pauses only its owned governor, submits offline edits from both distinct
+certified people, and requires each app to recover exactly one copy of each
+message with its original certified author after transport resumes. It then
+re-reads the exact shared-resource reference through Bob’s current governed action.
+
+Run the same builds above, then keep this journey in the same supported
+on-builder session and fetch only its nonsecret receipt:
+
+```sh
+"$CARGO" --on-builder --fetch two-person-reconnect-proof/journey.json run --locked \
+  -p shell --example native_pair_host -- \
+  --journey --out target/two-person-reconnect-proof --two-person-reconnect-proof
+```
+
+The receipt separates `two_person_resource_reconnect_qualified` from same-person
+device continuity and combined `qualified`. The final participant invokes the
+published shell `workspace.create(name?)` action. The fixture requires exactly
+one new active empty room, its certified local owner, unchanged authority in
+the original governed room, and no automatic admission of the other person.
+`participant_workspace_creation_qualified` records that separate journey.
+The shared test workspace is still provisioned by the private governor; this
+does not qualify inviting someone to or remotely hosting the newly created room.
+This mode does not qualify calls, following, revocation, or an external-account
+adapter. Shared resource references retain existing access and create no grants.
 
 ## Observed production boundaries
 
