@@ -76,10 +76,6 @@ pub(crate) fn known_application(app: &str) -> Option<&'static str> {
         .find_map(|(id, title)| (id == app).then_some(title))
 }
 
-/// What a group's new-tab control opens: Notes where the bundle has it,
-/// else the first application.
-const NEW_TAB_APP: &str = "so.tilo.notes";
-
 pub(crate) fn catalogue() -> Vec<Application> {
     known_applications()
         .into_iter()
@@ -702,15 +698,6 @@ impl TileSource for Tiles {
                 })
             }
         }
-    }
-
-    fn new_tab(&mut self, _: &Workspace, id: TabId) -> Option<Tab> {
-        let known = known_applications();
-        let (app, title) = known
-            .iter()
-            .find(|(app, _)| *app == NEW_TAB_APP)
-            .or_else(|| known.first())?;
-        Some(app_tab(id, app, title))
     }
 
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
