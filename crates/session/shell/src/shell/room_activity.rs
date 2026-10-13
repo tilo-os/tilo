@@ -708,10 +708,17 @@ impl ActivityHost for NativeActivityHost {
         save_history_map("departures", departures);
     }
     fn mutations_available(&self) -> bool {
-        // The pane borrows the device-wide projection, not an authenticated
-        // room/record owner writer. A local display identity is not admission.
-        // Keep inspection available; effects require an owner action adapter.
-        false
+        // Preserve native Undo/Restore. This host is installed only by the
+        // device session, not by an admitted portable or guest action session.
+        true
+    }
+    fn history_groups_are_local(&self) -> bool {
+        true
+    }
+    fn history_edits_available(&self) -> bool {
+        // Discovery is not a grant: execution requires the live tree's exact
+        // room-scoped local projection writer, never a display identity.
+        true
     }
     fn task_commands_available(&self) -> bool {
         // Task execution revalidates through its existing authenticated broker.
@@ -753,6 +760,12 @@ impl ActivityTree for WorkspaceTree {
     }
     fn commit_activity_change(&mut self) {
         self.commit_room_change();
+    }
+    fn local_history_groups_writable(&self, room: &str) -> bool {
+        // A mutable borrow of this live host-owned tree is the local capability.
+        // No observation/snapshot implements it and no room owner is impersonated.
+        self.active_workspace()
+            .is_some_and(|workspace| workspace.room.to_string() == room)
     }
     /// Every room's agents whose delegation its governance verified for
     /// exactly their device ([`WorkspaceTree::verified_agents`]).
@@ -1435,11 +1448,288 @@ mod morning_host_regression {
         assert!(NativeActivityHost::default().morning_sources_available());
     }
 
+    use tilo_desktop::activity::{
+        HistoryEditorialOperation, HistoryEditorialRequest, HistoryOrigin,
+    };
+
+    fn native_named_group() -> (WorkspaceTree, RoomActivityPane, HistoryEditorialRequest) {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        tree.commit_room_change();
+        for name in ["First revision", "Second revision", "Third revision"] {
+            tree.active_workspace_mut().unwrap().name = name.into();
+            tree.seed_doc_from_cache();
+            tree.commit_room_change();
+        }
+        let mut pane = RoomActivityPane::new(); // real production native host
+        pane.set_view(ActivityView::Explore);
+        pane.refresh(&mut tree);
+        assert!(pane.entries().len() >= 2);
+        pane.layout(vello::kurbo::Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.draw(
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
+            &mut ui::text_render::TextRenderer::new(),
+            &ui::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+        );
+        let band = (0..pane.timeline().row_count())
+            .find(|i| {
+                pane.timeline().group_at_row(*i).is_some() && !pane.timeline().is_day_heading_at(*i)
+            })
+            .expect("visible group header");
+        let key = pane.timeline().group_at_row(band).unwrap().0.to_string();
+        let mut groups = Vec::new();
+        for group in pane.timeline().groups() {
+            group.walk(&mut groups);
+        }
+        let group = groups.iter().find(|g| g.key == key).unwrap();
+        let (start, end) = (group.first_entry, group.last_entry);
+        let chip = pane
+            .timeline()
+            .group_chip_rects(band)
+            .expect("native Name chip")
+            .0
+            .center();
+        let request = HistoryEditorialRequest {
+            room: tree.active_workspace().unwrap().room.to_string(),
+            origin: HistoryOrigin::DesktopTree,
+            frontier: tree.doc.get_heads(),
+            operation: HistoryEditorialOperation::Name(ui::GroupNameRequest {
+                start,
+                end,
+                label: "Local review".into(),
+                record_id: None,
+            }),
+        };
+        // Drive the production chip, field and Enter path, not a test host.
+        let modifiers = winit::event::Modifiers::default();
+        pane.handle_event(
+            &ui::synthetic_input::cursor_moved(chip.x, chip.y),
+            1.0,
+            &modifiers,
+            Some(chip),
+            &mut tree,
+        );
+        assert!(
+            pane.handle_event(
+                &ui::synthetic_input::mouse_press(),
+                1.0,
+                &modifiers,
+                Some(chip),
+                &mut tree
+            )
+            .handled
+        );
+        assert!(pane.wants_keyboard());
+        for key in "Local review"
+            .chars()
+            .map(|ch| winit::keyboard::Key::Character(ch.to_string().into()))
+            .chain(std::iter::once(winit::keyboard::Key::Named(
+                winit::keyboard::NamedKey::Enter,
+            )))
+        {
+            let event = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+                key,
+                None,
+                winit::event::ElementState::Pressed,
+            ));
+            let outcome = pane.handle_event(&event, 1.0, &modifiers, None, &mut tree);
+            if !pane.wants_keyboard() {
+                assert!(outcome.named);
+            }
+        }
+        assert!(!pane.wants_keyboard());
+        (tree, pane, request)
+    }
+
     #[test]
-    fn native_history_requires_an_authenticated_owner_writer() {
+    fn native_local_group_ui_uses_live_tree_not_display_identity() {
+        let (mut tree, mut pane, request) = native_named_group();
+        let HistoryEditorialOperation::Name(name) = &request.operation else {
+            unreachable!()
+        };
+        let (start, end) = (name.start, name.end);
+        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &ui::AuthorDirectory::new());
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].label, "Local review");
+        assert!(
+            !pane.apply_history_editorial(&mut tree, &request),
+            "stale frontier"
+        );
+
+        // Organization survives locally but is not projected into a peer document.
+        let saved = tree.doc.save();
+        let restored = automerge::AutoCommit::load(&saved).unwrap();
+        assert_eq!(
+            ui::history_groups::read_named_ranges(&restored, &ui::AuthorDirectory::new()).len(),
+            1
+        );
+        let room = tree.active_workspace().unwrap().room;
+        tree.sync_room_doc(room);
+        let doc = tree.room_docs.get(&room).expect("peer room projection");
+        assert!(ui::history_groups::read_named_ranges(doc, &ui::AuthorDirectory::new()).is_empty());
+
+        let handle = WorkspaceTreeHandle::new(tree);
+        let mut observed = ActivityObservation::capture(&handle);
+        pane.refresh(&mut observed);
+        let mut next = request.clone();
+        next.frontier = observed.doc.get_heads();
+        next.operation = HistoryEditorialOperation::Name(ui::GroupNameRequest {
+            start,
+            end,
+            label: "Renamed locally".into(),
+            record_id: Some(ranges[0].id.clone()),
+        });
+        let mut live = handle.write();
+        assert!(
+            !pane.apply_history_editorial(&mut observed, &next),
+            "observation is not a writer"
+        );
+        next.room = "another room".into();
+        assert!(!pane.apply_history_editorial(&mut *live, &next));
+        next.room = room.to_string();
+        pane.set_host(Rc::new(tilo_desktop::activity::UnavailableActivityHost));
+        assert!(
+            !pane.apply_history_editorial(&mut *live, &next),
+            "read-only host cannot use local capability"
+        );
+        struct DiscoveryWithoutAdmission;
+        impl ActivityHost for DiscoveryWithoutAdmission {
+            fn mutations_available(&self) -> bool {
+                true
+            }
+            fn history_edits_available(&self) -> bool {
+                true
+            }
+        }
+        pane.set_host(Rc::new(DiscoveryWithoutAdmission));
+        assert!(
+            !pane.apply_history_editorial(&mut *live, &next),
+            "non-local callers cannot borrow the host's projection capability"
+        );
+        pane.set_host(Rc::new(NativeActivityHost::default()));
+        pane.refresh(&mut *live);
+        {
+            use automerge::transaction::Transactable;
+            live.doc
+                .put(automerge::ROOT, "pending-local-edit", true)
+                .unwrap();
+            assert!(
+                !pane.apply_history_editorial(&mut *live, &next),
+                "pending writes cannot be implicitly committed"
+            );
+            live.doc.rollback();
+        }
+        assert!(
+            pane.apply_history_editorial(&mut *live, &next),
+            "same request succeeds with the live local writer"
+        );
+        assert!(
+            pane.revert_to(&mut *live, &start),
+            "existing native Restore stays executable"
+        );
+        assert_eq!(live.active_workspace().unwrap().name, "First revision");
+    }
+
+    #[test]
+    fn native_local_split_boundary_and_merge_use_the_canonical_executor() {
+        let (mut tree, mut pane, mut request) = native_named_group();
+        let HistoryEditorialOperation::Name(name) = &request.operation else {
+            unreachable!()
+        };
+        let (start, end) = (name.start, name.end);
+        assert_ne!(start, end);
+        let middle = pane.entries()[1].id;
+        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &ui::AuthorDirectory::new());
+        request.frontier = tree.doc.get_heads();
+        request.operation = HistoryEditorialOperation::Split {
+            record: ranges[0].id.clone(),
+            left_end: start,
+            right_start: middle,
+            label: "First part".into(),
+            right_label: "Second part".into(),
+        };
+        assert!(pane.apply_history_editorial(&mut tree, &request));
+        let mut ranges =
+            ui::history_groups::read_named_ranges(&tree.doc, &ui::AuthorDirectory::new());
+        assert_eq!(ranges.len(), 2);
+        ranges.sort_by_key(|range| range.start != start);
+        request.frontier = tree.doc.get_heads();
+        request.operation = HistoryEditorialOperation::MoveBoundary {
+            left: tilo_desktop::activity::EditorialSession {
+                record: Some(ranges[0].id.clone()),
+                start,
+                end: start,
+                label: "First part".into(),
+            },
+            right: tilo_desktop::activity::EditorialSession {
+                record: Some(ranges[1].id.clone()),
+                start: middle,
+                end,
+                label: "Second part".into(),
+            },
+            left_end: middle,
+            right_start: end,
+        };
+        assert!(pane.apply_history_editorial(&mut tree, &request));
+        let mut moved =
+            ui::history_groups::read_named_ranges(&tree.doc, &ui::AuthorDirectory::new());
+        assert!(
+            moved
+                .iter()
+                .any(|range| range.start == start && range.end == Some(middle))
+        );
+        assert!(
+            moved
+                .iter()
+                .any(|range| range.start == end && range.end == Some(end))
+        );
+        request.frontier = tree.doc.get_heads();
+        moved.sort_by_key(|range| range.start != start);
+        request.operation = HistoryEditorialOperation::Merge {
+            records: moved.iter().map(|range| range.id.clone()).collect(),
+            start,
+            end,
+            label: "Joined locally".into(),
+        };
+        assert!(pane.apply_history_editorial(&mut tree, &request));
+        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &ui::AuthorDirectory::new());
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].label, "Joined locally");
+    }
+
+    #[test]
+    fn native_selected_undo_still_appends_the_inverse_change() {
+        let (mut tree, mut pane, request) = native_named_group();
+        let HistoryEditorialOperation::Name(name) = &request.operation else {
+            unreachable!()
+        };
+        pane.0
+            .apply_deep_link(tilo_desktop::activity::ActivityDeepLink {
+                entry_id: Some(*name.end.as_bytes()),
+                ..Default::default()
+            });
+        assert!(
+            pane.selection_history_actions()
+                .iter()
+                .any(|(id, _)| *id == tilo_desktop::activity::HISTORY_UNDO)
+        );
+        let before = tree.doc.get_heads();
+        let outcome = pane.apply_selection_history_action(
+            tilo_desktop::activity::HISTORY_UNDO,
+            &mut tree,
+            None,
+        );
+        assert!(outcome.reverted);
+        assert_ne!(tree.doc.get_heads(), before);
+        assert_eq!(tree.active_workspace().unwrap().name, "Second revision");
+    }
+
+    #[test]
+    fn native_history_discovery_does_not_grant_room_owner_admission() {
         let host = NativeActivityHost::default();
-        assert!(!host.mutations_available());
-        assert!(!host.history_edits_available());
+        assert!(host.mutations_available());
+        assert!(host.history_edits_available());
         assert!(
             host.authorize_history_edit(
                 "room",

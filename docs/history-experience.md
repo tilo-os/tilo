@@ -159,13 +159,13 @@ top-bar glance.
 - Exact causal comparison with generic before/after patches, stable selection
   across live feed reorder, provenance-aware Undo refusal, partial-Undo
   reporting, and shared rename/split/merge/boundary request validation.
-  Native history mutations are unavailable until they have an authenticated
-  room/record owner adapter (see below).
+  Native organization edits are private to the device projection (see below);
+  they do not rename collaborators' groups.
 - Workspace aggregation across the tree, live records, and validated cold local
   records. Cold reads are bounded and read-only; missing/corrupt records remain
   visible as incomplete coverage rather than silently disappearing.
 
-### Native editorial authority limitation
+### Native local organization and collaborative authority
 
 The native Activity pane reads `WorkspaceTree::doc`, the device-wide projection.
 `commit_room_change` stamps that document; it is not an admitted room-owner
@@ -174,18 +174,27 @@ workspace cache. Root-level named-range records written only into the device
 projection therefore are not a durable collaborative room edit. Likewise, a
 borrow of a cached record does not establish the caller's current write role.
 
-History mutation discovery is consequently disabled for the native adapter.
-Inspection, comparison and authenticated task-review owner commands remain
-separate. The shared editorial executor binds requests to a room, origin and
-reviewed frontier, rechecks admission at execution and refuses unsupported
-record owners. It must not be enabled merely because a local display name or
-cached role looks like an editor.
+Native Undo/Restore remain available through their existing paths. Names,
+splits, merges and boundary moves in `tilo:group` are local organization, not
+collaborative source edits: `state.automerge` persists them, while
+`try_sync_room_doc` projects explicit workspace fields and does not copy these
+root markers. The pane labels this device-only scope.
 
-Enabling native organization requires an authenticated owner action carrying
-exact room/record origins and causal bounds, current tree and record admission
-checks, and an owner receipt for the committed named-range metadata. The same
-owner action must be registered for semantic callers and used by UI controls.
-Until that exists, no native editorial action is advertised as executable.
+The shared `apply_history_editorial` entry point serves local UI and trusted
+in-process semantic callers. Execution requires a mutable live `WorkspaceTree`
+whose active room exactly matches the request, or independently revalidated
+owner admission. Read-only admitted snapshots and native observation clones
+have no local writer capability. Requests bind the reviewed frontier, active
+workspace and desktop-tree-only causal bounds; display attribution is never a
+grant. The native host does not grant guest room-owner admission. Task commands
+continue to use their independent authenticated broker.
+
+Collaborative organization remains blocked: there is no native authenticated
+room/record editorial owner executor with durable receipts, nor a registered
+remote semantic action family for name/split/merge/move-boundary. Such actions
+must not be advertised to admitted guest callers as executable. They require
+exact room/record origins, current owner admission and revocation checks, and
+an owner receipt; local projection access must never substitute for those.
 
 Generated prose remains intentionally optional. It should ship only with
 source-frontier labeling and factual evaluation fixtures; every implemented

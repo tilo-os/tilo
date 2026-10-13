@@ -3,9 +3,12 @@ use crate::activity::{EditorialSession, HistoryEditorialOperation as Op, History
 use automerge::transaction::Transactable;
 
 impl RoomActivityPane {
-    /// Canonical editorial door for UI, accessibility and semantic callers.
-    /// Requests are bound to the exact reviewed frontier; unsupported record
-    /// owners are refused rather than writing their projected ids into the tree.
+    /// Canonical editorial door for UI and trusted in-process semantic callers.
+    /// The native local host must hold the live tree's room-scoped projection
+    /// capability. Admitted callers instead require current owner authorization;
+    /// this method does not expose a remote action or grant guest host access.
+    /// Requests bind the exact reviewed frontier; unsupported record owners are
+    /// refused rather than writing their projected ids into the tree.
     pub fn apply_history_editorial(
         &mut self,
         tree: &mut impl ActivityTree,
@@ -19,13 +22,15 @@ impl RoomActivityPane {
             || tree.document_mut().get_heads() != request.frontier
             || request.frontier != self.last_heads
             || self.last_active != Some(tree.active.raw())
-            || self
-                .host
-                .authorize_history_edit(
-                    &self.task_room,
-                    &[super::super::index::HistoryOrigin::DesktopTree],
-                )
-                .is_err()
+            || (!(self.host.history_groups_are_local()
+                && tree.local_history_groups_writable(&request.room))
+                && self
+                    .host
+                    .authorize_history_edit(
+                        &self.task_room,
+                        &[super::super::index::HistoryOrigin::DesktopTree],
+                    )
+                    .is_err())
         {
             return false;
         }

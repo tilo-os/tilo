@@ -1,5 +1,7 @@
-//! Exact, frontier-bound history organization requests. Owner admission is
-//! checked at execution, never inferred from display attribution.
+//! Exact, frontier-bound history organization requests. Execution checks either
+//! the live device projection writer for local organization or current owner
+//! admission for admitted documents, never display attribution. This request
+//! type itself is not a remotely admitted action or a permission grant.
 use automerge::ChangeHash;
 use ui::{GroupNameRequest, HistoryEntryId};
 

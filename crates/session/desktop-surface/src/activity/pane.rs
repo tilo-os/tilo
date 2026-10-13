@@ -3447,9 +3447,14 @@ impl RoomActivityPane {
         bounds: Rect,
     ) {
         let style = theme.text(TextRole::Caption);
+        let heading = t(if self.host.history_groups_are_local() {
+            "activity-local-group-provenance"
+        } else {
+            "activity-provenance"
+        });
         tr.draw_style(
             scene,
-            &t("activity-provenance"),
+            &heading,
             theme.tokens.colors.text_primary,
             at(transform, bounds.x0 + 12.0, bounds.y0 + 12.0),
             None,
@@ -3468,7 +3473,7 @@ impl RoomActivityPane {
             let title = tr
                 .clamp_to_lines(&detail.title, &title_style, width, 2)
                 .join("\n");
-            let (_, heading_height) = tr.measure_style(&t("activity-provenance"), None, &style);
+            let (_, heading_height) = tr.measure_style(&heading, None, &style);
             let title_y =
                 bounds.y0 + f64::from(theme.tokens.spacing.s3) + f64::from(heading_height) + gap;
             let (_, title_height) = tr.measure_style(&title, Some(width), &title_style);
@@ -3522,7 +3527,11 @@ impl RoomActivityPane {
             );
             tr.draw_style(
                 scene,
-                &t("activity-select-hint"),
+                &t(if self.host.history_groups_are_local() {
+                    "activity-local-group-hint"
+                } else {
+                    "activity-select-hint"
+                }),
                 theme.tokens.colors.text_dim,
                 at(transform, bounds.x0 + 12.0, bounds.y0 + 88.0),
                 Some(width),
@@ -7225,9 +7234,9 @@ impl RoomActivityPane {
         }
     }
 
-    /// Write (or remove, for an empty label) a name over a run of the
-    /// room's changes, committed so it reaches peers through the same
-    /// sync as the changes it names.
+    /// Write (or remove, for an empty label) a name over the reviewed run.
+    /// Native names organize this device's private projection; they are not
+    /// published to collaborators. Admitted owners use their own writer.
     pub fn apply_name(&mut self, tree: &mut impl ActivityTree, req: &GroupNameRequest) -> bool {
         self.apply_history_editorial(
             tree,
