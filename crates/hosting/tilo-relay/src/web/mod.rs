@@ -20,6 +20,7 @@
 //! periodic work is the 50 ms live permission observation and the session
 //! janitor, both on tokio intervals.
 
+mod envelopes;
 pub mod install;
 mod legacy;
 mod live;
@@ -74,6 +75,40 @@ pub struct WebConfig {
     /// exception. The live plane then uses the HTTPS stream fallback over
     /// it; WebTransport stays on `listen`.
     pub plain_listen: Option<SocketAddr>,
+    /// The `https://` origin a TLS-terminating proxy publishes the plain
+    /// listener at. When set, the plain listener may bind a non-loopback
+    /// address (the proxy is the way in), and this origin is what pages
+    /// and links are told.
+    pub public_origin: Option<String>,
+    /// The `https://` origin browsers dial WebTransport (and voice) at, when
+    /// a proxy in front of the page passes HTTP only (a CDN): QUIC reaches
+    /// `listen` directly under this name, with the certificate from `tls`,
+    /// while pages and the HTTPS stream fallback stay on the page origin.
+    pub live_origin: Option<String>,
+    /// How many browsers the listener serves at once.
+    pub limits: WebLimits,
+}
+
+/// Caps on concurrent browser state. A public room expects hundreds of
+/// visitors, so its host raises them; the defaults suit a personal host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WebLimits {
+    /// Open browser sessions.
+    pub max_sessions: usize,
+    /// Session handshakes in flight.
+    pub max_handshakes: usize,
+    /// Live-plane grants outstanding.
+    pub max_live_grants: usize,
+}
+
+impl Default for WebLimits {
+    fn default() -> Self {
+        Self {
+            max_sessions: 256,
+            max_handshakes: 64,
+            max_live_grants: 512,
+        }
+    }
 }
 
 /// A running browser listener. Dropping it stops serving.
@@ -90,6 +125,18 @@ pub struct WebHandle {
     legacy: Arc<legacy::LegacyWindows>,
     locator_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     published_origin: Option<Arc<String>>,
+    sessions: Arc<Sessions>,
+}
+
+impl WebHandle {
+    /// Open browser sessions per person (user root) now, for a public
+    /// host's presence count and idle-guest pruning. One person on two
+    /// devices is one entry; a shared spectator person is one entry whose
+    /// count is its sessions.
+    #[must_use]
+    pub fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
+        self.sessions.online_users()
+    }
 }
 
 impl Drop for WebHandle {
@@ -121,6 +168,44 @@ struct Web {
     features: u64,
     /// The rooms this relay governs, for `/rooms` and `/join`.
     rooms: Option<crate::rooms::Rooms>,
+    /// Members' root envelopes, for `/envelope`.
+    envelopes: envelopes::Envelopes,
+    /// Members' profiles, for `/profile`.
+    profiles: envelopes::Envelopes,
+}
+
+/// Checks the published origins against the listeners they front, and
+/// returns the live origin without a trailing slash.
+fn checked_origins(config: &WebConfig) -> Result<Option<String>, String> {
+    if config.public_origin.is_none()
+        && config
+            .plain_listen
+            .is_some_and(|plain| !plain.ip().is_loopback())
+    {
+        return Err(
+            "the plain HTTP listener must be a loopback address unless a proxy publishes it".into(),
+        );
+    }
+    if config
+        .public_origin
+        .as_ref()
+        .is_some_and(|origin| !origin.starts_with("https://") || config.plain_listen.is_none())
+    {
+        return Err(
+            "a public origin is an https:// origin published for the plain listener".into(),
+        );
+    }
+    let live_origin = config
+        .live_origin
+        .as_deref()
+        .map(|origin| origin.trim_end_matches('/').to_owned());
+    if live_origin
+        .as_deref()
+        .is_some_and(|origin| !origin.starts_with("https://") || origin.len() <= 8)
+    {
+        return Err("a live origin is an https:// origin".into());
+    }
+    Ok(live_origin)
 }
 
 /// An unspecified listener is not a usable browser destination. Only its
@@ -181,6 +266,19 @@ fn browser_locator_origin(tls: &TlsSource, addr: SocketAddr) -> Result<Option<St
 }
 
 impl Relay {
+    /// Make `origin` the one browser locators name, and return it shared.
+    fn publish_browser_origin(
+        &self,
+        origin: Option<String>,
+    ) -> Result<Option<Arc<String>>, RelayError> {
+        let published = origin.map(Arc::new);
+        self.browser_origin
+            .write()
+            .map_err(|_| RelayError::Iroh("web listener: browser locator lock poisoned".into()))?
+            .clone_from(&published);
+        Ok(published)
+    }
+
     /// Serve browsers: HTTPS and WebTransport on `config.listen`.
     ///
     /// # Errors
@@ -193,29 +291,25 @@ impl Relay {
     )]
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
-        if config
-            .plain_listen
-            .is_some_and(|plain| !plain.ip().is_loopback())
-        {
-            return Err(failed(
-                "the plain HTTP listener must be a loopback address".into(),
-            ));
-        }
+        let live_origin = checked_origins(&config).map_err(failed)?;
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
         let (tcp, udp) =
             bind_port_pair(config.listen).map_err(|error| failed(error.to_string()))?;
         let addr = tcp
             .local_addr()
             .map_err(|error| failed(error.to_string()))?;
-        let public_origin = browser_locator_origin(&config.tls, addr)?;
-        let endpoint =
-            tilo_moq::carrier::listener_on(udp, identity.chain.clone(), identity.key.clone_key())
-                .map_err(failed)?;
-        let acceptor =
-            tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
+        let public_origin = match config.public_origin.clone() {
+            Some(origin) => Some(origin),
+            None => browser_locator_origin(&config.tls, addr)?,
+        };
+        let certificate = identity.certificate().map_err(failed)?;
+        let endpoint = tilo_moq::carrier::listener_on(udp, certificate.clone()).map_err(failed)?;
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
+            tilo_moq::tls::https_server_config(certificate).map_err(failed)?,
+        ));
         let context = self.web_context().clone();
-        let sessions = Sessions::new(context.clone());
-        let grants = live::LiveGrants::new();
+        let sessions = Sessions::with_limits(context.clone(), config.limits);
+        let grants = live::LiveGrants::with_limit(config.limits.max_live_grants);
         let live = LiveRelay::new(Arc::new(live::Authority(grants.clone())));
         let legacy =
             legacy::LegacyWindows::new(live.clone(), context.relay.identity.cert.device_public_key);
@@ -232,22 +326,37 @@ impl Relay {
             live,
             host_info: HostInfo {
                 host_cert: context.relay.identity.cert,
-                webtransport_port: addr.port(),
+                // Behind a TLS-terminating proxy the page only reaches the
+                // proxy's HTTPS; WebTransport (UDP) does not pass through it,
+                // so it is announced only with a direct origin of its own.
+                webtransport_port: (config.public_origin.is_none() || live_origin.is_some())
+                    .then_some(addr.port()),
                 certificate_sha256: identity.pinned_sha256.clone(),
+                webtransport_origin: live_origin.clone(),
             },
             allowed_origins: config.allowed_origins,
             features: self.web_features(),
             rooms: self.rooms().cloned(),
+            envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
+            profiles: envelopes::Envelopes::of(
+                envelopes::Kind::Profile,
+                self.state_root().join("profiles"),
+            ),
         });
         let mut tasks = vec![tasks_bridge, tasks_legacy];
         let live = web.live.clone();
         tasks.push(
-            match self.voice_carrier(&config.tls, addr, identity.pinned_sha256.clone()) {
+            match self.voice_carrier(
+                &config.tls,
+                addr,
+                live_origin.as_deref(),
+                identity.pinned_sha256.clone(),
+            ) {
                 Some(voice) => tokio::spawn(live.serve_with_voice(endpoint, voice)),
                 None => tokio::spawn(live.serve(endpoint)),
             },
         );
-        tasks.push(tokio::spawn(grants.follow(sessions)));
+        tasks.push(tokio::spawn(grants.follow(sessions.clone())));
         let mut plain_origin = None;
         if let Some(plain) = config.plain_listen {
             let plain = tokio::net::TcpListener::bind(plain)
@@ -261,11 +370,7 @@ impl Relay {
             tasks.push(tokio::spawn(plain_accept_loop(plain, web.clone())));
         }
         tasks.push(tokio::spawn(accept_loop(tcp, acceptor, web)));
-        let published_origin = public_origin.clone().map(Arc::new);
-        self.browser_origin
-            .write()
-            .map_err(|_| failed("browser locator lock poisoned".into()))?
-            .clone_from(&published_origin);
+        let published_origin = self.publish_browser_origin(public_origin.clone())?;
         Ok(WebHandle {
             addr,
             origin: public_origin.unwrap_or_else(|| format!("https://{addr}")),
@@ -275,6 +380,7 @@ impl Relay {
             legacy,
             locator_origin: Arc::clone(&self.browser_origin),
             published_origin,
+            sessions,
         })
     }
 }
@@ -298,9 +404,16 @@ impl Relay {
         &self,
         tls: &TlsSource,
         addr: SocketAddr,
+        live_origin: Option<&str>,
         pinned_sha256: Option<String>,
     ) -> Option<tilo_moq::relay::Relay> {
         let rooms = self.rooms()?;
+        if let Some(origin) = live_origin {
+            return Some(rooms.voice_carrier(
+                format!("{origin}{}", tilo_moq::relay::VOICE_PATH),
+                pinned_sha256.into_iter().collect(),
+            ));
+        }
         // Grants name the host a device dials: the certificate's name when
         // the listener is bound to every address.
         let host = match tls {
@@ -816,6 +929,35 @@ async fn body(
     Ok((parts, bytes))
 }
 
+/// Whether `user` is admitted to any workspace this relay serves: whose
+/// envelope it keeps.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each workspace is locked only for its own lookup"
+)]
+async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
+    let workspaces: Vec<_> = web
+        .sessions
+        .context()
+        .relay
+        .workspaces
+        .lock()
+        .await
+        .values()
+        .cloned()
+        .collect();
+    for workspace in workspaces {
+        let workspace = workspace.lock().await;
+        // A governed room names its members' roots apart from
+        // the roots its signed authority admitted.
+        if workspace.admitted_users.contains(&user) || workspace.governed_user_roots.contains(&user)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn wait(ms: u32) -> Duration {
     Duration::from_millis(u64::from(ms.min(MAX_POLL_MS)))
 }
@@ -871,11 +1013,28 @@ async fn route(
         }
         "/certify" => {
             let request: CertificationRequest = decode(&bytes)?;
+            // A member of a workspace here pairs their devices through it;
+            // the member's own devices answer (`/certify/approve`).
+            let member = admitted_anywhere(web, request.user_public_key).await;
+            Ok(encoded(&match certification.enqueue_member(
+                request,
+                tilo_clock::unix_now_ns(),
+                member,
+            ) {
+                Ok((_, pairing_code, _)) => CertifyReply::Pending { pairing_code },
+                Err(reason) => CertifyReply::Denied { reason },
+            }))
+        }
+        "/certify/approve" => {
+            let approval: crate::certify::MemberApproval = decode(&bytes)?;
+            if !admitted_anywhere(web, approval.user_public_key).await {
+                return Err(status(
+                    StatusCode::FORBIDDEN,
+                    "only a member approves devices here",
+                ));
+            }
             Ok(encoded(
-                &match certification.enqueue(request, tilo_clock::unix_now_ns()) {
-                    Ok((_, pairing_code, _)) => CertifyReply::Pending { pairing_code },
-                    Err(reason) => CertifyReply::Denied { reason },
-                },
+                &certification.member_approve(approval, tilo_clock::unix_now_ns()),
             ))
         }
         "/certify/wait" => {
@@ -975,6 +1134,43 @@ async fn route(
             let step = decode(&bytes)?;
             Ok(encoded(&rooms.page_join(step).await))
         }
+        "/envelope" | "/profile" => {
+            let now_ms = tilo_clock::unix_now_ns() / 1_000_000;
+            let kept = if route == "/profile" {
+                &web.profiles
+            } else {
+                &web.envelopes
+            };
+            kept.publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
+                .await
+                .map(|()| reply(StatusCode::NO_CONTENT, Vec::new()))
+                .map_err(|refusal| {
+                    let code = match refusal {
+                        envelopes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
+                        envelopes::Refusal::BadSignature | envelopes::Refusal::NotMember => {
+                            StatusCode::FORBIDDEN
+                        }
+                        envelopes::Refusal::Stale => StatusCode::CONFLICT,
+                        envelopes::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
+                    };
+                    status(code, refusal.message())
+                })
+        }
+        "/envelope/fetch" | "/profile/fetch" => match if route == "/profile/fetch" {
+            web.profiles.fetch(&bytes)
+        } else {
+            web.envelopes.fetch(&bytes)
+        } {
+            Some(json) => {
+                let mut response = reply(StatusCode::OK, json.into_bytes());
+                response.headers_mut().insert(
+                    header::CONTENT_TYPE,
+                    header::HeaderValue::from_static("application/json"),
+                );
+                Ok(response)
+            }
+            None => Err(status(StatusCode::NOT_FOUND, "nothing kept for this root")),
+        },
         _ if path == FALLBACK_OPEN_PATH => {
             let id: [u8; 16] = rand::random();
             let stream = web

@@ -1,4 +1,4 @@
-use ui::tilo_resource::{Id, Invoke, Replica};
+use ui::tilo_resource::{Id, Invoke, Replica, Resource};
 
 use super::*;
 
@@ -43,6 +43,35 @@ fn post(text: &str) -> Invoke<Chat> {
         body: None,
         attachment: None,
     })
+}
+
+#[test]
+fn a_bridges_post_keeps_the_name_it_showed_and_a_persons_does_not() {
+    let shown = tilo_actions::Appearance {
+        name: "Grace".into(),
+        avatar: Some("ab".repeat(32)),
+        persona: None,
+    };
+    let mut ada = room();
+    let mut bridge = ada
+        .fork()
+        .as_bot_for("5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1", ADA)
+        .showing(shown.clone());
+    bridge.apply(post("from Discord")).unwrap();
+    ada.sync_with(&mut bridge).unwrap();
+    let mut posing = ada.fork().as_author(BO).showing(shown.clone());
+    posing.apply(post("not Grace")).unwrap();
+    ada.sync_with(&mut posing).unwrap();
+    let rows = ada.state().unwrap().message_rows("c_general");
+    let of = |text: &str| rows.iter().find(|row| row.text == text).unwrap();
+    let bridged = of("from Discord");
+    assert_eq!(bridged.author, "bot:5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1");
+    assert_eq!(bridged.appearance.as_ref(), Some(&shown), "shown as Grace");
+    assert_eq!(
+        of("not Grace").appearance,
+        None,
+        "only a bot shows another name"
+    );
 }
 
 fn reply(parent: &Id, text: &str) -> Invoke<Chat> {
@@ -780,4 +809,97 @@ fn the_record_offers_each_item_its_views_with_no_window_open() {
     assert!(workspace.views.iter().any(|view| view.id == "workspace"));
     let person = item("people", &id(BO));
     assert!(actions(&person).iter().any(|id| id == "open-person"));
+}
+
+#[test]
+fn only_the_author_edits_or_deletes_and_a_moderator_removes() {
+    let mut ada = room();
+    ada.apply(post("mine")).unwrap();
+    let message = said(&ada, "mine");
+    let mut bo = ada.fork().as_author(BO);
+    assert!(
+        bo.apply(Chat::EDIT_MESSAGE.with(chat::EditMessage {
+            message: message.clone(),
+            text: "yours now".into(),
+            body: None,
+        }))
+        .is_err(),
+        "nobody edits another's message"
+    );
+    assert!(
+        bo.apply_confirmed(Chat::DELETE_MESSAGE.with(chat::DeleteMessage {
+            message: message.clone(),
+        }))
+        .is_err(),
+        "nobody deletes another's message"
+    );
+    assert_eq!(bo.state().unwrap().messages.len(), 1);
+    bo.apply_confirmed(Chat::REMOVE_MESSAGE.with(chat::RemoveMessage { message }))
+        .unwrap();
+    assert!(bo.state().unwrap().messages.is_empty());
+}
+
+#[test]
+fn removing_a_message_sits_under_the_moderation_node() {
+    let field = |id: &str| {
+        Chat::declarations()
+            .into_iter()
+            .find(|decl| decl.id == id)
+            .map(|decl| decl.field)
+    };
+    assert_eq!(
+        field("remove-message"),
+        Some(Some(ui::tilo_actions::MODERATION_FIELD))
+    );
+    assert_eq!(field("delete-message"), Some(None));
+}
+
+#[test]
+fn a_guest_reports_a_message_or_a_person_and_only_moderators_decide() {
+    let mut ada = room();
+    ada.apply(post("buy cheap links")).unwrap();
+    let message = said(&ada, "buy cheap links");
+    let mut bo = ada.fork().as_author(BO);
+    bo.apply(Chat::REPORT_MESSAGE.with(chat::ReportMessage {
+        message: message.clone(),
+        reason: "spam".into(),
+    }))
+    .unwrap();
+    let state = bo.state().unwrap();
+    let report = state.moderation.open_reports().next().unwrap();
+    assert_eq!(report.person, ADA, "a message report names its author");
+    assert_eq!(report.item, Some(message.to_string()));
+    assert!(
+        bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
+            person: id(BO),
+            reason: "me".into(),
+        }))
+        .is_err(),
+        "nobody reports themselves"
+    );
+    bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
+        person: id(ADA),
+        reason: "spamming the channel".into(),
+    }))
+    .unwrap();
+    assert_eq!(
+        bo.state().unwrap().moderation.open_reports_on(ADA).count(),
+        2
+    );
+
+    let field = |id: &str| {
+        Chat::declarations()
+            .into_iter()
+            .find(|decl| decl.id == id)
+            .map(|decl| decl.field)
+    };
+    assert_eq!(field("report-message"), Some(None));
+    assert_eq!(field("report-person"), Some(None));
+    for verb in ["decide-reports", "overturn-decision"] {
+        assert_eq!(
+            field(verb),
+            Some(Some(ui::tilo_actions::MODERATION_FIELD)),
+            "{verb}"
+        );
+    }
 }

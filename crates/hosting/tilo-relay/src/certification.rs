@@ -9,6 +9,11 @@
 //! handing it on, so an approver bug cannot certify another key, escalate
 //! capabilities or resurrect a revoked device.
 //!
+//! A member of a workspace the host serves pairs devices through it too:
+//! their request waits beside the owner's, and a page holding the member's
+//! root lists and answers that member's own requests over HTTPS with
+//! root-signed [`MemberApproval`]s ([`CertificationProtocol::member_approve`]).
+//!
 //! The same approvers answer the questions the host's agents put to their
 //! person ([`CertificationProtocol::confirm`]): one invocation each, allowed
 //! once or denied, refused when nobody answers in time.
@@ -28,12 +33,12 @@ use tokio::sync::watch;
 use crate::auth::{self, HandshakeTrust};
 use crate::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, CertifyOpen, CertifyReply,
-    ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, MAX_PENDING_CERTIFICATIONS, PendingAgent,
-    PendingCertification, PendingConfirmation,
+    ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, MAX_PENDING_CERTIFICATIONS, MemberApproval,
+    PendingCertification, PendingConfirmation, PendingDelegate,
 };
 use crate::frame::{read_frame, read_frame_or_eof, write_frame};
 use crate::handshake::{EndpointTrust, LiveIdentity};
-use tilo_relay_protocol::agents::{AgentDelegation, AgentProposal};
+use tilo_relay_protocol::delegation::{DelegateProposal, Delegation};
 
 /// How long a final answer may wait for the requester to read it.
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
@@ -45,9 +50,9 @@ struct Pending {
     entry: PendingCertification,
     answer: watch::Sender<Option<CertifyReply>>,
     /// Set for a request the host queued for an agent it supervises.
-    agent: Option<AgentProposal>,
+    agent: Option<DelegateProposal>,
     /// The approved delegation of such a request, once decided.
-    delegation: Option<AgentDelegation>,
+    delegation: Option<Delegation>,
 }
 
 impl Pending {
@@ -167,26 +172,85 @@ impl CertificationProtocol {
     ///
     /// Returns the reason the request is refused.
     pub fn enqueue(&self, request: CertificationRequest, now_ns: u64) -> Result<Queued, String> {
-        self.enqueue_with(request, None, now_ns)
+        self.enqueue_with(request, None, now_ns, false)
     }
 
-    /// Queue a request for an agent this host supervises, carrying what
-    /// the person proposed. Only an `IssueAgent` decision answers it; wait
-    /// for it with [`Self::agent_answer`].
+    /// [`Self::enqueue`], also for a member of a workspace this host serves
+    /// (`member`: the request names such a member's root), whose own devices
+    /// answer it through [`Self::member_approve`].
     ///
     /// # Errors
     ///
     /// Returns the reason the request is refused.
-    pub fn enqueue_agent(
+    pub fn enqueue_member(
         &self,
         request: CertificationRequest,
-        proposal: AgentProposal,
+        now_ns: u64,
+        member: bool,
+    ) -> Result<Queued, String> {
+        self.enqueue_with(request, None, now_ns, member)
+    }
+
+    /// Answer a member's root-signed approver command: their own pending
+    /// requests, or a decision on one of them.
+    pub fn member_approve(&self, approval: MemberApproval, now_ns: u64) -> ApproverReply {
+        let refused = |reason: &str| ApproverReply::Refused {
+            reason: reason.into(),
+        };
+        if let Err(reason) = approval.verify(now_ns) {
+            return refused(reason);
+        }
+        let user = approval.user_public_key;
+        match approval.request {
+            ApproverRequest::ListPending => ApproverReply::Pending(self.pending_of(&user, now_ns)),
+            ApproverRequest::Decide {
+                request_digest,
+                decision,
+            } => self.decide(
+                ApproverRequest::Decide {
+                    request_digest,
+                    decision,
+                },
+                now_ns,
+                &user,
+            ),
+            _ => refused("a member approves only their own device requests"),
+        }
+    }
+
+    /// `user`'s requests still waiting for an answer.
+    fn pending_of(&self, user: &[u8; 32], now_ns: u64) -> Vec<PendingCertification> {
+        self.lock()
+            .values()
+            .filter(|entry| {
+                entry.entry.request.user_public_key == *user
+                    && entry.entry.request.expires_at_ns > now_ns
+                    && !entry.decided()
+            })
+            .map(|entry| entry.entry.clone())
+            .collect()
+    }
+
+    /// Queue a request for an agent this host supervises, carrying what
+    /// the person proposed. Only an `IssueDelegate` decision answers it; wait
+    /// for it with [`Self::delegate_answer`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason the request is refused.
+    pub fn enqueue_delegate(
+        &self,
+        request: CertificationRequest,
+        proposal: DelegateProposal,
         now_ns: u64,
     ) -> Result<([u8; 32], String), String> {
-        if proposal.agent_id.is_empty() || proposal.scope.rooms.is_empty() {
-            return Err("an agent proposal names its agent and rooms".into());
+        if proposal.delegate.agent_id().is_some_and(str::is_empty)
+            || proposal.delegate.installation().is_some_and(str::is_empty)
+            || proposal.scope.rooms.is_empty()
+        {
+            return Err("a delegate proposal names its delegate and rooms".into());
         }
-        self.enqueue_with(request, Some(proposal), now_ns)
+        self.enqueue_with(request, Some(proposal), now_ns, false)
             .map(|(digest, code, _)| (digest, code))
     }
 
@@ -196,10 +260,10 @@ impl CertificationProtocol {
     /// # Errors
     ///
     /// Returns the denial, or that the request expired or is unknown.
-    pub async fn agent_answer(
+    pub async fn delegate_answer(
         &self,
         digest: &[u8; 32],
-    ) -> Result<(DeviceCert, AgentDelegation), String> {
+    ) -> Result<(DeviceCert, Delegation), String> {
         let (receiver, expires_at_ns) = self
             .lock()
             .get(digest)
@@ -224,13 +288,14 @@ impl CertificationProtocol {
     fn enqueue_with(
         &self,
         request: CertificationRequest,
-        agent: Option<AgentProposal>,
+        agent: Option<DelegateProposal>,
         now_ns: u64,
+        member: bool,
     ) -> Result<Queued, String> {
         request
             .verify_at(now_ns)
             .map_err(|error| error.to_string())?;
-        if request.user_public_key != self.identity.user_public_key {
+        if request.user_public_key != self.identity.user_public_key && !member {
             return Err("this host serves another user identity".into());
         }
         if self.revocations().is_revoked(&request.device_public_key) {
@@ -349,7 +414,7 @@ impl CertificationProtocol {
         {
             let request: ApproverRequest =
                 postcard::from_bytes(&frame).map_err(|error| io(&error))?;
-            let reply = self.decide(request, unix_now_ns());
+            let reply = self.decide(request, unix_now_ns(), &self.identity.user_public_key);
             write_frame(&mut send, &encode(&reply)?)
                 .await
                 .map_err(|error| io(&error))?;
@@ -379,24 +444,24 @@ impl CertificationProtocol {
         ApproverReply::Decided
     }
 
-    fn decide(&self, request: ApproverRequest, now_ns: u64) -> ApproverReply {
+    /// Answer `request` from an approver of `approver`'s root, who decides
+    /// only requests naming that root.
+    fn decide(&self, request: ApproverRequest, now_ns: u64, approver: &[u8; 32]) -> ApproverReply {
         let refused = |reason: &str| ApproverReply::Refused {
             reason: reason.into(),
         };
         match request {
-            ApproverRequest::ListPending => ApproverReply::Pending(
-                self.lock()
-                    .values()
-                    .filter(|entry| entry.entry.request.expires_at_ns > now_ns && !entry.decided())
-                    .map(|entry| entry.entry.clone())
-                    .collect(),
-            ),
-            ApproverRequest::AgentProposals => ApproverReply::AgentProposals(
+            // The owner's devices see the owner's requests; a member's are
+            // answered by the member (`member_approve`).
+            ApproverRequest::ListPending => {
+                ApproverReply::Pending(self.pending_of(&self.identity.user_public_key, now_ns))
+            }
+            ApproverRequest::DelegateProposals => ApproverReply::DelegateProposals(
                 self.lock()
                     .values()
                     .filter(|entry| entry.entry.request.expires_at_ns > now_ns && !entry.decided())
                     .filter_map(|entry| {
-                        Some(PendingAgent {
+                        Some(PendingDelegate {
                             request_digest: entry.entry.request_digest,
                             proposal: entry.agent.clone()?,
                         })
@@ -410,10 +475,9 @@ impl CertificationProtocol {
                 decision,
             } => {
                 let mut pending = self.lock();
-                let Some(entry) = pending
-                    .get_mut(&request_digest)
-                    .filter(|entry| !entry.decided())
-                else {
+                let Some(entry) = pending.get_mut(&request_digest).filter(|entry| {
+                    !entry.decided() && entry.entry.request.user_public_key == *approver
+                }) else {
                     return refused("no such pending request");
                 };
                 let reply = match decision {
@@ -423,7 +487,7 @@ impl CertificationProtocol {
                     ApproverDecision::Issue(_) if entry.agent.is_some() => {
                         return refused("an agent is approved together with its delegation");
                     }
-                    ApproverDecision::IssueAgent { cert, delegation } => {
+                    ApproverDecision::IssueDelegate { cert, delegation } => {
                         let Some(proposal) = &entry.agent else {
                             return refused("this request is not an agent's");
                         };
@@ -436,9 +500,7 @@ impl CertificationProtocol {
                         ) {
                             return refused(&error.to_string());
                         }
-                        if delegation.agent_device_public_key
-                            != entry.entry.request.device_public_key
-                        {
+                        if delegation.device_public_key != entry.entry.request.device_public_key {
                             return refused("the delegation names another device");
                         }
                         if let Err(error) =
@@ -563,7 +625,11 @@ mod confirmation_tests {
             .await;
         assert!(answer.is_err(), "{answer:?}");
         assert_eq!(
-            protocol.decide(ApproverRequest::Confirmations, unix_now_ns()),
+            protocol.decide(
+                ApproverRequest::Confirmations,
+                unix_now_ns(),
+                &protocol.identity.user_public_key
+            ),
             ApproverReply::Confirmations(Vec::new()),
             "an expired question is no longer shown"
         );
@@ -577,9 +643,11 @@ mod confirmation_tests {
             async move { protocol.confirm(question(2, Duration::from_secs(30))).await }
         });
         let shown = loop {
-            if let ApproverReply::Confirmations(shown) =
-                protocol.decide(ApproverRequest::Confirmations, unix_now_ns())
-                && !shown.is_empty()
+            if let ApproverReply::Confirmations(shown) = protocol.decide(
+                ApproverRequest::Confirmations,
+                unix_now_ns(),
+                &protocol.identity.user_public_key,
+            ) && !shown.is_empty()
             {
                 break shown;
             }
@@ -594,13 +662,129 @@ mod confirmation_tests {
             answer,
         };
         assert_eq!(
-            protocol.decide(answer(ConfirmationAnswer::AllowOnce), unix_now_ns()),
+            protocol.decide(
+                answer(ConfirmationAnswer::AllowOnce),
+                unix_now_ns(),
+                &protocol.identity.user_public_key
+            ),
             ApproverReply::Decided
         );
         assert!(matches!(
-            protocol.decide(answer(ConfirmationAnswer::Deny), unix_now_ns()),
+            protocol.decide(
+                answer(ConfirmationAnswer::Deny),
+                unix_now_ns(),
+                &protocol.identity.user_public_key
+            ),
             ApproverReply::Refused { .. }
         ));
         assert_eq!(waiting.await.unwrap(), Ok(ConfirmationAnswer::AllowOnce));
+    }
+
+    fn member_request(
+        member: &ed25519_dalek::SigningKey,
+        device: &ed25519_dalek::SigningKey,
+    ) -> CertificationRequest {
+        let now = unix_now_ns();
+        CertificationRequest {
+            version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: member.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Phone".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: [3; 16],
+            issued_at_ns: now,
+            expires_at_ns: now.checked_add(60_000_000_000).unwrap(),
+            signature: [0; 64],
+        }
+        .sign(device)
+        .unwrap()
+    }
+
+    fn signed(member: &ed25519_dalek::SigningKey, request: ApproverRequest) -> MemberApproval {
+        use ed25519_dalek::Signer as _;
+        let user_public_key = member.verifying_key().to_bytes();
+        let issued_at_ns = unix_now_ns();
+        let message =
+            MemberApproval::signed_message(&user_public_key, issued_at_ns, &request).unwrap();
+        MemberApproval {
+            user_public_key,
+            issued_at_ns,
+            request,
+            signature: member.sign(&message).to_bytes(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_member_pairs_a_device_through_a_host_they_share() {
+        let protocol = protocol();
+        let member = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
+        let request = member_request(&member, &device);
+        assert!(
+            protocol.enqueue(request.clone(), unix_now_ns()).is_err(),
+            "a stranger's request is refused"
+        );
+        let (digest, code, _) = protocol
+            .enqueue_member(request.clone(), unix_now_ns(), true)
+            .unwrap();
+        let owner = protocol.identity.user_public_key;
+        let ApproverReply::Pending(listed) =
+            protocol.decide(ApproverRequest::ListPending, unix_now_ns(), &owner)
+        else {
+            panic!("a list");
+        };
+        assert!(
+            listed.is_empty(),
+            "the owner never sees a member's requests"
+        );
+        let ApproverReply::Pending(theirs) =
+            protocol.member_approve(signed(&member, ApproverRequest::ListPending), unix_now_ns())
+        else {
+            panic!("a list");
+        };
+        assert_eq!(theirs.len(), 1);
+        assert_eq!(theirs[0].pairing_code, code);
+        let other = ed25519_dalek::SigningKey::from_bytes(&[13; 32]);
+        let deny = ApproverRequest::Decide {
+            request_digest: digest,
+            decision: ApproverDecision::Deny,
+        };
+        assert!(
+            matches!(
+                protocol.member_approve(signed(&other, deny.clone()), unix_now_ns()),
+                ApproverReply::Refused { .. }
+            ),
+            "another member cannot answer it"
+        );
+        assert!(
+            matches!(
+                protocol.decide(deny, unix_now_ns(), &owner),
+                ApproverReply::Refused { .. }
+            ),
+            "nor the owner"
+        );
+        let cert = tilo_user_identity::issue_device_cert(
+            &request,
+            &member,
+            &CertificationPolicy::browser(),
+            &RevocationList::new(),
+            unix_now_ns(),
+        )
+        .unwrap();
+        let issue = ApproverRequest::Decide {
+            request_digest: digest,
+            decision: ApproverDecision::Issue(cert.clone()),
+        };
+        assert_eq!(
+            protocol.member_approve(signed(&member, issue), unix_now_ns()),
+            ApproverReply::Decided
+        );
+        let CertifyReply::Issued {
+            cert: delivered, ..
+        } = protocol.wait(&digest, Duration::from_secs(1)).await
+        else {
+            panic!("issued");
+        };
+        assert_eq!(delivered, cert);
     }
 }

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 use ed25519_dalek::SigningKey;
-use tilo_relay_protocol::agents::{AgentDelegation, AgentScope};
+use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
 
 use super::*;
@@ -29,7 +29,7 @@ const OPS: [RoomOperation; 10] = [
     RoomOperation::Environment,
     RoomOperation::RemoteAction,
     RoomOperation::StewardedChannelKeys,
-    RoomOperation::AgentMembership,
+    RoomOperation::DelegateMembership,
 ];
 
 /// One decision as a letter, so a row reads as the ten planes in order.
@@ -101,13 +101,15 @@ impl Relay {
     }
 
     fn delegate(&self, device: [u8; 32], delegation: Option<(u64, &str)>) {
-        let delegation = delegation.map(|(expires_at_ns, room)| AgentDelegation {
+        let delegation = delegation.map(|(expires_at_ns, room)| Delegation {
             user_public_key: self.owner,
-            agent_device_public_key: device,
-            agent_id: "agent".into(),
+            device_public_key: device,
+            delegate: Delegate::Agent {
+                agent_id: "agent".into(),
+            },
             label: "Agent".into(),
             color: [0; 3],
-            scope: AgentScope {
+            scope: DelegateScope {
                 rooms: vec![room.into()],
                 apps: Vec::new(),
             },
@@ -180,7 +182,7 @@ fn decide_matrix() {
     };
     let none = || -> Setup { Box::new(|_, _| {}) };
     // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
-    // StewardedChannelKeys, AgentMembership
+    // StewardedChannelKeys, DelegateMembership
     let cases = vec![
         Case {
             name: "owner's member device",
@@ -472,7 +474,7 @@ fn an_agent_joins_governance_only_inside_its_live_delegation() {
             Room::current(runtime),
             &relay.trust(),
             &agent,
-            RoomOperation::AgentMembership,
+            RoomOperation::DelegateMembership,
             now,
         )
     };

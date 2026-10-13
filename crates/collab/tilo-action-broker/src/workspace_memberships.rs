@@ -83,6 +83,16 @@ impl CapnpBrokerState {
                 );
                 (format!("desktop:{task}"), "revoke", Some(argument))
             }
+            WorkspaceMembershipCommand::InstallBot(_)
+            | WorkspaceMembershipCommand::RenewBot(_)
+            | WorkspaceMembershipCommand::AdoptBot(_)
+            | WorkspaceMembershipCommand::UninstallBot { .. }
+            | WorkspaceMembershipCommand::PauseBot { .. }
+            | WorkspaceMembershipCommand::ResumeBot { .. }
+            | WorkspaceMembershipCommand::SetBotAppearance { .. } => {
+                let (action, argument) = bot_invocation(command)?;
+                (WORKSPACE.into(), action, Some(argument))
+            }
         };
         self.invoke_workspace_person_action(
             room,
@@ -431,7 +441,9 @@ impl CapnpBrokerState {
 }
 
 fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembershipCommand, String> {
-    let command = if envelope.resource == WORKSPACE && envelope.action == "add-agent" {
+    let command = if let Some(command) = bot_command(envelope)? {
+        command
+    } else if envelope.resource == WORKSPACE && envelope.action == "add-agent" {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct AddAgent {
@@ -518,17 +530,104 @@ fn membership_command(envelope: &InvocationEnvelope) -> Result<WorkspaceMembersh
     Ok(command)
 }
 
+/// The bot commands an envelope names: their arguments are the whole
+/// payload, as the governor checks it.
+fn bot_command(
+    envelope: &InvocationEnvelope,
+) -> Result<Option<WorkspaceMembershipCommand>, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Install {
+        install: tilo_peer_state::workspace_membership::BotInstall,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Renew {
+        renewal: tilo_peer_state::workspace_membership::BotRenewal,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Adopt {
+        adoption: tilo_peer_state::workspace_membership::BotAdoption,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Named {
+        installation: tilo_peer_state::InstallationId,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Appearance {
+        installation: tilo_peer_state::InstallationId,
+        appearance: tilo_peer_state::AppearancePolicy,
+    }
+    fn read<T: serde::de::DeserializeOwned>(
+        envelope: &InvocationEnvelope,
+        name: &str,
+    ) -> Result<T, String> {
+        serde_json::from_str(bounded_argument(envelope, name)?).map_err(|error| error.to_string())
+    }
+    if envelope.resource != WORKSPACE {
+        return Ok(None);
+    }
+    Ok(Some(match envelope.action.as_str() {
+        "install-bot" => {
+            let encoded = bounded_argument(envelope, "bot install")?;
+            let input: Install =
+                serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+            WorkspaceMembershipCommand::InstallBot(Box::new(input.install))
+        }
+        "renew-bot" => {
+            let encoded = bounded_argument(envelope, "bot renewal")?;
+            let input: Renew = serde_json::from_str(encoded).map_err(|error| error.to_string())?;
+            WorkspaceMembershipCommand::RenewBot(Box::new(input.renewal))
+        }
+        "adopt-bot" => WorkspaceMembershipCommand::AdoptBot(Box::new(
+            read::<Adopt>(envelope, "bot adoption")?.adoption,
+        )),
+        "uninstall-bot" => WorkspaceMembershipCommand::UninstallBot {
+            installation: read::<Named>(envelope, "bot")?.installation,
+        },
+        "pause-bot" => WorkspaceMembershipCommand::PauseBot {
+            installation: read::<Named>(envelope, "bot")?.installation,
+        },
+        "resume-bot" => WorkspaceMembershipCommand::ResumeBot {
+            installation: read::<Named>(envelope, "bot")?.installation,
+        },
+        "set-bot-appearance" => {
+            let input = read::<Appearance>(envelope, "bot appearance")?;
+            WorkspaceMembershipCommand::SetBotAppearance {
+                installation: input.installation,
+                appearance: input.appearance,
+            }
+        }
+        _ => return Ok(None),
+    }))
+}
+
 fn bounded_argument<'a>(envelope: &'a InvocationEnvelope, name: &str) -> Result<&'a str, String> {
     let encoded = envelope
         .argument
         .as_deref()
         .ok_or_else(|| format!("{name} arguments missing"))?;
-    if encoded.len() > 1024 {
+    if encoded.len() > argument_limit(&envelope.action) {
         return Err(format!("{name} arguments exceed bounded size"));
     }
     Ok(encoded
         .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
         .unwrap_or(encoded))
+}
+
+/// Most bytes an action's arguments may take. Installing a bot carries its
+/// whole program, and a bot's device carries a certificate and delegation;
+/// every other membership command is a few ids.
+fn argument_limit(action: &str) -> usize {
+    match action {
+        "install-bot" | "renew-bot" | "adopt-bot" => {
+            tilo_automation::program::MAX_PROGRAM_BYTES + 64 * 1024
+        }
+        _ => 1024,
+    }
 }
 
 fn membership_actions(workspace: &tilo_desktop_model::Workspace, now: u64) -> Vec<PublishedAction> {
@@ -583,6 +682,7 @@ fn membership_actions(workspace: &tilo_desktop_model::Workspace, now: u64) -> Ve
             "The grant's id",
         )],
     ));
+    actions.extend(bot_actions());
     actions.extend(
         workspace
             .agent_members_at(now)
@@ -597,6 +697,137 @@ fn membership_actions(workspace: &tilo_desktop_model::Workspace, now: u64) -> Ve
                 )
             }),
     );
+    actions
+}
+
+/// The membership action and arguments a bot command travels as.
+fn bot_invocation(command: &WorkspaceMembershipCommand) -> Result<(&'static str, String), String> {
+    Ok(match command {
+        WorkspaceMembershipCommand::InstallBot(install) => {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "install": install })
+            );
+            ("install-bot", argument)
+        }
+        WorkspaceMembershipCommand::RenewBot(renewal) => {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "renewal": renewal })
+            );
+            ("renew-bot", argument)
+        }
+        WorkspaceMembershipCommand::AdoptBot(adoption) => {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "adoption": adoption })
+            );
+            ("adopt-bot", argument)
+        }
+        WorkspaceMembershipCommand::UninstallBot { installation }
+        | WorkspaceMembershipCommand::PauseBot { installation }
+        | WorkspaceMembershipCommand::ResumeBot { installation } => {
+            let action = match command {
+                WorkspaceMembershipCommand::UninstallBot { .. } => "uninstall-bot",
+                WorkspaceMembershipCommand::PauseBot { .. } => "pause-bot",
+                _ => "resume-bot",
+            };
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "installation": installation })
+            );
+            (action, argument)
+        }
+        WorkspaceMembershipCommand::SetBotAppearance {
+            installation,
+            appearance,
+        } => {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::json!({ "installation": installation, "appearance": appearance })
+            );
+            ("set-bot-appearance", argument)
+        }
+        _ => return Err("not a bot command".into()),
+    })
+}
+
+/// The governor's bot commands, as membership actions.
+fn bot_actions() -> Vec<PublishedAction> {
+    let mut actions = Vec::new();
+    actions.push(membership_action(
+        WORKSPACE,
+        "install-bot",
+        "Workspace",
+        "Install a bot",
+        vec![tilo_actions::ActionParam::required(
+            "install",
+            tilo_actions::ParamType::Object,
+            "The installation, its program text and, for a new bot, its device",
+        )],
+    ));
+    actions.push(membership_action(
+        WORKSPACE,
+        "renew-bot",
+        "Workspace",
+        "Renew a bot's authorization",
+        vec![tilo_actions::ActionParam::required(
+            "renewal",
+            tilo_actions::ParamType::Object,
+            "The installation and its device with a fresh delegation",
+        )],
+    ));
+    actions.push(membership_action(
+        WORKSPACE,
+        "adopt-bot",
+        "Workspace",
+        "Adopt a bot",
+        vec![tilo_actions::ActionParam::required(
+            "adoption",
+            tilo_actions::ParamType::Object,
+            "The installation and the adopter's device and delegation",
+        )],
+    ));
+    for (action, label) in [
+        ("uninstall-bot", "Uninstall a bot"),
+        ("pause-bot", "Pause a bot"),
+        ("resume-bot", "Resume a bot"),
+    ] {
+        actions.push(membership_action(
+            WORKSPACE,
+            action,
+            "Workspace",
+            label,
+            vec![tilo_actions::ActionParam::required(
+                "installation",
+                tilo_actions::ParamType::Text,
+                "Installation id",
+            )],
+        ));
+    }
+    actions.push(membership_action(
+        WORKSPACE,
+        "set-bot-appearance",
+        "Workspace",
+        "Change how a bot may appear",
+        vec![
+            tilo_actions::ActionParam::required(
+                "installation",
+                tilo_actions::ParamType::Text,
+                "Installation id",
+            ),
+            tilo_actions::ActionParam::required(
+                "appearance",
+                tilo_actions::ParamType::Text,
+                "own, or personas to post as other names",
+            ),
+        ],
+    ));
     actions
 }
 
@@ -736,12 +967,19 @@ mod tests {
                 assert_eq!(state.published_surfaces_generation(), 0);
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 1);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 12));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 19));
                 let mut expected = vec![
                     (WORKSPACE, "add-agent"),
                     (WORKSPACE, "grant-app-authorship"),
                     (WORKSPACE, "grant"),
                     (WORKSPACE, "revoke"),
+                    (WORKSPACE, "install-bot"),
+                    (WORKSPACE, "renew-bot"),
+                    (WORKSPACE, "adopt-bot"),
+                    (WORKSPACE, "uninstall-bot"),
+                    (WORKSPACE, "pause-bot"),
+                    (WORKSPACE, "resume-bot"),
+                    (WORKSPACE, "set-bot-appearance"),
                     (WORKSPACE, "create-task"),
                     (WORKSPACE, "queue-agent-task"),
                     ("desktop:tasks", "queue"),
@@ -769,7 +1007,7 @@ mod tests {
                 }
                 state.refresh_workspace_membership_services().unwrap();
                 assert_eq!(state.published_surfaces_generation(), 2);
-                assert_eq!(membership_surface_counts(&state, &room), (1, 13));
+                assert_eq!(membership_surface_counts(&state, &room), (1, 20));
                 expected.push(("desktop:agent:scribe", "remove"));
                 assert_membership_action_set(&state, &room, &expected);
                 state.refresh_workspace_membership_services().unwrap();
@@ -843,6 +1081,86 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn a_bot_install_carries_its_whole_program_and_parses_back() {
+        let install = tilo_peer_state::workspace_membership::BotInstall {
+            installation: tilo_peer_state::Installation {
+                id: tilo_peer_state::InstallationId::parse("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6")
+                    .unwrap(),
+                program: "a".repeat(64),
+                name: "Discord Bridge".into(),
+                icon: None,
+                installed_by: "0".repeat(64),
+                installed_at_ms: 1,
+                appearance: tilo_peer_state::AppearancePolicy::Personas,
+                source: None,
+                armed_at: vec![],
+                connector_cursors_from_ms: 1,
+                inputs: std::collections::BTreeMap::default(),
+                paused: false,
+            },
+            // Far above the few ids other membership commands carry.
+            program: "x".repeat(8 * 1024),
+            device: None,
+        };
+        let parsed = membership_command(&envelope(
+            WORKSPACE,
+            "install-bot",
+            Some(serde_json::json!({ "install": install })),
+        ))
+        .unwrap();
+        assert_eq!(
+            parsed,
+            WorkspaceMembershipCommand::InstallBot(Box::new(install.clone()))
+        );
+        let forged = membership_command(&envelope(
+            WORKSPACE,
+            "install-bot",
+            Some(serde_json::json!({ "install": install, "caller": "forged" })),
+        ));
+        assert!(forged.is_err());
+        assert!(
+            membership_command(&envelope(
+                WORKSPACE,
+                "grant-app-authorship",
+                Some(serde_json::json!({ "app": "x".repeat(2048) })),
+            ))
+            .is_err(),
+            "other commands keep their small bound"
+        );
+        let pause = membership_command(&envelope(
+            WORKSPACE,
+            "pause-bot",
+            Some(serde_json::json!({ "installation": "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6" })),
+        ))
+        .unwrap();
+        assert!(matches!(pause, WorkspaceMembershipCommand::PauseBot { .. }));
+        assert!(
+            membership_command(&envelope(
+                WORKSPACE,
+                "pause-bot",
+                Some(serde_json::json!({ "installation": "nope" })),
+            ))
+            .is_err()
+        );
+        let appearance = membership_command(&envelope(
+            WORKSPACE,
+            "set-bot-appearance",
+            Some(serde_json::json!({
+                "installation": "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6",
+                "appearance": "personas"
+            })),
+        ))
+        .unwrap();
+        assert!(matches!(
+            appearance,
+            WorkspaceMembershipCommand::SetBotAppearance {
+                appearance: tilo_peer_state::AppearancePolicy::Personas,
+                ..
+            }
+        ));
     }
 
     #[test]

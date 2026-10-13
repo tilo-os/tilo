@@ -9,7 +9,7 @@
 //!
 //! So when the agent's grant is approved (or restored after a restart), each
 //! room this relay governs asks the one admission decision,
-//! [`RoomOperation::AgentMembership`], with the agent's certificate: only a
+//! [`RoomOperation::DelegateMembership`], with the agent's certificate: only a
 //! live delegated agent of this relay's own user, in a room the delegation
 //! names and governance owns here. If admitted, the agent goes on the roster
 //! bound to its delegation ([`tilo_peer_state::StatePeer::admit_agent`]); the
@@ -43,7 +43,7 @@ impl Rooms {
         }
     }
 
-    /// Whether [`RoomOperation::AgentMembership`] admits `peer` to `room`
+    /// Whether [`RoomOperation::DelegateMembership`] admits `peer` to `room`
     /// now.
     async fn agent_admitted(&self, room: &GovernedRoom, peer: &AuthenticatedPeer) -> bool {
         let Some(workspace) = self
@@ -61,7 +61,7 @@ impl Rooms {
             &*workspace.lock().await,
             &self.trust(),
             peer,
-            RoomOperation::AgentMembership,
+            RoomOperation::DelegateMembership,
         );
         if let Decision::Deny(reason) = decision
             && reason != DenyReason::NotADelegatedAgent

@@ -49,7 +49,8 @@ use tilo_agent_participant::{
     StepAction, record_provider,
 };
 use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerHandle};
-use tilo_relay_protocol::agents::{AgentDelegation, AgentScope, AgentStatus, TaskState};
+use tilo_relay_protocol::agents::{AgentStatus, TaskState};
+use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::live::{LiveFrame, ParticipantKind, PresenceFrame};
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
@@ -150,7 +151,7 @@ fn page(
         &route.app_id,
         ROOM,
         "ada",
-        false,
+        tilo_agent_participant::ReplicaActor::Owner,
         Seed::Existing {
             record,
             changes: changes.to_vec(),
@@ -198,13 +199,15 @@ async fn every_web_app_over_the_session() {
         CertificationPolicy::agent().ceiling,
     );
     let now = tilo_clock::unix_now_ns();
-    let delegation = AgentDelegation::sign(
+    let delegation = Delegation::sign(
         &root,
         agent_device.cert.device_public_key,
-        "coverage",
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "coverage".into(),
+        },
         "Coverage agent",
         [0x7c, 0x3a, 0xed],
-        AgentScope {
+        DelegateScope {
             rooms: vec![ROOM.into()],
             apps: catalogue.iter().map(|d| d.app_id.to_owned()).collect(),
         },
