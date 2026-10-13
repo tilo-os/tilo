@@ -2488,10 +2488,9 @@ impl NavShell {
     }
 
     fn take_requests(&mut self) -> bool {
-        let mut acted = false;
-        if self.requests.toggle.replace(false) {
+        let mut acted = self.requests.toggle.replace(false);
+        if acted {
             self.toggle_sidebar();
-            acted = true;
         }
         if self.requests.back.replace(false) {
             acted |= self.back();
@@ -3812,8 +3811,7 @@ impl NavShell {
     ) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 if let Some(resize) = self.resize {
                     self.drag_sidebar_to(resize, self.last_cursor.x);
                     return true;

@@ -131,15 +131,9 @@ impl History {
         self.revision
     }
 
-    /// Record a visit to `url` with `title`, stamped at the current wall
-    /// clock. De-duplicates by URL — see [`History::record_at`].
-    pub fn record(&mut self, url: &str, title: &str) {
-        self.record_at(url, title, unix_now());
-    }
-
-    /// Deterministic core of [`History::record`]: record a visit stamped
-    /// at `now` (Unix seconds). Split out so ranking/recency behaviour is
-    /// unit-testable without touching the wall clock.
+    /// Record a visit to `url` with `title`, stamped at `now` (Unix
+    /// seconds), so ranking/recency behaviour is unit-testable without
+    /// touching the wall clock.
     ///
     /// De-dup rule: if `url` already exists, bump its `visit_count`,
     /// set `last_visit = now`, and replace the title *only when the new

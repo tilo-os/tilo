@@ -1134,10 +1134,7 @@ mod tests {
                     .flatten()
             })
             .expect("the real shared sidebar toggle is exposed");
-        let pointer = |x, y| winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        };
+        let pointer = |x, y| ui::synthetic_input::cursor_moved(x, y);
         harness.send(&pointer(1190.0, 690.0));
         let mut renderer =
             ui::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(1200, 700)
@@ -1242,10 +1239,7 @@ mod tests {
             .max_by(|a, b| a.1.y0.total_cmp(&b.1.y0))
             .expect("a real visible navigation row");
         let harness = Framed::harness_mut(&mut app);
-        harness.send(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(100.0, 300.0),
-        });
+        harness.send(&ui::synthetic_input::cursor_moved(100.0, 300.0));
         harness.scroll(0.0, -3.0);
         let scrolled = row_rect(&app, category).expect("scrolled navigation row");
         assert!(

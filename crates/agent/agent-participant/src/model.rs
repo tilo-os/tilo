@@ -158,7 +158,7 @@ impl PlanModel for GatewayModel {
         most_steps: Option<usize>,
     ) -> Result<Answer, String> {
         self.0
-            .choose_actions(task, &[], catalogue, most_steps)
+            .choose_actions(task, catalogue, most_steps)
             .map_err(|route| format!("no model plan: {}", route.detail()))
     }
 
@@ -1417,7 +1417,6 @@ pub(crate) fn first_turn_parts(
     let described = |offer: &Offer| briefing.describes_offer(offer);
     let turn = tilo_agent::model::action_user_turn_listing(
         task,
-        &[],
         catalogue,
         revealed,
         MOST_PUBLISHED,
@@ -3758,13 +3757,9 @@ mod tests {
             ..PlanContext::default()
         };
         let mut revealed = tilo_agent::tools::Revealed::new();
-        let before = tilo_agent::model::action_user_turn(
-            task,
-            &[],
-            &catalogue(&before_context).0,
-            &mut revealed,
-        )
-        .text();
+        let before =
+            tilo_agent::model::action_user_turn(task, &catalogue(&before_context).0, &mut revealed)
+                .text();
         let after_context = PlanContext {
             open: vec![
                 (route(canvas, "c1"), canvas_ops.clone()),

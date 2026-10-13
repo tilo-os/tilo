@@ -1097,7 +1097,6 @@ impl Dropdown {
                     self.highlight = vi;
                     self.select_highlighted(state, root);
                 }
-                *handled = true;
             } else if self.rect.contains(pos) {
                 if self.supports_filter() && self.query_rect.contains(pos) {
                     *focus_target = Some(node_id);
@@ -1109,12 +1108,11 @@ impl Dropdown {
                 } else {
                     self.close();
                 }
-                *handled = true;
             } else {
                 // Click-outside dismissal.
                 self.close();
-                *handled = true;
             }
+            *handled = true;
         } else if self.rect.contains(pos) {
             *focus_target = Some(node_id);
             self.do_open();
@@ -1636,7 +1634,7 @@ impl Widget for Dropdown {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pos = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pos = ctx.logical(position);
                 self.on_cursor_moved(pos, ctx.handled);
             }
             // The pointer left the window: no `CursorMoved` follows, so the
@@ -2972,10 +2970,7 @@ mod tests {
             let mut dd = Dropdown::new(opts(), "tz");
             dd.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
             let (mut doc, root) = doc_with_tz("UTC");
-            let enter = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(20.0, 20.0),
-            };
+            let enter = crate::synthetic_input::cursor_moved(20.0, 20.0);
             assert!(
                 !feed_key(&mut dd, &enter, &mut doc, &root),
                 "a hover change must not mark the move handled"

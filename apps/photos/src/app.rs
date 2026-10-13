@@ -7116,8 +7116,8 @@ impl PhotosApp {
             control.bounds = Rect::ZERO;
         }
 
+        let mut y = frame.y0;
         if self.people_selection.is_none() {
-            let mut y = frame.y0;
             layout.recognition_heading = Some(Point::new(frame.x0, y));
             y += heading + related;
             layout.recognition_text = Rect::new(frame.x0, y, frame.x1, y + body);
@@ -7231,7 +7231,6 @@ impl PhotosApp {
             layout.lanes = viewport;
             layout.lanes_content = content_h;
         } else {
-            let mut y = frame.y0;
             let gap = f64::from(rhythm.related);
             let side = ((frame.width() - 3.0 * gap) / 4.0)
                 .min(ui::widget::MediaSize::Small.extent(theme))
@@ -11544,7 +11543,7 @@ impl Widget for PhotosApp {
     ) {
         self.reconcile_content();
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            let next = ctx.logical(position);
             if self.library_mode
                 && self.library_destination == LibraryDestination::Places
                 && let Some(previous) = self.places_drag_origin.replace(next)

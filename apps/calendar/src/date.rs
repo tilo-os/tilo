@@ -92,7 +92,6 @@ fn month_abbr(m: u32) -> &'static str {
 
 /// Three-letter weekday, Monday-indexed columns.
 pub const WEEKDAY_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-pub const WEEKDAY_NARROW: [&str; 7] = ["M", "T", "W", "T", "F", "S", "S"];
 
 /// Three-letter weekday abbreviation for `date`'s day of week.
 fn weekday_short(date: NaiveDate) -> &'static str {

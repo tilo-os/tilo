@@ -2741,10 +2741,7 @@ impl Widget for SheetsApp {
 
     fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(
-                position.x / event_ctx.scale_factor,
-                position.y / event_ctx.scale_factor,
-            );
+            self.last_mouse = event_ctx.logical(position);
         }
         // A menu or popover over the sheet is modal and takes the event first.
         if self.route_overlays(event, event_ctx) {

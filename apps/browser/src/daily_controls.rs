@@ -104,12 +104,13 @@ impl DailyControls {
         true
     }
     pub fn sync(&mut self, engine: &SharedEngine) -> bool {
-        let mut dirty = false;
-        if let Some(action) = self.pending.get() {
+        let mut dirty = if let Some(action) = self.pending.get() {
             self.pending.set(None);
             self.act(action, engine);
-            dirty = true;
-        }
+            true
+        } else {
+            false
+        };
         let query: String = self.query.get().chars().take(1024).collect();
         if self.open && query != self.sent {
             self.sent = query;

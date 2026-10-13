@@ -1998,7 +1998,7 @@ impl ui::widget::Decorator for WindowsApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         if let Some(dialog) = self.dialog.as_mut().filter(|dialog| dialog.is_open()) {
             dialog.handle_event(event, ctx);

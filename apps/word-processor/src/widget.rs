@@ -10434,9 +10434,7 @@ impl Widget for WordProcessorWidget {
         changed
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn needs_animation_frame(&self) -> bool {
         // Only the outline and inspector drawers move, while they open or
@@ -10831,9 +10829,6 @@ impl Widget for WordProcessorWidget {
         self.segmented_touch.is_active()
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
     }
@@ -12853,9 +12848,7 @@ impl WordProcessorWidget {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let pointer = match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor)
-            }
+            WindowEvent::CursorMoved { position, .. } => ctx.logical(position),
             _ => self.pointer,
         };
         let mut took = false;
@@ -13393,10 +13386,7 @@ impl WordProcessorWidget {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let pointer = match event {
-            WindowEvent::CursorMoved { position, .. } => Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            )),
+            WindowEvent::CursorMoved { position, .. } => Some(ctx.logical(position)),
             _ => None,
         };
         // The window's History control and the drawers' toggles answer for
@@ -13579,8 +13569,7 @@ impl WordProcessorWidget {
             || self.style_menu.is_open()
         {
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.pointer = ctx.logical(position);
             }
             let menu = if self.template_picker.is_open() {
                 self.template_picker.menu_mut()

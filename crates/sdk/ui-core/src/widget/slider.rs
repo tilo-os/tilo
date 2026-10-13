@@ -739,9 +739,7 @@ impl Widget for Slider {
         self.rect == Rect::ZERO
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -771,7 +769,7 @@ impl Widget for Slider {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 let hover = self.rect.inflate(KNOB_RADIUS, 0.0).contains(p);
                 if hover != self.is_hovered {
@@ -855,10 +853,6 @@ impl Widget for Slider {
 
     fn test_id(&self) -> Option<&str> {
         Some(self.id_override.as_deref().unwrap_or("slider"))
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_focusable(&self) -> bool {

@@ -7414,7 +7414,7 @@ impl FileExplorerWidget {
                 }
                 return true;
             }
-            if let Some(FileCommand::OpenWithMenu) = cmd {
+            if cmd == Some(FileCommand::OpenWithMenu) {
                 let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
                 self.open_open_with_submenu(anchor);
                 return true;
@@ -7467,13 +7467,13 @@ impl FileExplorerWidget {
         } else {
             self.menu_commands.get(index).cloned().flatten()
         };
-        if let Some(FileCommand::OpenTemplatesMenu) = command {
+        if command == Some(FileCommand::OpenTemplatesMenu) {
             let rect = self.context_menu.get_rect();
             self.open_templates_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if let Some(FileCommand::OpenShortcutsMenu) = command {
+        } else if command == Some(FileCommand::OpenShortcutsMenu) {
             let rect = self.context_menu.get_rect();
             self.open_shortcuts_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if let Some(FileCommand::OpenWithMenu) = command {
+        } else if command == Some(FileCommand::OpenWithMenu) {
             let rect = self.context_menu.get_rect();
             let row = self
                 .context_menu
@@ -9067,8 +9067,7 @@ impl Widget for FileExplorerWidget {
         let panel_was_open = self.collab_panel.is_some();
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
             // An armed press that has travelled far enough becomes a drag.
             if let Some((start, path, is_dir)) = self.armed_drag.clone()
                 && self.pin_drag.is_none()

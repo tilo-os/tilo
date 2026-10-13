@@ -64,7 +64,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 
 use crate::plan;
-use crate::surface::{self, APPLICATION_KIND, CONTRACTS, Catalogue, Offer};
+use crate::surface::{self, APPLICATION_KIND, Catalogue, Offer};
 
 pub const LIST_APPLICATIONS: &str = "list_applications";
 pub const LIST_OPERATIONS: &str = "list_operations";
@@ -1141,13 +1141,8 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
         .iter()
         .map(|offer| offer.app.as_str())
         .chain(catalogue.held.iter().copied())
-        .chain(CONTRACTS.iter().map(|contract| contract.namespace))
         .collect::<BTreeSet<_>>();
     for application in applications {
-        let contract = CONTRACTS
-            .iter()
-            .find(|contract| contract.namespace == application);
-        let title = contract.map_or(application, |contract| contract.title);
         let open = catalogue.held.contains(&application)
             || catalogue.offers.iter().any(|offer| {
                 offer.app == application && offer.descriptor.resource_kind != APPLICATION_KIND
@@ -1172,7 +1167,7 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
             .filter(|o| o.app == application && surface::opens_record(o.address()).is_some())
             .collect();
 
-        let _ = write!(s, "{title} ({application})");
+        let _ = write!(s, "{application}");
         s.push_str(if open { " — open" } else { " — not open" });
         let _ = write!(
             s,
@@ -1238,11 +1233,7 @@ fn names_application(asked: &str, o: &Offer) -> bool {
     let names = |app: &str| {
         let asked = asked.to_lowercase();
         let app_lower = app.to_lowercase();
-        app_lower == asked
-            || app_lower.ends_with(&format!(".{asked}"))
-            || CONTRACTS
-                .iter()
-                .any(|c| c.namespace == app && c.title.eq_ignore_ascii_case(&asked))
+        app_lower == asked || app_lower.ends_with(&format!(".{asked}"))
     };
     names(&o.app) || o.address().resource == asked || opened_app(o).is_some_and(names)
 }

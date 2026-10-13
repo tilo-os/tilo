@@ -18,8 +18,7 @@ use ui::a11y::{AccessNode, Role};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 /// Tabs 1..=4 in single-tab groups 10..=40 along one strip. 1 and 3 are
@@ -96,14 +95,7 @@ impl Harness {
     /// compositor hands it on: Alt's own release arrives with Alt up.
     fn key(&mut self, key: Key, state: ElementState, mods: ModifiersState) -> bool {
         let key_event = ui::synthetic_input::key_event(key, None, state);
-        self.event(
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: key_event,
-                is_synthetic: false,
-            },
-            mods,
-        )
+        self.event(&ui::synthetic_input::keyboard_input(key_event), mods)
     }
 
     fn hold_alt(&mut self) {
@@ -380,10 +372,7 @@ fn clicking_a_window_in_the_switcher_goes_there() {
         .expect("every window fits on screen");
     let at = card.center();
     h.event(
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(at.x, at.y),
-        },
+        &ui::synthetic_input::cursor_moved(at.x, at.y),
         ModifiersState::ALT,
     );
     assert_eq!(
@@ -394,24 +383,10 @@ fn clicking_a_window_in_the_switcher_goes_there() {
         Some(4),
         "hovering a window selects it"
     );
-    assert!(h.event(
-        &WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        ModifiersState::ALT,
-    ));
+    assert!(h.event(&ui::synthetic_input::mouse_press(), ModifiersState::ALT,));
     let focused = h.focused();
     let active = h.host.window_switcher_active();
-    let release_absorbed = h.event(
-        &WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-        ModifiersState::ALT,
-    );
+    let release_absorbed = h.event(&ui::synthetic_input::mouse_release(), ModifiersState::ALT);
     drop(h);
     assert_eq!(focused, 4);
     assert!(!active);
@@ -433,10 +408,7 @@ fn closing_another_window_while_alt_is_held_keeps_the_intended_selection() {
         .elapse(Duration::from_millis(200));
     assert!(h.host.close_tab_in_group(20, Some(2)));
     h.event(
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(0.0, 0.0),
-        },
+        &ui::synthetic_input::cursor_moved(0.0, 0.0),
         ModifiersState::ALT,
     );
     let (titles, selected) = listed(&h.switcher_on_screen().expect("surviving session"));
@@ -460,10 +432,7 @@ fn closing_the_armed_window_cancels_before_a_later_alt_release() {
         .elapse(Duration::from_millis(200));
     assert!(h.host.close_tab_in_group(40, Some(4)));
     h.event(
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(0.0, 0.0),
-        },
+        &ui::synthetic_input::cursor_moved(0.0, 0.0),
         ModifiersState::ALT,
     );
     assert!(!h.host.window_switcher_active());

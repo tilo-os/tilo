@@ -1353,7 +1353,7 @@ where
     ) {
         // If the wl_surface was destroyed the object is inert.
         if !data.surface.is_alive() {
-            if let wp_color_management_surface_v1::Request::Destroy = request {
+            if matches!(request, wp_color_management_surface_v1::Request::Destroy) {
                 return;
             }
             obj.post_error(

@@ -24,18 +24,7 @@ macro_rules! chart_leaf {
             crate::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
         }
 
-        fn apply_layout(
-            &mut self,
-            taffy: &taffy::TaffyTree<()>,
-            node: taffy::NodeId,
-            origin: vello::kurbo::Point,
-        ) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            self.rect
-        }
+        crate::rect_geometry!();
 
         fn is_layout_dirty(&self) -> bool {
             self.rect == vello::kurbo::Rect::ZERO
@@ -278,8 +267,7 @@ pub(crate) fn handle_chart_event(
     }
     match event {
         WindowEvent::CursorMoved { position, .. } => {
-            chart.inspection().pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            chart.inspection().pointer = ctx.logical(position);
             chart.update_hover();
             chart.inspection().keyboard = false;
         }

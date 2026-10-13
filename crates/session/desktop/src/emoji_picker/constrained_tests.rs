@@ -104,11 +104,7 @@ fn wrapped_tones_navigate_by_spatial_row_and_keep_the_named_target() {
     let expected = tones.forms.last().unwrap().clone();
     for state in [ElementState::Pressed, ElementState::Released] {
         picker.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button: MouseButton::Left,
-            },
+            &ui::synthetic_input::mouse_input(state, MouseButton::Left),
             1.0,
             ModifiersState::empty(),
             Some(target),
@@ -128,11 +124,7 @@ fn shared_body_scrolling_retires_old_presses_and_reveals_keyboard_focus() {
         .expect("visible selected emoji")
         .center();
     picker.handle_event(
-        &WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
+        &ui::synthetic_input::mouse_press(),
         1.0,
         ModifiersState::empty(),
         Some(target),
@@ -145,11 +137,7 @@ fn shared_body_scrolling_retires_old_presses_and_reveals_keyboard_focus() {
     ));
     assert!(picker.press.is_none());
     picker.handle_event(
-        &WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
+        &ui::synthetic_input::mouse_release(),
         1.0,
         ModifiersState::empty(),
         Some(target),
@@ -220,11 +208,7 @@ fn short_wrapped_tones_scroll_through_the_same_accessible_surface() {
     );
     for state in [ElementState::Pressed, ElementState::Released] {
         picker.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button: MouseButton::Left,
-            },
+            &ui::synthetic_input::mouse_input(state, MouseButton::Left),
             1.0,
             ModifiersState::empty(),
             Some(target.center()),

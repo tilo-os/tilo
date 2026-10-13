@@ -83,10 +83,7 @@ fn rest_over_notes(frame: &mut FrameBuilder, at: Point) {
     let origin = with_notes_on_screen(&*frame, |rect, _| rect.origin());
     notes_input(
         frame,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(at.x - origin.x, at.y - origin.y),
-        },
+        &ui::synthetic_input::cursor_moved(at.x - origin.x, at.y - origin.y),
     );
 }
 

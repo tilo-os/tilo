@@ -551,7 +551,7 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
     let metadata = ui::app::compose_structural_continuation_metadata(
         ui::view::View::default(),
         Some(ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
+            schema_version: ui::collaboration::semantic_schema::WEB_LOCATION_V1,
             bytes: br#"{"url":"https://example.test/reading"}"#.to_vec(),
         }),
     )

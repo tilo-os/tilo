@@ -204,11 +204,6 @@ impl WeatherService {
         }
     }
 
-    /// Drain all ready responses without blocking.
-    pub fn drain(&self) -> Vec<Response> {
-        self.drain_with_status().0
-    }
-
     /// Wait up to `timeout` for the next response (the standalone probe).
     pub fn wait(&self, timeout: std::time::Duration) -> Option<Response> {
         self.rx.recv_timeout(timeout).ok()

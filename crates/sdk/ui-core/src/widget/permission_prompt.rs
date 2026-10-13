@@ -604,7 +604,7 @@ impl Widget for PermissionPrompt {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 let new_idx = if self.allow_rect.contains(p) {
                     Some(0)
@@ -1014,10 +1014,7 @@ mod tests {
     }
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
 
     use crate::synthetic_input::mouse_press;

@@ -207,8 +207,4 @@ impl AppWidget for AppNoticeCard {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("󰏗")
     }
-
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }

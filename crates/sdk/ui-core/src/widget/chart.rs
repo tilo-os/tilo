@@ -921,9 +921,7 @@ impl Widget for Sparkline {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -946,10 +944,6 @@ impl Widget for Sparkline {
 
     fn name(&self) -> &'static str {
         "Sparkline"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_layout_dirty(&self) -> bool {

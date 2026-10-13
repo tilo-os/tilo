@@ -52,21 +52,6 @@ use crate::resource::{SampleForecasts, Weather};
 /// The overview rail's places (id, name, condition glyph) and the selected one.
 type RailPlaces = (Vec<(String, String, Icon)>, Option<String>);
 
-/// The screenshot scenarios a capture can stage (`--shots --scenario NAME`).
-pub const SCENARIOS: &[&str] = &[
-    "onboarding",
-    "detail",
-    "drag",
-    "menu",
-    "scrolled",
-    "detail_scrolled",
-    "search",
-    "search_loading",
-    "search_empty",
-    "offline",
-    "error",
-];
-
 /// A refresh someone invoked, waiting for the requests it sent.
 struct PendingRefresh {
     /// The requests that belong to this refresh and have not settled.
@@ -162,7 +147,7 @@ impl WeatherApp {
                 if !self.core.borrow_mut().open_location(id) {
                     return Err("Weather location is no longer saved".into());
                 }
-                if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
+                if self.core.borrow_mut().take_nav_request() == Some(NavIntent::ShowDetail) {
                     self.nav.show(NavPane::Content);
                 }
                 Ok(Effected::done())
@@ -441,8 +426,7 @@ impl WeatherApp {
 
         let reqs = self.core.borrow_mut().take_tracked_outbox();
         let mut completions = Vec::new();
-        let mut disconnected = false;
-        if let Some(svc) = self.service.as_ref() {
+        let disconnected = if let Some(svc) = self.service.as_ref() {
             if !reqs.is_empty() {
                 self.last_activity = ui::time::now();
             }
@@ -453,8 +437,10 @@ impl WeatherApp {
             }
             let (ready, closed) = svc.drain_with_status();
             completions.extend(ready);
-            disconnected = closed;
-        }
+            closed
+        } else {
+            false
+        };
         for response in completions {
             self.apply_network_response(response);
         }
@@ -484,7 +470,7 @@ impl WeatherApp {
     /// the selected place.
     fn follow_core(&mut self) -> bool {
         let navigate = self.core.borrow_mut().take_nav_request();
-        if let Some(NavIntent::ShowDetail) = navigate {
+        if navigate == Some(NavIntent::ShowDetail) {
             self.nav.show(NavPane::Content);
         }
         self.sync_title();
@@ -494,7 +480,7 @@ impl WeatherApp {
     /// Stage a screenshot scenario's view state, once its places are
     /// presented.
     ///
-    /// Recognised scenarios ([`SCENARIOS`]):
+    /// Recognised scenarios:
     /// * `"detail"` — push the forecast in (a narrow window shows the
     ///   pushed forecast and its Back button).
     /// * `"drag"` — a reorder drag of the second saved place is in flight.
@@ -617,7 +603,7 @@ impl ui::widget::Decorator for WeatherApp {
         self.nav.handle_event(event, ctx);
 
         // The overview raises a push intent when a city is selected.
-        if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
+        if self.core.borrow_mut().take_nav_request() == Some(NavIntent::ShowDetail) {
             self.nav.show(NavPane::Content);
         }
 
@@ -687,10 +673,8 @@ mod interaction_tests {
     use crate::net::Request;
     use ui::headless::Framed;
     use vello::kurbo::Point as KPoint;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{
-        ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
-    };
+
+    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, NamedKey, SmolStr};
 
     use ui::synthetic_input::key_press;
@@ -746,50 +730,30 @@ mod interaction_tests {
         }
 
         fn move_to(&mut self, x: f64, y: f64) {
-            self.dispatch(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: PhysicalPosition::new(x, y),
-            });
+            self.dispatch(&ui::synthetic_input::cursor_moved(x, y));
         }
 
         fn click(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
-            self.dispatch(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            });
-            self.dispatch(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_press());
+            self.dispatch(&ui::synthetic_input::mouse_release());
         }
 
         fn press(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
-            self.dispatch(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_press());
         }
 
         fn release(&mut self) {
-            self.dispatch(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_release());
         }
 
         fn right_click(&mut self, x: f64, y: f64) {
             self.move_to(x, y);
-            self.dispatch(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_input(
+                ElementState::Pressed,
+                MouseButton::Right,
+            ));
         }
 
         fn key(&mut self, logical_key: Key, text: Option<&str>) {
@@ -882,11 +846,7 @@ mod interaction_tests {
             // hourly strip, whose band owns the wheel for its own scroll.
             let content = h.app.nav.geometry().content_column;
             h.move_to(content.center().x, content.y0 + 120.0);
-            h.dispatch(&WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: TouchPhase::Moved,
-            });
+            h.dispatch(&ui::synthetic_input::mouse_wheel(0.0, -1.0));
             assert!(
                 h.app.core.borrow().scroll() > 0.0,
                 "wheel scrolls the forecast body down"
@@ -909,11 +869,7 @@ mod interaction_tests {
             let vp = h.app.core.borrow().hourly_viewport_rect();
             let p = vp.center();
             h.move_to(p.x, p.y);
-            h.dispatch(&WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(-2.0, 0.0),
-                phase: TouchPhase::Moved,
-            });
+            h.dispatch(&ui::synthetic_input::mouse_wheel(-2.0, 0.0));
             assert!(
                 h.app.core.borrow().hourly_scroll_x() > 0.0,
                 "a horizontal wheel scrolls the overflowing strip"

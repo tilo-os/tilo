@@ -7,7 +7,7 @@ use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
 use crate::tokens::TextRole;
@@ -397,9 +397,7 @@ impl Widget for Tooltip {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -447,7 +445,7 @@ impl Widget for Tooltip {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 let inside = self.anchor.contains(p);
                 if inside && self.hover_since.is_none() {
                     self.on_hover_enter(Duration::ZERO);
@@ -477,10 +475,6 @@ impl Widget for Tooltip {
 
     fn name(&self) -> &'static str {
         "Tooltip"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -805,6 +799,7 @@ mod host_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vello::kurbo::Point;
 
     fn feed(t: &mut Tooltip, p: Point) {
         let ev = WindowEvent::CursorMoved {

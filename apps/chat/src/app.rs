@@ -2965,15 +2965,16 @@ impl ChatApp {
     /// when the active workspace changed (the caller must reload so the
     /// channel + message lists refresh).
     pub(crate) fn ensure_selection(&mut self) -> bool {
-        let mut ws_changed = false;
-        if !self.workspaces.iter().any(|w| w.id == self.active_ws)
+        let ws_changed = if !self.workspaces.iter().any(|w| w.id == self.active_ws)
             && let Some(first) = self.workspaces.first()
         {
             self.active_ws = first.id.clone();
             self.context_ws = first.id.clone();
             self.active_channel.clear();
-            ws_changed = true;
-        }
+            true
+        } else {
+            false
+        };
         // Drop a stale open thread whose parent isn't in this workspace.
         if let Some(t) = self.thread_open.clone()
             && self.message(&t).is_none()

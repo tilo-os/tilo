@@ -2384,11 +2384,7 @@ mod tests {
         // these are the same inert placeholders used by ui::App's key tests.
         let event =
             ui::synthetic_input::key_event(key, text.map(Into::into), ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     fn named_key_event(key: NamedKey) -> WindowEvent {

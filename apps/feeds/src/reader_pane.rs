@@ -585,9 +585,7 @@ impl Widget for ReaderPane {
         fill_leaf(taffy, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -604,8 +602,7 @@ impl Widget for ReaderPane {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.core.borrow_mut().pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.core.borrow_mut().pointer = ctx.logical(position);
         }
         if self.core.borrow_mut().reader_event(event, ctx) {
             *ctx.handled = true;
@@ -671,9 +668,5 @@ impl Widget for ReaderPane {
 
     fn name(&self) -> &'static str {
         "FeedsReader"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }

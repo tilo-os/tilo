@@ -175,21 +175,6 @@ impl Page {
             Rotation::CounterClockwise => DynamicImage::ImageRgba8(imageops::rotate270(&cropped)),
         }
     }
-
-    /// Runs OCR on the current rendered page and retains the result.
-    ///
-    /// # Errors
-    ///
-    /// Propagates OCR engine or decoding errors.
-    pub fn recognize(&mut self, language: &str) -> Result<&Document, tilo_ocr::Error> {
-        let recognition = tilo_ocr::recognize_detailed(&self.rendered(), language)?;
-        self.ocr = Some(recognition.document);
-        self.ocr_deskew_degrees = recognition.deskew_degrees;
-        // Set immediately above and retained by `self`.
-        self.ocr
-            .as_ref()
-            .ok_or_else(|| tilo_ocr::Error::Engine("OCR result was lost".into()))
-    }
 }
 
 #[derive(Default)]
@@ -219,15 +204,6 @@ impl ScanSession {
         self.pages.remove(index);
         self.selected = self.selected.min(self.pages.len().saturating_sub(1));
         true
-    }
-    #[must_use]
-    pub fn searchable_text(&self) -> String {
-        self.pages
-            .iter()
-            .filter_map(|page| page.ocr.as_ref())
-            .map(Document::plain_text)
-            .collect::<Vec<_>>()
-            .join("\n\n")
     }
 
     /// Render the current page order, edits, and OCR layers into a searchable

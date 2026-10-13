@@ -770,18 +770,11 @@ mod tests {
         let mut region = region(1000.0);
         send(
             &mut region,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(100.0, 100.0),
-            },
+            &crate::synthetic_input::cursor_moved(100.0, 100.0),
         );
         assert!(send(
             &mut region,
-            &WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
+            &crate::synthetic_input::mouse_wheel(0.0, -1.0),
         ));
         let line = f64::from(Theme::dark().tokens.metrics.wheel_line);
         assert!((region.offset().y - line).abs() < 1e-9);

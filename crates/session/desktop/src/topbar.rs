@@ -5087,7 +5087,7 @@ impl TopBarChrome {
         modifiers: winit::event::Modifiers,
         handled: &mut bool,
     ) -> bool {
-        if let WindowEvent::Focused(false) = event {
+        if matches!(event, WindowEvent::Focused(false)) {
             self.set_focus(false);
         }
         if let WindowEvent::KeyboardInput { event: key, .. } = event
@@ -5536,10 +5536,7 @@ impl Widget for TopBarChrome {
                 return;
             }
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.last_cursor = Some(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                self.last_cursor = Some(ctx.logical(position));
             }
             if self.responsive.toolbar.traps_focus()
                 || self.responsive.toolbar.wants_pointer_capture()
@@ -5557,10 +5554,7 @@ impl Widget for TopBarChrome {
 
         if self.is_compact() {
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.last_cursor = Some(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                self.last_cursor = Some(ctx.logical(position));
                 return;
             }
             if self.handle_left_release(event, ctx.handled) {
@@ -6582,11 +6576,7 @@ mod tests {
             None,
             winit::event::ElementState::Pressed,
         );
-        let event = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: key_event,
-            is_synthetic: false,
-        };
+        let event = ui::synthetic_input::keyboard_input(key_event);
         let mut handled = false;
         bar.handle_keyboard(&event, winit::event::Modifiers::default(), &mut handled);
         handled
@@ -6627,11 +6617,10 @@ mod tests {
         let mut bar = sample_chrome();
         lay_out_and_draw(&mut bar, 1280.0);
         bar.last_cursor = Some(bar.center_rect.center());
-        let secondary = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Right,
-        };
+        let secondary = ui::synthetic_input::mouse_input(
+            winit::event::ElementState::Pressed,
+            winit::event::MouseButton::Right,
+        );
         assert!(dispatch_topbar_event(&mut bar, &secondary));
         assert!(bar.widget_editing);
         lay_out_and_draw(&mut bar, 1280.0);
@@ -6651,11 +6640,7 @@ mod tests {
             None,
             winit::event::ElementState::Pressed,
         );
-        let escape = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: key_event,
-            is_synthetic: false,
-        };
+        let escape = ui::synthetic_input::keyboard_input(key_event);
         assert!(dispatch_topbar_event(&mut bar, &escape));
         assert!(!bar.widget_editing);
 
@@ -6663,11 +6648,7 @@ mod tests {
         assert!(dispatch_topbar_event(&mut bar, &secondary));
         lay_out_and_draw(&mut bar, 1280.0);
         bar.last_cursor = Some(Point::new(2.0, 2.0));
-        let outside = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        };
+        let outside = ui::synthetic_input::mouse_press();
         assert!(dispatch_topbar_event(&mut bar, &outside));
         assert!(!bar.widget_editing);
     }
@@ -7632,26 +7613,15 @@ mod tests {
         event.location = winit::keyboard::KeyLocation::Standard;
         event.state = state;
         event.repeat = repeat;
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     fn editor_pointer_event(point: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-        }
+        ui::synthetic_input::cursor_moved(point.x, point.y)
     }
 
     fn editor_mouse_event(state: winit::event::ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: winit::event::MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_input(state, winit::event::MouseButton::Left)
     }
 
     #[test]
