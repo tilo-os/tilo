@@ -1692,10 +1692,10 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let label = self
-            .messages
-            .first()
-            .map_or_else(|| "Today".into(), |m| day_label(m.ts));
+        let label = self.messages.first().map_or_else(
+            || ui::format::near_day(0).unwrap_or_default(),
+            |m| day_label(m.ts),
+        );
         let style = theme.text(TextRole::Caption);
         let w = width_of(tr, &label, &style);
         let band = Rect::new(area.x0, y, area.x1, y + divider_h);

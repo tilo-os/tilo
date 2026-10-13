@@ -101,6 +101,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `window-management.md` | one model for windows, strips and workspaces: chords, gestures, pointer, overlays, actions, motion |
 | `collaboration.md` | CRDT sync, presence, peers |
 | `rooms.md` | workspaces, hosts, membership |
+| `web-routing.md` | links: one URL grammar over resource refs, desktop and full-tab modes, history, admission, `share-link` |
 | `storage.md` | unified storage, sync, records, history and caching (design for review) |
 | `security.md` | sandbox and capability grants for app code |
 | `theming.md` | the theme token contract, validation, layers and precedence, app boundaries |

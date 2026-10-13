@@ -26,7 +26,6 @@ pub struct StatusState {
     pub lsp_working: bool,
     /// The last file-operation message ("Saved main.rs", "Could not save …").
     pub notice: String,
-    pub notice_is_error: bool,
     /// True when the active buffer has unsaved edits.
     pub dirty: bool,
 }
