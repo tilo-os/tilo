@@ -708,6 +708,13 @@ impl Resource for ArtworkResource {
             )
             .answering(),
             ActionDecl::new("draw", "Draw shapes", params_of::<Draw>(), |args, _now| {
+                // Geometry beside `shape` rather than in it: say where it goes
+                // before serde refuses it as an unknown field.
+                for (index, mark) in args.array("marks").unwrap_or_default().iter().enumerate() {
+                    if let Some(problem) = crate::actions::misplaced_geometry(index, mark) {
+                        return Err(problem);
+                    }
+                }
                 let mut draw: Draw = read_args(args)?;
                 for mark in &mut draw.marks {
                     kept_image(&mut mark.shape)?;

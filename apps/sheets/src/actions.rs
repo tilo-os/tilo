@@ -372,6 +372,8 @@ pub enum SheetsAction {
         sheet_id: String,
         hidden: bool,
     },
+    /// Name the workbook `title`, as people call the spreadsheet.
+    SetWorkbookTitle { title: String },
     /// Insert a blank row above row `at` on `sheet`, shifting cells at or below
     /// it down. Recomputed from the document's base state.
     InsertRow {
@@ -590,6 +592,12 @@ fn history_resource(action: &SheetsAction) -> HistoryResource {
             format!("sheets.sheet:{sheet_id}"),
             "sheets.sheet",
             "Sheet".into(),
+        ),
+        SheetsAction::SetWorkbookTitle { title } => (
+            "Name workbook",
+            "sheets.workbook".to_string(),
+            "sheets.workbook",
+            title.clone(),
         ),
         SheetsAction::InsertRow { sheet_id, at, .. } => (
             "Insert row",
@@ -866,6 +874,9 @@ impl Action for SheetsAction {
                 sheet_id, hidden, ..
             } => {
                 SheetsDoc::set_sheet_hidden(doc, resolve_sheet(doc, sheet_id)?, *hidden);
+            }
+            SheetsAction::SetWorkbookTitle { title } => {
+                SheetsDoc::set_workbook_title(doc, title);
             }
             SheetsAction::InsertRow { sheet_id, at, .. } => {
                 restructure(doc, resolve_sheet(doc, sheet_id)?, GridEdit::InsertRow(*at));
@@ -1431,6 +1442,13 @@ fn validate_action(doc: &Doc, action: &SheetsAction) -> Result<(), ActionError> 
                 .count();
             if *hidden && !SheetsDoc::sheet_hidden(doc, *idx) && shown <= 1 {
                 refuse("a workbook keeps at least one sheet shown")
+            } else {
+                Ok(())
+            }
+        }
+        SheetsAction::SetWorkbookTitle { title } => {
+            if title.trim().is_empty() || title.len() > MAX_IMPORT_SOURCE_BYTES {
+                refuse("a workbook title is empty or too long")
             } else {
                 Ok(())
             }
@@ -2009,6 +2027,12 @@ pub fn set_sheet_hidden_action(
         idx,
         sheet_id: sheet_id.into(),
         hidden,
+    }
+}
+
+pub fn set_workbook_title_action(title: impl Into<String>) -> SheetsAction {
+    SheetsAction::SetWorkbookTitle {
+        title: title.into(),
     }
 }
 

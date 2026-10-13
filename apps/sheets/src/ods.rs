@@ -6,7 +6,7 @@
 //! form, and a small set of named styles for currency/percent/date cells,
 //! declared in `styles.xml`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 

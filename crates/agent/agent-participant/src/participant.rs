@@ -189,6 +189,14 @@ struct Running {
     /// How many of its performed steps did something (not only opened a
     /// record).
     acted: usize,
+    /// Whether a step changed a record or made content: a plan of reads
+    /// alone has done nothing the request asked for yet.
+    changed: bool,
+    /// Whether the task was already planned again after its reads.
+    replanned_after_reads: bool,
+    /// The steps that ran, briefly, oldest first: what a repair must not
+    /// do again.
+    ran: Vec<String>,
 }
 
 impl Running {
@@ -209,6 +217,26 @@ impl Running {
 }
 
 impl Running {
+    /// When every step ran and they only read (a plan of reads alone, from
+    /// a model that meant to plan with what they answer), plan the rest
+    /// once more with what they found. Steps written out run as written.
+    fn plan_again_after_reads(&mut self) {
+        if self.steps.is_empty()
+            && self.acted > 0
+            && !self.changed
+            && !self.replanned_after_reads
+            && !self.request.trim_start().starts_with(['[', '{'])
+        {
+            self.replanned_after_reads = true;
+            self.steps.push_back(Step {
+                app: String::new(),
+                record: None,
+                action: StepAction::Continue(READS_ANSWERED.to_owned()),
+                carries: false,
+            });
+        }
+    }
+
     /// A task that starts with `steps`, and what was read while planning
     /// them.
     fn new(id: String, request: String, steps: Vec<Step>, read: Vec<String>) -> Self {
@@ -224,6 +252,9 @@ impl Running {
             news_replans: 0,
             touched: Vec::new(),
             acted: 0,
+            changed: false,
+            replanned_after_reads: false,
+            ran: Vec::new(),
         };
         for seen in read {
             running.observe(seen);
@@ -255,6 +286,28 @@ impl Running {
             self.last = Some(output);
         }
     }
+}
+
+/// What a task whose plan was only reads is planned again with.
+const READS_ANSWERED: &str = "The reads above have answered. Now plan the steps that make or change \
+     what the request asks for, using what they found. If the request asks for nothing to be \
+     made or changed, plan no steps and say so in `reply`.";
+
+/// A step as a repair is told it already ran: its action and, briefly, its
+/// arguments.
+fn step_brief(step: &Step) -> String {
+    let (_, action) = step.log_names();
+    let arguments = match &step.action {
+        StepAction::Invoke { arguments, .. } if !arguments.is_empty() => {
+            serde_json::Value::Object(arguments.clone()).to_string()
+        }
+        _ => String::new(),
+    };
+    let mut brief = format!("{action} {arguments}");
+    if brief.chars().count() > 160 {
+        brief = brief.chars().take(157).collect::<String>() + "...";
+    }
+    brief.trim().to_owned()
 }
 
 /// The content addresses among what `output` names.
@@ -673,6 +726,7 @@ impl AgentParticipant {
             return false;
         }
         take_news(running, &mut self.news);
+        running.plan_again_after_reads();
         let Some(step) = running.steps.pop_front() else {
             let (id, done) = (running.id.clone(), running.done());
             self.running = None;
@@ -708,7 +762,9 @@ impl AgentParticipant {
         if let Some(ready_at) = self.plan_ready_at.take() {
             tracing::debug!(after = ?ready_at.elapsed(), "agent: a plan's first step starts");
         }
+        let generation = self.generation;
         let outcome = self.perform(&step, previous.as_ref());
+        let edited = self.generation != generation;
         let (resource, action) = step.log_names();
         let content = match &outcome {
             Ok(Some(output)) => produced(output),
@@ -736,6 +792,8 @@ impl AgentParticipant {
                 if matches!(step.action, StepAction::Invoke { .. }) {
                     running.acted = running.acted.saturating_add(1);
                 }
+                running.changed |= edited || !content.is_empty();
+                running.ran.push(step_brief(&step));
                 if let Some(output) = output {
                     running.answered(&step, output);
                 }
@@ -890,8 +948,16 @@ impl AgentParticipant {
             record: None,
             action: StepAction::Continue(format!(
                 "The step {} failed: {error}. Finish the request with steps that work, without \
-                 repeating the steps that already ran.",
-                step.log_names().1
+                 repeating the steps that already ran.{}",
+                step.log_names().1,
+                if running.ran.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " Already done, and kept: {}. Do not do any of them again.",
+                        running.ran.join("; ")
+                    )
+                }
             )),
             carries: false,
         });
@@ -1972,5 +2038,57 @@ mod tests {
             tilo_agent::plan::carried_arguments(&serde_json::Map::new(), true, fresh.last.as_ref())
                 .is_err()
         );
+    }
+
+    /// A repair is told each step that ran by its action and arguments,
+    /// briefly.
+    #[test]
+    fn a_ran_step_is_told_briefly() {
+        let mut step = invoke("so.tilo.slides", "slides.deck", "add-slide");
+        if let StepAction::Invoke { arguments, .. } = &mut step.action {
+            arguments.insert("title".into(), "Meet Lumo".into());
+        }
+        assert_eq!(step_brief(&step), r#"add-slide {"title":"Meet Lumo"}"#);
+        if let StepAction::Invoke { arguments, .. } = &mut step.action {
+            arguments.insert("body".into(), "x".repeat(400).into());
+        }
+        let brief = step_brief(&step);
+        assert!(
+            brief.ends_with("...") && brief.chars().count() == 160,
+            "{brief}"
+        );
+    }
+
+    /// A model plan of reads alone is planned once more with what they
+    /// answered; a plan that changed something, or steps written out, end.
+    #[test]
+    fn a_plan_of_reads_alone_is_planned_again_once() {
+        let mut running =
+            Running::new("t1".into(), "build the deck".into(), Vec::new(), Vec::new());
+        running.acted = 2;
+        running.plan_again_after_reads();
+        assert!(matches!(
+            running.steps.front().map(|step| &step.action),
+            Some(StepAction::Continue(rest)) if rest == READS_ANSWERED
+        ));
+        running.steps.clear();
+        running.plan_again_after_reads();
+        assert!(running.steps.is_empty(), "only once");
+
+        let mut edited = Running::new("t2".into(), "build the deck".into(), Vec::new(), Vec::new());
+        edited.acted = 1;
+        edited.changed = true;
+        edited.plan_again_after_reads();
+        assert!(edited.steps.is_empty());
+
+        let mut written = Running::new(
+            "t3".into(),
+            r#"[{"app": "so.tilo.slides"}]"#.into(),
+            Vec::new(),
+            Vec::new(),
+        );
+        written.acted = 1;
+        written.plan_again_after_reads();
+        assert!(written.steps.is_empty());
     }
 }

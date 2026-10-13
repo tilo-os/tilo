@@ -2584,6 +2584,11 @@ mod tests {
                 &Element::shape(ElementKind::Ellipse, 100.0, 100.0, 200.0, 200.0),
             )),
             door_add_element => |doc| through_door(doc, ADD_ELEMENT, add_text_args(doc)),
+            door_add_element_by_integer => |doc| {
+                let mut args = add_text_args(doc);
+                args["slide"] = 2.into();
+                through_door(doc, ADD_ELEMENT, args)
+            },
             door_add_element_by_number => |doc| {
                 let mut args = add_text_args(doc);
                 args["slide"] = "2".into();

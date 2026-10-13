@@ -472,9 +472,6 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": [
-              "shape"
-            ],
             "properties": {
               "pixelated": {
                 "type": [
@@ -837,7 +834,14 @@
                     "description": "A PNG, JPEG or WebP in the frame `x, y, width, height`."
                   }
                 ],
-                "description": "The geometry: `{\"kind\": \"rect\", \"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10}`, `ellipse` (cx, cy, rx, ry), `polygon`/`line` (points), `path` (d: SVG path data), `text` (x, y, text, size) or `stroke` (points, size)."
+                "description": "The geometry: `{\"kind\": \"rect\", \"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10}`, `ellipse` (cx, cy, rx, ry), `polygon`/`line` (points), `path` (d: SVG path data), `text` (x, y, text, size) or `stroke` (points, size). Left out when `place` gives the box."
+              },
+              "kind": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "With `place` and no `shape`: `rect` (the default) or `ellipse`."
               },
               "fill": {
                 "type": [
@@ -1065,6 +1069,18 @@
                 "minItems": 6,
                 "maxItems": 6,
                 "description": "An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows."
+              },
+              "place": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "A rect's or ellipse's box as fractions of the artwork, `[x, y, width, height]` from 0 to 1, instead of units: `[0.62, 0, 0.38, 1]` is the right 38% at full height."
               }
             },
             "additionalProperties": false,
@@ -3573,6 +3589,24 @@
             "string",
             "null"
           ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "fit_to",
+        "ty": "array",
+        "required": false,
+        "description": "Make the artwork exactly `[width, height]`: crop it, centred, to that shape, then scale it and everything on it to that size (16:9 at 1520 by 855 is `[1520, 855]`).",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
         },
         "nullable": true
       }

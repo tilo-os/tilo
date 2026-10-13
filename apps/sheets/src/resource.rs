@@ -16,7 +16,7 @@ use ui::widget::Element;
 
 use crate::actions::{
     SHEETS_ACTION_TYPE, SearchableCell, SheetsAction, SheetsEffect, add_sheet_action,
-    document_children,
+    document_children, set_workbook_title_action,
 };
 use crate::app::SheetsApp;
 use crate::doc::{ChartSnapshot, CommentThread, SheetSnapshot, SheetsDoc};
@@ -280,6 +280,104 @@ fn import_xlsx_content() -> ActionDecl<SheetsWorkbook> {
     )
 }
 
+/// The workbook's new sheet, appended, with its first content when given;
+/// `count` is how many sheets the workbook has, `titled` whether it has a
+/// title already.
+fn new_sheet(count: usize, titled: bool) -> ActionDecl<SheetsWorkbook> {
+    ActionDecl::new(
+        "new-sheet",
+        "New sheet",
+        vec![
+            ActionParam::optional(
+                "name",
+                ParamType::Text,
+                "The new sheet's name; omit for the next free SheetN",
+            ),
+            ActionParam::optional(
+                "rows",
+                ParamType::Array,
+                "Its first content: rows of values from A1, \"=…\" a formula, an ISO date such as \
+                 \"2026-10-22\" a real date",
+            ),
+            ActionParam::optional(
+                "formats",
+                ParamType::Object,
+                "Number formats of its ranges, e.g. {\"D2:D5\": \"percent\"}: general, number, \
+                 currency, percent, date, time or text",
+            ),
+            ActionParam::optional(
+                "workbook",
+                ParamType::Text,
+                "The spreadsheet's name, when the workbook has none yet",
+            ),
+        ],
+        move |args, _| {
+            let name = args.text("name").map_or("", str::trim);
+            let name = if name.is_empty() {
+                format!("Sheet{}", count + 1)
+            } else {
+                name.to_owned()
+            };
+            // A workbook already named keeps its name.
+            let title = args
+                .text("workbook")
+                .map(str::trim)
+                .filter(|title| !titled && !title.is_empty())
+                .map(str::to_owned);
+            let rows = args.array("rows");
+            if rows.is_none() && title.is_none() {
+                return Ok(add_sheet_action(&name));
+            }
+            // A sheet and its content in one change, as an import makes
+            // them; a new workbook's blank first sheet gives way to it, and
+            // the workbook takes the name it is given in the same change.
+            let mut cells = match rows {
+                Some(rows) => crate::cell_actions::cells_from_rows((0, 0), rows)?,
+                None => Vec::new(),
+            };
+            if let Some(formats) = args.object("formats") {
+                cells = crate::cell_actions::with_formats(cells, formats)?;
+            }
+            Ok(SheetsAction::ImportSheets {
+                sheets: vec![crate::actions::ImportedSheet {
+                    name,
+                    sheet_id: uuid::Uuid::new_v4().to_string(),
+                    cells,
+                    hidden: false,
+                }],
+                replace_blank: true,
+                source: None,
+                title,
+            })
+        },
+    )
+    .describe(
+        "Add a sheet at the end of the workbook, with its content when given; naming the \
+         workbook too when it has no name yet.",
+    )
+}
+
+/// The workbook's naming: the spreadsheet's name, as its label shows it.
+fn set_title() -> ActionDecl<SheetsWorkbook> {
+    ActionDecl::new(
+        "set-title",
+        "Name the workbook",
+        vec![ActionParam::required(
+            "title",
+            ParamType::Text,
+            "The spreadsheet's name, as people call it",
+        )],
+        |args, _| {
+            let title = args.text("title").map_or("", str::trim);
+            if title.is_empty() {
+                return Err("give the workbook a name: `title` is empty".into());
+            }
+            Ok(set_workbook_title_action(title))
+        },
+    )
+    .describe("Name the workbook, so it is found and listed by that name.")
+}
+
 /// The identity of a new workbook's first sheet. The genesis is the same
 /// change on every device, so two people creating the room's workbook before
 /// they sync converge on one first sheet rather than two.
@@ -378,61 +476,9 @@ impl Resource for SheetsWorkbook {
     }
 
     fn bound_declarations(state: &SheetsState) -> Vec<ActionDecl<Self>> {
-        let count = state.sheets.len();
         vec![
-            ActionDecl::new(
-                "new-sheet",
-                "New sheet",
-                vec![
-                    ActionParam::optional(
-                        "name",
-                        ParamType::Text,
-                        "The new sheet's name; omit for the next free SheetN",
-                    ),
-                    ActionParam::optional(
-                        "rows",
-                        ParamType::Array,
-                        "Its first content: rows of values from A1, \"=…\" a formula, an ISO date such as \
-                         \"2026-10-22\" a real date",
-                    ),
-                    ActionParam::optional(
-                        "formats",
-                        ParamType::Object,
-                        "Number formats of its ranges, e.g. {\"D2:D5\": \"percent\"}: general, number, \
-                         currency, percent, date, time or text",
-                    ),
-                ],
-                move |args, _| {
-                    let name = args.text("name").map_or("", str::trim);
-                    let name = if name.is_empty() {
-                        format!("Sheet{}", count + 1)
-                    } else {
-                        name.to_owned()
-                    };
-                    let Some(rows) = args.array("rows") else {
-                        return Ok(add_sheet_action(&name));
-                    };
-                    // A sheet and its content in one change, as an import
-                    // makes them; a new workbook's blank first sheet gives
-                    // way to it.
-                    let mut cells = crate::cell_actions::cells_from_rows((0, 0), rows)?;
-                    if let Some(formats) = args.object("formats") {
-                        cells = crate::cell_actions::with_formats(cells, formats)?;
-                    }
-                    Ok(SheetsAction::ImportSheets {
-                        sheets: vec![crate::actions::ImportedSheet {
-                            name,
-                            sheet_id: uuid::Uuid::new_v4().to_string(),
-                            cells,
-                            hidden: false,
-                        }],
-                        replace_blank: true,
-                        source: None,
-                        title: None,
-                    })
-                },
-            )
-            .describe("Add a sheet at the end of the workbook, with its content when given."),
+            new_sheet(state.sheets.len(), state.title.is_some()),
+            set_title(),
             import_xlsx_content(),
         ]
     }
@@ -906,6 +952,83 @@ mod tests {
         )
         .unwrap();
         assert!(app.state().sheets.iter().all(|sheet| !sheet.hidden));
+    }
+
+    /// An agent names the workbook, and it is called by that name; an empty
+    /// name is refused, by the declaration and by the action itself.
+    #[test]
+    fn a_workbook_is_named() {
+        use tilo_actions::Action as _;
+
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        app.call("set-title", serde_json::json!({"title": "Lumo pricing"}))
+            .unwrap();
+        assert_eq!(SheetsShell::label(&app.state()), "Lumo pricing");
+        app.call("set-title", serde_json::json!({"title": "  Lumo 2027  "}))
+            .unwrap();
+        assert_eq!(SheetsShell::label(&app.state()), "Lumo 2027", "renamed");
+        let error = app
+            .call("set-title", serde_json::json!({"title": "   "}))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("empty"), "{error}");
+        assert_eq!(SheetsShell::label(&app.state()), "Lumo 2027");
+
+        let mut doc = Doc::new();
+        SheetsWorkbook::initialize(&mut doc).unwrap();
+        for title in [" ", &"x".repeat(5 * 1024)] {
+            assert!(
+                crate::actions::set_workbook_title_action(title)
+                    .apply(&mut doc)
+                    .is_err()
+            );
+        }
+        assert_eq!(SheetsDoc::workbook_title(&doc), None);
+    }
+
+    /// A new sheet can name a workbook that has no name yet, taking the
+    /// blank first sheet's place, with or without content; a named workbook
+    /// keeps its name.
+    #[test]
+    fn a_new_sheet_names_its_workbook() {
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Tiers", "workbook": "Lumo pricing"}),
+        )
+        .unwrap();
+        let state = app.state();
+        let names: Vec<&str> = state
+            .sheets
+            .iter()
+            .map(|sheet| sheet.name.as_str())
+            .collect();
+        assert_eq!(names, ["Tiers"], "the blank sheet gave way");
+        assert_eq!(SheetsShell::label(&state), "Lumo pricing");
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Plans", "workbook": "Other"}),
+        )
+        .unwrap();
+        let state = app.state();
+        let names: Vec<&str> = state
+            .sheets
+            .iter()
+            .map(|sheet| sheet.name.as_str())
+            .collect();
+        assert_eq!(names, ["Tiers", "Plans"], "the named sheet stays");
+        assert_eq!(SheetsShell::label(&state), "Lumo pricing", "kept its name");
+
+        let mut app = TestApp::<SheetsShell>::new().unwrap();
+        app.call(
+            "new-sheet",
+            serde_json::json!({"name": "Tiers", "rows": [["Basic", 5]], "workbook": "Lumo pricing"}),
+        )
+        .unwrap();
+        let state = app.state();
+        assert_eq!(state.sheets.len(), 1);
+        assert_eq!(state.sheets[0].cells()[0].raw, "Basic");
+        assert_eq!(SheetsShell::label(&state), "Lumo pricing");
     }
 
     /// A workbook kept as content imports with its formulas, its hidden

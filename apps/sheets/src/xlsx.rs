@@ -13,7 +13,7 @@
 //! `table:formula` attribute on the `.ods` path) instead of collapsing to its
 //! last computed value — a re-import restores the live formula.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use tilo_doc::sheet::a1::{make_ref, parse_ref};

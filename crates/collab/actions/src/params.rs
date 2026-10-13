@@ -637,6 +637,11 @@ impl ActionArgs {
                 (ParamType::Secret, serde_json::Value::String(value)) => {
                     Some(ArgValue::Secret(value.clone()))
                 }
+                // A number where text is declared is its text: a slide's
+                // number, a code, an id a caller wrote unquoted.
+                (ParamType::Text, serde_json::Value::Number(number)) => {
+                    Some(ArgValue::Text(number.to_string()))
+                }
                 _ => ArgValue::from_json(value),
             };
             let Some(v) = value else {
@@ -836,12 +841,43 @@ fn validate_object_schema(
         if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
             for key in object.keys() {
                 if !properties.contains_key(key) {
-                    return Err(format!("contains unknown property `{key}`"));
+                    // A field written one level too high (a shape's `x` beside
+                    // the shape): say which property holds it.
+                    let holder = properties
+                        .iter()
+                        .find(|(_, property)| declares_property(property, key))
+                        .map(|(holder, _)| holder);
+                    return Err(match holder {
+                        Some(holder) => format!(
+                            "contains unknown property `{key}`; it belongs inside `{holder}`"
+                        ),
+                        None => format!("contains unknown property `{key}`"),
+                    });
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Whether `schema` (an object's, or any of its `oneOf`/`anyOf` forms)
+/// requires a property named `key`: then a `key` written beside it was
+/// meant inside it (a shape's `x`), where an optional field of the same
+/// name (a shadow's `colour`) says nothing about where a stray one goes.
+fn declares_property(schema: &serde_json::Value, key: &str) -> bool {
+    let Some(schema) = schema.as_object() else {
+        return false;
+    };
+    schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|required| required.iter().any(|name| name == key))
+        || ["oneOf", "anyOf"].iter().any(|forms| {
+            schema
+                .get(*forms)
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|forms| forms.iter().any(|form| declares_property(form, key)))
+        })
 }
 
 /// Validate the commonly useful, deterministic JSON Schema vocabulary used by
@@ -1386,6 +1422,53 @@ mod declaration_reuse_tests {
 mod rich_schema_tests {
     use super::*;
     use serde_json::json;
+
+    /// An unknown field that a nested property declares is refused saying
+    /// which property holds it; any other unknown field as before.
+    #[test]
+    fn a_field_one_level_too_high_is_pointed_inside() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "id": {"type": "string"},
+                "shape": {"oneOf": [
+                    {"type": "object", "required": ["kind", "x"], "properties": {"kind": {"type": "string"}, "x": {"type": "number"}}},
+                ]},
+                "shadow": {"type": "object", "properties": {"colour": {"type": "string"}}},
+            },
+        });
+        let error = validate_schema(&json!({"id": "a", "x": 3}), &schema).unwrap_err();
+        assert_eq!(
+            error,
+            "contains unknown property `x`; it belongs inside `shape`"
+        );
+        let error = validate_schema(&json!({"colour": "red"}), &schema).unwrap_err();
+        assert_eq!(error, "contains unknown property `colour`");
+    }
+
+    /// A number where text is declared binds as its text (a slide's number
+    /// written unquoted); text where a number is declared is still refused.
+    #[test]
+    fn a_number_binds_to_a_text_parameter() {
+        let params = vec![
+            ActionParam::required("slide", ParamType::Text, "slide"),
+            ActionParam::optional("count", ParamType::Integer, "count"),
+        ];
+        let bound =
+            ActionArgs::bind_json(&params, json!({"slide": 3}).as_object().unwrap()).unwrap();
+        assert_eq!(bound.text("slide"), Some("3"));
+        let bound =
+            ActionArgs::bind_json(&params, json!({"slide": 2.5}).as_object().unwrap()).unwrap();
+        assert_eq!(bound.text("slide"), Some("2.5"));
+        assert!(matches!(
+            ActionArgs::bind_json(
+                &params,
+                json!({"slide": "1", "count": "two"}).as_object().unwrap()
+            ),
+            Err(ArgError::WrongType { .. })
+        ));
+    }
 
     /// Structured arguments are typed and recursively validated; resource, datetime, secret and
     /// nullable values round-trip; a malformed schema is rejected before it describes values; unique

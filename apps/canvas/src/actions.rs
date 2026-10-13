@@ -540,6 +540,92 @@ pub(crate) fn refuse(message: impl Into<String>) -> ActionError {
     ActionError::Refused(message.into())
 }
 
+/// How a refusal names the `index`th mark (or stroke, the `noun`) of an
+/// action, so its caller can repair that one: by the id it was given, else
+/// by its place in the list.
+pub(crate) fn named(noun: &str, id: Option<&str>, index: usize) -> String {
+    match id {
+        Some(id) => format!("{noun} `{id}` (item {index})"),
+        None => format!("{noun} item {index}"),
+    }
+}
+
+/// Geometry a caller writes beside a mark's `shape` instead of inside it
+/// (`{"x": 0, "width": 40, "fill": …}`). None of these is a mark's own
+/// field; `draw`'s schema lets them through so the refusal can say where
+/// they go.
+pub(crate) const MISPLACED_GEOMETRY: [&str; 10] = [
+    "x", "y", "width", "height", "w", "h", "points", "cx", "cy", "r",
+];
+
+/// Why the `index`th mark of a `draw`, as its caller wrote it, cannot be
+/// read: geometry given beside `shape` rather than inside it. Answers the
+/// shape it meant, so the caller can move the fields rather than guess.
+pub(crate) fn misplaced_geometry(index: usize, mark: &serde_json::Value) -> Option<String> {
+    let fields = mark.as_object()?;
+    let misplaced: Vec<(&str, &serde_json::Value)> = MISPLACED_GEOMETRY
+        .iter()
+        .filter_map(|key| fields.get(*key).map(|value| (*key, value)))
+        .collect();
+    if misplaced.is_empty() {
+        return None;
+    }
+    let given = fields.get("shape").and_then(serde_json::Value::as_object);
+    let kind = given
+        .and_then(|shape| shape.get("kind"))
+        .or_else(|| fields.get("kind"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| {
+            if misplaced
+                .iter()
+                .any(|(key, _)| matches!(*key, "cx" | "cy" | "r"))
+            {
+                "ellipse"
+            } else if misplaced.iter().any(|(key, _)| *key == "points") {
+                "polygon"
+            } else {
+                "rect"
+            }
+        });
+    let mut shape = serde_json::Map::new();
+    shape.insert("kind".into(), kind.into());
+    for (key, value) in given.into_iter().flatten() {
+        shape.insert(key.clone(), value.clone());
+    }
+    let mut names = Vec::with_capacity(misplaced.len());
+    for (key, value) in &misplaced {
+        let inside: &[&str] = match *key {
+            "w" => &["width"],
+            "h" => &["height"],
+            "r" => &["rx", "ry"],
+            key => &[key][..],
+        };
+        for name in inside {
+            shape.insert((*name).to_owned(), (*value).clone());
+        }
+        names.push(if inside == [*key] {
+            format!("`{key}`")
+        } else {
+            format!("`{key}` (as `{}`)", inside.join("`, `"))
+        });
+    }
+    Some(format!(
+        "{}: {} {} inside `shape`: {}",
+        named(
+            "mark",
+            fields.get("id").and_then(serde_json::Value::as_str),
+            index
+        ),
+        names.join(", "),
+        if misplaced.len() == 1 {
+            "belongs"
+        } else {
+            "belong"
+        },
+        serde_json::json!({ "shape": shape })
+    ))
+}
+
 /// The id of a mark or layer given none: a hash of what it is and where it
 /// sits in its action, so every replica of the action names it alike and two
 /// collaborators drawing different things never collide.
@@ -852,6 +938,22 @@ pub(crate) fn add_marks(
     layer: &str,
     marks: Vec<Mark>,
 ) -> Result<(), ActionError> {
+    let names: Vec<String> = marks
+        .iter()
+        .enumerate()
+        .map(|(index, mark)| named("mark", Some(&mark.id), index))
+        .collect();
+    add_named_marks(doc, art, layer, marks, &names)
+}
+
+/// [`add_marks`], a refusal naming the mark it is about as `names` does.
+fn add_named_marks(
+    doc: &mut Doc,
+    art: &Artwork,
+    layer: &str,
+    marks: Vec<Mark>,
+    names: &[String],
+) -> Result<(), ActionError> {
     if marks.is_empty() {
         return Err(refuse("give at least one mark"));
     }
@@ -863,9 +965,13 @@ pub(crate) fn add_marks(
     let ids: Vec<String> = marks.iter().map(|mark| mark.id.clone()).collect();
     unique_ids(art, &ids)?;
     for (index, mark) in marks.iter().enumerate() {
-        let problem = |error: ActionError| refuse(format!("mark {index}: {error}"));
+        let name = names
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| named("mark", None, index));
+        let problem = |error: ActionError| refuse(format!("{name}: {error}"));
         if let Some(problem) = mark.shape.problem() {
-            return Err(refuse(format!("mark {index}: {problem}")));
+            return Err(refuse(format!("{name}: {problem}")));
         }
         if let Some(transform) = mark.transform {
             check_transform(transform).map_err(problem)?;
@@ -962,18 +1068,30 @@ fn placed_shape(art: &Artwork, mark: &NewMark) -> Result<Shape, ActionError> {
             ));
         }
         // Fractions written into a shape's units (`"width": 0.38`) draw
-        // something too small to see: say so, rather than draw nothing.
-        let tiny = match &mark.shape {
-            Shape::Rect { width, height, .. } => width.abs() < 1.0 || height.abs() < 1.0,
-            Shape::Ellipse { rx, ry, .. } => rx.abs() < 0.5 || ry.abs() < 0.5,
-            _ => false,
+        // something too small to see, and a side of 0 nothing: say which
+        // side, rather than draw nothing.
+        let (sides, least, units) = match &mark.shape {
+            Shape::Rect { width, height, .. } => (
+                [("width", *width), ("height", *height)],
+                1.0,
+                "x, y, width and height",
+            ),
+            Shape::Ellipse { rx, ry, .. } => ([("rx", *rx), ("ry", *ry)], 0.5, "cx, cy, rx and ry"),
+            _ => return Ok(mark.shape.clone()),
         };
-        if tiny {
-            return Err(refuse(
-                "the shape is under one unit across: its x, y, width and height are \
-                 units (pixels at scale 1); for fractions of the artwork give place \
-                 [x, y, width, height] instead",
-            ));
+        let short: Vec<String> = sides
+            .iter()
+            .filter(|(_, value)| value.is_nan() || *value < least)
+            .map(|(side, value)| format!("{side} is {value}"))
+            .collect();
+        if !short.is_empty() {
+            return Err(refuse(format!(
+                "the shape is under one unit across: {}; its {units} are units (pixels at \
+                 scale 1), so give each {} at least {least}; for fractions of the artwork \
+                 give place [x, y, width, height] instead",
+                short.join(" and "),
+                if least < 1.0 { "radius" } else { "side" }
+            )));
         }
         return Ok(mark.shape.clone());
     };
@@ -1030,15 +1148,29 @@ fn placed_shape(art: &Artwork, mark: &NewMark) -> Result<Shape, ActionError> {
 impl Draw {
     fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
         let layer = target_layer(art, self.layer.as_deref())?;
+        // A refusal names the mark it is about by the id its caller gave it
+        // (or its place), so the one wrong mark can be repaired.
+        let names: Vec<String> = self
+            .marks
+            .iter()
+            .enumerate()
+            .map(|(index, mark)| named("mark", mark.id.as_deref(), index))
+            .collect();
+        let about = |index: usize| {
+            let name = names.get(index).cloned().unwrap_or_default();
+            move |error: ActionError| refuse(format!("{name}: {error}"))
+        };
         let clips = self
             .marks
             .iter()
-            .map(|mark| clip_named(art, mark.clip.as_deref()))
+            .enumerate()
+            .map(|(index, mark)| clip_named(art, mark.clip.as_deref()).map_err(about(index)))
             .collect::<Result<Vec<(String, String)>, ActionError>>()?;
         let shapes = self
             .marks
             .iter()
-            .map(|mark| placed_shape(art, mark))
+            .enumerate()
+            .map(|(index, mark)| placed_shape(art, mark).map_err(about(index)))
             .collect::<Result<Vec<Shape>, ActionError>>()?;
         let marks = self
             .marks
@@ -1108,17 +1240,27 @@ impl Draw {
                 placed
             })
             .collect();
-        add_marks(doc, art, &layer, marks)
+        add_named_marks(doc, art, &layer, marks, &names)
     }
 }
 
 impl Paint {
     fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
         let layer = target_layer(art, self.layer.as_deref())?;
+        let names: Vec<String> = self
+            .strokes
+            .iter()
+            .enumerate()
+            .map(|(index, stroke)| named("stroke", stroke.id.as_deref(), index))
+            .collect();
         let clips = self
             .strokes
             .iter()
-            .map(|stroke| clip_named(art, stroke.clip.as_deref()))
+            .zip(&names)
+            .map(|(stroke, name)| {
+                clip_named(art, stroke.clip.as_deref())
+                    .map_err(|error| refuse(format!("{name}: {error}")))
+            })
             .collect::<Result<Vec<(String, String)>, ActionError>>()?;
         let marks = self
             .strokes
@@ -1156,22 +1298,22 @@ impl Paint {
                 mark
             })
             .collect::<Vec<Mark>>();
-        for (index, (mark, stroke)) in marks.iter().zip(&self.strokes).enumerate() {
+        for ((mark, stroke), name) in marks.iter().zip(&self.strokes).zip(&names) {
             if let Some(brush) = &stroke.brush
                 && crate::brushes::Preset::parse(brush).is_none()
             {
                 return Err(refuse(format!(
-                    "stroke {index}: brush {brush:?} is not a preset; use one of {}",
+                    "{name}: brush {brush:?} is not a preset; use one of {}",
                     crate::brushes::Preset::names()
                 )));
             }
             if mark.style.stroke.is_none() && !mark.erases() {
                 return Err(refuse(format!(
-                    "stroke {index}: give a colour (#rrggbb or pigment:<name>); only an eraser paints none"
+                    "{name}: give a colour (#rrggbb or pigment:<name>); only an eraser paints none"
                 )));
             }
         }
-        add_marks(doc, art, &layer, marks)
+        add_named_marks(doc, art, &layer, marks, &names)
     }
 }
 
@@ -2607,4 +2749,164 @@ fn set_reference(doc: &mut Doc, art: &Artwork, set: &SetReference) -> Result<(),
     }
     doc::write_reference(doc, Some(&reference))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use ui::tilo_actions::{Action as _, ActionArgs};
+    use ui::tilo_resource::Resource as _;
+
+    use super::*;
+    use crate::resource::ArtworkResource;
+
+    fn artwork() -> Doc {
+        let mut doc = Doc::new();
+        ArtworkResource::initialize(&mut doc).expect("a new artwork");
+        doc
+    }
+
+    fn rect(width: f64, height: f64) -> Shape {
+        Shape::Rect {
+            x: 10.0,
+            y: 10.0,
+            width,
+            height,
+            radius: 0.0,
+        }
+    }
+
+    fn refusal(marks: Vec<NewMark>) -> String {
+        CanvasAction::Draw(Draw { layer: None, marks })
+            .apply(&mut artwork())
+            .expect_err("refused")
+            .to_string()
+    }
+
+    /// A refused `draw` names the one mark that is wrong, by the id its
+    /// caller gave it or else its place, and says which side is too small.
+    #[test]
+    fn a_draw_refusal_names_the_mark_and_the_side_that_is_wrong() {
+        let bars = |third: Option<&str>| {
+            vec![
+                NewMark {
+                    id: Some("title".into()),
+                    ..NewMark::new(rect(200.0, 40.0))
+                },
+                NewMark {
+                    id: Some("bar-north".into()),
+                    ..NewMark::new(rect(40.0, 120.0))
+                },
+                NewMark {
+                    id: third.map(Into::into),
+                    ..NewMark::new(rect(40.0, 0.0))
+                },
+                NewMark::new(rect(40.0, 0.0)),
+            ]
+        };
+        assert_eq!(
+            refusal(bars(Some("bar-south"))),
+            "mark `bar-south` (item 2): the shape is under one unit across: height is 0; \
+             its x, y, width and height are units (pixels at scale 1), so give each side \
+             at least 1; for fractions of the artwork give place [x, y, width, height] instead"
+        );
+        let unnamed = refusal(bars(None));
+        assert!(
+            unnamed.starts_with("mark item 2: the shape is under one unit across: height is 0;"),
+            "{unnamed}"
+        );
+        let both = refusal(vec![NewMark::new(rect(0.38, -4.0))]);
+        assert!(
+            both.starts_with(
+                "mark item 0: the shape is under one unit across: width is 0.38 and height is -4;"
+            ),
+            "{both}"
+        );
+        let ellipse = refusal(vec![NewMark {
+            id: Some("sun".into()),
+            ..NewMark::new(Shape::Ellipse {
+                cx: 50.0,
+                cy: 50.0,
+                rx: 20.0,
+                ry: 0.0,
+            })
+        }]);
+        assert!(
+            ellipse
+                .starts_with("mark `sun` (item 0): the shape is under one unit across: ry is 0;")
+                && ellipse.contains("give each radius at least 0.5"),
+            "{ellipse}"
+        );
+        // Canvas's later checks name the mark too.
+        let colour = refusal(vec![
+            NewMark::new(rect(20.0, 20.0)),
+            NewMark {
+                id: Some("sky".into()),
+                fill: Some("blue-ish".into()),
+                ..NewMark::new(rect(20.0, 20.0))
+            },
+        ]);
+        assert!(
+            colour.starts_with("mark `sky` (item 1): fill \"blue-ish\" is not a colour"),
+            "{colour}"
+        );
+        let path = refusal(vec![NewMark {
+            id: Some("hill".into()),
+            ..NewMark::new(Shape::Path {
+                d: "Q nonsense".into(),
+            })
+        }]);
+        assert!(
+            path.starts_with("mark `hill` (item 0): invalid SVG path data"),
+            "{path}"
+        );
+    }
+
+    /// The `draw` an agent invokes by name: arguments bound against its
+    /// published parameters, then built.
+    fn draw(marks: &serde_json::Value) -> Result<CanvasAction, String> {
+        let declarations = ArtworkResource::declarations();
+        let draw = declarations
+            .iter()
+            .find(|decl| decl.id == "draw")
+            .expect("draw is declared");
+        let arguments = json!({ "marks": marks });
+        let args = ActionArgs::bind_json(&draw.params, arguments.as_object().expect("an object"))
+            .map_err(|error| error.to_string())?;
+        (draw.build)(&args, 0)
+    }
+
+    /// Geometry written beside a mark's `shape` instead of inside it is
+    /// refused naming the mark, the fields, and the shape they make; any
+    /// other unknown field is still refused by the schema.
+    #[test]
+    fn geometry_beside_the_shape_is_refused_saying_it_goes_inside() {
+        // Through the published `draw`, as an agent calls it: the shared
+        // validator names the property a misplaced field belongs in.
+        let beside = draw(&json!([
+            {"shape": {"kind": "rect", "x": 0, "y": 0, "width": 10, "height": 10}},
+            {"id": "brand-panel", "x": 0, "width": 320, "fill": "#123456"},
+        ]))
+        .expect_err("refused");
+        assert!(beside.contains("it belongs inside `shape`"), "{beside}");
+        let circle = draw(&json!([{"id": "sun", "cx": 50, "cy": 40, "rx": 12, "ry": 12}]))
+            .expect_err("refused");
+        assert!(circle.contains("it belongs inside `shape`"), "{circle}");
+        let unknown = draw(&json!([{"shape": {"kind": "rect", "x": 0, "y": 0, "width": 10, "height": 10}, "colour": "#fff"}]))
+            .expect_err("refused");
+        assert!(
+            unknown.contains("unknown property `colour`") && !unknown.contains("belongs"),
+            "{unknown}"
+        );
+        draw(&json!([{"id": "box", "shape": {"kind": "rect", "x": 0, "y": 0, "width": 10, "height": 10}}]))
+            .expect("a well-formed mark builds");
+        // A caller that skips the published schema hears the same advice.
+        assert_eq!(
+            misplaced_geometry(1, &json!({"id": "brand-panel", "x": 0, "width": 320})).as_deref(),
+            Some(
+                "mark `brand-panel` (item 1): `x`, `width` belong inside `shape`: \
+                 {\"shape\":{\"kind\":\"rect\",\"x\":0,\"width\":320}}"
+            )
+        );
+    }
 }
