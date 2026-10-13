@@ -13,6 +13,9 @@ pub mod action_api;
 pub mod files_index;
 pub mod invocation_wake;
 pub mod providers;
+#[cfg(test)]
+mod relevance_tests;
+pub mod usage;
 pub mod visibility;
 
 use std::cell::RefCell;
@@ -132,6 +135,31 @@ pub(crate) fn rank_rows(
         .filter_map(|(mut row, rank)| {
             row.score = provider_score(rank?);
             Some(row)
+        })
+        .collect()
+}
+
+/// [`rank_rows`] over rows a provider keeps between keystrokes: only the rows
+/// that match are copied out.
+pub(crate) fn rank_kept_rows(
+    index: &ui::search::ListIndex,
+    needle: &str,
+    rows: &[SearchResult],
+    fields: &[Vec<(String, ui::search::FieldWeight)>],
+) -> Vec<SearchResult> {
+    let ranks = index.ranks(
+        needle,
+        fields
+            .iter()
+            .map(|row| row.iter().map(|(text, weight)| (text.as_str(), *weight))),
+    );
+    rows.iter()
+        .zip(ranks)
+        .filter_map(|(row, rank)| {
+            Some(SearchResult {
+                score: provider_score(rank?),
+                ..row.clone()
+            })
         })
         .collect()
 }
@@ -256,6 +284,9 @@ pub struct SearchResult {
     pub subtitle: Option<String>,
     /// Optional short live status rendered by trusted shell chrome.
     pub badge: Option<String>,
+    /// The keyboard shortcut that does the same, spelled as the active
+    /// keyboard layout reads it, shown beside the row.
+    pub shortcut: Option<String>,
     pub score: i32,
     /// What an invocation must carry; empty for the nullary majority (see
     /// [`SearchResult::nullary`]).
@@ -293,6 +324,7 @@ impl SearchResult {
             title: title.into(),
             subtitle,
             badge: None,
+            shortcut: None,
             score,
             params: Vec::new(),
             contract: None,
@@ -326,6 +358,7 @@ impl SearchResult {
             title: title.into(),
             subtitle,
             badge: None,
+            shortcut: None,
             score,
             params: Vec::new(),
             contract: None,
@@ -372,6 +405,7 @@ impl std::fmt::Debug for SearchResult {
             .field("title", &self.title)
             .field("subtitle", &self.subtitle)
             .field("badge", &self.badge)
+            .field("shortcut", &self.shortcut)
             .field("score", &self.score)
             .field("params", &self.params)
             .field("contract", &self.contract)
@@ -1441,7 +1475,7 @@ impl system::SearchRow for SearchResult {
         self.subtitle.as_deref()
     }
     fn shortcut(&self) -> Option<&str> {
-        (self.id == "room.activity.open").then_some("Super+H")
+        self.shortcut.as_deref()
     }
 }
 

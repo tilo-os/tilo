@@ -873,12 +873,15 @@ impl ForeignEntry {
         pixels: Arc<Vec<u8>>,
         (width, height): (u32, u32),
         generation: u64,
+        gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
     ) -> Arc<Vec<u8>> {
         let replaced = std::mem::replace(&mut self.rgba, pixels);
         // Protocol commit/unmap owns mapping. A late worker completion
         // cannot map a pending buffer early or remap a detached surface.
         self.hdr = None;
-        self.set_gpu(None);
+        // Drawn from its texture on the presenting device when it has one;
+        // `pixels` stay for everything that reads the frame on the CPU.
+        self.set_gpu(gpu);
         self.width = width;
         self.height = height;
         self.seq = self.seq.wrapping_add(1);
@@ -1391,6 +1394,25 @@ impl ShmJob {
             .fold(0, usize::saturating_add)
     }
 
+    /// What this job's frame changes against the frame its first copy was
+    /// laid over, in buffer pixels; `None` when a copy is whole.
+    fn changed_regions(&self) -> Option<Vec<crate::shell::gpu_frames::FrameRegion>> {
+        let mut changed = Vec::new();
+        for patch in &self.patches {
+            patch.based_on?;
+            changed.extend(patch.frame.regions()?.iter().map(|region| {
+                let to_u32 = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+                (
+                    to_u32(region.x),
+                    to_u32(region.y),
+                    to_u32(region.width),
+                    to_u32(region.height),
+                )
+            }));
+        }
+        Some(changed)
+    }
+
     fn starts_whole(&self) -> bool {
         self.patches
             .first()
@@ -1446,6 +1468,8 @@ struct ShmSurface {
     /// The frame `pixels` replaced, written into next instead of a full copy
     /// when nothing draws it any more.
     spare: Option<ShmSpare>,
+    /// The textures the frames are drawn from on the presenting device.
+    textures: crate::shell::gpu_frames::UploadRing,
 }
 
 /// A frame kept for reuse after a newer one replaced it.
@@ -1950,14 +1974,28 @@ impl ShmWorker<'_> {
 
     /// Build one job's frame and publish it, or record why not.
     fn run(&self, mut job: ShmJob) {
-        let previous = self.surfaces().remove(&job.surface);
+        let mut previous = self.surfaces().remove(&job.surface);
+        let textures = previous
+            .as_mut()
+            .map(|previous| std::mem::take(&mut previous.textures))
+            .unwrap_or_default();
         match build_shm_frame(&job, previous) {
-            Ok(built) => {
+            Ok(mut built) => {
                 let size = (
                     u32::try_from(built.shape.width).unwrap_or(u32::MAX),
                     u32::try_from(built.shape.height).unwrap_or(u32::MAX),
                 );
-                let published = store().publish_shm_frame(&job, Arc::clone(&built.pixels), size);
+                // Only what changed since the frame the textures were last
+                // written from goes to the GPU.
+                built.textures = textures;
+                let gpu = built.textures.upload(
+                    job.surface,
+                    &built.pixels,
+                    size,
+                    job.changed_regions().as_deref(),
+                );
+                let published =
+                    store().publish_shm_frame(&job, Arc::clone(&built.pixels), size, gpu);
                 // A surface forgotten meanwhile stays forgotten.
                 if published {
                     let replaced = self.surfaces().insert(job.surface, built);
@@ -2114,6 +2152,7 @@ fn build_shm_frame(
             stale,
             since: Instant::now(),
         }),
+        textures: crate::shell::gpu_frames::UploadRing::default(),
     })
 }
 
@@ -3191,7 +3230,13 @@ impl ForeignFrameStore {
     /// change hands, they are not copied under the lock. Returns `false`,
     /// publishing nothing, when the job's surface went meanwhile.
     #[cfg(target_os = "linux")]
-    fn publish_shm_frame(&self, job: &ShmJob, pixels: Arc<Vec<u8>>, size: (u32, u32)) -> bool {
+    fn publish_shm_frame(
+        &self,
+        job: &ShmJob,
+        pixels: Arc<Vec<u8>>,
+        size: (u32, u32),
+        gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
+    ) -> bool {
         let mut guard = self
             .entries
             .lock()
@@ -3199,7 +3244,7 @@ impl ForeignFrameStore {
         let Some(entry) = shm_job_entry(&mut guard, job) else {
             return false;
         };
-        let replaced = entry.publish_frame(pixels, size, job.damage_generation);
+        let replaced = entry.publish_frame(pixels, size, job.damage_generation, gpu);
         drop(guard);
         drop(replaced);
         true
@@ -3236,7 +3281,7 @@ impl ForeignFrameStore {
         let Some(entry) = guard.get_mut(&id) else {
             return false;
         };
-        let replaced = entry.publish_frame(pixels, size, generation);
+        let replaced = entry.publish_frame(pixels, size, generation, None);
         drop(guard);
         drop(replaced);
         true
@@ -3727,8 +3772,13 @@ impl ForeignFrameStore {
                 guard.get(&id).and_then(|e| {
                     // A buffer that needs resampling is drawn from a snapshot.
                     let layout = layout_of(&guard, id, &[]).filter(|l| l.canvas.root_is_canvas)?;
+                    // A frame on the GPU is drawn from its texture, also an
+                    // SHM frame that keeps its pixels on the CPU too.
+                    if let Some(gpu) = e.gpu.clone() {
+                        return Some(SharedFrame::Gpu(gpu, layout.content));
+                    }
                     if e.rgba.is_empty() {
-                        return Some(SharedFrame::Gpu(e.gpu.clone()?, layout.content));
+                        return None;
                     }
                     // A CPU frame shown whole is drawn from the stored pixels
                     // themselves; a cropped one is cut out of a snapshot.
@@ -6804,7 +6854,7 @@ mod tests {
         let gone = sid(74);
         let job = queue(gone);
         frames.forget(gone);
-        assert!(!frames.publish_shm_frame(&job, pixels(), (64, 64)));
+        assert!(!frames.publish_shm_frame(&job, pixels(), (64, 64), None));
         assert_eq!(
             tracked(gone),
             None,
@@ -6812,7 +6862,7 @@ mod tests {
         );
 
         frames.note_placement(gone, Rect::new(0.0, 0.0, 64.0, 64.0));
-        assert!(!frames.publish_shm_frame(&job, pixels(), (64, 64)));
+        assert!(!frames.publish_shm_frame(&job, pixels(), (64, 64), None));
         frames.note_shm_failure(&job, "late".into());
         assert_eq!(
             tracked(gone),
@@ -6824,7 +6874,7 @@ mod tests {
 
         let live = sid(75);
         let job = queue(live);
-        assert!(frames.publish_shm_frame(&job, pixels(), (64, 64)));
+        assert!(frames.publish_shm_frame(&job, pixels(), (64, 64), None));
         let snapshot = frames
             .snapshot(live)
             .expect("a live surface gets its frame");
