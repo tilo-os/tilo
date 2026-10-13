@@ -295,6 +295,10 @@ impl<'a> AvatarFace<'a> {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
+        // A preceding nested text scene can leave a resolved glyph transform
+        // active even when its last encoded transform equals ours. Establish
+        // the avatar's geometry state explicitly before its first path.
+        ctx.scene.encoding_mut().force_next_transform_and_style();
         let shape = self.shape(rect, ctx.theme);
         if let Some(ground) = self.ring_on {
             let ring = f64::from(ctx.theme.tokens.metrics.chrome_rule_px) * 2.0;
@@ -375,6 +379,7 @@ impl<'a> AvatarFace<'a> {
         if count == 0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
+        ctx.scene.encoding_mut().force_next_transform_and_style();
         let side = rect.width().min(rect.height());
         let disc = Rect::from_center_size(rect.center(), (side, side));
         if let Some(ground) = ring_on {
@@ -736,6 +741,7 @@ impl Widget for Avatar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color_compat::ColorCompat;
     use vello::peniko::ImageData as PenikoImage;
     use vello_encoding::DrawTag;
 
@@ -761,6 +767,92 @@ mod tests {
             .iter()
             .filter(|t| **t == tag)
             .count()
+    }
+
+    fn nested_message_scene(text: &mut TextRenderer, theme: &Theme, transform: Affine) -> Scene {
+        use crate::widget::{BlockContent, BlockEditor, Embedded};
+        let mut editor = BlockEditor::new()
+            .with_wrap_lines(true)
+            .with_compact_paragraph_spacing(true)
+            .with_block_handles(false)
+            .with_read_only(true);
+        editor.present_blocks(&[BlockContent::paragraph("message", "A preceding message")]);
+        let mut body = Embedded::new(editor);
+        body.layout(Rect::new(68.0, 28.0, 300.0, 28.0), theme, text);
+        let mut scene = Scene::new();
+        body.draw(&mut scene, transform, text, theme, &PresenceCtx::empty());
+        assert!(
+            !scene.encoding().resources.glyphs.is_empty(),
+            "text must render"
+        );
+        scene
+    }
+
+    fn assert_avatar_pixels(theme: &Theme, renderer: &mut crate::offscreen::OffscreenRenderer) {
+        let mut text = TextRenderer::new();
+        let transform = Affine::translate((13.0, 17.0));
+        let mut scene = nested_message_scene(&mut text, theme, transform);
+        let ground = theme.tokens.colors.surfaces.content;
+        let before = renderer.render(&scene, ground);
+        let mut avatar = crate::widget::Embedded::new(Avatar::person("Scribe Agent", "scribe"));
+        avatar.layout(Rect::new(24.0, 104.0, 64.0, 144.0), theme, &mut text);
+        let bounds = transform.transform_rect_bbox(avatar.rect());
+        avatar.draw(
+            &mut scene,
+            transform,
+            &mut text,
+            theme,
+            &PresenceCtx::empty(),
+        );
+        let after = renderer.render(&scene, ground);
+        let fill = AvatarFace::new("Scribe Agent", "scribe").colour(theme);
+        let mut changed = 0;
+        let mut ink = 0;
+        for y in 0..240_u32 {
+            for x in 0..360_u32 {
+                let pixel = crate::offscreen::OffscreenRenderer::sample(&after, 360, x, y);
+                if pixel == crate::offscreen::OffscreenRenderer::sample(&before, 360, x, y) {
+                    continue;
+                }
+                assert!(
+                    bounds.contains(Point::new(f64::from(x), f64::from(y))),
+                    "avatar escaped its laid-out bounds at ({x}, {y})"
+                );
+                changed += 1;
+                if bounds
+                    .inset(10.0)
+                    .contains(Point::new(f64::from(x), f64::from(y)))
+                    && crate::color::contrast_ratio(
+                        Color::from_rgb8(pixel.0, pixel.1, pixel.2),
+                        fill,
+                    ) >= crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST - 0.05
+                {
+                    ink += 1;
+                }
+            }
+        }
+        assert!(
+            changed > 700,
+            "the avatar background must paint in its bounds"
+        );
+        assert!(
+            ink > 10,
+            "legible initials must paint inside that background"
+        );
+        let pixel = crate::offscreen::OffscreenRenderer::sample(&after, 360, 57, 126);
+        assert_eq!((pixel.0, pixel.1, pixel.2), (fill.r(), fill.g(), fill.b()));
+        assert!(
+            crate::color::contrast_ratio(initial_ink(fill, theme), fill)
+                >= crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST - 0.05
+        );
+    }
+
+    #[test]
+    fn nested_avatar_background_and_initials_share_the_laid_out_bounds() {
+        let mut renderer = crate::offscreen::OffscreenRenderer::new(360, 240);
+        for theme in [Theme::dark(), Theme::light()] {
+            assert_avatar_pixels(&theme, &mut renderer);
+        }
     }
 
     #[test]

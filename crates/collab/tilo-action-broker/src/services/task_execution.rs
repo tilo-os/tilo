@@ -140,6 +140,19 @@ pub trait WorkspaceTaskExecution: Send + Sync {
         agent: &str,
         requirement: &NativeTaskActionRequirement,
     ) -> Result<(), String>;
+    /// Admit a host activation in the same serialized task turn as an action.
+    /// The callback must retain custody before invoking the ordinary launcher.
+    ///
+    /// # Errors
+    /// Membership, starter authority, frozen scope or instruction frontier changed.
+    fn admit_host_launch(
+        &self,
+        room: &str,
+        binding: &NativeTaskBinding,
+        requirement: &NativeTaskActionRequirement,
+        launch: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String>;
+
     /// Runs ordinary action admission inside the existing serialized task turn.
     ///
     /// # Errors
