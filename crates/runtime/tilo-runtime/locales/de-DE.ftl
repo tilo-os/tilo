@@ -23,3 +23,7 @@ device-grant-denied = { $device ->
 device-grant-room = im Arbeitsbereich { $room }
 device-grant-revoke = Widerrufen
 device-grant-revoke-description = Diese Entscheidung vergessen: eine laufende Aufnahme endet, und beim nächsten Mal wird erneut gefragt.
+agent-confirm-question = Deinem Agenten „{ $action }“ in { $app } erlauben?
+agent-confirm-detail = Ein Agent, der für dich handelt, bittet darum, dies einmal zu tun. Beim nächsten Mal wird erneut gefragt.
+agent-confirm-allow = Einmal erlauben
+agent-confirm-deny = Nicht erlauben
