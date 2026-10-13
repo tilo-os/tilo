@@ -110,8 +110,10 @@ History answers three questions, each a filter over the same action record:
 | What did this person or agent do? | Clicking an avatar or chip | one collaborator in this workspace |
 
 **What counts as history:** content changes to resources, membership and permission
-changes, and undo/restore. **What does not:** opening or viewing, window layout, and the
-workspace's own bootstrap writes (initial owner, first record). Permission changes stay visible
+changes, and undo/restore. **What does not count as a content-change row:** opening or
+viewing, layout-only setup, and the workspace's own bootstrap writes (initial owner,
+first record). Recorded workspace topology can still be inspected in read-only Replay;
+it is not a capture of app pixels or contents. Permission changes stay visible
 under their own *Access* lens, and are never presented as "while you were away" when you made
 them.
 
@@ -125,12 +127,15 @@ Kind and Time as menus. Entries sit under **Today / Yesterday / This week / Earl
 A row reads *avatar · who · verb + resource · app · time*. An agent row names the agent and the
 person it acts for. Selecting a row opens detail: the diff (via the resource type's
 renderer), *Open at this point*, *Restore this version*, and *Undo this change*. Undo and
-restore append inverse actions; history is never rewritten. Replay stays reachable from the
-view menu, not as a peer tab.
+restore append inverse actions; history is never rewritten. Replay is a separate
+read-only workspace-topology view, with checkpoint seeking and viewer-local playback.
+The [History guide](history-experience.md) describes its coverage and limitations.
 
-**Per-resource history is the same component.** An app's History tab and Files' History pane
-embed the timeline with the resource filter applied, so rows, diff and undo match
-everywhere.
+**Managed app History** uses the shared component. Resource, Person or agent, and
+Task group lenses filter published entry metadata, not document ownership. Selecting a
+version compares the registered source's pinned causal document; a mentioned resource
+does not authorize opening another document. See [managed History browsing](managed-history-browsing.md)
+for the canonical filter action and historical-renderer limitations.
 
 ## Actions
 
@@ -138,9 +143,13 @@ Every capability above is an action, so search, accessibility and agents reach i
 clicking:
 
 - windows: `tab.focus:{group}:{tab}` next to the existing close, move and copy rows;
-- history: `room.activity.open` (catch up), `room.activity.explore` with optional
-  `person`, `app`, `resource` and `since` arguments, `history.compare`, `history.undo`, and
-  `history.restore` on an entry or group;
+- workspace history: `room.activity.open` (catch up), `room.activity.explore`, and
+  `room.activity.replay`; retained replay actions navigate or inspect checkpoints;
+- native group organization: `history.groups.inspect` and `history.groups.edit`,
+  scoped to the active device-private projection, not collaborative room edits;
+- generated prose: `history.summary.read` and exact-evidence citation actions;
+- managed app history: `filter` on `tilo.host:history`, plus the existing pinned
+  comparison and reviewed restore path;
 - search surfaces "undo", "restore" and "history of …" as those actions for the focused
   resource.
 

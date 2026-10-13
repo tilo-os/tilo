@@ -1,4 +1,4 @@
-# Workspace history: glance, catch up, investigate
+# History: glance, catch up, browse, and replay
 
 History is not a log viewer. It is the workspace's shared memory: a calm way to
 notice that work is moving, understand what changed while you were elsewhere,
@@ -9,6 +9,9 @@ model, not three separately generated feeds.
 
 What counts as history, and how Catch up, the timeline and per-resource history
 divide the work, is settled in [search-and-history-views.md](search-and-history-views.md).
+For an app's Resource, Person or agent, and Task group lenses and pinned causal
+comparison, see [Browsing an app's managed History](managed-history-browsing.md).
+These views select evidence; they do not grant access to another document.
 
 ## 1. Glance: ambient, quiet, current
 
@@ -22,9 +25,9 @@ moving?” without demanding a context switch.
   may rotate in for a few seconds after a remote group settles, then returns to
   the user's chosen clock/calendar/system view. Repeated changes to the same
   group update the line instead of restarting the animation.
-- A small count on the collaborator cluster means “new since you last opened
-  activity”, not “all unread events”. Opening the catch-up surface advances the
-  per-user, per-workspace seen frontier.
+- A small count on the collaborator cluster means “new since your last activity
+  review”, not “all unread events”. Leaving the catch-up surface advances the
+  private per-device, per-workspace seen frontier.
 - Clicking the line opens catch-up with that group selected. Clicking an avatar
   opens the same surface filtered to the person. There is no notification for
   ordinary progress; mentions, permission changes, failures, and requested
@@ -84,9 +87,12 @@ briefs, up to 64 allowed IDs per brief, and accept at most six unique citations.
 Citation membership checks only that IDs were supplied, not factual correctness
 or entailment. Citation buttons use the existing Explore evidence navigation;
 `history.summary.read` and `history.summary.source.0` through `.5` expose the
-same views to automation. The prose is static text for assistive technology,
-never a history entry. Pending, unavailable and invalid-output states retain
-the deterministic cards and recorded history.
+same views to automation. Each action binds the exact scoped evidence and a
+revocable presentation epoch, so a cached citation cannot target a replacement
+summary or pane. The prose is static text for assistive technology, never a
+history entry. Scope or frontier changes revoke pending generation and stale
+actions; pending, unavailable and invalid-output states retain the deterministic
+cards and recorded history.
 
 ## 3. Investigate: a faceted, lossless timeline
 
@@ -117,6 +123,26 @@ control, not another mode. Selecting a row opens a detail pane with immutable
 attribution, action input (redacted where policy requires), affected resources,
 before/after diff, causal parents, and undo/restore affordances. Permission and
 redaction events retain their stricter audit treatment.
+
+## 4. Replay: recorded workspace topology
+
+Replay shows causal checkpoints of workspace strips, groups, and tab labels.
+It does **not** capture full desktop snapshots, historical app pixels, document
+contents, or media. Where a source did not record local geometry or active-tab
+selection, the presentation explicitly uses neutral layout rather than passing
+current geometry off as historical.
+
+Previous/Next, Play/Pause, and a shared slider navigate the same retained
+checkpoint selection. The slider exports its range and value through AccessKit;
+`room.activity.replay` and the `room.activity.replay.*` actions expose replay without
+pointer coordinates. Entry and frontier seeking identify the source as well as
+the checkpoint. Inspect reports missing or unavailable checkpoints rather than
+fabricating a successful snapshot. A refresh preserves causal selection rather
+than silently applying an old ordinal to another entry.
+
+Playback is viewer-local and read-only. It stops when Activity is hidden;
+retained actions are refused after workspace, host, or pane replacement. It
+never edits the live workspace or another room's document.
 
 ## The action record
 
@@ -206,13 +232,20 @@ workspace and desktop-tree-only causal bounds; display attribution is never a
 grant. The native host does not grant guest room-owner admission. Task commands
 continue to use their independent authenticated broker.
 
-Collaborative organization remains blocked: there is no native authenticated
-room/record editorial owner executor with durable receipts, nor a registered
-remote semantic action family for name/split/merge/move-boundary. Such actions
-must not be advertised to admitted guest callers as executable. They require
-exact room/record origins, current owner admission and revocation checks, and
-an owner receipt; local projection access must never substitute for those.
+The native `history.groups.inspect` and `history.groups.edit` actions share the
+pane's local organization path. Requests bind the current room, exact causal
+frontier, source, and reviewed group bounds. Name, clear, split, merge, and
+boundary movement preserve action attribution; stale requests and requests for
+another room are refused. Inspection reveals only the active pane's admitted
+bands, not private group names from other workspaces. Host bindings are weak
+and are revalidated after pane replacement or revocation.
 
-Generated prose remains intentionally optional. It should ship only with
-source-frontier labeling and factual evaluation fixtures; every implemented
-surface is already complete without it.
+Collaborative organization remains unavailable: there is no native authenticated
+room/record editorial owner executor with durable receipts. Local semantic
+actions do not grant remote callers room-owner authority. Collaborative edits
+would require exact room/record origins, current owner admission and revocation
+checks, and an owner receipt; local projection access must never substitute for
+those.
+
+Generated prose remains optional, source-labeled, and subordinate to recorded
+evidence; every deterministic surface remains usable without a model.
