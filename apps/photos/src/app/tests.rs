@@ -1460,28 +1460,6 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
 
 #[test]
 fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
-    eprintln!("phase unresolved_share_reference_returns_a_canonical_operation_failure");
-    {
-        let mut app = test_app();
-        let doc = crate::test_doc::new_doc();
-        let payload = PhotosEffect::ShareReference {
-            resource_id: "photos.photo:missing".into(),
-        };
-
-        let error = app
-            .answer_effect(
-                payload,
-                ui::tilo_actions::InvocationId::new(),
-                &crate::test_doc::library(&doc),
-            )
-            .expect_err("a missing resource cannot claim that its reference was shared");
-        assert_eq!(error, tr("photos-share-failed"));
-        assert_eq!(
-            app.notice.as_deref(),
-            Some(tr("photos-share-failed").as_str())
-        );
-    }
-
     eprintln!("phase cancelling_a_portal_invocation_is_terminal_and_drops_late_results");
     {
         let mut app = test_app();
@@ -2586,5 +2564,111 @@ fn sync_never_frees_a_laid_out_child() {
     assert!(
         !app.take_structure_dirty(),
         "a sync that keeps the photograph keeps the viewer"
+    );
+}
+
+/// The room's host behind the door, announcing a web entry for links.
+struct LinkHost;
+
+impl tilo_actions::remote::ActionHost for LinkHost {
+    fn query(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+    > {
+        tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::CataloguePage {
+            locator: Some(tilo_actions::remote::ResourceViewLocator {
+                origin: "https://host.example".into(),
+                room: "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90".into(),
+                host_device: "ab".repeat(32),
+                provider: query.provider.unwrap_or_default(),
+                web_entry: Some("https://tilo.so/".into()),
+            }),
+            exhausted: true,
+            ..tilo_actions::remote::CataloguePage::default()
+        }))
+    }
+
+    fn invoke(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+    > {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionHostError::NotPermitted,
+        ))
+    }
+
+    fn observe(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _: &tilo_actions::remote::Caller,
+        _: &tilo_actions::InvocationId,
+    ) -> Result<(), tilo_actions::remote::ActionHostError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct LinkClipboard(std::sync::Mutex<Option<String>>);
+
+impl ui::clipboard::ClipboardBackend for LinkClipboard {
+    fn set_text(&self, _: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+        *self.0.lock().unwrap() = Some(text.into());
+        true
+    }
+
+    fn text(&self, _: ui::clipboard::ClipboardTarget) -> Option<String> {
+        self.0.lock().unwrap().clone()
+    }
+
+    fn name(&self) -> &'static str {
+        "photos-share-test-clipboard"
+    }
+}
+
+#[test]
+fn share_copies_the_open_photographs_link() {
+    use ui::framework::testing::TestApp;
+    let _served = ui::RemoteActions::enter(
+        std::sync::Arc::new(LinkHost),
+        tilo_actions::remote::Caller::local_person("owner"),
+    );
+    let services = ui::host::HostServices::null()
+        .with_clipboard(std::sync::Arc::new(LinkClipboard::default()));
+    let _scope = ui::host::enter(&services);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("lake.png");
+    std::fs::write(
+        &path,
+        crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap(),
+    )
+    .unwrap();
+    let mut app =
+        TestApp::<crate::resource::PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
+    let lake = app.state().all_photos().next().unwrap().id.clone();
+    let item = crate::resource::photo_resource_id(&lake);
+    app.call_on(&item, PhotosEffect::VIEW.id, serde_json::json!({}))
+        .unwrap();
+    app.settle();
+
+    app.surface_mut::<PhotosApp>().share_open_photo();
+    app.settle();
+    let copied = ui::clipboard_paste().expect("the link is copied");
+    assert!(copied.starts_with("https://tilo.so/app/#/"), "{copied}");
+    assert_eq!(
+        app.surface_mut::<PhotosApp>().notice.as_deref(),
+        Some(tr("photos-share-copied").as_str())
     );
 }

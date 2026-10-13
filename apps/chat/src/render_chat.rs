@@ -1997,18 +1997,12 @@ impl ChatApp {
         } = paint;
         let gap = f64::from(theme.tokens.spacing.s2);
         let height = ButtonFace::height(ControlSize::Regular, theme);
-        for (key, hit) in [
-            (
-                "chat-resource-copy-link",
-                Hit::CopyResourceLink(m.id.clone()),
-            ),
-            (
-                "chat-resource-open-link",
-                Hit::OpenResourceLink(m.id.clone()),
-            ),
+        for (open, hit) in [
+            (false, Hit::CopyResourceLink(m.id.clone())),
+            (true, Hit::OpenResourceLink(m.id.clone())),
         ] {
             *y += gap;
-            let caption = crate::i18n::t(key);
+            let caption = self.resource_navigation.label(&m.id, open, false);
             let width = ButtonFace::new(Rect::ZERO, &caption)
                 .intrinsic_width(tr, theme)
                 .min(f64::from(column.text_width));
