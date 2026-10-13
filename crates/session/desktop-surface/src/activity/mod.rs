@@ -11,6 +11,8 @@ use tilo_desktop_model::{
     WorkspaceTaskStatus,
 };
 
+pub mod editorial;
+pub use editorial::{EditorialSession, HistoryEditorialOperation, HistoryEditorialRequest};
 pub mod index;
 pub mod morning;
 pub mod view_actions;
@@ -201,6 +203,27 @@ pub trait ActivityHost {
     fn save_departures(&self, _departures: &HashMap<u64, WorkspaceDeparture>) {}
     fn mutations_available(&self) -> bool {
         false
+    }
+    /// Availability of task commands, whose execution uses the task owner door.
+    /// This is independent of direct history document mutation.
+    fn task_commands_available(&self) -> bool {
+        self.mutations_available()
+    }
+    /// Discovery only. Execution must independently recheck current owner admission.
+    fn history_edits_available(&self) -> bool {
+        false
+    }
+    /// Recheck the authenticated caller's current write admission to the tree
+    /// and every addressed record. Display names and actor labels are not authority.
+    ///
+    /// # Errors
+    /// Refuses when there is no admitted owner writer or admission was revoked.
+    fn authorize_history_edit(
+        &self,
+        _room: &str,
+        _origins: &[HistoryOrigin],
+    ) -> Result<(), String> {
+        Err(crate::i18n::t("activity-history-edit-unavailable"))
     }
     fn all_workspaces_available(&self) -> bool {
         false

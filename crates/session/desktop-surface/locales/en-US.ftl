@@ -237,6 +237,8 @@ activity-detail-compare = Compare
 activity-detail-undo = Undo
 activity-detail-undo-task = Undo whole task
 activity-detail-split = Split
+activity-group-continued = { $label } — continued
+activity-history-edit-unavailable = History editing requires an admitted document owner.
 activity-detail-merge = Merge
 activity-detail-action-count = { $count } { $count ->
         [one] action

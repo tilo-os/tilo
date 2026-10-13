@@ -176,6 +176,9 @@ mod workspace_activity {
             fn mutations_available(&self) -> bool {
                 true
             }
+            fn history_edits_available(&self) -> bool {
+                true
+            }
         }
         let mut tree = causal_room();
         // Layout/setup commits are omitted from the feed; rename the room so

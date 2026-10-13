@@ -158,10 +158,34 @@ top-bar glance.
   contributor, lens, and outcome reachable at short heights.
 - Exact causal comparison with generic before/after patches, stable selection
   across live feed reorder, provenance-aware Undo refusal, partial-Undo
-  reporting, and collaborative rename/split/merge controls.
+  reporting, and shared rename/split/merge/boundary request validation.
+  Native history mutations are unavailable until they have an authenticated
+  room/record owner adapter (see below).
 - Workspace aggregation across the tree, live records, and validated cold local
   records. Cold reads are bounded and read-only; missing/corrupt records remain
   visible as incomplete coverage rather than silently disappearing.
+
+### Native editorial authority limitation
+
+The native Activity pane reads `WorkspaceTree::doc`, the device-wide projection.
+`commit_room_change` stamps that document; it is not an admitted room-owner
+transaction. Peer publication instead exports `room_docs` after projecting the
+workspace cache. Root-level named-range records written only into the device
+projection therefore are not a durable collaborative room edit. Likewise, a
+borrow of a cached record does not establish the caller's current write role.
+
+History mutation discovery is consequently disabled for the native adapter.
+Inspection, comparison and authenticated task-review owner commands remain
+separate. The shared editorial executor binds requests to a room, origin and
+reviewed frontier, rechecks admission at execution and refuses unsupported
+record owners. It must not be enabled merely because a local display name or
+cached role looks like an editor.
+
+Enabling native organization requires an authenticated owner action carrying
+exact room/record origins and causal bounds, current tree and record admission
+checks, and an owner receipt for the committed named-range metadata. The same
+owner action must be registered for semantic callers and used by UI controls.
+Until that exists, no native editorial action is advertised as executable.
 
 Generated prose remains intentionally optional. It should ship only with
 source-frontier labeling and factual evaluation fixtures; every implemented

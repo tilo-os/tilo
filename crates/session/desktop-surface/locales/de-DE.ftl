@@ -249,6 +249,8 @@ activity-detail-compare = Vergleichen
 activity-detail-undo = Rückgängig
 activity-detail-undo-task = Ganze Aufgabe rückgängig
 activity-detail-split = Teilen
+activity-group-continued = { $label } — Fortsetzung
+activity-history-edit-unavailable = Zum Bearbeiten des Verlaufs ist ein berechtigter Dokumentinhaber erforderlich.
 activity-detail-merge = Zusammenführen
 activity-detail-action-count = { $count } { $count ->
         [one] Aktion

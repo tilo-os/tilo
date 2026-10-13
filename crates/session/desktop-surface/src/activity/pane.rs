@@ -1,6 +1,7 @@
 use super::morning::{
     MORNING_OPEN, MORNING_REMOVE, MORNING_SOURCE, MorningCommand, MorningPreferences, MorningSource,
 };
+mod editorial;
 mod morning_sources;
 mod task_review_view;
 
@@ -884,14 +885,16 @@ impl RoomActivityPane {
     /// Install host services. Uninstalled services remain unavailable.
     pub fn set_host(&mut self, host: Rc<dyn ActivityHost>) {
         self.timeline
-            .set_preview_selection(!host.mutations_available());
-        if !host.mutations_available() {
+            .set_preview_selection(!host.mutations_available() || !host.history_edits_available());
+        if !host.task_commands_available() {
             self.close_task_composer();
             self.new_task_rect = None;
             self.task_action_rects.clear();
             self.task_route_rects.clear();
             self.task_create_rect = None;
             self.task_cancel_rect = None;
+        }
+        if !host.mutations_available() {
             self.revert_intent.take();
             self.name_intent.borrow_mut().take();
             self.undo_intent.borrow_mut().take();
@@ -1531,9 +1534,12 @@ impl RoomActivityPane {
         }
         if detail.can_compare {
             out.push((HISTORY_COMPARE, t("activity-history-compare")));
-            out.push((HISTORY_RESTORE, t("activity-history-restore")));
+            if self.host.mutations_available() {
+                out.push((HISTORY_RESTORE, t("activity-history-restore")));
+            }
         }
-        if detail.can_undo && self.selected_agent_run().is_none() {
+        if self.host.mutations_available() && detail.can_undo && self.selected_agent_run().is_none()
+        {
             out.push((HISTORY_UNDO, t("activity-history-undo")));
         }
         out
@@ -1827,31 +1833,30 @@ impl RoomActivityPane {
                 (*new_left_end, *new_right_start)
             }
         };
-        if ui::history_groups::materialize_and_move_boundary(
-            tree.document_mut(),
-            ui::history_groups::DisplayedSession {
-                record: older.work_session_id.as_deref(),
-                start: &older_start,
-                end: &older_end,
-                label: &older.title,
+        self.apply_history_editorial(
+            tree,
+            &super::HistoryEditorialRequest {
+                room: self.task_room.clone(),
+                origin: super::HistoryOrigin::DesktopTree,
+                frontier: self.last_heads.clone(),
+                operation: super::HistoryEditorialOperation::MoveBoundary {
+                    left: super::EditorialSession {
+                        record: older.work_session_id,
+                        start: older_start,
+                        end: older_end,
+                        label: older.title,
+                    },
+                    right: super::EditorialSession {
+                        record: newer.work_session_id,
+                        start: newer_start,
+                        end: newer_end,
+                        label: newer.title,
+                    },
+                    left_end: new_left_end,
+                    right_start: new_right_start,
+                },
             },
-            ui::history_groups::DisplayedSession {
-                record: newer.work_session_id.as_deref(),
-                start: &newer_start,
-                end: &newer_end,
-                label: &newer.title,
-            },
-            &new_left_end,
-            &new_right_start,
         )
-        .is_none()
-        {
-            return false;
-        }
-        tree.commit_activity_change();
-        self.last_heads.clear();
-        self.refresh(tree);
-        true
     }
 
     #[doc(hidden)]
@@ -1997,23 +2002,25 @@ impl RoomActivityPane {
         };
         let record_id = range.id.clone();
         let label = range.label.clone();
-        let right_label = format!("{label} — continued");
-        if ui::history_groups::split_named_range(
-            tree.document_mut(),
-            &record_id,
-            &left_end,
-            &right_start,
-            &label,
-            &right_label,
+        let right_label = t_args(
+            "activity-group-continued",
+            &[("label", ArgValue::from(&label))],
+        );
+        self.apply_history_editorial(
+            tree,
+            &super::HistoryEditorialRequest {
+                room: self.task_room.clone(),
+                origin: super::HistoryOrigin::DesktopTree,
+                frontier: self.last_heads.clone(),
+                operation: super::HistoryEditorialOperation::Split {
+                    record: record_id,
+                    left_end,
+                    right_start,
+                    label,
+                    right_label,
+                },
+            },
         )
-        .is_none()
-        {
-            return false;
-        }
-        tree.commit_activity_change();
-        self.last_heads.clear();
-        self.refresh(tree);
-        true
     }
 
     fn merge_selection_groups(&mut self, tree: &mut impl ActivityTree) -> bool {
@@ -2023,21 +2030,20 @@ impl RoomActivityPane {
         let Some((records, start, end, label)) = self.merge_candidate() else {
             return false;
         };
-        if ui::history_groups::merge_named_ranges(
-            tree.document_mut(),
-            &records,
-            &start,
-            Some(&end),
-            &label,
+        self.apply_history_editorial(
+            tree,
+            &super::HistoryEditorialRequest {
+                room: self.task_room.clone(),
+                origin: super::HistoryOrigin::DesktopTree,
+                frontier: self.last_heads.clone(),
+                operation: super::HistoryEditorialOperation::Merge {
+                    records,
+                    start,
+                    end,
+                    label,
+                },
+            },
         )
-        .is_none()
-        {
-            return false;
-        }
-        tree.commit_activity_change();
-        self.last_heads.clear();
-        self.refresh(tree);
-        true
     }
 
     /// Materialize the exact before/after document for the current selection.
@@ -2253,6 +2259,9 @@ impl RoomActivityPane {
         reason = "timeline refresh keeps document observation, filter projection, and retained activity rows in one ordered read-only projection pass"
     )]
     pub fn refresh(&mut self, tree: &mut impl ActivityTree) {
+        self.timeline.set_preview_selection(
+            !self.host.mutations_available() || !self.host.history_edits_available(),
+        );
         // Commit only what was written: an empty commit on every refresh
         // would still open and roll back a transaction each frame.
         if tree.document().pending_ops() > 0 {
@@ -3714,8 +3723,12 @@ impl RoomActivityPane {
                 DetailAction::Compare | DetailAction::Restore => detail.can_compare,
                 DetailAction::Undo => detail.can_undo && self.selected_agent_run().is_none(),
                 DetailAction::UndoTask => self.can_undo_agent_run(),
-                DetailAction::Split => self.split_candidate().is_some(),
-                DetailAction::Merge => self.merge_candidate().is_some(),
+                DetailAction::Split => {
+                    self.host.history_edits_available() && self.split_candidate().is_some()
+                }
+                DetailAction::Merge => {
+                    self.host.history_edits_available() && self.merge_candidate().is_some()
+                }
             };
             if !enabled {
                 continue;
@@ -4304,6 +4317,7 @@ impl RoomActivityPane {
                 reason = "previous_index is an earlier enumerate() index of the same briefs being iterated"
             )]
             if let Some(newer) = previous_index
+                && self.host.history_edits_available()
                 && (expanded || self.expanded_brief == Some(newer))
             {
                 let rail = Rect::new(x0 + 8.0, y - 5.0, x1 - 8.0, y + 21.0);
@@ -4644,7 +4658,7 @@ impl RoomActivityPane {
         let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
         let new_task = Rect::new(x1 - 116.0, y, x1, y + 30.0);
         self.new_task_rect = None;
-        if self.host.mutations_available()
+        if self.host.task_commands_available()
             && !self.feed_coverage.pending_tree
             && !self.host.task_review_required(&self.task_room)
         {
@@ -5474,7 +5488,7 @@ impl RoomActivityPane {
     }
 
     fn open_task_composer(&mut self, tree: &impl ActivityTree) {
-        if !self.host.mutations_available() || tree.document().pending_ops() > 0 {
+        if !self.host.task_commands_available() || tree.document().pending_ops() > 0 {
             return;
         }
         self.task_compose_open = true;
@@ -5538,7 +5552,7 @@ impl RoomActivityPane {
     }
 
     fn create_task_from_draft(&mut self, tree: &mut impl ActivityTree) -> RoomActivityOutcome {
-        if !self.host.mutations_available() || tree.document().pending_ops() > 0 {
+        if !self.host.task_commands_available() || tree.document().pending_ops() > 0 {
             if tree.native_manual_tasks(tree.active) {
                 return RoomActivityOutcome {
                     handled: true,
@@ -5643,7 +5657,7 @@ impl RoomActivityPane {
             return handled_outcome();
         }
         if action != TaskAction::OpenResource
-            && (!self.host.mutations_available() || tree.document().pending_ops() > 0)
+            && (!self.host.task_commands_available() || tree.document().pending_ops() > 0)
         {
             return handled_outcome();
         }
@@ -5805,7 +5819,7 @@ impl RoomActivityPane {
                 )
             });
         }
-        if !self.host.mutations_available() || self.feed_coverage.pending_tree {
+        if !self.host.task_commands_available() || self.feed_coverage.pending_tree {
             actions.retain(|action| *action == TaskAction::OpenResource);
             return actions;
         }
@@ -7215,32 +7229,15 @@ impl RoomActivityPane {
     /// room's changes, committed so it reaches peers through the same
     /// sync as the changes it names.
     pub fn apply_name(&mut self, tree: &mut impl ActivityTree, req: &GroupNameRequest) -> bool {
-        if !self.host.mutations_available() {
-            return false;
-        }
-        let before = tree.document_mut().get_heads();
-        if req.label.is_empty() {
-            let Some(record) = req.record_id.as_deref() else {
-                return false;
-            };
-            if !ui::history_groups::clear_name(tree.document_mut(), record) {
-                return false;
-            }
-        } else {
-            ui::history_groups::name_range(
-                tree.document_mut(),
-                &req.start,
-                Some(&req.end),
-                &req.label,
-            );
-        }
-        tree.commit_activity_change();
-        if tree.document_mut().get_heads() == before {
-            return false;
-        }
-        self.last_heads.clear();
-        self.refresh(tree);
-        true
+        self.apply_history_editorial(
+            tree,
+            &super::HistoryEditorialRequest {
+                room: self.task_room.clone(),
+                origin: super::HistoryOrigin::DesktopTree,
+                frontier: self.last_heads.clone(),
+                operation: super::HistoryEditorialOperation::Name(req.clone()),
+            },
+        )
     }
 
     /// True while the pane's name field has the keyboard, so Escape

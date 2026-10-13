@@ -708,7 +708,14 @@ impl ActivityHost for NativeActivityHost {
         save_history_map("departures", departures);
     }
     fn mutations_available(&self) -> bool {
-        true
+        // The pane borrows the device-wide projection, not an authenticated
+        // room/record owner writer. A local display identity is not admission.
+        // Keep inspection available; effects require an owner action adapter.
+        false
+    }
+    fn task_commands_available(&self) -> bool {
+        // Task execution revalidates through its existing authenticated broker.
+        self.broker.is_some()
     }
     fn all_workspaces_available(&self) -> bool {
         true
@@ -1426,5 +1433,21 @@ mod morning_host_regression {
     #[test]
     fn native_morning_sources_advertise_private_selection() {
         assert!(NativeActivityHost::default().morning_sources_available());
+    }
+
+    #[test]
+    fn native_history_requires_an_authenticated_owner_writer() {
+        let host = NativeActivityHost::default();
+        assert!(!host.mutations_available());
+        assert!(!host.history_edits_available());
+        assert!(
+            host.authorize_history_edit(
+                "room",
+                &[tilo_desktop::activity::HistoryOrigin::DesktopTree]
+            )
+            .is_err()
+        );
+        assert!(!host.task_commands_available());
+        drop(host);
     }
 }

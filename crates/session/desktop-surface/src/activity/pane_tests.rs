@@ -3262,6 +3262,251 @@ mod tests {
         assert_ne!(before, pane.brief_rects);
     }
 
+    struct EditorialHost {
+        admitted: Cell<bool>,
+    }
+    impl ActivityHost for EditorialHost {
+        fn mutations_available(&self) -> bool {
+            true
+        }
+        fn history_edits_available(&self) -> bool {
+            true
+        }
+        fn authorize_history_edit(
+            &self,
+            _room: &str,
+            origins: &[crate::activity::HistoryOrigin],
+        ) -> Result<(), String> {
+            if self.admitted.get() && origins == [crate::activity::HistoryOrigin::DesktopTree] {
+                Ok(())
+            } else {
+                Err("owner admission revoked".into())
+            }
+        }
+    }
+
+    #[test]
+    fn editorial_door_rechecks_revocation_and_rejects_stale_or_malformed_requests() {
+        use crate::activity::{HistoryEditorialOperation as Op, HistoryEditorialRequest};
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let host = Rc::new(EditorialHost {
+            admitted: Cell::new(true),
+        });
+        pane.set_host(host.clone());
+        let entries = pane.entries().to_vec();
+        let request = HistoryEditorialRequest {
+            room: pane.task_room.clone(),
+            origin: crate::activity::HistoryOrigin::DesktopTree,
+            frontier: pane.last_heads.clone(),
+            operation: Op::Name(GroupNameRequest {
+                record_id: None,
+                start: entries[1].id,
+                end: entries[3].id,
+                label: "Reviewed work".into(),
+            }),
+        };
+        let heads = tree.doc.get_heads();
+        host.admitted.set(false);
+        assert!(!pane.apply_history_editorial(&mut tree, &request));
+        assert_eq!(tree.doc.get_heads(), heads);
+        host.admitted.set(true);
+        let mut wrong_owner = request.clone();
+        wrong_owner.room = "another-room".into();
+        assert!(!pane.apply_history_editorial(&mut tree, &wrong_owner));
+        wrong_owner.room.clone_from(&request.room);
+        wrong_owner.origin = crate::activity::HistoryOrigin::Record {
+            id: RecordId::for_file("another-record.note"),
+            kind: ui::RecordKind::new("note"),
+        };
+        assert!(!pane.apply_history_editorial(&mut tree, &wrong_owner));
+        assert_eq!(tree.doc.get_heads(), heads);
+        let mut malformed = request.clone();
+        malformed.operation = Op::Name(GroupNameRequest {
+            record_id: None,
+            start: entries[3].id,
+            end: entries[1].id,
+            label: "Backwards".into(),
+        });
+        assert!(!pane.apply_history_editorial(&mut tree, &malformed));
+        assert_eq!(tree.doc.get_heads(), heads);
+        malformed.operation = Op::Name(GroupNameRequest {
+            record_id: None,
+            start: HistoryEntryId([255; 16]),
+            end: entries[3].id,
+            label: "Unknown".into(),
+        });
+        assert!(!pane.apply_history_editorial(&mut tree, &malformed));
+        assert_eq!(tree.doc.get_heads(), heads);
+        assert!(pane.apply_history_editorial(&mut tree, &request));
+        let named_heads = tree.doc.get_heads();
+        assert!(
+            !pane.apply_history_editorial(&mut tree, &request),
+            "old reviewed frontier cannot execute twice"
+        );
+        assert_eq!(tree.doc.get_heads(), named_heads);
+    }
+
+    #[test]
+    fn editorial_unavailable_or_pending_owner_does_not_flush_document_heads() {
+        use crate::activity::{HistoryEditorialOperation as Op, HistoryEditorialRequest};
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let entries = pane.entries().to_vec();
+        let request = HistoryEditorialRequest {
+            room: pane.task_room.clone(),
+            origin: crate::activity::HistoryOrigin::DesktopTree,
+            frontier: pane.last_heads.clone(),
+            operation: Op::Name(GroupNameRequest {
+                record_id: None,
+                start: entries[1].id,
+                end: entries[3].id,
+                label: "Reviewed".into(),
+            }),
+        };
+        let heads = tree.doc.get_heads();
+        pane.set_host(Rc::new(super::super::UnavailableActivityHost));
+        assert!(!pane.apply_history_editorial(&mut tree, &request));
+        assert_eq!(tree.doc.get_heads(), heads);
+        pane.set_host(Rc::new(EditorialHost {
+            admitted: Cell::new(true),
+        }));
+        tree.doc
+            .put(automerge::ROOT, "unfinished-work", "pending")
+            .unwrap();
+        let pending = tree.doc.pending_ops();
+        assert!(!pane.apply_history_editorial(&mut tree, &request));
+        assert_eq!(
+            tree.doc.pending_ops(),
+            pending,
+            "refusal never implicitly commits unrelated work"
+        );
+        assert_eq!(
+            tree.doc.get_changes(&heads).len(),
+            1,
+            "only the existing pending content edit is committed by this assertion"
+        );
+    }
+
+    #[test]
+    fn editorial_name_rename_clear_preserves_attribution_and_unrelated_legacy_band() {
+        use crate::activity::{HistoryEditorialOperation as Op, HistoryEditorialRequest};
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let original = pane.entries().to_vec();
+        let actor = tree.doc.get_actor().clone();
+        let legacy = ui::history_groups::name_range(
+            &mut tree.doc,
+            &original[0].id,
+            Some(&original[0].id),
+            "Legacy work",
+        );
+        tree.commit_activity_change();
+        pane.refresh(&mut tree);
+        let req = GroupNameRequest {
+            record_id: None,
+            start: original[1].id,
+            end: original[3].id,
+            label: "Named work".into(),
+        };
+        assert!(pane.apply_history_editorial(
+            &mut tree,
+            &HistoryEditorialRequest {
+                room: pane.task_room.clone(),
+                origin: crate::activity::HistoryOrigin::DesktopTree,
+                frontier: pane.last_heads.clone(),
+                operation: Op::Name(req.clone())
+            }
+        ));
+        let record = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new())
+            .into_iter()
+            .find(|range| range.start == req.start)
+            .unwrap()
+            .id;
+        let renamed = GroupNameRequest {
+            record_id: Some(record),
+            label: "Renamed work".into(),
+            ..req
+        };
+        assert!(pane.apply_name(&mut tree, &renamed));
+        assert!(pane.apply_name(
+            &mut tree,
+            &GroupNameRequest {
+                label: String::new(),
+                ..renamed
+            }
+        ));
+        assert_eq!(tree.doc.get_actor(), &actor);
+        assert_eq!(
+            pane.entries()
+                .iter()
+                .map(|e| (e.id, e.author.clone()))
+                .collect::<Vec<_>>(),
+            original
+                .iter()
+                .map(|e| (e.id, e.author.clone()))
+                .collect::<Vec<_>>()
+        );
+        let remaining = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, legacy);
+        assert_eq!(remaining[0].label, "Legacy work");
+    }
+
+    #[test]
+    fn read_only_editorial_ui_retains_inspection_and_cannot_move_boundaries() {
+        let (mut tree, _, _) = peers_busy_room();
+        let mut pane = pane_over(&mut tree);
+        let local = pane.local_user();
+        let entries = pane
+            .entries()
+            .iter()
+            .filter(|entry| !author_is_local(&entry.author, &local))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(entries.len() >= 4);
+        for (start, end, label) in [(0, 1, "Older work"), (2, 3, "Newer work")] {
+            assert!(pane.apply_name(
+                &mut tree,
+                &GroupNameRequest {
+                    record_id: None,
+                    start: entries[start].id,
+                    end: entries[end].id,
+                    label: label.into()
+                }
+            ));
+        }
+        pane.set_view(ActivityView::CatchUp);
+        let host = Rc::new(EditorialHost {
+            admitted: Cell::new(true),
+        });
+        pane.set_host(host.clone());
+        pane.expanded_brief = Some(0);
+        paint(&mut pane);
+        let discovered = pane
+            .boundary_rects
+            .first()
+            .expect("editable sessions expose a boundary")
+            .0;
+        let heads = tree.doc.get_heads();
+        host.admitted.set(false);
+        assert!(!pane.move_work_session_boundary(&mut tree, discovered));
+        assert_eq!(tree.doc.get_heads(), heads);
+        pane.set_host(Rc::new(super::super::UnavailableActivityHost));
+        assert!(!pane.move_work_session_boundary(
+            &mut tree,
+            WorkSessionBoundary {
+                older: 1,
+                newer: 0,
+                direction: BoundaryDirection::IntoNewer
+            }
+        ));
+        paint(&mut pane);
+        assert!(pane.boundary_rects.is_empty());
+        assert!(!pane.entries().is_empty());
+        assert_eq!(tree.doc.get_heads(), heads);
+    }
+
     #[test]
     fn selected_named_bands_can_be_split_and_merged() {
         let (mut tree, _, _) = busy_room();
@@ -3287,6 +3532,20 @@ mod tests {
         );
         assert!(split.iter().any(|range| range.start == entries[2].id));
 
+        let heads = tree.doc.get_heads();
+        let duplicate = crate::activity::HistoryEditorialRequest {
+            room: pane.task_room.clone(),
+            origin: crate::activity::HistoryOrigin::DesktopTree,
+            frontier: pane.last_heads.clone(),
+            operation: crate::activity::HistoryEditorialOperation::Merge {
+                records: vec![split[0].id.clone(), split[0].id.clone()],
+                start: entries[1].id,
+                end: entries[3].id,
+                label: "Do not lose the other band".into(),
+            },
+        };
+        assert!(!pane.apply_history_editorial(&mut tree, &duplicate));
+        assert_eq!(tree.doc.get_heads(), heads);
         pane.timeline_mut().set_selection(Some((1, 3)));
         assert!(pane.merge_selection_groups(&mut tree));
         let merged = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());

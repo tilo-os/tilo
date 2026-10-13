@@ -502,6 +502,16 @@ impl ActivityHost for TestHost {
     fn mutations_available(&self) -> bool {
         true
     }
+    fn history_edits_available(&self) -> bool {
+        true
+    }
+    fn authorize_history_edit(
+        &self,
+        _room: &str,
+        _origins: &[super::HistoryOrigin],
+    ) -> Result<(), String> {
+        Ok(())
+    }
     fn all_workspaces_available(&self) -> bool {
         true
     }
