@@ -154,6 +154,7 @@ mod tests {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         }
     }
 

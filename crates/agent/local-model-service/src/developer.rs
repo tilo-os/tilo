@@ -88,7 +88,7 @@ impl HttpsTransport for OfflineTransport {
         if maximum_bytes != remaining {
             return Err(ServiceError::InvalidArtifact);
         }
-        let mut source = open_without_symlinks(&self.root.join(&pin.sha256))?;
+        let mut source = tilo_files::native::nofollow::open_read(&self.root.join(&pin.sha256))?;
         let metadata = source.metadata()?;
         if !metadata.is_file() || metadata.len() != pin.size_bytes {
             return Err(ServiceError::InvalidArtifact);
@@ -112,51 +112,4 @@ impl HttpsTransport for OfflineTransport {
         }
         Ok(count)
     }
-}
-
-/// Open a real regular-file candidate without following any path symlink.
-/// # Errors
-/// Returns the OS error on unsupported secure opening or unsafe path components.
-#[cfg(target_os = "linux")]
-pub fn open_without_symlinks(path: &Path) -> std::io::Result<File> {
-    use std::ffi::CString;
-    use std::os::fd::FromRawFd as _;
-    use std::os::unix::ffi::OsStrExt as _;
-    #[repr(C)]
-    struct OpenHow {
-        flags: u64,
-        mode: u64,
-        resolve: u64,
-    }
-    let path = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| std::io::Error::other("path contains a NUL byte"))?;
-    let how = OpenHow {
-        flags: u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
-            .map_err(|_| std::io::Error::other("invalid open flags"))?,
-        mode: 0,
-        resolve: 0x02 | 0x04, // RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS
-    };
-    // SAFETY: live C path and exact Linux open_how ABI; successful fd is owned.
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            libc::AT_FDCWD,
-            path.as_ptr(),
-            &raw const how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let fd = i32::try_from(fd).map_err(|_| std::io::Error::other("invalid open descriptor"))?;
-    // SAFETY: the successful openat2 descriptor has exactly one owner.
-    Ok(unsafe { File::from_raw_fd(fd) })
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn open_without_symlinks(_: &Path) -> std::io::Result<File> {
-    Err(std::io::Error::other(
-        "offline developer import requires Linux openat2",
-    ))
 }

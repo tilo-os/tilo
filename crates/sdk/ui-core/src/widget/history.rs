@@ -477,25 +477,13 @@ impl EntryKind {
     }
 }
 
-/// Used by both widgets so the wording stays uniform. Re-renders every
-/// frame, so the label freshens naturally as `now` advances — no clock
-/// plumbing needed.
+/// Used by both widgets so the wording stays uniform with every other
+/// "time ago" label ([`crate::format::relative`]). Re-renders every frame,
+/// so the label freshens naturally as `now` advances — no clock plumbing
+/// needed.
 pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
-    use crate::i18n::widget_format;
-    let delta = now.duration_since(ts).unwrap_or_default();
-    let secs = delta.as_secs();
-    if secs < 60 {
-        return widget_format("relative-time-just-now", &[]);
-    }
-    let mins = secs / 60;
-    let (key, count) = if mins < 60 {
-        ("relative-time-minutes", mins)
-    } else if mins < 60 * 24 {
-        ("relative-time-hours", mins / 60)
-    } else {
-        ("relative-time-days", mins / (60 * 24))
-    };
-    widget_format(key, &[("count", count.into())])
+    let secs = now.duration_since(ts).unwrap_or_default().as_secs();
+    crate::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
 }
 
 /// Rounds a normalized `[0, 1]` colour channel to a `u8` byte. The `clamp`
@@ -737,11 +725,11 @@ mod tests {
             );
             assert_eq!(
                 format_relative_time(base, base + Duration::from_secs(2 * 3600 + 5)),
-                "2 h ago"
+                "2 hr ago"
             );
             assert_eq!(
                 format_relative_time(base, base + Duration::from_secs(259_200)),
-                "3 d ago"
+                "3 days ago"
             );
         }
 

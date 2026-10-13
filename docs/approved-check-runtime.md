@@ -42,3 +42,11 @@ cleanup. Preserve failure receipts when testing timeout, cancellation, output
 limits or failing commands. The internal `__approved-check-supervise` and
 `__approved-check-init` entry points support the owned runtime; they are not an
 app command gateway.
+
+For informational phase qualification, configure the optional host-reviewed
+`reported_phases` vocabulary and add `--reports` to the existing developer
+example. It prints closed report events as they arrive through the production
+owned guest stderr capture. This developer probe proves supervision and capture;
+it does not prove signed application delivery or establish a hardware result.
+The native action transport and reporting contract are described in
+[approved project checks](architecture/project-approved-checks.md#reported-phases-on-the-original-job).

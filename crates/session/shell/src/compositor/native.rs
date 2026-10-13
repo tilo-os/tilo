@@ -73,7 +73,7 @@ fn with_action_gate<R>(
     Ok(f(&chrome, &gate))
 }
 use smithay::reexports::calloop::{self, EventLoop, Interest, Mode, PostAction, generic::Generic};
-use smithay::reexports::wayland_server::Display;
+use smithay::reexports::wayland_server::{Display, Resource};
 use smithay::wayland::socket::ListeningSocketSource;
 use taffy::NodeId;
 use vello::kurbo::Rect;
@@ -119,6 +119,21 @@ type DesiredShares = HashMap<
         crate::shell::state::RoomId,
     ),
 >;
+
+fn observed_frame_sequence(
+    store: &crate::compositor::foreign::ForeignFrameStore,
+    surface: u64,
+    pixels: Option<(u64, u64)>,
+) -> u64 {
+    pixels.map_or_else(|| store.frame_seq(surface), |(seq, _)| seq)
+}
+
+fn insert_preedit_route(row: &mut serde_json::Value, route: &str, source: u64) {
+    if let Some(object) = row.as_object_mut() {
+        object.insert("input_route".into(), route.into());
+        object.insert("input_source_surface_id".into(), source.into());
+    }
+}
 
 /// The legacy windows to encode for viewers: none while nobody watches the
 /// backend, so a headless machine's encoders stop and receivers get
@@ -1097,8 +1112,14 @@ fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
     if credentials.uid != unsafe { libc::geteuid() } {
         return None;
     }
-    if let Some(identity) = crate::shell::launcher::verified_launch_for_descendant(pid) {
-        return Some(ClientState::attributed_arc(identity, pid));
+    if let Some((identity, custody)) =
+        crate::shell::launcher::verified_launch_custody_for_descendant(pid)
+    {
+        return Some(ClientState::attributed_with_custody_arc(
+            identity,
+            Some(custody),
+            pid,
+        ));
     }
     unattributed_host_client_allowed(credentials.uid, peer_shares_host_security_namespaces(pid))
         .then(|| {
@@ -1114,6 +1135,274 @@ fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
 
 fn external_floating_id(connection: u64, id: &str) -> String {
     format!("external:{connection}:{id}")
+}
+
+/// Resolve only the exact live launch that authenticated this shell-ui channel.
+/// App ids and requested regions are descriptive; they never select another
+/// instance's primary surface or substitute for its kernel process custody.
+fn authenticated_app_owned_source(
+    state: &State,
+    frame_builder: &mut FrameBuilder,
+    app_id: &str,
+    launch: Option<&crate::compositor::floating_service::AuthenticatedLaunch>,
+) -> Result<(u64, Rect), String> {
+    let launch = launch.ok_or("floating source has no authenticated launch custody")?;
+    if !crate::shell::launcher::launch_custody_is_current(
+        launch.custody,
+        app_id,
+        &launch.workspace_id,
+    ) {
+        return Err("floating source launch custody retired".into());
+    }
+    let candidates = frame_builder
+        .foreign_surfaces_for_app_room(app_id, &launch.workspace_id)
+        .into_iter()
+        .filter(|(surface, _)| state.surface_launch_custody(*surface) == Some(launch.custody))
+        .collect::<Vec<_>>();
+    match candidates.as_slice() {
+        [source] => Ok(*source),
+        _ => Err("floating source is unavailable or ambiguous for its exact launch".into()),
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct NativeAgentMarkerSource {
+    launch: crate::compositor::floating_service::AuthenticatedLaunch,
+    client: smithay::reexports::wayland_server::backend::ClientId,
+    surface: u64,
+    app_id: String,
+    rect: Rect,
+    painted_rect: Rect,
+    agents: HashMap<String, String>,
+}
+
+impl NativeAgentMarkerSource {
+    fn is_current(&self, state: &State, frame: &mut FrameBuilder) -> bool {
+        let active_room = frame
+            .chrome_handle()
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string());
+        active_room.as_deref() == Some(self.launch.workspace_id.as_str())
+            && authenticated_app_owned_source(state, frame, &self.app_id, Some(&self.launch))
+                == Ok((self.surface, self.rect))
+            && state
+                .client_input
+                .surface(self.surface)
+                .and_then(smithay::reexports::wayland_server::Resource::client)
+                .is_some_and(|client| client.id() == self.client)
+            && foreign::store().is_presented(self.surface)
+            && foreign::store().painted_frame_rect(self.surface, self.rect)
+                == Some(self.painted_rect)
+    }
+}
+
+fn publish_native_agent_markers(
+    state: &mut State,
+    frame: &mut FrameBuilder,
+    connection: u64,
+    app_id: &str,
+    launch: Option<&crate::compositor::floating_service::AuthenticatedLaunch>,
+    markers: Vec<ui::app::PaintedActionMarker>,
+) {
+    let previous = state.native_agent_markers.remove(&connection);
+    // Apps acknowledge every presented frame, including frames with no marker.
+    // No previous source means there is no composer continuation to validate.
+    if markers.is_empty() && previous.is_none() {
+        frame.host_mut().retire_accessible_agent_markers(connection);
+        return;
+    }
+    let source = (|| {
+        let (surface, rect) = authenticated_app_owned_source(state, frame, app_id, launch).ok()?;
+        let client = state.client_input.surface(surface)?.client()?.id();
+        let source = NativeAgentMarkerSource {
+            launch: launch?.clone(),
+            client,
+            surface,
+            app_id: app_id.to_owned(),
+            rect,
+            painted_rect: foreign::store().painted_frame_rect(surface, rect)?,
+            agents: HashMap::new(),
+        };
+        source.is_current(state, frame).then_some(source)
+    })();
+    let Some(mut source) = source else {
+        frame.host_mut().retire_accessible_agent_markers(connection);
+        return;
+    };
+    let room = source.launch.workspace_id.clone();
+    let published: Vec<crate::shell::overlay_host::AccessibleAgentMarker> = markers
+        .into_iter()
+        .take(16)
+        .filter_map(|painted| {
+            let identity = frame
+                .host()
+                .certified_marker_agent(&room, &painted.interaction.actor.id)?;
+            if painted.interaction.actor.kind != tilo_actions::ActorKind::Agent {
+                return None;
+            }
+            let viewport = Rect::new(
+                painted.viewport[0],
+                painted.viewport[1],
+                painted.viewport[2],
+                painted.viewport[3],
+            );
+            if !viewport.is_finite() || viewport.width() <= 0.0 || viewport.height() <= 0.0 {
+                return None;
+            }
+            let placement = vello::kurbo::Affine::translate((-viewport.x0, -viewport.y0))
+                .then_scale_non_uniform(
+                    source.painted_rect.width() / viewport.width(),
+                    source.painted_rect.height() / viewport.height(),
+                )
+                .then_translate((source.painted_rect.x0, source.painted_rect.y0).into());
+            let translate = |values: [f64; 4]| {
+                let rect = Rect::new(values[0], values[1], values[2], values[3]);
+                if !rect.is_finite() || rect.width() <= 0.0 || rect.height() <= 0.0 {
+                    return None;
+                }
+                let placed = placement
+                    .transform_rect_bbox(rect)
+                    .intersect(source.painted_rect);
+                (placed.width() > 0.0 && placed.height() > 0.0).then_some(placed)
+            };
+            let user = ui::permissions::UserId(identity.participant_id);
+            Some(crate::shell::overlay_host::AccessibleAgentMarker {
+                connection,
+                surface: source.surface,
+                app_id: source.app_id.clone(),
+                room: room.clone(),
+                agent: identity.agent_key,
+                marker: translate(painted.marker)?,
+                locus: translate(painted.locus)?,
+                protected: translate(painted.protected)?,
+                label: frame.presence().display_name(&user),
+                description: frame
+                    .presence()
+                    .interaction_status_label(&painted.interaction),
+                interaction: painted.interaction,
+                published_at: Instant::now(),
+            })
+        })
+        .collect();
+    if let Some(previous) = previous
+        && previous.client == source.client
+        && previous.surface == source.surface
+        && previous.launch == source.launch
+    {
+        source.agents = previous.agents;
+    }
+    source.agents.extend(published.iter().map(
+        |marker: &crate::shell::overlay_host::AccessibleAgentMarker| {
+            (marker.agent.clone(), marker.interaction.actor.id.clone())
+        },
+    ));
+    frame
+        .host_mut()
+        .publish_accessible_agent_markers(connection, published);
+    state.native_agent_markers.insert(connection, source);
+}
+
+fn revalidate_native_agent_markers(
+    state: &mut State,
+    frame: &mut FrameBuilder,
+    suppressed: bool,
+) -> bool {
+    let current: HashMap<_, _> = state
+        .native_agent_markers
+        .iter()
+        .filter(|(_, source)| !suppressed && source.is_current(state, frame))
+        .map(|(connection, source)| (*connection, source.clone()))
+        .collect();
+    state.native_agent_markers.clone_from(&current);
+    let identities: HashMap<_, _> = current
+        .iter()
+        .map(|(connection, source)| {
+            (
+                *connection,
+                (
+                    source.surface,
+                    source.app_id.clone(),
+                    source.launch.workspace_id.clone(),
+                ),
+            )
+        })
+        .collect();
+    // Resolve owner-backed membership before borrowing the overlay mutably.
+    let broker = frame.host().marker_action_session_source();
+    let changed = frame.host_mut().retain_accessible_agent_markers(|marker| {
+        marker.is_fresh(Instant::now())
+            && identities
+                .get(&marker.connection)
+                .is_some_and(|(surface, app, room)| {
+                    *surface == marker.surface && *app == marker.app_id && *room == marker.room
+                })
+            && broker
+                .as_ref()
+                .and_then(|source| {
+                    source.certified_marker_agent(&marker.room, &marker.interaction.actor.id)
+                })
+                .is_some_and(|identity| identity.agent_key == marker.agent)
+    });
+    if let Some(owner) = frame.host_mut().agent_quick_composer_mut().owner().cloned()
+        && (suppressed
+            || !current.values().any(|source| {
+                source.launch.workspace_id == owner.room
+                    && source
+                        .agents
+                        .get(&owner.agent)
+                        .and_then(|actor| {
+                            broker.as_ref()?.certified_marker_agent(&owner.room, actor)
+                        })
+                        .is_some_and(|identity| identity.agent_key == owner.agent)
+            })
+            || broker
+                .as_ref()
+                .and_then(|source| source.identity_revision(&owner.room))
+                != Some(owner.identity_revision))
+    {
+        frame.host_mut().agent_quick_composer_mut().dismiss();
+    }
+    let Some(marker) = frame.host().take_accessible_agent_marker_activation() else {
+        return changed;
+    };
+    let Some(source) = current.get(&marker.connection) else {
+        return changed;
+    };
+    if !source.is_current(state, frame) {
+        return changed;
+    }
+    let Some(session) = broker.as_ref() else {
+        return changed;
+    };
+    let Some(identity) = session.certified_marker_agent(&marker.room, &marker.interaction.actor.id)
+    else {
+        return changed;
+    };
+    if identity.agent_key != marker.agent {
+        return changed;
+    }
+    let Some(identity_revision) = session.identity_revision(&marker.room) else {
+        return changed;
+    };
+    drop(broker);
+    let person = frame.chrome_handle().borrow().active_local_user();
+    frame.host_mut().open_agent_quick_composer(
+        crate::shell::agent_quick_composer::ComposerOwner {
+            room: marker.room,
+            agent: identity.agent_key,
+            person,
+            identity_revision,
+        },
+        &marker.label,
+        crate::shell::agent_quick_composer::AgentQuickComposerOrigin {
+            marker: marker.marker,
+            protected: marker.protected,
+            context: marker.description,
+        },
+    ) || changed
 }
 
 fn external_floating_parts(id: &str) -> Option<(u64, &str)> {
@@ -1446,6 +1735,7 @@ fn pump_floating_surface_service(
             FloatingServiceEvent::Message {
                 connection,
                 app_id,
+                launch,
                 message,
             } => match message {
                 ui::floating_surface::FloatingSurfaceClientMessage::DeviceShellOutcome {
@@ -1505,14 +1795,37 @@ fn pump_floating_surface_service(
                     let result = ui::floating_surface::FloatingSurfaceRequest::try_from(request)
                         .and_then(|mut request| {
                             let (source_surface_id, app_rect) =
-                                frame_builder.foreign_surface_for_app(&app_id).ok_or_else(
-                                    || format!("{app_id} has no visible foreign surface"),
-                                )?;
-                            let (transfer_frame, transfer_source) = if matches!(
-                                request.role,
-                                ui::floating_surface::FloatingRole::ActiveCall
-                                    | ui::floating_surface::FloatingRole::Navigation
-                            ) {
+                                if request.role.uses_app_owned_host() {
+                                    authenticated_app_owned_source(
+                                        state,
+                                        frame_builder,
+                                        &app_id,
+                                        launch.as_ref(),
+                                    )?
+                                } else {
+                                    frame_builder.foreign_surface_for_app(&app_id).ok_or_else(
+                                        || format!("{app_id} has no visible foreign surface"),
+                                    )?
+                                };
+                            let owner = request
+                                .role
+                                .uses_app_owned_host()
+                                .then(|| state.floating_owner_for_surface(source_surface_id))
+                                .transpose()
+                                .map_err(str::to_string)?;
+                            if request.role.uses_app_owned_host() {
+                                state
+                                    .validate_floating_resume_owner(
+                                        connection,
+                                        &public_id,
+                                        owner.as_deref(),
+                                    )
+                                    .map_err(str::to_string)?;
+                            }
+                            let (transfer_frame, transfer_source) = if request
+                                .role
+                                .uses_app_owned_host()
+                            {
                                 validate_app_owned_source(&request.source, &app_id)?;
                                 let source = app_owned_transfer_region(
                                     &request.source,
@@ -1554,15 +1867,20 @@ fn pump_floating_surface_service(
                                 transfer_frame,
                                 transfer_source,
                                 [app_rect.x0, app_rect.y0],
+                                owner,
+                                source_surface_id,
                             ))
                         });
                     match result {
-                        Ok((request, transfer_frame, transfer_source, coordinate_offset)) => {
-                            if matches!(
-                                request.role,
-                                ui::floating_surface::FloatingRole::ActiveCall
-                                    | ui::floating_surface::FloatingRole::Navigation
-                            ) {
+                        Ok((
+                            request,
+                            transfer_frame,
+                            transfer_source,
+                            coordinate_offset,
+                            owner,
+                            source_surface_id,
+                        )) => {
+                            if request.role.uses_app_owned_host() {
                                 let content_rect = request.initial_rect.unwrap_or_else(|| {
                                     Rect::from_center_size(desktop.center(), request.preferred_size)
                                 });
@@ -1578,32 +1896,39 @@ fn pump_floating_surface_service(
                                         fallback_size,
                                     );
                                 let transfer_covered = transfer_frame.is_some();
-                                let token = state
-                                    .resume_floating_toplevel(
-                                        connection,
-                                        &public_id,
-                                        rect,
-                                        content_rect,
-                                        transfer_frame.clone(),
-                                        transfer_source,
-                                    )
-                                    .unwrap_or_else(|| {
-                                        let token = uuid::Uuid::new_v4().simple().to_string();
-                                        state.authorize_floating_toplevel(
-                                            crate::compositor::state::PendingFloatingToplevel {
-                                                token: token.clone(),
-                                                connection,
-                                                public_id: public_id.clone(),
-                                                app_id: app_id.clone(),
-                                                content_rect,
-                                                rect,
-                                                transfer_frame,
-                                                transfer_source,
-                                                suspended: false,
-                                            },
-                                        );
-                                        token
-                                    });
+                                let Ok(resumed) = state.resume_floating_request_with_focus(
+                                    connection,
+                                    &public_id,
+                                    (rect, content_rect),
+                                    (transfer_frame.clone(), transfer_source),
+                                    owner
+                                        .as_ref()
+                                        .map(|owner| (source_surface_id, owner.clone())),
+                                ) else {
+                                    tracing::warn!(
+                                        "floating resume rejected incompatible input geometry"
+                                    );
+                                    continue;
+                                };
+                                let token = resumed.unwrap_or_else(|| {
+                                    let token = uuid::Uuid::new_v4().simple().to_string();
+                                    state.authorize_floating_toplevel(
+                                        crate::compositor::state::PendingFloatingToplevel {
+                                            owner: owner.clone(),
+                                            token: token.clone(),
+                                            connection,
+                                            public_id: public_id.clone(),
+                                            app_id: app_id.clone(),
+                                            content_rect,
+                                            input_rect: None,
+                                            rect,
+                                            transfer_frame,
+                                            transfer_source,
+                                            suspended: false,
+                                        },
+                                    );
+                                    token
+                                });
                                 service.send(
                                     connection,
                                     &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
@@ -1683,22 +2008,36 @@ fn pump_floating_surface_service(
                     id,
                     rect,
                     content_rect,
+                    input_rect,
                 } => match (
                     ui::floating_surface::protocol_rect(rect),
                     ui::floating_surface::protocol_rect(content_rect),
                 ) {
                     (Ok(window_rect), Ok(content_rect)) => {
+                        let Ok(input_rect) =
+                            ui::floating_surface::protocol_input_rect(window_rect, input_rect)
+                        else {
+                            tracing::warn!("floating geometry has invalid input bounds");
+                            continue;
+                        };
+                        let previous_origin = window_rect.union(content_rect).origin();
                         let (rect, content_rect) = clamp_external_floating_geometry_to_outputs(
                             window_rect,
                             content_rect,
                             outputs,
                             fallback_size,
                         );
+                        let input_rect = ui::floating_surface::translate_input_rect(
+                            input_rect,
+                            previous_origin,
+                            rect.origin(),
+                        );
                         changed |= state.update_floating_toplevel_rect(
                             connection,
                             &id,
                             rect,
                             content_rect,
+                            input_rect,
                         );
                     }
                     (Err(error), _) | (_, Err(error)) => {
@@ -1726,7 +2065,7 @@ fn pump_floating_surface_service(
                             outputs,
                             fallback_size,
                         );
-                        changed |= state.update_floating_toplevel_rect(
+                        changed |= state.update_retained_floating_geometry(
                             connection,
                             &id,
                             rect,
@@ -1743,6 +2082,17 @@ fn pump_floating_surface_service(
                         connection,
                         &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
                     );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::ActionMarkers { markers } => {
+                    publish_native_agent_markers(
+                        state,
+                        frame_builder,
+                        connection,
+                        &app_id,
+                        launch.as_ref(),
+                        markers,
+                    );
+                    changed = true;
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
                     protected,
@@ -1840,6 +2190,9 @@ fn pump_floating_surface_service(
             FloatingServiceEvent::Disconnected { connection, app_id } => {
                 frame_builder
                     .host_mut()
+                    .retire_accessible_agent_markers(connection);
+                frame_builder
+                    .host_mut()
                     .disconnect_native_terminal(connection);
                 appearance.disconnected(connection);
                 // Closing the control socket does not destroy the last Wayland
@@ -1861,6 +2214,7 @@ fn pump_floating_surface_service(
                 }
                 state.dismiss_floating_connection(connection);
                 state.drop_paint_connection(connection);
+                state.native_agent_markers.remove(&connection);
                 foreign::store().release_capture_protection(connection);
                 tracing::debug!(connection, %app_id, "shell-ui client disconnected");
                 changed = true;
@@ -2003,6 +2357,11 @@ fn rehome_native_floating_surfaces(
         changed |= rect != surface.rect || content_rect != surface.content_rect;
         surface.rect = rect;
         surface.content_rect = content_rect;
+        surface.input_rect = ui::floating_surface::translate_input_rect(
+            surface.input_rect,
+            previous.origin(),
+            rect.origin(),
+        );
         if let Some(source) = surface.transfer_source.as_mut() {
             source.rect = source.rect + offset;
         }
@@ -2019,6 +2378,11 @@ fn rehome_native_floating_surfaces(
         changed |= rect != surface.rect || content_rect != surface.content_rect;
         surface.rect = rect;
         surface.content_rect = content_rect;
+        surface.input_rect = ui::floating_surface::translate_input_rect(
+            surface.input_rect,
+            previous.origin(),
+            rect.origin(),
+        );
         if let Some(source) = surface.transfer_source.as_mut() {
             source.rect = source.rect + offset;
         }
@@ -2603,6 +2967,15 @@ struct FrameBuilderControlState<'a> {
 }
 
 impl FrameBuilderControlState<'_> {
+    fn insert_primary_preedit_route(&self, row: &mut serde_json::Value, surface: u64) {
+        if let Some(child) = self
+            .seat
+            .and_then(|seat| seat.floating_preedit_child_for(surface))
+        {
+            insert_preedit_route(row, "floating-preedit-child", child);
+        }
+    }
+
     /// Which windows each display holds, in the order they are laid out,
     /// and which display has focus: the per-device partition as the person
     /// sees it. Lists every connected display, a single one included.
@@ -2721,7 +3094,11 @@ impl FrameBuilderControlState<'_> {
         // yet: an index build or an app's directory page that would add to it
         // is still on its way. `wait_ms` waits for that.
         answer.insert("revision".into(), format!("{fingerprint:016x}").into());
-        answer.insert("complete".into(), complete.into());
+        answer.insert(
+            "complete".into(),
+            (complete && catalog.completion().complete).into(),
+        );
+        answer.insert("completion".into(), serde_json::json!(catalog.completion()));
         Ok(serde_json::Value::Object(answer))
     }
 }
@@ -2862,23 +3239,34 @@ impl ControlState for FrameBuilderControlState<'_> {
     fn foreign_frames_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let store = crate::compositor::foreign::store();
-        let frames: Vec<serde_json::Value> =
+        let keyboard_focus = self
+            .seat
+            .and_then(|seat| seat.client_input.keyboard_focus());
+        let rect_json = |rect: Rect| {
+            serde_json::json!({
+                "x": rect.x0, "y": rect.y0,
+                "w": rect.width(), "h": rect.height(),
+            })
+        };
+        let mut frames: Vec<serde_json::Value> =
             crate::compositor::foreign::foreign_tabs(&chrome.tree())
                 .into_iter()
                 .map(|tab| {
+                    let (pixels, capture_pending) =
+                        store.presentation_capture_state(tab.surface_id);
                     // The rect the widget tree laid this tab into, so a harness can aim at it.
-                    let placement = store.placement(tab.surface_id).map(|r| {
-                        serde_json::json!({
-                            "x": r.x0, "y": r.y0,
-                            "w": r.width(), "h": r.height(),
-                        })
+                    let placement = store.placement(tab.surface_id);
+                    let content_rect = placement.map(|rect| store.target_box(tab.surface_id, rect));
+                    let content_origin = placement.map(|rect| {
+                        let (x, y) = store.surface_origin(tab.surface_id, rect);
+                        serde_json::json!({ "x": x, "y": y })
                     });
                     // What the client actually drew, beside the tab it was drawn into — an
                     // opening-then-resizing window is those two disagreeing for a moment.
                     let buffer = store
                         .frame_size(tab.surface_id)
                         .map(|(w, h)| serde_json::json!({ "w": w, "h": h }));
-                    serde_json::json!({
+                    let mut row = serde_json::json!({
                         "surface_id": tab.surface_id,
                         "app_id": tab.app_id,
                         // Dialogs shown on this tile, bottom to top, where they are drawn.
@@ -2890,18 +3278,73 @@ impl ControlState for FrameBuilderControlState<'_> {
                                 "rect": { "x": r.x0, "y": r.y0, "w": r.width(), "h": r.height() },
                             })
                         }).collect::<Vec<_>>(),
-                        "frame_seq": store.frame_seq(tab.surface_id),
+                        "frame_seq": observed_frame_sequence(store, tab.surface_id, pixels),
                         "last_error": store.last_error(tab.surface_id),
-                        "rect": placement,
+                        "rect": placement.map(&rect_json),
+                        // The exact content box and surface-local origin used by
+                        // `client_input::route_tile_point`. These are observation
+                        // only: they carry no connection or input authority.
+                        "content_rect": content_rect.map(&rect_json),
+                        "content_origin": content_origin,
                         "buffer": buffer,
+                        "keyboard_focused": keyboard_focus == Some(tab.surface_id),
                         // Whether the shell is painting this window yet.
                         "presented": store.is_presented(tab.surface_id),
+                        "pixels_ready": pixels.is_some(),
+                        "capture_pending": capture_pending,
                         // And, while it is not, whether the placeholder card is up — without this
                         // a harness can't tell an empty desktop from one announcing an app is on its way.
                         "opening": store.is_opening(tab.surface_id),
-                    })
+                    });
+                    self.insert_primary_preedit_route(&mut row, tab.surface_id);
+                    row
                 })
                 .collect();
+        if let Some(seat) = self.seat {
+            frames.extend(seat.floating_toplevels.iter().map(|surface| {
+                let (pixels, capture_pending) =
+                    store.presentation_capture_state(surface.surface_id);
+                let input_source = seat.floating_preedit_source_for(surface.surface_id);
+                // A mapped client or a retained transfer image is not proof
+                // that its secondary surface is currently being presented.
+                let visible = !surface.suspended
+                    && surface.presented
+                    && surface.transfer_source.is_none()
+                    && store.is_presented(surface.surface_id);
+                let (origin_x, origin_y) = store.surface_origin(surface.surface_id, surface.rect);
+                let mut row = serde_json::json!({
+                    "surface_id": surface.surface_id,
+                    "app_id": surface.app_id,
+                    "floating_id": surface.public_id,
+                    "frame_seq": observed_frame_sequence(store, surface.surface_id, pixels),
+                    "last_error": store.last_error(surface.surface_id),
+                    "rect": {
+                        "x": surface.rect.x0, "y": surface.rect.y0,
+                        "w": surface.rect.width(), "h": surface.rect.height(),
+                    },
+                    "content_rect": rect_json(surface.content_rect),
+                    "target_rect": rect_json(store.target_box(surface.surface_id, surface.rect)),
+                    "frame_geometry": store.frame_geometry(surface.surface_id),
+                    "device_scale": seat.surface_scale(surface.surface_id),
+                    "content_origin": {
+                        "x": origin_x,
+                        "y": origin_y,
+                    },
+                    "buffer": store.frame_size(surface.surface_id)
+                        .map(|(w, h)| serde_json::json!({ "w": w, "h": h })),
+                    "presented": visible,
+                    "pixels_ready": pixels.is_some(),
+                    "capture_pending": capture_pending,
+                    "keyboard_focused": keyboard_focus == Some(surface.surface_id),
+                    "suspended": surface.suspended,
+                    "transferring": surface.transfer_source.is_some(),
+                });
+                if let Some(source) = input_source {
+                    insert_preedit_route(&mut row, "floating-preedit-source", source);
+                }
+                row
+            }));
+        }
         serde_json::Value::Array(frames)
     }
 
@@ -3206,10 +3649,15 @@ impl ControlState for FrameBuilderControlState<'_> {
     fn chrome_state_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
+        let native_broker = chrome
+            .native_app_opening
+            .as_ref()
+            .and_then(|opening| opening.0.upgrade().ok());
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         serde_json::json!({
             "seat_focus": self.seat.map(State::seat_focus_json),
+            "native_window_provenance": self.seat.map(|seat| seat.native_window_provenance_with_broker(native_broker.as_ref())),
             "overlays": {
                 "overview": overlays.overview,
                 "quick_settings": overlays.quick_settings,
@@ -7541,6 +7989,8 @@ fn attach_collab_broker_bridges(
             dispatcher.set(&room.to_string(), peer_id);
         }));
     if let Some(action_broker) = broker.app_action_broker() {
+        // Links the shell opens show their resource through this broker.
+        crate::shell::link_open::attach_broker(&action_broker);
         // An app reaching for another app's action is asked about on this
         // session's own sheet, which the overlay host draws and answers.
         action_broker.set_app_action_consent(std::sync::Arc::new(
@@ -8643,7 +9093,10 @@ pub fn run() {
     state.scale = crate::compositor::state::display_scale_from(&live_settings.snapshot().document);
     // Point `ui`'s clipboard at the compositor's selection mirror — everything
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
-    crate::compositor::selection::install_host_services(state.selection_store());
+    crate::compositor::selection::install_host_services(
+        state.selection_store(),
+        tree_handle.clone(),
+    );
     // Building the desktop mounts the hosted tabs it restores, which connect
     // to the collaboration broker and identity service bound below: they
     // wait for them rather than find no socket and stay offline.
@@ -11466,9 +11919,16 @@ pub fn run() {
             .filter(|surface| {
                 !surface.suspended && surface.presented && surface.transfer_source.is_none()
             })
-            .map(|surface| (surface.surface_id, surface.app_id.clone(), surface.rect))
+            .map(|surface| {
+                (
+                    surface.surface_id,
+                    surface.app_id.clone(),
+                    surface.rect,
+                    surface.input_rect,
+                )
+            })
             .collect::<Vec<_>>();
-        frame_builder.set_floating_surfaces(&floating_surfaces);
+        frame_builder.set_floating_surfaces_with_input(&floating_surfaces);
         state.sync_capture_protection();
         state.set_capture_placeholder_fill(
             crate::shell::capture_protection::placeholder_fill_rgba8(frame_builder.theme()),
@@ -11984,7 +12444,11 @@ pub fn run() {
             frame_builder.with_chrome(|st| publish_media_osd(st, osd));
             session_changed = true;
         }
+        let markers_suppressed = session.is_locked() || frame_builder.host().onboarding_active();
+        let markers_retired =
+            revalidate_native_agent_markers(&mut state, &mut frame_builder, markers_suppressed);
         let mut apps_changed = foreign_capture_changed
+            | markers_retired
             | frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         crate::shell::launcher::record_presented_launches(|surface| {
             crate::compositor::foreign::store().frame_seq(surface)
@@ -13646,7 +14110,7 @@ mod tests {
 
     /// Automatic brightness is off by default, so on almost every desktop its
     /// worker has nothing to do: it waits for a settings change instead of
-    /// waking every 2 s (TIL-690 measured 0.5 wakeups/s on an idle desktop).
+    /// waking every 2 s (#3983 measured 0.5 wakeups/s on an idle desktop).
     #[test]
     fn auto_brightness_worker_sleeps_while_the_setting_is_off() {
         let source = std::sync::Arc::new(settings_store::HostDocument::new(
@@ -16016,7 +16480,6 @@ mod tests {
                 );
             attach_directory_fixture(&mut fixture.frame_builder, &directory);
             let (wake, woken) = loop_wake(&fixture.event_loop);
-            let _installed = crate::shell::search::invocation_wake::install(wake);
             let (mut conn, mut writer, mut reader) = control_client();
 
             let enumerate = b"{\"op\":\"actions_enumerate\",\"query\":\"open atlas\"}\n";
@@ -16042,6 +16505,12 @@ mod tests {
                 .dispatch(Some(Duration::ZERO), &mut fixture.state)
                 .expect("dispatch");
             woken.set(false);
+            // Install the loop's wake only now. The listings above start the
+            // local index workers, and a finished build wakes whichever loop
+            // was installed when it started; one landing after the clear
+            // above would read as the admission waking the loop early. The
+            // admission ticket takes this wake when the invocation makes it.
+            let _installed = crate::shell::search::invocation_wake::install(wake);
 
             let invoke = serde_json::json!({
                 "op": "actions_invoke",
@@ -16175,6 +16644,7 @@ mod tests {
                 panic!("a waited listing answers with the listing");
             };
             assert_eq!(listing["complete"], true, "{listing}");
+            assert_eq!(listing["completion"]["complete"], true, "{listing}");
             assert_eq!(listing["settled"], true, "{listing}");
             let action_id = listing["actions"]
                 .as_array()
@@ -16958,6 +17428,20 @@ mod tests {
             rows["count"].as_u64().is_some_and(|count| count > 0),
             "{rows}"
         );
+        let completion = &rows["completion"];
+        assert!(
+            completion["complete"].is_boolean(),
+            "admin wire preserves completion: {rows}"
+        );
+        assert!(
+            completion["incomplete"].is_array(),
+            "admin wire preserves provider outcomes: {rows}"
+        );
+        assert_eq!(
+            completion["complete"].as_bool(),
+            completion["incomplete"].as_array().map(Vec::is_empty)
+        );
+        assert_eq!(rows["complete"], completion["complete"]);
         assert!(matches!(
             ask(r#"{"op":"state_dump"}"#),
             test_control::Response::State { .. }
@@ -17743,8 +18227,16 @@ mod tests {
             serde_json::json!({
                 "keyboard": null,
                 "routed_keyboard_surface": null,
+                "pointer_observable": true,
+                "pointer": null,
+                "routed_pointer_surface": null,
+                "pointer_grab": {"kind": "none", "surface": null},
+                "pointer_buttons_down": 0,
                 "text_input": null,
                 "text_input_active": false,
+                "input_method_connected": false,
+                "input_method_keyboard_grabbed": false,
+                "input_method_preedit_active": false,
                 "on_screen_keyboard_surface": null,
             })
         );

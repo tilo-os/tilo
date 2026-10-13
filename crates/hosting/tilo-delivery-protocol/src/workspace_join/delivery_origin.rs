@@ -21,8 +21,12 @@ impl DeliveryOriginLocatorV1 {
                 "invalid delivery origin locator".into(),
             ));
         }
-        crate::descriptor::validate_origin(&self.origin)
-            .map_err(|_| WorkspaceJoinError::Protocol("invalid delivery origin".into()))
+        if !crate::origin::is_https_origin(&self.origin) {
+            return Err(WorkspaceJoinError::Protocol(
+                "invalid delivery origin".into(),
+            ));
+        }
+        Ok(())
     }
     /// Sign inert discovery bytes with the named host key. Installation is the
     /// caller's private native responsibility, not a property of this utility.

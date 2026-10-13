@@ -97,6 +97,16 @@ fn pin(layer: &Path, name: &str, key: &str) {
 }
 
 fn package(layer: &Path, work: &Path, version: &str, case: &str) -> InstalledPackage {
+    package_named(layer, work, version, case, "fixture")
+}
+
+fn package_named(
+    layer: &Path,
+    work: &Path,
+    version: &str,
+    case: &str,
+    name: &str,
+) -> InstalledPackage {
     let payload = work.join("payload");
     fs::create_dir_all(payload.join("bin")).unwrap();
     let binary = payload.join("bin/fixture");
@@ -129,7 +139,7 @@ fn package(layer: &Path, work: &Path, version: &str, case: &str) -> InstalledPac
     let source = format!(
         r#"
 [package]
-id = "so.tilo.fixture"
+id = "so.tilo.{name}"
 kind = "{kind}"
 version = "0.1.0"
 runtime = "tilo-runtime/{version}"
@@ -164,13 +174,13 @@ type = "{entry_type}"
     let archives = store.join("cohort");
     fs::create_dir_all(&archives).unwrap();
     tilo_app_package::tapp::write(
-        fs::File::create(archives.join("so.tilo.fixture.tapp")).unwrap(),
+        fs::File::create(archives.join(format!("so.tilo.{name}.tapp"))).unwrap(),
         &packed.meta,
         Some(&packed),
     )
     .unwrap();
-    let actual = store.join("payload/fixture");
-    let record = store.join("packages/fixture");
+    let actual = store.join(format!("payload/{name}"));
+    let record = store.join(format!("packages/{name}"));
     fs::create_dir_all(actual.join("bin")).unwrap();
     fs::create_dir_all(&record).unwrap();
     fs::copy(binary, actual.join("bin/fixture")).unwrap();
@@ -191,15 +201,15 @@ type = "{entry_type}"
     .unwrap();
     pin(layer, "app-publisher.hex", &publisher);
     serde_json::from_value(serde_json::json!({
-        "id":"so.tilo.fixture", "version":"0.1.0", "package_id_hex":packed.meta.id.to_hex(),
-        "manifest_path":"/usr/share/tilo-apps/packages/fixture/manifest.toml",
-        "payload_root":"/usr/share/tilo-apps/payload/fixture", "publisher_key_hex":publisher,
+        "id":format!("so.tilo.{name}"), "version":"0.1.0", "package_id_hex":packed.meta.id.to_hex(),
+        "manifest_path":format!("/usr/share/tilo-apps/packages/{name}/manifest.toml"),
+        "payload_root":format!("/usr/share/tilo-apps/payload/{name}"), "publisher_key_hex":publisher,
         "runtime":format!("tilo-runtime/{version}")
     }))
     .unwrap()
 }
 
-fn fixture(root: &Path, case: &str) {
+pub(crate) fn fixture(root: &Path, case: &str) {
     let layer = root.join("layer");
     let work = root.join("work");
     fs::create_dir_all(&work).unwrap();
@@ -270,7 +280,7 @@ fn fixture(root: &Path, case: &str) {
     }
 }
 
-fn save(registry: &Registry, path: &Path) {
+pub(crate) fn save(registry: &Registry, path: &Path) {
     #[derive(serde::Serialize)]
     struct Rows<'a> {
         entry: &'a [InstalledPackage],
@@ -453,4 +463,18 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+pub(crate) fn fixture_pair(root: &Path) {
+    fixture(root, "valid");
+    let layer = root.join("layer");
+    let registry_path = layer.join("usr/share/tilo-apps/registry.toml");
+    let mut registry = Registry::load(&registry_path).unwrap();
+    let runtime = registry.entries().first().unwrap().runtime.clone();
+    let version = runtime.strip_prefix("tilo-runtime/").unwrap();
+    let work = root.join("second-work");
+    fs::create_dir_all(&work).unwrap();
+    registry.upsert(package_named(&layer, &work, version, "valid", "sibling"));
+    save(&registry, &registry_path);
+    save(&registry, &root.join("base/registry.toml"));
 }

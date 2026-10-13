@@ -26,6 +26,9 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import is_test_file, line_number, production_source  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 CRATES = (Path("crates/sdk/ui-core"), Path("crates/sdk/tilo-host"))
@@ -36,7 +39,6 @@ DIRECT_PATH = re.compile(rf"\bstd::time::{CLOCK_ITEM}\b")
 BRACED_PATH = re.compile(rf"\bstd::time::\{{[^}}]*\b{CLOCK_ITEM}\b")
 GROUPED_USE = re.compile(r"\buse\s+std::\{(?P<body>.*?)\};", re.DOTALL)
 GROUPED_TIME = re.compile(rf"\btime::(?:{CLOCK_ITEM}\b|\{{[^}}]*\b{CLOCK_ITEM}\b)")
-TEST_MODULE_MARKERS = ("\n#[cfg(test)]", "\n#[cfg(all(test")
 
 
 @dataclass(frozen=True)
@@ -48,25 +50,6 @@ class Violation:
     def __str__(self) -> str:
         location = f"{self.path}:{self.line}" if self.line else self.path
         return f"{location}: {self.reason}"
-
-
-def is_test_file(relative: Path) -> bool:
-    name = relative.name
-    return "tests" in relative.parts or name == "tests.rs" or name.endswith("_tests.rs")
-
-
-def production_source(text: str) -> str:
-    """Drop the conventional trailing test module and full-line comments.
-
-    Comments are blanked rather than removed so line numbers stay accurate.
-    """
-    ends = [text.find(marker) for marker in TEST_MODULE_MARKERS if marker in text]
-    source = text[: min(ends)] if ends else text
-    return re.sub(r"(?m)^\s*//.*$", "", source)
-
-
-def line_number(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1
 
 
 def audit_sources(root: Path, crate: Path) -> list[Violation]:

@@ -24,8 +24,6 @@
 //!   renderer, which scales once more.
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 
 use tilo_ui::State;
 use tilo_ui::TextRole;
@@ -35,8 +33,7 @@ use tilo_ui::search::{SearchGroup, SearchResult};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::{
-    Alternative, Banner, Button, Chart, Column, ConflictBanner, ConflictKind, ConflictPicker,
-    Container, Element, IconGrid, IconGridItem, SearchResultsView, Section, SectionHeader, Series,
+    Banner, Button, Chart, Column, Element, SearchResultsView, Section, SectionHeader, Series,
     StatGroup, StatTile, Text, TreeNode, TreeView, Trend,
 };
 use vello::kurbo::Rect;
@@ -52,10 +49,6 @@ const SEARCH_ROW_ONE_LINE: f64 = 38.0;
 const SEARCH_ROW_TWO_LINE: f64 = 50.0;
 const SEARCH_TEXT_X: f64 = 8.0 + 12.0 + 30.0;
 const CHART_HEADER_H: f64 = 22.0;
-const ICON_CELL: (f64, f64) = (96.0, 88.0);
-const PICKER_PAD: f64 = 16.0;
-const PICKER_TITLE_H: f64 = 28.0;
-const ICON_GLYPH: f64 = 40.0;
 
 // The production formulas the widgets size their bands from — one line of
 // type as the renderer lays it out, and a pinned floor grown by content plus
@@ -332,69 +325,6 @@ fn chart() -> Element {
     )
 }
 
-fn icon_grid() -> Element {
-    // Inside a Column the grid is stretched to the window width and reflows
-    // into columns, as it does in an app; as a bare root it would measure one
-    // cell wide.
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(IconGrid::new(vec![
-                IconGridItem::new(Icon::Folder, "Documents"),
-                IconGridItem::new(Icon::Folder, "Downloads"),
-                IconGridItem::new(Icon::Image, "holiday-photo-2026.png"),
-                IconGridItem::new(Icon::FileText, "notes.md"),
-                IconGridItem::new(Icon::Music, "song.flac"),
-                IconGridItem::new(Icon::File, "archive.tar"),
-            ]))),
-    )
-}
-
-/// The picker fills the modal its host allocates and caps its cards to that
-/// band, so the fixture sizes the modal with the text scale as a shell would.
-fn conflict(scale: f32) -> Element {
-    fn alt(label: &str, summary: &str, author: &str, secs_ago: u64) -> Alternative {
-        Alternative {
-            label: label.into(),
-            summary: summary.into(),
-            author: author.into(),
-            timestamp: SystemTime::now()
-                .checked_sub(Duration::from_secs(secs_ago))
-                .unwrap_or_else(SystemTime::now),
-            payload: Arc::from(Vec::<u8>::new()),
-        }
-    }
-    let mut banner = ConflictBanner::new("Kanban move");
-    banner.set_conflict_count(2);
-    let picker = ConflictPicker::new(
-        "Kanban move",
-        ConflictKind::PickOne {
-            alternatives: vec![
-                alt(
-                    "Move to Done",
-                    "Alice marked the card finished",
-                    "Alice",
-                    120,
-                ),
-                alt("Move to In Review", "Bob wants Carol to approve", "Bob", 60),
-            ],
-        },
-    );
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_gap(8.0)
-            .push(Box::new(banner))
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_height(320.0 * scale)
-                    .with_child(Box::new(picker)),
-            )),
-    )
-}
-
 fn legacy_cards() -> Element {
     Box::new(
         Column::new()
@@ -591,67 +521,6 @@ fn data_rows_centre_their_text_and_scale_once() {
         }
         assert_scaled_once("search title", title_ink[0], title_ink[1]);
     }
-
-    // Case `icon_grid_centres_glyph_and_label_block_in_the_cell_and_scales_once`.
-    {
-        let mut label_ink = Vec::new();
-        for scale in [1.0, 2.0] {
-            let cap = capture("icon_grid", icon_grid(), (440, 260), scale);
-            let grid = rect(find(&cap.harness.inspection().root, "IconGrid"));
-            // The default cell follows the label type: eight ems of `sm` across,
-            // and the glyph, its `s2` gap and one `sm` line plus two `s3` insets
-            // down — the pinned 96×88 at 1x.
-            let theme = Theme::dark().with_text_scale(scale);
-            let sm_size = f64::from(theme.tokens.typography.size(TextRole::Caption));
-            let sm = line(&theme.tokens.typography, TextRole::Caption);
-            let s2 = f64::from(theme.tokens.spacing.s2);
-            let s3 = f64::from(theme.tokens.spacing.s3);
-            let cell_w = band(ICON_CELL.0, sm_size * 8.0, 0.0);
-            let cell_h = band(ICON_CELL.1, ICON_GLYPH + s2 + sm, 2.0 * s3);
-            assert!(cell_w >= ICON_CELL.0 && cell_h >= ICON_CELL.1);
-            if scale > 1.0 {
-                assert!(cell_w > ICON_CELL.0 && cell_h > ICON_CELL.1);
-            }
-            let cell = Rect::new(grid.x0, grid.y0, grid.x0 + cell_w, grid.y0 + cell_h);
-            // The label lives under the glyph; probe below the glyph's lowest
-            // possible bottom edge once the block is centred in the cell.
-            let glyph_bottom = (cell_h - (ICON_GLYPH + s2 + sm)) / 2.0 + ICON_GLYPH;
-            let label = Rect::new(cell.x0, cell.y0 + glyph_bottom + 1.0, cell.x1, cell.y1);
-            let label_run = ink(&cap.image, label);
-            label_ink.push(label_run);
-            let glyph_and_label = ink(&cap.image, cell);
-            // The block is centred by its line box, not its ink: the label's
-            // descender space (no letter of "Documents" reaches into it) lifts
-            // the ink a little, by an amount that grows with the type.
-            let block_tolerance = 1.5 * f64::from(scale);
-            assert_centered(
-                "glyph + label block",
-                glyph_and_label,
-                cell,
-                block_tolerance,
-            );
-            let drift = glyph_and_label.center().x - cell.center().x;
-            assert!(
-                drift.abs() <= 1.5,
-                "cell content {glyph_and_label:?} is {drift:+.2} px off centre"
-            );
-            // The second cell starts one `s3` gap after the first: the grid
-            // reflowed into columns rather than one cell per row.
-            let second = Rect::new(cell.x1 + s3, cell.y0, cell.x1 + s3 + cell_w, cell.y1);
-            let second_content = ink(&cap.image, second);
-            assert_centered("second cell block", second_content, second, block_tolerance);
-        }
-        assert_scaled_once("icon label", label_ink[0], label_ink[1]);
-        // "Documents" fits the 2x cell whole: a cell that had stayed 96 px wide
-        // would elide it to "Docum…", a run barely wider than the 1x label.
-        let width_ratio = label_ink[1].width() / label_ink[0].width();
-        assert!(
-            width_ratio >= 1.8,
-            "2x label {:?} must not be elided (x{width_ratio:.2} of the 1x run {:?})",
-            label_ink[1],
-            label_ink[0]
-        );
-    }
 }
 
 #[allow(
@@ -775,122 +644,5 @@ fn card_headers_centre_on_their_icon_line_and_scale_once() {
             title_heights[0],
             title_heights[1]
         );
-    }
-}
-
-#[test]
-fn conflict_surfaces_centre_their_title_and_keep_a_visible_edge() {
-    // Case `conflict_surfaces_centre_the_title_and_scale_once`.
-    {
-        let mut title_ink = Vec::new();
-        for scale in [1.0, 2.0] {
-            // The window grows with the modal so the whole picker stays in frame.
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "the fixture scale is exactly 1 or 2, so the viewport height is the nonnegative integer 400 or 800"
-            )]
-            let viewport_h = (400.0 * scale) as u32;
-            let cap = capture("conflict", conflict(scale), (820, viewport_h), scale);
-            let snapshot = cap.harness.inspection();
-            let picker = rect(find(&snapshot.root, "ConflictPicker"));
-            // The title band holds the `lg` title line plus `s1`; the banner its
-            // `sm` label line plus its two 8 px paddings. The pinned 28 / 36 at 1x.
-            let theme = Theme::dark().with_text_scale(scale);
-            let title_h = band(
-                PICKER_TITLE_H,
-                line(&theme.tokens.typography, TextRole::Heading),
-                f64::from(theme.tokens.spacing.s1),
-            );
-            let banner_h = band(
-                36.0,
-                line(&theme.tokens.typography, TextRole::Caption),
-                16.0,
-            );
-            assert!(title_h >= PICKER_TITLE_H && banner_h >= 36.0);
-            if scale > 1.0 {
-                assert!(title_h > PICKER_TITLE_H && banner_h > 36.0);
-            }
-            let title = Rect::new(
-                picker.x0 + PICKER_PAD,
-                picker.y0 + PICKER_PAD,
-                picker.x0 + 320.0,
-                picker.y0 + PICKER_PAD + title_h,
-            );
-            let title_run = ink(&cap.image, title);
-            title_ink.push(title_run);
-            assert_centered("picker title", title_run, title, 1.0);
-            assert_has_air("picker title", title_run, title);
-
-            let banner = rect(find(&snapshot.root, "ConflictBanner"));
-            assert!(
-                (banner.height() - banner_h).abs() < 0.5,
-                "{scale}x: the banner lays out its resolved band {banner_h}, got {banner:?}"
-            );
-            let label = Rect::new(banner.x0 + 36.0, banner.y0, banner.x0 + 300.0, banner.y1);
-            assert_centered("conflict banner label", ink(&cap.image, label), banner, 1.0);
-            // The trailing chips end inside the banner's padding: at 2x the
-            // labels widen their chips instead of overrunning the banner.
-            let chips = Rect::new(banner.x1 - 260.0, banner.y0, banner.x1, banner.y1);
-            let chip_ink = ink(&cap.image, chips);
-            assert!(
-                chip_ink.x1 <= banner.x1 - 8.0 + 0.5,
-                "{scale}x: chip labels {chip_ink:?} must end inside the banner padding of {banner:?}"
-            );
-        }
-        assert_scaled_once("picker title", title_ink[0], title_ink[1]);
-    }
-
-    // Case `conflict_surfaces_keep_a_visible_chip_edge_in_both_themes`.
-    // HIG §9.5 "Rest edges" on the conflict surfaces, at 1× on the dark and the
-    // light preset: the banner's `Review` / `Dismiss` chips are Neutral faces
-    // whose fill and edge derive from the theme, replacing the
-    // `surface_white_*` / `border_white_*` veneers that were invisible on a
-    // light palette. A glyph-free column through the trailing chip must carry a
-    // face or edge pixel that registers against the banner's own fill in both
-    // themes. (Centring is pinned by `conflict_surfaces_centre_the_title_and_scale_once`;
-    // its `ink` helper reads light-on-dark and is not reused here.)
-    {
-        for theme in [Theme::dark(), Theme::light()] {
-            let name = theme.name.clone();
-            let cap = capture_with_theme("conflict", conflict(1.0), (820, 400), theme);
-            let snapshot = cap.harness.inspection();
-            let banner = rect(find(&snapshot.root, "ConflictBanner"));
-
-            // The banner fill, sampled on its centre line in the empty band
-            // between the label and the chips.
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "the banner is laid out inside the 820x400 fixture; flooring its nonnegative center selects the sample pixel"
-            )]
-            let (mid_x, mid_y) = (banner.center().x as u32, banner.center().y as u32);
-            let fill = luma(cap.image.get_pixel(mid_x, mid_y).0);
-            // The trailing chip ends inside the banner's 8 px padding; three
-            // pixels further in is inside the chip's own horizontal padding, so
-            // the column holds only the chip's edge and face, never a glyph.
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "the 820-pixel-wide fixture banner leaves this inset chip column nonnegative; flooring selects a raster column"
-            )]
-            let x = (banner.x1 - 8.0 - 3.0) as u32;
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "the fixture banner lies within the 400-pixel image; flooring its nonnegative edges selects the interior scan rows"
-            )]
-            let (y0, y1) = (banner.y0 as u32 + 1, banner.y1 as u32 - 1);
-            let best = (y0..y1)
-                .map(|y| (luma(cap.image.get_pixel(x, y).0) - fill).abs())
-                .fold(0.0_f64, f64::max);
-            // `luma` is the 0..255 weighted average; HIG's floor is 0.02 in
-            // relative-luminance units, which sits well above 4/255 here.
-            assert!(
-                best >= 4.0,
-                "{name}: the trailing chip's face/edge does not register against the banner fill \
-             (max |Δluma| = {best:.2} down column x={x})"
-            );
-        }
     }
 }

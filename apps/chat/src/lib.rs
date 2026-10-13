@@ -46,6 +46,8 @@
     )
 )]
 
+mod agent_conversation_surface;
+mod agent_tasks;
 pub mod app;
 pub mod body;
 pub mod call;
@@ -64,6 +66,7 @@ mod live_context;
 mod local_voice;
 pub mod mention;
 pub mod model;
+mod moderation;
 pub mod paint;
 pub mod permissions;
 pub mod picker;

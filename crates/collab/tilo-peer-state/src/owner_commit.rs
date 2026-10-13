@@ -83,6 +83,10 @@ pub enum CommitTarget {
         device: [u8; 32],
         invocation: uuid::Uuid,
     },
+    /// Signed native content root publication; not a caller-facing operation.
+    NativeCheckpointRoot {
+        root: [u8; 32],
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitBinding {

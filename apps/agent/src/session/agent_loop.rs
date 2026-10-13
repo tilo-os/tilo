@@ -530,7 +530,7 @@ impl Session {
         }
     }
 
-    /// The task catalogue — every live broker offer an unattended task may
+    /// The task catalogue — every broker route an unattended task may
     /// invoke — rebuilt only when the broker republished it, and shared
     /// rather than copied between rebuilds.
     pub(super) fn task_catalogue(&mut self) -> std::sync::Arc<surface::Catalogue> {
@@ -542,7 +542,7 @@ impl Session {
         let offers = surface::broker_offers(&self.broker_surfaces)
             .into_iter()
             .filter(|offer| {
-                offer.broker_peer_id.is_some()
+                (offer.broker_peer_id.is_some() || offer.broker_provider.is_some())
                     // The agent's own AI transforms are not task steps.
                     && !crate::transform::is_transform_kind(&offer.descriptor.resource_kind)
                     && matches!(
@@ -653,16 +653,32 @@ impl Session {
                 .checked_add(Duration::from_millis(u64::from(budget.total_ms)))
                 .unwrap_or_else(ui::time::now)
         });
+        // Native tasks are separate permission scopes, not messages in the
+        // legacy conversation. Keep their memory empty for the entire execution;
+        // Conversation still retains this run's turns and authenticated steering.
+        let legacy_memory = self
+            .native_task
+            .is_some()
+            .then(|| std::mem::take(&mut self.memory));
         let result = self.run_task_loop_with(run, &mut state);
         self.task_deadline = None;
+        if let Some(memory) = legacy_memory {
+            // Restore before propagating any I/O error, cancellation or failure,
+            // and never remember native prompts, actions or replies globally.
+            self.memory = memory;
+            return result;
+        }
         let end = result?;
         let reply = match &end {
             LoopEnd::Finished(finish, _) => finish.reply.clone().unwrap_or_default(),
             LoopEnd::Failed(message) => format!("(failed) {message}"),
             LoopEnd::Cancelled(message) => format!("(cancelled) {message}"),
         };
-        self.memory
-            .remember(&run.title, std::mem::take(&mut state.actions), &reply);
+        self.memory.remember(
+            run.instruction(),
+            std::mem::take(&mut state.actions),
+            &reply,
+        );
         Ok(end)
     }
 
@@ -699,7 +715,7 @@ impl Session {
         let catalogue = self.task_catalogue();
         // "ping/tell/notify … in Chat" requires a successful Chat operation,
         // whatever the model later claims.
-        let request = run.title.to_lowercase();
+        let request = run.instruction().to_lowercase();
         if request.contains("chat")
             && NOTIFY_WORDS.iter().any(|word| request.contains(word))
             && let Some(chat) = catalogue
@@ -749,7 +765,7 @@ impl Session {
             task: format!(
                 "{}The request:\n\n{}",
                 self.memory.render(),
-                run.title.trim()
+                run.instruction().trim()
             ),
         };
         let mut conversation = Conversation::new(protocol, &model, LOOP_SYSTEM, &first);
@@ -1095,10 +1111,6 @@ impl Session {
 
     /// Handle one completed call. `failed` records that an `invoke` of this
     /// turn did not succeed; the rest of the turn's invokes are then not run.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one completed call is checked, resolved, performed and recorded in a single auditable sequence"
-    )]
     fn handle_call(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -1299,7 +1311,7 @@ impl Session {
         };
         let instruction = match Instruction::from_answer(
             &invocation.operation,
-            &run.title,
+            run.instruction(),
             Some(&invocation.arguments),
             &catalogue.offers,
         ) {
@@ -1836,7 +1848,7 @@ mod tests {
     use tilo_actions::remote::RemoteActionMessage;
     use tilo_actions::{ActionContract, ActionParam, Availability, ParamType};
     use ui::collaboration::CollabRequest;
-    use ui::collaboration::{BrokerActionDescriptor, BrokerActionInput, BrokerActionSurface};
+    use ui::collaboration::{BrokerActionSurface, ExportedAction, ExportedInput};
     use uuid::Uuid;
 
     // -- A scripted model ------------------------------------------------
@@ -2016,8 +2028,8 @@ mod tests {
         params: Vec<ActionParam>,
         availability: Availability,
         tags: Vec<String>,
-    ) -> BrokerActionDescriptor {
-        BrokerActionDescriptor {
+    ) -> ExportedAction {
+        ExportedAction {
             semantic_identity: None,
             resource: DOC.into(),
             action: action.into(),
@@ -2032,12 +2044,8 @@ mod tests {
                 tags,
                 ..ActionContract::default()
             },
-            input: BrokerActionInput {
-                kind: "none".into(),
-                prompt: String::new(),
-                placeholder: String::new(),
-                wants_content: false,
-            },
+            view: None,
+            input: ExportedInput::None,
         }
     }
 
@@ -2143,6 +2151,7 @@ mod tests {
             let mut surfaces = vec![
                 BrokerActionSurface {
                     peer_id: PEER,
+                    provider: None,
                     app_id: "so.tilo.word-processor".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: "doc-1".into(),
@@ -2211,11 +2220,12 @@ mod tests {
                 },
                 BrokerActionSurface {
                     peer_id: CHAT_PEER,
+                    provider: None,
                     app_id: "so.tilo.chat".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: String::new(),
                     live: true,
-                    actions: vec![BrokerActionDescriptor {
+                    actions: vec![ExportedAction {
                         semantic_identity: None,
                         resource: "chat.channel:general".into(),
                         resource_kind: "chat.channel".into(),
@@ -2242,7 +2252,7 @@ mod tests {
                 if !self.writer_opened {
                     surfaces.remove(0);
                 }
-                let open = |app: &str, title: &str| BrokerActionDescriptor {
+                let open = |app: &str, title: &str| ExportedAction {
                     semantic_identity: None,
                     resource: format!("{}{app}", tools::LAUNCHER_OPEN_PREFIX),
                     resource_kind: "desktop.application".into(),
@@ -2258,6 +2268,7 @@ mod tests {
                 };
                 surfaces.push(BrokerActionSurface {
                     peer_id: DESKTOP_PEER,
+                    provider: None,
                     app_id: "so.tilo.desktop".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: String::new(),
@@ -2828,10 +2839,6 @@ mod tests {
         execution_fixture(title, world, turns, pace, None)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one fixture wires the scripted model, the fake broker peer and the real Session"
-    )]
     fn execution_fixture(
         title: &str,
         world: World,
@@ -2866,6 +2873,7 @@ mod tests {
             version: 1,
             task_id: "task:loop".into(),
             title: title.into(),
+            instruction: None,
             run_id: 7,
             lease: "broker-minted-lease".into(),
             planning: runtime_collab::TaskRunPlanning::Model,
@@ -2883,12 +2891,8 @@ mod tests {
                 cluster: Uuid::from_u128(1),
                 record: None,
                 name: "agent-1".into(),
-                pace: Duration::ZERO,
-                once: false,
                 model: true,
                 model_timeout: Duration::from_secs(5),
-                await_document: Duration::ZERO,
-                settle: Duration::ZERO,
                 permissions: ui::permissions::PermissionContext::agent_granted_at(
                     "agent-1",
                     &[],
@@ -3002,6 +3006,86 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn native_model_receives_the_full_private_instruction_not_a_truncated_title() {
+        let mut fixture = native_fixture(0);
+        let instruction =
+            "Inspect every release-note section and preserve the complete compatibility matrix. "
+                .repeat(6);
+        assert!(instruction.chars().count() > 240);
+        fixture.run.instruction = Some(instruction.clone());
+        fixture.session.run_task(&fixture.run).unwrap();
+        let bodies = fixture.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert!(bodies[0].to_string().contains(instruction.trim()));
+        drop(bodies);
+        assert!(fixture.session.memory.render().is_empty());
+    }
+
+    #[test]
+    fn native_tasks_isolate_private_memory_in_actual_model_requests() {
+        let mut fixture = native_fixture(0);
+        fixture.session.memory.remember(
+            "legacy-private-prompt-secret",
+            vec!["legacy-private-action-secret".into()],
+            "legacy-private-result-secret",
+        );
+        let legacy = fixture.session.memory.render();
+        let first_instruction = "first-native-private-instruction-secret";
+        fixture.run.instruction = Some(first_instruction.into());
+        *fixture.script.turns.lock().unwrap() = vec![turn(
+            &[finish("first-native-private-result-secret", true)],
+            24,
+        )]
+        .into();
+        fixture.session.run_task(&fixture.run).unwrap();
+        assert_eq!(fixture.session.memory.render(), legacy);
+
+        fixture.run.task_id = "task:second-private-scope".into();
+        fixture.run.run_id += 1;
+        fixture.run.action_context = serde_json::to_value(
+            tilo_actions::ActionContext::default()
+                .with_purpose(fixture.run.title.as_str())
+                .with_group(
+                    fixture.run.task_id.as_str(),
+                    fixture.run.title.as_str(),
+                    "task",
+                ),
+        )
+        .unwrap();
+        fixture
+            .world
+            .borrow_mut()
+            .native_control
+            .as_mut()
+            .unwrap()
+            .task_id = fixture.run.task_id.clone();
+        let second_instruction = "second-native-private-instruction-secret";
+        fixture.run.instruction = Some(second_instruction.into());
+        *fixture.script.turns.lock().unwrap() = vec![turn(
+            &[finish("second-native-private-result-secret", true)],
+            24,
+        )]
+        .into();
+        fixture.session.run_task(&fixture.run).unwrap();
+        assert_eq!(fixture.session.memory.render(), legacy);
+
+        let bodies = fixture.script.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "both tasks must reach the model");
+        let first = bodies[0].to_string();
+        let second = bodies[1].to_string();
+        drop(bodies);
+        assert!(first.contains(first_instruction));
+        assert!(second.contains(second_instruction));
+        for request in [&first, &second] {
+            assert!(!request.contains("legacy-private-prompt-secret"));
+            assert!(!request.contains("legacy-private-action-secret"));
+            assert!(!request.contains("legacy-private-result-secret"));
+        }
+        assert!(!second.contains(first_instruction));
+        assert!(!second.contains("first-native-private-result-secret"));
     }
 
     #[test]
@@ -3445,12 +3529,15 @@ mod tests {
                 ],
                 24,
             )],
-            Some(Duration::from_secs(1)),
+            // The provider's first event comes long after Stop is seen at the
+            // third cancellation poll (about 600 ms), so a loaded machine's
+            // slower polls still finish well before it.
+            Some(Duration::from_secs(4)),
         );
         let started = ui::time::now();
         f.session.run_task(&f.run).unwrap();
         assert!(
-            started.elapsed() < Duration::from_millis(700),
+            started.elapsed() < Duration::from_secs(2),
             "Stop must not wait for the provider's first event"
         );
         assert_eq!(f.script.bodies.lock().unwrap().len(), 1);

@@ -541,20 +541,17 @@ fn read_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> u64 {
 }
 
 impl Namespace {
-    /// # Errors
-    ///
-    /// Returns an error if the fresh document's root `nodes` map cannot be created.
-    pub fn new(author: impl Into<String>) -> Result<Self, automerge::AutomergeError> {
-        let mut doc = AutoCommit::new();
-        let nodes = doc.put_object(&ROOT, "nodes", ObjType::Map)?;
+    /// A namespace over `doc` whose `nodes` map is already in place, with
+    /// only the root bound and every derived index empty.
+    fn over(doc: AutoCommit, nodes: ObjId, author: String, next_id: u64) -> Self {
         let mut ns = Self {
             doc: ChangeTrackedDoc::new(doc),
             nodes,
             ino_to_id: HashMap::new(),
             id_to_ino: HashMap::new(),
             next_ino: ROOT_INO + 1,
-            author: author.into(),
-            next_id: 0,
+            author,
+            next_id,
             content_authority: ContentAuthority::LegacyNamespace,
             verified_records: HashMap::new(),
             record_index: BTreeMap::new(),
@@ -585,6 +582,16 @@ impl Namespace {
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
+        ns
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the fresh document's root `nodes` map cannot be created.
+    pub fn new(author: impl Into<String>) -> Result<Self, automerge::AutomergeError> {
+        let mut doc = AutoCommit::new();
+        let nodes = doc.put_object(&ROOT, "nodes", ObjType::Map)?;
+        let mut ns = Self::over(doc, nodes, author.into(), 0);
         let root_record_id = FileRecordId::new();
         let _ = ns
             .doc
@@ -616,44 +623,7 @@ impl Namespace {
                 max_local = max_local.max(v.saturating_add(1));
             }
         }
-        let mut ns = Self {
-            doc: ChangeTrackedDoc::new(doc),
-            nodes,
-            ino_to_id: HashMap::new(),
-            id_to_ino: HashMap::new(),
-            next_ino: ROOT_INO + 1,
-            author,
-            next_id: max_local,
-            content_authority: ContentAuthority::LegacyNamespace,
-            verified_records: HashMap::new(),
-            record_index: BTreeMap::new(),
-            record_index_order: Vec::new(),
-            record_index_revision: String::new(),
-            record_index_by_node: HashMap::new(),
-            record_index_children: HashMap::new(),
-            record_index_ambiguous: HashSet::new(),
-            record_index_digest: RecordIndexDigest::default(),
-            tree: TreeIndex::default(),
-            record_ids_complete: false,
-            resolved_heads: None,
-            incremental_batch: None,
-            peer_sync_states: HashMap::new(),
-            peer_sync_generation: 0,
-            #[cfg(test)]
-            sync_bytes_generated: 0,
-            #[cfg(test)]
-            record_index_rebuilds: 0,
-            verified_generation: next_verified_generation(),
-            merge_generation: next_verified_generation(),
-            #[cfg(test)]
-            conflict_scans: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            #[cfg(test)]
-            record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            #[cfg(test)]
-            node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        };
-        ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
-        ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
+        let mut ns = Self::over(doc, nodes, author, max_local);
         ns.ensure_record_ids();
         ns.rebuild_record_index();
         Ok(ns)
@@ -975,7 +945,7 @@ impl Namespace {
 
     /// Whether this namespace has completed a sync exchange with any other
     /// device (restored progress included): someone has dialled it, or been
-    /// dialled, before (TIL-774, [`crate::reachability`]).
+    /// dialled, before (#4224, [`crate::reachability`]).
     #[must_use]
     pub fn has_synced_with_peers(&self) -> bool {
         !self.peer_sync_states.is_empty()
@@ -3023,7 +2993,7 @@ impl Namespace {
     /// document and to the sync progress beside it
     /// ([`Self::peer_sync_generation`]). It says that something may have
     /// changed, never what; compare [`Self::heads`] to know. Persisting
-    /// and repairing on it replaces polling (TIL-750).
+    /// and repairing on it replaces polling.
     #[must_use]
     pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.doc.subscribe()
@@ -4962,7 +4932,7 @@ mod tests {
         ns
     }
 
-    /// TIL-745. Sync progress persisted beside the document survives a
+    /// #4113. Sync progress persisted beside the document survives a
     /// restart of either side: the first exchange after it summarises only
     /// the heads, not the whole history, and still carries every change.
     #[test]
@@ -5014,7 +4984,7 @@ mod tests {
         assert!(converged(&mut device, &mut host));
     }
 
-    /// TIL-745. Persisted progress is never trusted: damaged bytes are
+    /// #4113. Persisted progress is never trusted: damaged bytes are
     /// refused whole and leave what is held alone; progress naming heads the
     /// document does not hold (another workspace's, or written after the
     /// copy the document was restored from) falls back to a full sync; older

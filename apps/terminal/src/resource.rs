@@ -27,13 +27,7 @@ use crate::TerminalWidget;
 use crate::screen::Screen;
 use crate::target::SessionTarget;
 
-/// The terminal's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[
-    ("en-US", include_str!("../locales/en-US.ftl")),
-    ("de-DE", include_str!("../locales/de-DE.ftl")),
-];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// A terminal session, as its record holds it. Only the terminal running
 /// the session records these, as facts about the world outside the

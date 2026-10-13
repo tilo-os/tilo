@@ -142,9 +142,6 @@ impl AppWidget for Owner {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("M")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 thread_local! { static NEXT: RefCell<Option<Seen>> = const { RefCell::new(None) }; }
 fn factory(

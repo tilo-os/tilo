@@ -79,6 +79,24 @@ pub enum CallerPrincipal {
     /// An application, by its package id, acting under its own identity
     /// rather than borrowing the authority of the person using it.
     App(String),
+    /// An installed bot, by installation id. It acts for the person who
+    /// installed it and is never that person.
+    Bot(String),
+}
+
+impl CallerPrincipal {
+    /// The grant subject this principal is decided as. The one mapping every
+    /// door uses, instead of each matching on the principal by hand.
+    #[must_use]
+    pub fn subject(&self) -> tilo_action_policy::Subject {
+        use tilo_action_policy::Subject;
+        match self {
+            Self::Person(id) => Subject::Person(id.clone()),
+            Self::Agent(id) => Subject::Agent(id.clone()),
+            Self::App(id) => Subject::App(id.clone()),
+            Self::Bot(id) => Subject::Bot(id.clone()),
+        }
+    }
 }
 
 /// Host-owned execution lifetime. Clones share closure, never authority.
@@ -219,6 +237,27 @@ impl Caller {
         }
     }
 
+    /// A bot device whose certificate chains to `user_public_key` (its
+    /// installer) and whose root-signed delegation names it installation
+    /// `installation`. It acts for its installer and is never that person.
+    #[must_use]
+    pub fn bot(
+        installation: impl Into<String>,
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+    ) -> Self {
+        Self {
+            principal: CallerPrincipal::Bot(installation.into()),
+            user_public_key: Some(user_public_key),
+            device_public_key: Some(device_public_key),
+            room: None,
+            foreign: false,
+            execution: None,
+            acting_for: Some(hex::encode(user_public_key)),
+            shortcut: None,
+        }
+    }
+
     /// Give an already admitted connection its own execution scope. The host
     /// mints the identifier; no payload, display name or history run selects it.
     /// This changes invocation ownership, never the caller's permissions.
@@ -340,6 +379,14 @@ impl Caller {
                     None => actor,
                 }
             }
+            (CallerPrincipal::Bot(bot), _) => {
+                let actor =
+                    crate::InteractionActor::new(format!("bot:{bot}"), crate::ActorKind::Bot);
+                match &self.acting_for {
+                    Some(person) => actor.acting_for(person.clone()),
+                    None => actor,
+                }
+            }
         }
     }
 
@@ -391,6 +438,31 @@ impl Caller {
 pub struct RemoteActionTarget {
     pub provider: String,
     pub address: ActionAddress,
+}
+
+/// The provider a room's own governance actions (membership, roles, grants,
+/// bans) are answered under. It is the host's, not an app's, so it is the
+/// one provider a caller names without reading it from a catalogue page.
+pub const ROOM_GOVERNANCE_PROVIDER: &str = "tilo.workspace";
+/// The resource kind of a room's governance resource.
+pub const ROOM_GOVERNANCE_KIND: &str = "workspace.permissions";
+
+impl RemoteActionTarget {
+    /// The governance action `verb` (one of
+    /// `tilo_action_policy::roles::governance`) on the room `room`.
+    #[must_use]
+    pub fn room_governance(room: &str, verb: &str) -> Self {
+        Self {
+            provider: ROOM_GOVERNANCE_PROVIDER.to_owned(),
+            address: ActionAddress::new(room_governance_resource(room), verb),
+        }
+    }
+}
+
+/// The id of the room `room`'s governance resource.
+#[must_use]
+pub fn room_governance_resource(room: &str) -> String {
+    format!("{ROOM_GOVERNANCE_KIND}:{room}")
 }
 
 /// Why a host refuses a directory action that asks for confirmation when
@@ -471,6 +543,12 @@ pub struct InvokeRequest {
     /// admission, as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_ms: Option<u32>,
+    /// The name and avatar a bot asks to show for this action. Only a door
+    /// that can check the caller is a bot allowed it admits one
+    /// (the room-action door a bot host drives); every other door refuses the request
+    /// ([`crate::appearance::refuse_here`]) rather than dropping the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<crate::Appearance>,
 }
 
 impl InvokeRequest {
@@ -488,6 +566,7 @@ impl InvokeRequest {
             revision,
             on_behalf_of,
             wait_ms: _,
+            appearance,
         } = self;
         *invocation == other.invocation
             && *target == other.target
@@ -496,6 +575,7 @@ impl InvokeRequest {
             && *confirmation == other.confirmation
             && *revision == other.revision
             && *on_behalf_of == other.on_behalf_of
+            && *appearance == other.appearance
     }
 }
 
@@ -1486,6 +1566,7 @@ impl<T> InvocationLedger<T> {
                 caller: caller.clone(),
                 request: InvokeRequest {
                     wait_ms: None,
+                    appearance: None,
                     ..request.clone()
                 },
                 handle: None,
@@ -1539,6 +1620,45 @@ mod tests {
 
     use super::*;
     use crate::{ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind};
+
+    #[test]
+    fn a_bot_is_its_own_principal_acting_for_its_installer() {
+        let installer = [7u8; 32];
+        let caller = Caller::bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6", installer, [9u8; 32]);
+        assert_eq!(
+            caller.principal().subject(),
+            tilo_action_policy::Subject::Bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into())
+        );
+        let actor = caller.actor();
+        assert_eq!(actor.id, "bot:6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6");
+        assert_eq!(actor.kind, crate::ActorKind::Bot);
+        assert_eq!(
+            actor.for_person.as_deref(),
+            Some(hex::encode(installer).as_str())
+        );
+        assert!(crate::ActorKind::Bot.acts_for_someone());
+    }
+
+    #[test]
+    fn every_principal_maps_to_its_subject() {
+        use tilo_action_policy::Subject;
+        assert_eq!(
+            CallerPrincipal::Person("p".into()).subject(),
+            Subject::Person("p".into())
+        );
+        assert_eq!(
+            CallerPrincipal::Agent("a".into()).subject(),
+            Subject::Agent("a".into())
+        );
+        assert_eq!(
+            CallerPrincipal::App("x.y".into()).subject(),
+            Subject::App("x.y".into())
+        );
+        assert_eq!(
+            CallerPrincipal::Bot("b".into()).subject(),
+            Subject::Bot("b".into())
+        );
+    }
 
     #[test]
     fn execution_lifetime_is_shared_without_changing_caller_identity() {
@@ -1728,6 +1848,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_retry_with_another_appearance_is_another_invocation() {
+        let request = archive(InvocationId(uuid::Uuid::from_u128(9)));
+        let appearing = InvokeRequest {
+            appearance: Some(crate::Appearance::new("alice", None, None).unwrap()),
+            ..request.clone()
+        };
+        assert!(!request.same_invocation(&appearing));
+        assert!(appearing.same_invocation(&InvokeRequest {
+            wait_ms: Some(10),
+            ..appearing.clone()
+        }));
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(!json.contains("appearance"), "{json}");
+    }
+
     fn archive(invocation: InvocationId) -> InvokeRequest {
         InvokeRequest {
             on_behalf_of: None,
@@ -1741,6 +1877,7 @@ mod tests {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         }
     }
 
@@ -1807,6 +1944,7 @@ mod tests {
             }),
             RemoteActionMessage::Invoke(InvokeRequest {
                 wait_ms: Some(2_000),
+                appearance: None,
                 ..archive(invocation)
             }),
         ]
@@ -2010,6 +2148,21 @@ mod tests {
             host.cancel(&second, &id),
             Err(ActionHostError::UnknownInvocation)
         );
+        let retained = first.clone();
+        let hash = |caller: &Caller| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(caller, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        };
+        let before = hash(&first);
+        host.retire_execution(&first);
+        assert!(!retained.execution_is_live());
+        assert!(second.execution_is_live());
+        assert_eq!(first, retained);
+        assert_eq!(hash(&first), before);
+        let reconnected = retained.in_new_execution();
+        assert!(reconnected.execution_is_live());
+        assert_ne!(reconnected.execution_id(), first.execution_id());
         host.finish(&first, &id);
         assert!(matches!(
             now(host.invoke(&first, archive(id))).unwrap().status,

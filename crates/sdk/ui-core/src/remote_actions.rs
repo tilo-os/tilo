@@ -320,6 +320,7 @@ impl RemoteActions {
             revision: None,
             // A host that predates waits answers at admission, as before.
             wait_ms: Some(INVOKE_WAIT_MS),
+            appearance: None,
         };
         self.lock().invocations.insert(
             request.invocation,

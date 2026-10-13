@@ -1043,11 +1043,10 @@ fn device_projection(
             })),
     );
     let mut fields: Vec<_> = actions.iter().map(ContinuityAction::fields).collect();
-    let mut wake_result = None;
-    if let Some((title, subtitle)) = wake {
+    let wake_result = wake.map(|(title, subtitle)| {
         fields.push(action_fields(&title, &subtitle, WAKE_ACTION_ID));
-        wake_result = Some(wake_search_result(bridge, title, subtitle));
-    }
+        wake_search_result(bridge, title, subtitle)
+    });
     let results = actions
         .into_iter()
         .map(|entry| {
@@ -1651,7 +1650,7 @@ mod tests {
         // Phase `speaker_groups_project_consent_play_and_leave_without_disclosing_ids`.
         {
             use crate::shell::speaker_group::{
-                EndpointSelector, SpeakerGroupId, SpeakerMemberState, SpeakerRole, SpeakerTrim,
+                EndpointSelector, SpeakerGroupId, SpeakerMemberStatus, SpeakerRole, SpeakerTrim,
                 StereoSide,
             };
             use crate::shell::speaker_group_runtime::{
@@ -1709,7 +1708,7 @@ mod tests {
                     output_label: None,
                     role: SpeakerRole::Stereo(StereoSide::Left),
                     trim: SpeakerTrim::default(),
-                    state: SpeakerMemberState::Ready,
+                    state: SpeakerMemberStatus::Ready,
                 }],
             });
             let actions = device_actions(&view);

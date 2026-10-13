@@ -327,6 +327,7 @@ mod rows;
 mod scenario;
 mod section;
 mod settings;
+mod share_link;
 mod stage;
 mod surface;
 mod switch;
@@ -364,6 +365,7 @@ pub use root::{reserved_action_ids, with_surface};
 pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};
 pub use settings::Setting;
+pub use share_link::host_link;
 pub use stage::{stage, time_frames};
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
@@ -374,9 +376,11 @@ pub use view::{Bindable, EffectsHandle, ViewCx};
 #[cfg(not(target_arch = "wasm32"))]
 mod headless_results_tests;
 
-/// Record content and canonical hashing. Use the store borrowed through
-/// `SurfaceCx::content` or `LaunchInput::content` so the host binds reads and
-/// writes to the resource's content lane.
+/// Record content, canonical hashing and picture headers. Use the store
+/// borrowed through `SurfaceCx::content` or `LaunchInput::content` so the host
+/// binds reads and writes to the resource's content lane.
 pub mod content {
-    pub use tilo_content::{ContentStore, hash_bytes, valid_hash};
+    pub use tilo_content::{
+        ContentStore, ImageFormat, hash_bytes, image_format, image_size, valid_hash,
+    };
 }

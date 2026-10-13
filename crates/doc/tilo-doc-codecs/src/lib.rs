@@ -193,14 +193,6 @@ pub fn provider_for_ext(ext: &str) -> Option<&'static dyn FormatProvider> {
     }
 }
 
-/// Extensions of [`DOCUMENT_EXTENSIONS`], owned.
-pub fn supported_extensions() -> Vec<String> {
-    DOCUMENT_EXTENSIONS
-        .iter()
-        .map(|e| (*e).to_string())
-        .collect()
-}
-
 /// Whether `ext` (case-insensitive) is one of [`DOCUMENT_EXTENSIONS`].
 pub fn is_supported_ext(ext: &str) -> bool {
     DOCUMENT_EXTENSIONS

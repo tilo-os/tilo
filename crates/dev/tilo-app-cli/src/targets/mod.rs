@@ -56,14 +56,13 @@ impl TargetRequest {
 }
 
 /// The web bundle a web build produces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum WebBundle {
-    /// The desktop bundle when the app is one of the Tilo apps it links,
-    /// otherwise a single-app bundle.
+    /// The desktop bundle for Tilo's own web apps, otherwise the app alone.
     Auto,
-    /// The page runtime with only this app registered.
+    /// The page runtime with only this app.
     App,
-    /// `crates/browser/tilo-web-desktop`: every web-capable Tilo app.
+    /// Every web-capable Tilo app (inside a Tilo checkout).
     Desktop,
 }
 
@@ -74,7 +73,7 @@ pub struct BuildOutcome {
     /// The binary, the `.app`, or the web bundle directory.
     pub artifact: PathBuf,
     /// What to open: the binary (also inside a `.app`) or the page path
-    /// (`index.html?app=…`) relative to the bundle.
+    /// (`app/#/me/<id>`) relative to the bundle.
     pub entry: String,
 }
 

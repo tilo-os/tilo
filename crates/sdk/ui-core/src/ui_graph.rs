@@ -21,7 +21,6 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
-use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::Rect;
 
@@ -1550,10 +1549,7 @@ impl LiveUi {
 /// The style of a widget that fills the space its parent gives it.
 fn filling() -> Style {
     Style {
-        size: taffy::Size {
-            width: percent(1.0_f32),
-            height: percent(1.0_f32),
-        },
+        size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
         ..Default::default()
     }
 }

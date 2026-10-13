@@ -24,6 +24,44 @@ pub enum Retention {
     Delta,
 }
 
+/// The devices a host delivers `msg` to as it arrives, when only they can
+/// use it: the copy of a channel admission carrying what its devices join
+/// from (every other member gets the copy without it). `None` for a message
+/// every member of the room gets. A device catching up replays it like any
+/// retained message.
+pub fn audience(msg: &NeighbourMsg) -> Option<&[collab_types::Ed25519PublicKey]> {
+    let NeighbourMsg::MlsGovernance { frame, .. } = msg else {
+        return None;
+    };
+    match &frame.action {
+        collab_types::MlsGovernanceAction::AddWithKeyHistory {
+            recipients,
+            joining: collab_types::Joining::Material(_),
+            ..
+        } => Some(recipients),
+        _ => None,
+    }
+}
+
+/// Whether checkpoint `msg` is the whole of its route: its author's next
+/// one on the same channel leaves it nothing to add, so a host keeps only
+/// the latest. A device's latest certificate, access request and
+/// acknowledgement, and a channel's governance head, are each complete on
+/// their own; an Automerge checkpoint is not (whether it covers what came
+/// before is proven from the document).
+pub fn standalone(msg: &NeighbourMsg) -> bool {
+    match msg {
+        NeighbourMsg::MlsGovernance { frame, .. } => {
+            // Each genesis keeps a route of its own.
+            !matches!(frame.action, collab_types::MlsGovernanceAction::Genesis)
+        }
+        NeighbourMsg::MlsAccessRequest { .. }
+        | NeighbourMsg::MlsGovernanceAck { .. }
+        | NeighbourMsg::IdentityHello { .. } => true,
+        _ => false,
+    }
+}
+
 /// Classify `msg` for durable retention.
 ///
 /// Returns the 32-byte channel digest the host keys the message under and
@@ -81,16 +119,26 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             return Some((channel, retention));
         }
         // Channel governance is replayable state a device that was offline
-        // must still receive: every frame of the chain, and the latest access
-        // request and acknowledgement of each device. None of it is content.
-        // Each frame is its own baseline, keyed by its digest, so a steward
-        // redelivering a frame replaces the retained copy instead of growing
-        // the host's tail; receivers restore chain order themselves.
+        // must still receive, and none of it is content: the channel's
+        // genesis, its newest frame, and the latest access request and
+        // acknowledgement of each device. Genesis is kept for good: it names
+        // the channel's steward. Every later frame replaces the one before:
+        // a joining device needs only the admission that names it, and one
+        // that missed a commit asks again. Keeping every commit and Welcome
+        // made each newcomer replay the channel's whole history, every
+        // Welcome carrying the group's ratchet tree.
         NeighbourMsg::MlsGovernance { frame, .. } => {
-            let digest = frame.digest().ok()?;
             let mut route = b"mls-governance\0".to_vec();
             route.extend_from_slice(frame.channel.0.as_bytes());
-            route.extend_from_slice(&digest);
+            if matches!(frame.action, collab_types::MlsGovernanceAction::Genesis) {
+                route.extend_from_slice(&frame.digest().ok()?);
+            } else if audience(msg).is_some() {
+                // The copy carrying what an admission's devices join from
+                // keeps its own route: the head is every member's copy.
+                route.extend_from_slice(b"join");
+            } else {
+                route.extend_from_slice(b"head");
+            }
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
         NeighbourMsg::MlsAccessRequest { request, .. } => {
@@ -258,9 +306,9 @@ mod tests {
         );
     }
 
-    /// A device that was offline gets every frame of a channel's chain
-    /// (a redelivered frame replaces its copy), and the steward gets each
-    /// device's latest request and acknowledgement.
+    /// A device that was offline gets a channel's genesis and newest frame,
+    /// and the steward gets each device's latest request and
+    /// acknowledgement.
     fn host_retains_channel_governance_per_channel_and_device() {
         use collab_types::{
             ChannelId, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
@@ -290,6 +338,31 @@ mod tests {
         assert_eq!(first, retention(&frame([0; 32]), false).unwrap());
         assert_ne!(first.0, retention(&frame([1; 32]), false).unwrap().0);
         assert_eq!(first.1, Retention::Checkpoint);
+        // Every later frame replaces the channel's previous one.
+        let change = |epoch| NeighbourMsg::MlsGovernance {
+            room: "room".into(),
+            frame: Box::new(
+                MlsGovernanceFrameV1::signed(
+                    channel,
+                    [epoch; 32],
+                    u64::from(epoch),
+                    [epoch; 32],
+                    u64::from(epoch),
+                    MlsGovernanceAction::Remove {
+                        removed: collab_types::Ed25519PublicKey::from_bytes(
+                            device.verifying_key().to_bytes(),
+                        ),
+                        commit: vec![epoch],
+                    },
+                    &steward,
+                )
+                .unwrap(),
+            ),
+            delivery: 0,
+        };
+        let head = retention(&change(2), false).unwrap();
+        assert_eq!(head, retention(&change(3), false).unwrap());
+        assert_ne!(head.0, first.0);
 
         let request = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsAccessRequest {
             room: "room".into(),

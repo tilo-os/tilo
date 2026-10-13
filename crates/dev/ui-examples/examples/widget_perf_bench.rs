@@ -21,7 +21,6 @@
 //! Iterations override: `TILO_UI_PERF_ITERS=50`.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use automerge::AutoCommit;
 use chrono::NaiveDate;
@@ -40,19 +39,13 @@ use tilo_ui::widget::{
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::{Blob, Color, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format};
+use vello::peniko::{Color, ImageData as PenikoImage};
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
 
 fn placeholder_image() -> PenikoImage {
     let buf = vec![99u8; 4 * 16 * 16];
-    PenikoImage {
-        data: Blob::new(Arc::new(buf)),
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: 16,
-        height: 16,
-    }
+    tilo_ui::raster::rgba8(buf, 16, 16)
 }
 
 fn caption(key: &'static str) -> Box<dyn Widget> {

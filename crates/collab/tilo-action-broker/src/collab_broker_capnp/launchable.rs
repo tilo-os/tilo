@@ -595,6 +595,7 @@ mod tests {
                 confirmation,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         )
         .wait_timeout(tilo_test_env::hang_bound())
@@ -749,6 +750,44 @@ mod tests {
         assert!(app.try_recv().is_err(), "nothing ran");
     }
 
+    #[test]
+    fn a_waiting_legacy_task_still_bounds_unnamed_agent_actions() {
+        use crate::test_support::{Answer, Grants as _, KindSet, Subject, TreePath};
+        let mut workspace = workspace();
+        workspace.admit_agent("scribe", KindSet::READ_UNDOABLE);
+        workspace.answer(
+            Subject::Task("task:waiting".into()),
+            &TreePath::root().app(APP).rest().action("new-window"),
+            KindSet::READ_UNDOABLE,
+            Answer::Deny,
+        );
+        workspace.tasks.push(tilo_desktop_model::WorkspaceTask {
+            id: "task:waiting".into(),
+            title: "Waiting for input".into(),
+            created_by: "owner".into(),
+            assigned_agent: Some("scribe".into()),
+            route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+            status: tilo_desktop_model::WorkspaceTaskStatus::Waiting,
+            resource: None,
+            created_at: 1,
+            updated_at: 1,
+            audit: Vec::new(),
+        });
+        let (state, room) = broker(&workspace);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(5, surface(5, &room));
+        let mut app = state.capture_invocations_for_test(5);
+        let agent = Caller::local_agent("scribe").in_room(&room);
+        assert!(invoke(&state, &agent, "5", "new-window", None).is_err());
+        assert!(
+            app.try_recv().is_err(),
+            "the waiting task's denied action did not run"
+        );
+    }
+
     /// The broker reads a field edit without the app's code: only removing
     /// an item of a collection not published as quiet asks for confirmation;
     /// sets and an outbox's settle do not.
@@ -790,6 +829,7 @@ mod tests {
                         confirmation: None,
                         revision: None,
                         wait_ms: None,
+                        appearance: None,
                     },
                 )
                 .wait_timeout(tilo_test_env::hang_bound())
@@ -862,6 +902,7 @@ mod tests {
                         confirmation: None,
                         revision: None,
                         wait_ms: None,
+                        appearance: None,
                     },
                 )
                 .wait_timeout(tilo_test_env::hang_bound())
@@ -1125,6 +1166,73 @@ mod tests {
         let owner = Caller::local_person("owner").in_room(&room);
         invoke(&state, &owner, "5", "send", None).expect("the person may");
         assert_eq!(app.try_recv().expect("delivered").actor, "owner");
+    }
+
+    #[tokio::test]
+    async fn retiring_a_delegated_run_preserves_its_running_actions_view() {
+        use super::super::ExecutionStatus;
+        use ui::collaboration::{CollabEvent, PresencePayload};
+        let (state, room, fanout) = broker_with_fanout(&workspace());
+        state.surfaces.lock().unwrap().insert(5, surface(5, &room));
+        let mut app = state.capture_invocations_for_test(5);
+        let (seen, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = fanout.subscribe_rooms(
+            vec![room.clone()],
+            Box::new(move |event, _| {
+                let _ = seen.send(event.clone());
+            }),
+        );
+        let mut events = state.subscribe_execution_activity();
+        let owner = Caller::local_person("owner")
+            .in_room(&room)
+            .in_new_execution();
+        let client = owner.clone().delegated_to("mcp-1");
+        invoke(&state, &client, "5", "new-window", None).unwrap();
+        let delivered = app.try_recv().unwrap();
+        let accepted = events.try_recv().unwrap();
+        assert_eq!(accepted.principal, "agent:mcp-1");
+        assert!(matches!(
+            heard.try_recv().unwrap(),
+            CollabEvent::RemotePresenceUpdate {
+                payload: PresencePayload::Interaction(interaction), ..
+            } if interaction.phase == tilo_actions::InteractionPhase::Applying
+        ));
+
+        // Certified runtime sessions retain the person's admitted caller,
+        // while their app work runs as the delegated agent on the same lease.
+        state.retire_execution(&owner);
+        let ended = events.try_recv().unwrap();
+        assert_eq!(ended.status, ExecutionStatus::Ended);
+        assert_eq!(ended.execution, owner.execution_id().unwrap());
+        assert!(!accepted.execution_is_live());
+        assert!(!client.execution_is_live());
+        assert!(heard.try_recv().is_err(), "retirement is not a job outcome");
+        state.retire_execution(&client);
+        assert!(events.try_recv().is_err(), "retirement is idempotent");
+        state
+            .apply_invocation_update(
+                5,
+                delivered.id,
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: delivered.invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(events.try_recv().is_err(), "the transport run stays ended");
+        assert!(
+            matches!(
+                heard.try_recv().unwrap(),
+                CollabEvent::RemotePresenceUpdate {
+                    payload: PresencePayload::Interaction(interaction), ..
+                } if interaction.invocation == delivered.invocation
+                    && interaction.actor.id == "agent:mcp-1"
+                    && interaction.phase == tilo_actions::InteractionPhase::Committed
+            ),
+            "the view receives the running action's actual outcome"
+        );
     }
 
     /// An application target reaches an app that never ran in the workspace:
@@ -1453,6 +1561,7 @@ mod tests {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         );
         wait_for_parked_launches(&state, &launches, 1);
@@ -1492,6 +1601,7 @@ mod tests {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         )
     }

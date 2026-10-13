@@ -991,12 +991,10 @@ impl Widget for ColorPicker {
         // Its preferred size, narrowed to what the parent gives; the height
         // then follows the width it got (`adjust_layout_style`).
         let style = Style {
-            size: Size {
-                width: Dimension::length(crate::num::f32_of_f64(PICKER_WIDTH)),
-                height: Dimension::length(crate::num::f32_of_f64(
-                    self.content_height(PICKER_WIDTH),
-                )),
-            },
+            size: Size::from_lengths(
+                crate::num::f32_of_f64(PICKER_WIDTH),
+                crate::num::f32_of_f64(self.content_height(PICKER_WIDTH)),
+            ),
             max_size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
@@ -1082,7 +1080,7 @@ impl Widget for ColorPicker {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 if self.drag_target.is_some() {
                     self.apply_drag(p);
@@ -1271,11 +1269,11 @@ impl Widget for ColorPicker {
             .with_action_target(TARGET_VALUE)
             .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
             .with_value(self.hex_string())
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused()),
+            );
         if !self.has_extras() {
             return Some(value);
         }
@@ -1745,14 +1743,7 @@ mod tests {
 
     fn key(p: &mut ColorPicker, named: NamedKey) {
         let ev = crate::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
-        dispatch(
-            p,
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            },
-        );
+        dispatch(p, &crate::synthetic_input::keyboard_input(ev));
     }
 
     #[test]

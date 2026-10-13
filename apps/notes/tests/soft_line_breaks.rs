@@ -2,7 +2,6 @@ use crate::component_support::*;
 use notes::{markdown, read};
 use ui::widget::{BlockEditor, BlockKind};
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
     eprintln!("phase shift_enter_is_one_durable_text_block_in_paragraphs_and_lists");

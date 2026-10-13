@@ -1996,9 +1996,16 @@ mod tests {
                 };
                 let d = pipeline_desc(&s, 1920, 1080, "/tmp/o");
                 let bps = (resolution.target_mbps() * 1_000_000.0) as u64;
+                // The rate is written in the selected encoder's own units —
+                // bits for openh264 and libvpx, kilobits for x264 and every
+                // hardware encoder — so which number appears depends on what
+                // this machine has installed. Ask the selection for it rather
+                // than assuming the bits-per-second baseline.
+                let (sel, _, _) = encode_chain(container);
+                let arg = sel.spec.bitrate_arg(bps);
                 assert!(
-                    d.contains(&format!("={bps} !")),
-                    "{container:?} at {} must encode at the quoted {bps} bps: {d}",
+                    d.contains(&format!("{} {arg} !", sel.spec.element)),
+                    "{container:?} at {} must encode at the quoted {bps} bps ({arg}): {d}",
                     resolution.label(),
                 );
                 // 10s at that bitrate, in megabytes, video only.

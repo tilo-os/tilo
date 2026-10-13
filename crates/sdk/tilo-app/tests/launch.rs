@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! Launching a framework app on something: a path on its command line opens
 //! that path's own record and takes the app's launch actions there through
 //! the door every control uses; a file a host hands over reaches the app

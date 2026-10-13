@@ -1,6 +1,4 @@
 //! Shared session startup and presentation acknowledgement policy.
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,8 +79,7 @@ pub fn load_or_create_workspace_salt(
         let key = crate::network::behaviour::load_or_create_keypair(peer_key_path)?;
         crate::network::behaviour::peer_salt_from_keypair(&key).max(1)
     } else {
-        let mut bytes = [0_u8; 2];
-        UnwrapErr(SysRng).fill_bytes(&mut bytes);
+        let bytes = crate::random::bytes::<2>();
         u16::from_be_bytes(bytes).max(1)
     };
 

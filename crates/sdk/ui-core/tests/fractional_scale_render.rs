@@ -11,16 +11,6 @@
 //! Skipped (eprintln + early return) when no wgpu adapter is available,
 //! matching the sibling `screenshot_test.rs`; we never `#[ignore]`.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use crate::support::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};

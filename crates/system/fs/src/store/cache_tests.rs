@@ -1,11 +1,6 @@
 //! The hot blob cache is bounded by bytes, and streamed imports hold and
 //! cache nothing whole.
 
-#![allow(
-    clippy::arithmetic_side_effects,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use super::*;
 
 /// `len` bytes that differ from those of every other `seed`.

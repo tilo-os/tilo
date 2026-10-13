@@ -468,10 +468,7 @@ impl Table {
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> Option<(usize, usize, String)> {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
+            self.last_cursor = Some(ctx.logical(position));
         }
         if matches!(
             event,
@@ -1142,10 +1139,7 @@ impl Widget for Table {
 
         let node = if self.is_empty() {
             taffy.leaf_node(Style {
-                size: Size {
-                    width: length(total_w as f32),
-                    height: length(total_h as f32),
-                },
+                size: Size::from_lengths(total_w as f32, total_h as f32),
                 ..Default::default()
             })
         } else {
@@ -1158,10 +1152,7 @@ impl Widget for Table {
             taffy.parent_node(
                 Style {
                     display: Display::Grid,
-                    size: Size {
-                        width: length(total_w as f32),
-                        height: length(total_h as f32),
-                    },
+                    size: Size::from_lengths(total_w as f32, total_h as f32),
                     padding: TaffyRect {
                         left: length(LEFT_GUTTER as f32),
                         right: length(RIGHT_PAD as f32),
@@ -1262,8 +1253,7 @@ impl Widget for Table {
         if let Some(rz) = self.resize.as_ref() {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    let p =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    let p = ctx.logical(position);
                     let new_w = (rz.orig_w + (p.x - rz.start_x)).max(MIN_COL_W);
                     // The column follows the pointer here; the owner gets
                     // the width when the drag ends.
@@ -1296,7 +1286,7 @@ impl Widget for Table {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = Some(p);
                 let h = self.hit(p);
                 if h != self.hover {
@@ -1765,11 +1755,7 @@ mod tests {
                 (col_width(&doc, &t, &cid0) - before).abs() < 0.5,
                 "the column follows the pointer; the owner gets the width when the drag ends"
             );
-            let release = WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            };
+            let release = crate::synthetic_input::mouse_release();
             dispatch(&mut table, &taffy, node, &mut doc, &t, &release, mods);
 
             let after = col_width(&doc, &t, &cid0);

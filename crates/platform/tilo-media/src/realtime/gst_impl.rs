@@ -1506,11 +1506,8 @@ impl RealtimeDecoder {
             startup_timeout()
         };
         let (running, _) = self.running.as_ref().ok_or("no decoder is running")?;
-        let mut newest = None;
         // Anything that arrived late from the previous unit first.
-        if let Some(s) = running.drain()?.pop() {
-            newest = Some(s);
-        }
+        let mut newest = running.drain()?.pop();
         running.push(buffer)?;
         if let Some(s) = running.next_sample(timeout)? {
             newest = Some(s);
