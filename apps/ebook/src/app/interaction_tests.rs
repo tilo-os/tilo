@@ -315,7 +315,6 @@ fn reader_controls_are_accessible_and_live() {
         Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters = (0..4)
             .map(|index| crate::model::Chapter {
                 title: format!("Part {}", index + 1),
-                href: format!("part-{}.xhtml", index + 1),
                 blocks: chapter.blocks.clone(),
             })
             .collect();
@@ -795,7 +794,6 @@ fn wheel_over_rails_scrolls_the_rail_not_the_book() {
         Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters = (0..32)
             .map(|index| crate::model::Chapter {
                 title: format!("Long chapter {}", index + 1),
-                href: format!("chapter-{}.xhtml", index + 1),
                 blocks: template.blocks.clone(),
             })
             .collect();

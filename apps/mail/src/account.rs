@@ -13,7 +13,7 @@
 //! ergonomic in-memory shapes the rest of the app works with — [`Account`]
 //! (an [`AccountConfig`] plus per-account sidebar state) and [`AccountStore`]
 //! (the list plus the active index) — and hydrates them from the shared store
-//! and vault ([`AccountStore::load`]). The type-specific connection settings
+//! and vault ([`AccountStore::load_in`]). The type-specific connection settings
 //! ([`AccountConfig`]) are serialised into each shared account's opaque
 //! `config`; the password is read back from the vault, never from the JSON.
 
@@ -135,13 +135,6 @@ impl AccountStore {
         }
     }
 
-    /// Load the mail accounts from the shared canonical store, hydrating each
-    /// password from the secret vault. An empty store when nothing is
-    /// configured — never an error.
-    pub fn load() -> Self {
-        Self::from_shared(&SharedStore::load(), &SecretVault::open())
-    }
-
     /// Load under an explicit config root — the seam tests use, so they never
     /// touch the real user config directory.
     pub fn load_in(config_root: &Path) -> Self {
@@ -170,22 +163,6 @@ impl AccountStore {
             .and_then(|id| accounts.iter().position(|a| a.id == id.as_str()))
             .unwrap_or(0);
         Self { accounts, active }
-    }
-
-    /// Persist to the default Tilo config root
-    /// (`$XDG_CONFIG_HOME/tilo/accounts/`). The in-app account add/edit/remove
-    /// flow calls this so accounts survive a restart; a no-op (Ok) when the
-    /// config root can't be resolved (read-only environment / `--shots`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if writing the shared account store or the secret vault
-    /// fails (see [`AccountStore::persist_in`]).
-    pub fn persist(&self) -> std::io::Result<()> {
-        match accounts::config_root() {
-            Some(root) => self.persist_in(&root),
-            None => Ok(()),
-        }
     }
 
     /// Write these accounts into the shared store + vault under an explicit

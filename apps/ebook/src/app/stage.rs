@@ -108,7 +108,6 @@ impl BooksApp {
             Arc::make_mut(book).chapters = (0..32)
                 .map(|index| crate::model::Chapter {
                     title: format!("Chapter {} — a longer voyage", index + 1),
-                    href: format!("chapter-{}.xhtml", index + 1),
                     blocks: template.blocks.clone(),
                 })
                 .collect();

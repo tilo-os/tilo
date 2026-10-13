@@ -36,7 +36,6 @@ pub mod encoding {
 
 /// RFB security types.
 pub mod security {
-    pub const INVALID: u8 = 0;
     pub const NONE: u8 = 1;
     pub const VNC_AUTH: u8 = 2;
 }
@@ -533,25 +532,6 @@ pub fn client_protocol_version(server_major: u8, server_minor: u8) -> [u8; 12] {
     out
 }
 
-/// Parse the 3.7+ security-type list: a count byte followed by that many
-/// type bytes. A zero count means the server rejected us and follows with a
-/// reason string — surfaced here as an error.
-///
-/// # Errors
-///
-/// Returns an error if the server advertised zero security types, or if
-/// fewer type bytes followed than the count promised.
-pub fn parse_security_types(count: u8, types: &[u8]) -> Result<Vec<u8>, String> {
-    if count == 0 {
-        return Err("server offered no security types".into());
-    }
-    let n = (count as usize).min(types.len());
-    let Some(slice) = types.get(..n) else {
-        return Err("malformed security type list".into());
-    };
-    Ok(slice.to_vec())
-}
-
 /// Pick the security type we prefer from the server's offer: `None` when
 /// available (no password), else `VNC Authentication`.
 pub fn choose_security(types: &[u8]) -> Option<u8> {
@@ -800,14 +780,15 @@ mod tests {
 
         eprintln!("phase security_negotiation");
         {
-            let types = parse_security_types(2, &[security::NONE, security::VNC_AUTH]).unwrap();
-            assert_eq!(choose_security(&types), Some(security::NONE));
+            assert_eq!(
+                choose_security(&[security::NONE, security::VNC_AUTH]),
+                Some(security::NONE)
+            );
             assert_eq!(
                 choose_security(&[security::VNC_AUTH]),
                 Some(security::VNC_AUTH)
             );
             assert_eq!(choose_security(&[99]), None);
-            assert!(parse_security_types(0, &[]).is_err());
         }
     }
 

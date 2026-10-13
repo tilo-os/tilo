@@ -263,11 +263,6 @@ impl AccountList {
         std::mem::take(&mut self.events)
     }
 
-    /// The account at visible index `i`, if any.
-    pub fn account_at(&self, i: usize) -> Option<&Account> {
-        self.accounts.get(i)
-    }
-
     pub fn len(&self) -> usize {
         self.accounts.len()
     }

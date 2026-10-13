@@ -548,11 +548,9 @@ impl MonitorApp {
                     cpu: p.cpu,
                     mem_bytes: p.mem_bytes,
                     threads: p.threads,
-                    status: p.status,
                     depth: 0,
                     has_children: false,
                     expanded: false,
-                    descendants: 0,
                 })
                 .collect()
         }
