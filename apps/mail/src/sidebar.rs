@@ -7,7 +7,7 @@
 
 use ui::icons::Icon;
 use ui::num::u32_of_usize;
-use ui::widget::{AppModel, ModelPath, NavAction, NavItem, NavList, NavSection};
+use ui::widget::{NavAction, NavItem, NavList, NavSection};
 
 use crate::account::AccountStore;
 use crate::model::Folder;
@@ -95,19 +95,13 @@ pub(crate) fn selected_row(state: &MailState) -> Option<String> {
     (!state.accounts.is_empty()).then(|| folder_row_id(state.accounts.active, state.folder))
 }
 
-/// The accounts-and-folders sidebar.
-pub struct MailSidebar {
-    list: NavList,
-    shared: Shared,
-    shown: Vec<NavSection>,
-    selected: Option<String>,
-}
-
-/// The toolkit list of `sections`, reporting choices into `shared`.
-fn build_list(shared: &Shared, sections: Vec<NavSection>, selected: Option<&str>) -> NavList {
+/// The accounts-and-folders sidebar: the toolkit list, following the
+/// accounts and the open folder and reporting choices into `shared`.
+pub fn sidebar(shared: &Shared) -> NavList {
     let on_select = shared.clone();
     let on_section = shared.clone();
-    let mut list = NavList::new(sections)
+    let follow = shared.clone();
+    NavList::new(Vec::new())
         .with_id("mail-mailboxes")
         .with_accessible_name("Mailboxes")
         .on_select(move |id| {
@@ -125,62 +119,11 @@ fn build_list(shared: &Shared, sections: Vec<NavSection>, selected: Option<&str>
                     .borrow_mut()
                     .push_command(Command::AccountSettings(Some(account)));
             }
-        });
-    list.set_selected(selected);
-    list
-}
-
-impl MailSidebar {
-    pub fn new(shared: Shared) -> Self {
-        let (shown, selected) = {
-            let state = shared.borrow();
-            (sections(&state), selected_row(&state))
-        };
-        Self {
-            list: build_list(&shared, shown.clone(), selected.as_deref()),
-            shared,
-            shown,
-            selected,
-        }
-    }
-
-    /// Bring the list in step with the state: new counts, accounts and the
-    /// open folder.
-    fn refresh(&mut self) {
-        let (next, selected) = {
-            let state = self.shared.borrow();
-            (sections(&state), selected_row(&state))
-        };
-        if next != self.shown {
-            self.list.set_sections(next.clone());
-            self.shown = next;
-        }
-        if selected != self.selected || self.list.selected_id() != selected {
-            self.list.set_selected(selected.as_deref());
-            self.selected = selected;
-        }
-    }
-}
-
-impl ui::widget::Decorator for MailSidebar {
-    type Inner = NavList;
-
-    fn inner(&self) -> &NavList {
-        &self.list
-    }
-
-    fn inner_mut(&mut self) -> &mut NavList {
-        &mut self.list
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.refresh();
-        ui::widget::Widget::sync(&mut self.list, state, path);
-    }
-
-    fn name(&self) -> &'static str {
-        "MailSidebar"
-    }
+        })
+        .follow(move || {
+            let state = follow.try_borrow().ok()?;
+            Some((sections(&state), selected_row(&state)))
+        })
 }
 
 #[cfg(test)]
