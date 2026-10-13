@@ -4416,7 +4416,7 @@ impl Continuable for BooksApp {
         }))
         .ok()?;
         Some(ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
+            schema_version: ui::collaboration::semantic_schema::PUBLICATION_POSITION_V1,
             bytes,
         })
     }
@@ -4427,7 +4427,7 @@ impl Continuable for BooksApp {
         _doc: &mut ui::widget::Edits<'_>,
         _path: &ObjId,
     ) -> bool {
-        if metadata.schema_version != 1 {
+        if metadata.schema_version != ui::collaboration::semantic_schema::PUBLICATION_POSITION_V1 {
             return false;
         }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&metadata.bytes) else {
