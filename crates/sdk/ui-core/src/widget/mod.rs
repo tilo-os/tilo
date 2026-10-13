@@ -3059,8 +3059,6 @@ pub mod table {
     pub use super::block_editor_table::*;
 }
 pub use table::Table;
-pub mod icon_grid;
-pub use icon_grid::{IconGrid, IconGridItem};
 mod window_group;
 pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
@@ -3284,7 +3282,6 @@ pub use selection_handles::{Handle as SelectionHandle, SelectionHandles};
 pub mod activity_timeline;
 pub mod history;
 pub mod history_group;
-pub mod history_scrubber;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
 pub use history::{
@@ -3292,7 +3289,6 @@ pub use history::{
     HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
     hue_to_rgb,
 };
-pub use history_scrubber::HistoryScrubber;
 // The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
 // caller can build one without naming the collab-types crate directly.
 pub use collab_types::ArtifactKind;
