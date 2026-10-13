@@ -441,7 +441,6 @@ pub use widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, MAX_GROUP_DEPTH, NamedRange, OpFamily,
     group_entries,
 };
-pub use widget::history_scrubber::HistoryScrubber;
 pub use widget::name_field::{NameField, NameFieldOutcome};
 // Re-exported so an app reaches the whole history stack through `tilo_ui::`
 // without knowing the module layout.

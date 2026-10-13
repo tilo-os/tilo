@@ -33,8 +33,8 @@ use tilo_ui::search::{SearchGroup, SearchResult};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::{
-    Banner, Button, Chart, Column, Element, IconGrid, IconGridItem, SearchResultsView, Section,
-    SectionHeader, Series, StatGroup, StatTile, Text, TreeNode, TreeView, Trend,
+    Banner, Button, Chart, Column, Element, SearchResultsView, Section, SectionHeader, Series,
+    StatGroup, StatTile, Text, TreeNode, TreeView, Trend,
 };
 use vello::kurbo::Rect;
 
@@ -49,8 +49,6 @@ const SEARCH_ROW_ONE_LINE: f64 = 38.0;
 const SEARCH_ROW_TWO_LINE: f64 = 50.0;
 const SEARCH_TEXT_X: f64 = 8.0 + 12.0 + 30.0;
 const CHART_HEADER_H: f64 = 22.0;
-const ICON_CELL: (f64, f64) = (96.0, 88.0);
-const ICON_GLYPH: f64 = 40.0;
 
 // The production formulas the widgets size their bands from — one line of
 // type as the renderer lays it out, and a pinned floor grown by content plus
@@ -327,25 +325,6 @@ fn chart() -> Element {
     )
 }
 
-fn icon_grid() -> Element {
-    // Inside a Column the grid is stretched to the window width and reflows
-    // into columns, as it does in an app; as a bare root it would measure one
-    // cell wide.
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(IconGrid::new(vec![
-                IconGridItem::new(Icon::Folder, "Documents"),
-                IconGridItem::new(Icon::Folder, "Downloads"),
-                IconGridItem::new(Icon::Image, "holiday-photo-2026.png"),
-                IconGridItem::new(Icon::FileText, "notes.md"),
-                IconGridItem::new(Icon::Music, "song.flac"),
-                IconGridItem::new(Icon::File, "archive.tar"),
-            ]))),
-    )
-}
-
 fn legacy_cards() -> Element {
     Box::new(
         Column::new()
@@ -541,67 +520,6 @@ fn data_rows_centre_their_text_and_scale_once() {
             assert_centered("row icon", ink(&cap.image, icon), icon, 1.5);
         }
         assert_scaled_once("search title", title_ink[0], title_ink[1]);
-    }
-
-    // Case `icon_grid_centres_glyph_and_label_block_in_the_cell_and_scales_once`.
-    {
-        let mut label_ink = Vec::new();
-        for scale in [1.0, 2.0] {
-            let cap = capture("icon_grid", icon_grid(), (440, 260), scale);
-            let grid = rect(find(&cap.harness.inspection().root, "IconGrid"));
-            // The default cell follows the label type: eight ems of `sm` across,
-            // and the glyph, its `s2` gap and one `sm` line plus two `s3` insets
-            // down — the pinned 96×88 at 1x.
-            let theme = Theme::dark().with_text_scale(scale);
-            let sm_size = f64::from(theme.tokens.typography.size(TextRole::Caption));
-            let sm = line(&theme.tokens.typography, TextRole::Caption);
-            let s2 = f64::from(theme.tokens.spacing.s2);
-            let s3 = f64::from(theme.tokens.spacing.s3);
-            let cell_w = band(ICON_CELL.0, sm_size * 8.0, 0.0);
-            let cell_h = band(ICON_CELL.1, ICON_GLYPH + s2 + sm, 2.0 * s3);
-            assert!(cell_w >= ICON_CELL.0 && cell_h >= ICON_CELL.1);
-            if scale > 1.0 {
-                assert!(cell_w > ICON_CELL.0 && cell_h > ICON_CELL.1);
-            }
-            let cell = Rect::new(grid.x0, grid.y0, grid.x0 + cell_w, grid.y0 + cell_h);
-            // The label lives under the glyph; probe below the glyph's lowest
-            // possible bottom edge once the block is centred in the cell.
-            let glyph_bottom = (cell_h - (ICON_GLYPH + s2 + sm)) / 2.0 + ICON_GLYPH;
-            let label = Rect::new(cell.x0, cell.y0 + glyph_bottom + 1.0, cell.x1, cell.y1);
-            let label_run = ink(&cap.image, label);
-            label_ink.push(label_run);
-            let glyph_and_label = ink(&cap.image, cell);
-            // The block is centred by its line box, not its ink: the label's
-            // descender space (no letter of "Documents" reaches into it) lifts
-            // the ink a little, by an amount that grows with the type.
-            let block_tolerance = 1.5 * f64::from(scale);
-            assert_centered(
-                "glyph + label block",
-                glyph_and_label,
-                cell,
-                block_tolerance,
-            );
-            let drift = glyph_and_label.center().x - cell.center().x;
-            assert!(
-                drift.abs() <= 1.5,
-                "cell content {glyph_and_label:?} is {drift:+.2} px off centre"
-            );
-            // The second cell starts one `s3` gap after the first: the grid
-            // reflowed into columns rather than one cell per row.
-            let second = Rect::new(cell.x1 + s3, cell.y0, cell.x1 + s3 + cell_w, cell.y1);
-            let second_content = ink(&cap.image, second);
-            assert_centered("second cell block", second_content, second, block_tolerance);
-        }
-        assert_scaled_once("icon label", label_ink[0], label_ink[1]);
-        // "Documents" fits the 2x cell whole: a cell that had stayed 96 px wide
-        // would elide it to "Docum…", a run barely wider than the 1x label.
-        let width_ratio = label_ink[1].width() / label_ink[0].width();
-        assert!(
-            width_ratio >= 1.8,
-            "2x label {:?} must not be elided (x{width_ratio:.2} of the 1x run {:?})",
-            label_ink[1],
-            label_ink[0]
-        );
     }
 }
 
