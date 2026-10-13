@@ -111,9 +111,11 @@ pub mod paint_reason {
     pub const LOCK_CLOCK: u16 = 1 << 12;
     pub const LOCK_ANIMATION: u16 = 1 << 13;
     pub const LOCK_OSD: u16 = 1 << 14;
+    /// A change an earlier tick counted still waited for its frame.
+    pub const OWED: u16 = 1 << 15;
 
     /// Bit and CSV name, in bit order.
-    pub const NAMES: [(u16, &str); 15] = [
+    pub const NAMES: [(u16, &str); 16] = [
         (FORCE, "force"),
         (INPUT, "input"),
         (CURSOR, "cursor"),
@@ -129,6 +131,7 @@ pub mod paint_reason {
         (LOCK_CLOCK, "lock-clock"),
         (LOCK_ANIMATION, "lock-animation"),
         (LOCK_OSD, "lock-osd"),
+        (OWED, "owed"),
     ];
 
     /// `+`-joined names of the set bits, in bit order.
@@ -1110,7 +1113,7 @@ mod tests {
         let all = paint_reason::NAMES
             .iter()
             .fold(0, |bits, (bit, _)| bits | bit);
-        assert_eq!(all.count_ones(), 15, "the 15 bits are distinct");
+        assert_eq!(all.count_ones(), 16, "the 16 bits are distinct");
         assert_eq!(intern_clients(""), "");
         let first = intern_clients("so.tilo.notes");
         assert!(

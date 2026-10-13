@@ -128,6 +128,22 @@ impl Verb {
 }
 
 /// The setting and verb an action id of this provider names.
+/// The Settings page each setting is shown on, by the slug its links use.
+const fn page_of(kind: Kind) -> &'static str {
+    match kind {
+        Kind::LockAfter | Kind::BlankAfter | Kind::SuspendAfter | Kind::AutoSuspend => "power",
+        Kind::DisplayScale | Kind::DisplayRefreshRate => "displays",
+        Kind::KeyboardLayout => "keyboard",
+        Kind::AppearanceMode => "appearance",
+    }
+}
+
+/// Every setting served here with the Settings page that shows it: its
+/// page's slug and its name in the desktop's language.
+pub(crate) fn named_settings() -> impl Iterator<Item = (&'static str, String)> {
+    SPECS.iter().map(|spec| (page_of(spec.kind), t(spec.name)))
+}
+
 fn parse(id: &str) -> Option<(&'static Spec, Verb)> {
     let (setting, suffix) = id.rsplit_once('.')?;
     let verb = [Verb::Get, Verb::Set, Verb::Toggle]
@@ -611,6 +627,68 @@ fn answer_of(reading: &Reading, spec: &Spec) -> Value {
 
 pub struct SystemSettingsProvider {
     ranker: ui::search::ListIndex,
+    /// The rows and their searchable text, read once per version of what
+    /// they show: a keystroke checks the documents' stamps instead of reading
+    /// and parsing every setting again.
+    built: std::cell::RefCell<Option<Built>>,
+}
+
+/// What [`SystemSettingsProvider`]'s rows were read from: the settings
+/// document, the published display hardware, and the language they speak.
+type BuiltFrom = (
+    Option<settings_store::SettingsStamp>,
+    Option<std::time::SystemTime>,
+    u64,
+    String,
+);
+
+struct Built {
+    from: BuiltFrom,
+    rows: Vec<SearchResult>,
+    fields: Vec<Vec<(String, FieldWeight)>>,
+}
+
+fn built_from() -> BuiltFrom {
+    let displays = settings_store::hardware::display_snapshot_path()
+        .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+    (
+        settings_store::stamp(),
+        displays,
+        DisplayHardwareSnapshot::published_generation(),
+        crate::shell::i18n::current_locale(),
+    )
+}
+
+fn build() -> (Vec<SearchResult>, Vec<Vec<(String, FieldWeight)>>) {
+    let mut rows = Vec::new();
+    let mut fields = Vec::new();
+    for spec in SPECS {
+        let Some(reading) = read(spec.kind) else {
+            continue;
+        };
+        let name = t(spec.name);
+        let words = format!("{} {}", spec.words, t(&format!("{}-words", spec.name)));
+        let verbs: &[Verb] = if spec.kind == Kind::AutoSuspend {
+            &[Verb::Get, Verb::Set, Verb::Toggle]
+        } else {
+            &[Verb::Get, Verb::Set]
+        };
+        for &verb in verbs {
+            let row = row_for(spec, verb, &name, &reading);
+            fields.push(vec![
+                (row.title.clone(), FieldWeight::TITLE),
+                (name.clone(), FieldWeight::TITLE),
+                (row.id.clone(), FieldWeight::IDENTITY),
+                (words.clone(), FieldWeight::IDENTITY),
+                (
+                    row.subtitle.clone().unwrap_or_default(),
+                    FieldWeight::SUBTITLE,
+                ),
+            ]);
+            rows.push(row);
+        }
+    }
+    (rows, fields)
 }
 
 impl Default for SystemSettingsProvider {
@@ -623,6 +701,7 @@ impl SystemSettingsProvider {
     pub fn new() -> Self {
         Self {
             ranker: ui::search::ListIndex::default(),
+            built: std::cell::RefCell::default(),
         }
     }
 }
@@ -648,35 +727,16 @@ impl SearchProvider for SystemSettingsProvider {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
         }
-        let mut rows = Vec::new();
-        let mut fields = Vec::new();
-        for spec in SPECS {
-            let Some(reading) = read(spec.kind) else {
-                continue;
-            };
-            let name = t(spec.name);
-            let words = format!("{} {}", spec.words, t(&format!("{}-words", spec.name)));
-            let verbs: &[Verb] = if spec.kind == Kind::AutoSuspend {
-                &[Verb::Get, Verb::Set, Verb::Toggle]
-            } else {
-                &[Verb::Get, Verb::Set]
-            };
-            for &verb in verbs {
-                let row = row_for(spec, verb, &name, &reading);
-                fields.push(vec![
-                    (row.title.clone(), FieldWeight::TITLE),
-                    (name.clone(), FieldWeight::TITLE),
-                    (row.id.clone(), FieldWeight::IDENTITY),
-                    (words.clone(), FieldWeight::IDENTITY),
-                    (
-                        row.subtitle.clone().unwrap_or_default(),
-                        FieldWeight::SUBTITLE,
-                    ),
-                ]);
-                rows.push(row);
-            }
+        let from = built_from();
+        let mut built = self.built.borrow_mut();
+        if built.as_ref().is_none_or(|built| built.from != from) {
+            let (rows, fields) = build();
+            *built = Some(Built { from, rows, fields });
         }
-        crate::shell::search::rank_rows(&self.ranker, ctx.needle.trim(), rows, &fields)
+        let Some(Built { rows, fields, .. }) = built.as_ref() else {
+            return Vec::new();
+        };
+        crate::shell::search::rank_kept_rows(&self.ranker, ctx.needle.trim(), rows, fields)
     }
 }
 
@@ -695,8 +755,10 @@ fn row_for(spec: &'static Spec, verb: Verb, name: &str, reading: &Reading) -> Se
             t("setting-get-detail"),
             Vec::new(),
         ),
+        // A verb, as every setter in the palette reads: the bare name is
+        // the Settings page's, which lets the person choose rather than type.
         Verb::Set => (
-            name.to_owned(),
+            t_args("setting-set", &[("name", name.to_owned().into())]),
             t_args("setting-current", &value),
             set_params(spec.kind),
         ),
@@ -719,6 +781,7 @@ fn row_for(spec: &'static Spec, verb: Verb, name: &str, reading: &Reading) -> Se
     let open = Rc::clone(&run);
     let invoke = Rc::clone(&run);
     let mut row = SearchResult {
+        shortcut: None,
         kind: ResourceKind::Action,
         operation_kind: if verb == Verb::Get {
             OperationKind::View
