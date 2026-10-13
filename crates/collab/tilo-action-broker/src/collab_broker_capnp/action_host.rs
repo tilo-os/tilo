@@ -225,23 +225,10 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
     }
 }
 
+/// The host runs the action wherever its app lives; a published surface
+/// carries no locus of its own.
 fn descriptor(action: &PublishedAction) -> ActionDescriptor {
-    ActionDescriptor {
-        semantic_identity: action.semantic_identity.clone(),
-        address: ActionAddress::new(&action.resource, &action.action),
-        resource_kind: action.resource_kind.clone(),
-        resource_label: action.resource_label.clone(),
-        action_label: action.action_label.clone(),
-        description: action.description.clone(),
-        // The host runs the action wherever its app lives; a published
-        // surface carries no locus of its own.
-        locus: ExecutionLocus::default(),
-        kind: action.operation_kind,
-        contract: action.contract.clone(),
-        input: (&action.input).into(),
-        params: action.params.clone(),
-        view: action.view.clone(),
-    }
+    action.descriptor(ExecutionLocus::default())
 }
 
 fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDescriptor {
