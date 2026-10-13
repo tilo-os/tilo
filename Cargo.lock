@@ -12458,6 +12458,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app-package",
+ "tilo-automation",
  "tilo-clock",
  "tilo-net",
  "tilo-secrets",
@@ -12504,8 +12505,11 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-action-policy",
  "tilo-advisory-lock",
  "tilo-app-package",
+ "tilo-automation",
+ "tilo-bot-directory",
  "tilo-clock",
  "tilo-files",
  "tilo-net",
@@ -16083,6 +16087,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app-package",
+ "tilo-automation",
+ "tilo-clock",
  "tilo-rt",
  "tokio",
  "workspace-hack",
@@ -16204,6 +16210,19 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-bot-directory"
+version = "0.1.0"
+dependencies = [
+ "app-cli",
+ "registry-types",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-action-policy",
+ "tilo-automation",
+ "workspace-hack",
 ]
 
 [[package]]

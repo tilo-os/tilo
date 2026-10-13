@@ -64,6 +64,7 @@ fn registry(entries: usize) -> Registry {
     for index in 0..entries {
         let mut entry = RegistryEntry {
             package_id: format!("so.tilo.test{index}"),
+            kind: registry_types::EntryKind::App,
             name: "Test".into(),
             description: "A test app with a description long enough to weigh something".into(),
             tagline: "Test on Tilo OS".into(),
@@ -78,18 +79,20 @@ fn registry(entries: usize) -> Registry {
             publisher_pubkey_hex: publisher_hex.clone(),
             versions: vec![RegistryVersion {
                 version: "1".into(),
-                tapp_url: format!("https://apps.tilo.so/artifacts/test{index}.tapp"),
-                tapp_root_hash_hex: "ab".repeat(32),
-                tapp_size_bytes: 1,
                 released_at_unix: 1,
-                tapp_blake3_hex: "cd".repeat(32),
-                target: RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: format!("https://apps.tilo.so/artifacts/test{index}.tapp"),
+                    tapp_root_hash_hex: "ab".repeat(32),
+                    tapp_size_bytes: 1,
+                    tapp_blake3_hex: "cd".repeat(32),
+                    target: RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),
