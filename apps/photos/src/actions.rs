@@ -146,10 +146,6 @@ pub enum PhotosEffect {
     /// Copy photograph: the photograph this window shows, as edited.
     #[effect(device_only)]
     Copy,
-    /// Share photograph reference: copy its portable address to the local
-    /// clipboard.
-    #[effect(device_only)]
-    ShareReference { resource_id: String },
     /// Produce edited image content: render the photograph's crop and
     /// rotation, as they are now, into immutable PNG content.
     #[effect(content, idempotent, kind = "read", item = photos)]

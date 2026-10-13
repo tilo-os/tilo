@@ -1,0 +1,47 @@
+# The web entry: static files behind Cloudflare. Everything under /v/ is
+# named by its content and never changes; the entry pages and entry.json are
+# revalidated on every visit, so a new image takes effect at once.
+{
+	admin off
+	auto_https off
+	persist_config off
+	log {
+		format console
+		level WARN
+	}
+}
+
+:8080 {
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# Written at start from the environment (entrypoint.sh).
+	handle /entry.json {
+		root * /tmp/tilo-web
+		header Cache-Control "no-cache"
+		file_server
+	}
+
+	handle /v/* {
+		root * /srv/tilo-web
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server {
+			precompressed zstd br
+		}
+	}
+
+	handle {
+		root * /srv/tilo-web
+		header Cache-Control "no-cache"
+		file_server {
+			precompressed zstd br
+		}
+	}
+}

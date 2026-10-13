@@ -3,9 +3,9 @@
 //! `content.xml`); headings are recognised from `text:h` *and* from a heading
 //! paragraph-style. Unmodeled body elements are captured verbatim as fidelity atoms.
 
-use super::container::OdtContainer;
 use super::styles::{StyleRegistry, attr_val};
 use crate::format::CodecError;
+use crate::package::ZipPackage;
 use crate::preserve::{ATTR_FORMAT, MARK_ODT_XML};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
@@ -225,7 +225,7 @@ impl BodyState {
         ev: &Event,
         s: &str,
         end_pos: usize,
-        container: &OdtContainer,
+        container: &ZipPackage,
         doc: &mut DocMut,
         inputs: &mut ContentInputs,
     ) -> Result<FrameOutcome, CodecError> {
@@ -1310,7 +1310,7 @@ pub(crate) fn content_head(content_xml: &[u8]) -> Option<ContentHead> {
 pub(crate) fn parse_body(
     content_xml: &[u8],
     reg: &StyleRegistry,
-    container: &OdtContainer,
+    container: &ZipPackage,
     doc: &mut DocMut,
     inputs: &mut ContentInputs,
 ) -> Result<(), CodecError> {
@@ -1996,7 +1996,7 @@ mod tests {
     fn imports_inline_images_with_alt_text_and_surrounding_text() {
         // Phase `imports_image_nested_in_paragraph`.
         {
-            use super::super::container::OdtContainer;
+            use crate::package::ZipPackage;
             let body = concat!(
                 r#"<text:p>before</text:p>"#,
                 r#"<text:p text:style-name="Fig">"#,
@@ -2005,9 +2005,9 @@ mod tests {
                 r#"<text:p>after</text:p>"#,
             );
             let base = minimal_odt_styled("", body);
-            let mut c = OdtContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set("Pictures/0.png", TINY_PNG.to_vec());
-            let odt = c.write().unwrap();
+            let odt = c.write_odf().unwrap();
 
             let mut d = Document::new();
             let mut inputs = tilo_content::ContentInputs::new();
@@ -2044,17 +2044,17 @@ mod tests {
         }
         // Phase `image_alt_text_keeps_entity_references`.
         {
-            use super::super::container::OdtContainer;
+            use crate::package::ZipPackage;
             let body = concat!(
                 r#"<text:p><draw:frame><draw:image xlink:href="Pictures/0.png"/>"#,
                 "<svg:title>R&amp;D &lt;chart&gt; &#x1F600;</svg:title></draw:frame></text:p>",
             );
-            let mut c = OdtContainer::read(&minimal_odt_styled("", body)).unwrap();
+            let mut c = ZipPackage::read(&minimal_odt_styled("", body)).unwrap();
             c.set("Pictures/0.png", TINY_PNG.to_vec());
             let mut d = Document::new();
             OdtCodec
                 .import(
-                    &c.write().unwrap(),
+                    &c.write_odf().unwrap(),
                     &mut d.as_mut(),
                     &mut tilo_content::ContentInputs::new(),
                 )
@@ -2068,12 +2068,12 @@ mod tests {
         }
         // Phase `keeps_paragraph_text_before_inline_image`.
         {
-            use super::super::container::OdtContainer;
+            use crate::package::ZipPackage;
             let body = "<text:p>see <draw:frame><draw:image xlink:href=\"Pictures/0.png\"/></draw:frame></text:p>";
             let base = minimal_odt_styled("", body);
-            let mut c = OdtContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set("Pictures/0.png", TINY_PNG.to_vec());
-            let odt = c.write().unwrap();
+            let odt = c.write_odf().unwrap();
 
             let mut d = Document::new();
             OdtCodec
@@ -2162,7 +2162,7 @@ mod tests {
 
     #[test]
     fn keeps_unmodeled_paragraph_content_inline_through_export() {
-        use super::super::container::OdtContainer;
+        use crate::package::ZipPackage;
         let field = r#"<text:page-number text:select-page="current">3</text:page-number>"#;
         let shape = r#"<draw:custom-shape text:anchor-type="paragraph" svg:width="1cm" svg:height="1cm"><draw:enhanced-geometry draw:type="star5"/></draw:custom-shape>"#;
         let text_box = r#"<draw:frame text:anchor-type="paragraph" svg:width="3cm"><draw:text-box><text:p>boxed</text:p></draw:text-box></draw:frame>"#;
@@ -2196,7 +2196,7 @@ mod tests {
         let out = OdtCodec
             .export(d.as_ref(), &tilo_content::NoContent)
             .unwrap();
-        let c = OdtContainer::read(&out).unwrap();
+        let c = ZipPackage::read(&out).unwrap();
         let xml = String::from_utf8(c.get("content.xml").unwrap().to_vec()).unwrap();
         let at = |needle: &str| {
             xml.find(needle)
@@ -2225,7 +2225,7 @@ mod tests {
             let out = OdtCodec
                 .export(d.as_ref(), &tilo_content::NoContent)
                 .unwrap();
-            let c = OdtContainer::read(&out).unwrap();
+            let c = ZipPackage::read(&out).unwrap();
             String::from_utf8(c.get("content.xml").unwrap().to_vec()).unwrap()
         };
         let after_field = "_Page 3".chars().count();

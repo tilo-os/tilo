@@ -255,6 +255,17 @@ impl Rooms {
         // The factory is the app's own code: it runs in a confined app
         // worker, held only while its genesis is taken and admitted here
         // before it is signed.
+        // A record a room route names (the room's default record) is
+        // created under that id: a genesis naming another id would be
+        // published there, and no member could open it.
+        let seed =
+            if record.is_empty() {
+                Seed::New
+            } else {
+                Seed::NewAt(ui::record::RecordId::parse(record).ok_or_else(|| {
+                    CollaborationError::new("application record is not a record id")
+                })?)
+            };
         let genesis = {
             let source = ConfinedReplica::open(
                 catalogue,
@@ -262,7 +273,7 @@ impl Rooms {
                 room,
                 &hex::encode(governor.user_public_key),
                 &tilo_agent_participant::ReplicaActor::Owner,
-                Seed::New,
+                seed,
             )
             .map_err(|error| CollaborationError::new(error.to_string()))?;
             if record.is_empty() != (source.record() == "@tilo:package-primary") {

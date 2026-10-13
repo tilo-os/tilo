@@ -13,17 +13,25 @@ pub struct Stats {
     pub chat_tx: AtomicU64,
     pub committed: AtomicU64,
     pub chat_rx: AtomicU64,
+    /// Messages sent before their receiver joined, which reach it with the
+    /// room's history; their age says nothing about delivery.
+    pub chat_history: AtomicU64,
     pub live_open: AtomicU64,
     pub live_ended: AtomicU64,
     pub session_failures: AtomicU64,
     join_ms: Mutex<Vec<f64>>,
     /// The admission part of each join: `/join` and the redemptions.
     admit_ms: Mutex<Vec<f64>>,
-    chat_ms: Mutex<Vec<f64>>,
+    /// Delivery of messages sent while their receiver was in the room, with
+    /// when each was sent (ms into the run).
+    chat_ms: Mutex<Vec<(u64, f64)>>,
     /// How long each guest refused for a full room waited for the answer.
     full_ms: Mutex<Vec<f64>>,
     failures: Mutex<BTreeMap<String, u64>>,
 }
+
+/// The width of the send-time windows chat delivery is reported in.
+const CHAT_WINDOW_MS: u64 = 5000;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -55,9 +63,13 @@ impl Stats {
         lock(&self.full_ms).push(ms);
     }
 
-    pub fn chat(&self, ms: f64) {
+    pub fn chat(&self, sent: u64, ms: f64) {
         self.chat_rx.fetch_add(1, Ordering::Relaxed);
-        lock(&self.chat_ms).push(ms);
+        lock(&self.chat_ms).push((sent, ms));
+    }
+
+    pub fn chat_history(&self) {
+        self.chat_history.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn fail(&self, what: impl Into<String>) {
@@ -78,7 +90,21 @@ impl Stats {
         };
         let join_by_tenth = by_tenth(&join);
         let admit_by_tenth = by_tenth(&admit);
-        let mut chat = lock(&self.chat_ms).clone();
+        let delivered = lock(&self.chat_ms).clone();
+        // By when each message was sent: whether delivery slows while guests
+        // are still joining.
+        let mut windows: BTreeMap<u64, Vec<f64>> = BTreeMap::new();
+        for (sent, ms) in &delivered {
+            windows
+                .entry(sent / CHAT_WINDOW_MS * CHAT_WINDOW_MS / 1000)
+                .or_default()
+                .push(*ms);
+        }
+        let chat_p95_by_sent_s: BTreeMap<u64, f64> = windows
+            .into_iter()
+            .map(|(at, mut ms)| (at, quantile(&mut ms, 0.95)))
+            .collect();
+        let mut chat: Vec<f64> = delivered.into_iter().map(|(_, ms)| ms).collect();
         let mut full = lock(&self.full_ms).clone();
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         serde_json::json!({
@@ -104,12 +130,14 @@ impl Stats {
             "presence_refused": load(&self.presence_refused),
             "chat_tx": load(&self.chat_tx),
             "chat_rx": load(&self.chat_rx),
+            "chat_history": load(&self.chat_history),
             "committed": load(&self.committed),
             "chat_ms": {
                 "p50": quantile(&mut chat, 0.5),
                 "p95": quantile(&mut chat, 0.95),
                 "max": quantile(&mut chat, 1.0),
             },
+            "chat_p95_ms_by_sent_s": chat_p95_by_sent_s,
             "live_open": load(&self.live_open),
             "live_ended": load(&self.live_ended),
             "session_failures": load(&self.session_failures),

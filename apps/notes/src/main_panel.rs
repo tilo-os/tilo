@@ -1114,6 +1114,10 @@ impl MainPanel {
         self.editor.editor()
     }
 
+    pub(crate) fn editor_route_available(&self) -> bool {
+        self.editor_node.is_some()
+    }
+
     /// Test/internal mutable accessor for the editor — used by the
     /// integration tests to drive split/merge/promote and observe
     /// the resulting markdown.

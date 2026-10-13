@@ -550,7 +550,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         .map(|_| ReplayPendingTarget {
             device: [9; 32],
             live: Arc::new(AtomicBool::new(false)),
-            catchup: Arc::new(ReplayCatchup::new()),
+            catchup: Arc::new(ReplayCatchup::new(std::path::Path::new("store-work-v1"))),
         })
         .collect();
     let mut work =

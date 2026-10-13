@@ -42,11 +42,14 @@ use ui::winit::keyboard::{Key, NamedKey};
 use ui::{TextRenderer, Theme};
 
 /// What the desktop asks of the page that embeds it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum HostRequest {
     /// Invite someone into this workspace (`mountDesktop({onInvite})`).
     Invite,
+    /// Perform the host action the person chose in search or on a banner
+    /// (`mountDesktop({hostActions, onHostAction})`), by id.
+    Action(String),
 }
 
 /// Requests the desktop queued since the page last read its status.
@@ -272,7 +275,7 @@ impl BrowserShell {
     }
 
     fn launch(&self, app: &str) {
-        if crate::desktop::application(app).is_some() {
+        if crate::desktop::known_application(app).is_some() {
             self.dispatch(&Command::Launch {
                 generation: self.generation.clone(),
                 app: app.into(),
@@ -597,6 +600,13 @@ impl Widget for BrowserShell {
         }
         changed |= self.bar.update(state, path);
         changed |= self.area.update(state, path);
+        // Chosen while the surface updated (search, a banner): the page
+        // performs them when it reads this frame's status.
+        let choices = self.handle.take_host_choices();
+        changed |= !choices.is_empty();
+        self.requests
+            .borrow_mut()
+            .extend(choices.into_iter().map(HostRequest::Action));
         changed
     }
 

@@ -6,12 +6,27 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
 /// Last daemon counter snapshot, consumed by offline admin/status commands.
 pub const METRICS_FILE: &str = "metrics.json";
+
+/// The relay's own state root under the `--state` of `tilo-relay room`: it
+/// keeps [`METRICS_FILE`] there. A room host reads the snapshot from here.
+#[must_use]
+pub fn room_relay_root(room_state: &Path) -> PathBuf {
+    room_state.join("relay")
+}
+
+/// Where the connector workers of a `tilo-relay room` keep their counters as
+/// Prometheus text, one `<app>.prom` each, under its `--state`. A room host
+/// appends these to its metrics page.
+#[must_use]
+pub fn room_textfile_dir(room_state: &Path) -> PathBuf {
+    room_state.join("metrics.d")
+}
 
 /// Immutable copy of every relay counter for status reports.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

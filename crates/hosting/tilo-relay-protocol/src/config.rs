@@ -113,10 +113,11 @@ pub struct RelayConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environments: Option<EnvironmentsConfig>,
 
-    /// Public HTTPS resource-page entry of the operator's versioned browser bundle.
+    /// Web entry base (ending in `/`) of the operator's versioned browser bundle,
+    /// announced in catalogue locators so links are minted under it.
     /// This is a navigation destination, not an admission or content-access grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource_browser_page: Option<String>,
+    pub web_entry: Option<String>,
     /// Per-person change and content budgets, for a host whose rooms admit
     /// the public. `None` limits nobody.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -438,7 +439,7 @@ impl Default for RelayConfig {
             workspaces: Vec::new(),
             peer_relays: Vec::new(),
             environments: None,
-            resource_browser_page: None,
+            web_entry: None,
             member_limits: None,
             max_room_grants: None,
         }
