@@ -1094,10 +1094,7 @@ impl Widget for ScreenshotMarkup {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                if self.move_active_gesture(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                )) {
+                if self.move_active_gesture(ctx.logical(position)) {
                     *ctx.handled = true;
                 }
             }

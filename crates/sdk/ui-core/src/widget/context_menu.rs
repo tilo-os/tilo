@@ -879,8 +879,7 @@ impl ContextMenu {
             return false;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
         }
         let p = self.last_cursor;
         let over = self
@@ -1416,8 +1415,7 @@ impl Widget for ContextMenu {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 // Hover follows the pointer once it moves; until then the
                 // row the menu opened on (or the keyboard moved to) stays.
                 if self
@@ -1521,10 +1519,7 @@ impl Widget for ContextMenu {
                 *ctx.handled = true;
             }
             WindowEvent::Touch(touch) => {
-                let point = Point::new(
-                    touch.location.x / ctx.scale_factor,
-                    touch.location.y / ctx.scale_factor,
-                );
+                let point = ctx.logical(touch.location);
                 match touch.phase {
                     winit::event::TouchPhase::Started if self.active_touch.is_none() => {
                         self.active_touch = Some(touch.id);

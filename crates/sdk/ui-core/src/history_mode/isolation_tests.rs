@@ -744,7 +744,4 @@ impl crate::widget::AppWidget for LiveOwner {
     fn app_icon(&self) -> crate::widget::IconDescriptor {
         crate::widget::IconDescriptor::Glyph("P")
     }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
-    }
 }

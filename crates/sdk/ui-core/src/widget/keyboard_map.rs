@@ -633,10 +633,7 @@ impl Widget for KeyboardMap {
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
+            self.pointer = Some(ctx.logical(position));
         }
         if matches!(
             event,
@@ -895,10 +892,7 @@ impl crate::widget::Decorator for KeyboardMapSelection {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Some(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                self.pointer = Some(ctx.logical(position));
             }
             WindowEvent::MouseInput {
                 state,
@@ -914,10 +908,7 @@ impl crate::widget::Decorator for KeyboardMapSelection {
                 }
             }
             WindowEvent::Touch(touch) => {
-                let point = Point::new(
-                    touch.location.x / ctx.scale_factor,
-                    touch.location.y / ctx.scale_factor,
-                );
+                let point = ctx.logical(touch.location);
                 match touch.phase {
                     winit::event::TouchPhase::Started => self.press(point),
                     winit::event::TouchPhase::Ended => {

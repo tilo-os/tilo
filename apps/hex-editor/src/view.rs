@@ -721,8 +721,7 @@ impl HexView {
     ) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_mouse = ctx.logical(position);
                 let hovered = self.geo.toggle.contains(self.last_mouse);
                 if hovered != self.toggle_hovered {
                     self.toggle_hovered = hovered;

@@ -3562,7 +3562,7 @@ impl Widget for MailApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let point = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            let point = ctx.logical(position);
             self.shared.borrow_mut().last_mouse = point;
             self.dirty = true;
         }

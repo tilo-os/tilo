@@ -1634,7 +1634,7 @@ impl Widget for Dropdown {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pos = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pos = ctx.logical(position);
                 self.on_cursor_moved(pos, ctx.handled);
             }
             // The pointer left the window: no `CursorMoved` follows, so the

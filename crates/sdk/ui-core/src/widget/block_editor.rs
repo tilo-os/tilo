@@ -2017,8 +2017,7 @@ impl BlockEditor {
         use winit::event::MouseButton;
 
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse_pos =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse_pos = ctx.logical(position);
         }
         if let WindowEvent::KeyboardInput {
             event:
@@ -3573,8 +3572,7 @@ impl BlockEditor {
             return false;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse_pos =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse_pos = ctx.logical(position);
         }
         for (index, block) in self.blocks.iter().enumerate() {
             if let Some(image) = self.image_attachments.get_mut(&block.id) {

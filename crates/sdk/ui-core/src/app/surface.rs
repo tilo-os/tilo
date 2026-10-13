@@ -1492,8 +1492,7 @@ mod tests {
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.pointer =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.pointer = ctx.logical(position);
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
@@ -1528,9 +1527,6 @@ mod tests {
         }
         fn app_icon(&self) -> crate::widget::IconDescriptor {
             crate::widget::IconDescriptor::Glyph("C")
-        }
-        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-            None
         }
     }
 

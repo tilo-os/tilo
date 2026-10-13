@@ -668,8 +668,7 @@ impl Widget for WebView {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let logical = ctx.logical(position);
                 self.last_mouse = logical;
                 if self.rect.contains(logical) {
                     let (x, y) = self.to_engine(logical);

@@ -3026,8 +3026,7 @@ impl NotesApp {
         }
         self.route_to_sidebar(event, ctx);
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse = ctx.logical(position);
         }
         self.refresh_status();
         *ctx.handled = true;
@@ -3316,10 +3315,7 @@ impl NotesApp {
         // Update the last-mouse cache so the next MouseInput knows
         // where to hit-test for link clicks.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let logical = vello::kurbo::Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            );
+            let logical = ctx.logical(position);
             self.last_mouse = logical;
             // Resting on the bubble's corner pins it open; over a failed
             // save's toast its actions lift.
