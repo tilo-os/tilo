@@ -513,6 +513,57 @@ fn sync_once(path: &Path) -> Result<(), StoreError> {
     }
 }
 
+/// Run independent barriers at once. Concurrent fsyncs share the file
+/// system's journal commits: a commit whose barriers order nothing between
+/// them waits about as long as for one of them instead of for each in turn.
+fn barriers(
+    work: &mut [&mut (dyn FnMut() -> Result<(), StoreError> + Send)],
+) -> Result<(), StoreError> {
+    let Some((first, rest)) = work.split_first_mut() else {
+        return Ok(());
+    };
+    std::thread::scope(|scope| {
+        let others: Vec<_> = rest
+            .iter_mut()
+            .map(|barrier| {
+                scope.spawn(move || {
+                    let result = barrier();
+                    (result, crate::store::helper_fsyncs())
+                })
+            })
+            .collect();
+        let mut result = first();
+        for other in others {
+            let other = match other.join() {
+                Ok((other, fsyncs)) => {
+                    crate::store::credit_fsyncs(fsyncs);
+                    other
+                }
+                Err(_) => Err(invalid("a barrier panicked")),
+            };
+            if result.is_ok() {
+                result = other;
+            }
+        }
+        result
+    })
+}
+
+/// [`create_dir`] for `lineage` in `v2`, except that a lineage this
+/// creates leaves its entry unsynced: returns `v2` then, for the caller to
+/// sync beside its own barriers.
+fn create_lineage(v2: PathBuf, lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
+    if !lineage.is_dir() {
+        match fs::create_dir(lineage) {
+            Ok(()) => return Ok(Some(v2)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    create_dir(lineage)?;
+    Ok(None)
+}
+
 pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
     // Every commit passes here for directories that exist: a stat, rather
     // than a mkdir that fails with EEXIST and a stat.
@@ -739,6 +790,10 @@ pub(crate) struct RetainBuild {
     /// append selects and writes into; a staged checkpoint becomes the
     /// first instead.
     fresh: bool,
+    /// The directory holding the lineage, when this build created the
+    /// lineage and has not yet made its entry durable: a checkpoint does
+    /// that beside its own barriers.
+    unsynced_parent: Option<PathBuf>,
     scratch: PathBuf,
     bytes: Vec<u8>,
     /// Digest of `bytes`, which a prior record must share to be read.
@@ -972,21 +1027,37 @@ impl RetainBuild {
     /// Every prior record was inspected: collect a duplicate, stage a
     /// checkpoint, or append.
     fn inspected(&mut self) -> Result<(), StoreError> {
+        let unsynced_parent = self.unsynced_parent.take();
+        let stage_checkpoint = self.continuity.is_none()
+            && self.checkpoint
+            && !self.opaque
+            && (covers(&self.bytes, &self.bytes, self.workspace)
+                || standalone(&self.bytes, self.workspace).is_some());
+        if let Some(parent) = unsynced_parent.as_deref()
+            && (self.duplicate || !stage_checkpoint)
+        {
+            sync_dir_once(parent)?;
+        }
         if self.duplicate && self.continuity.is_none() {
             self.phase = if self.staged_only {
                 RetainPhase::Done
             } else {
                 RetainPhase::Collect(Box::new(GenerationGc::new(self.lineage.clone())?))
             };
-        } else if self.continuity.is_none()
-            && self.checkpoint
-            && !self.opaque
-            && (covers(&self.bytes, &self.bytes, self.workspace)
-                || standalone(&self.bytes, self.workspace).is_some())
-        {
+        } else if stage_checkpoint {
             let staged = self.lineage.join(hex::encode(rand::random::<[u8; 16]>()));
-            create_dir(&staged)?;
-            durable_write(&staged.join("checkpoint.delta"), &self.bytes)?;
+            fs::create_dir(&staged)?;
+            // The stage's entry, its checkpoint and a new lineage's own entry
+            // order nothing between them; all hold before CURRENT names the
+            // stage.
+            let checkpoint = staged.join("checkpoint.delta");
+            let bytes = &self.bytes;
+            let lineage = &self.lineage;
+            barriers(&mut [
+                &mut || durable_write(&checkpoint, bytes),
+                &mut || sync_dir_once(lineage),
+                &mut || unsynced_parent.as_deref().map_or(Ok(()), sync_dir_once),
+            ])?;
             self.staged = Some(staged);
             self.staged_synced = true;
             #[cfg(test)]
@@ -1467,7 +1538,7 @@ impl WorkspaceStore {
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         create_dir(&v2)?;
         let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
-        create_dir(&lineage)?;
+        let unsynced_parent = create_lineage(v2, &lineage)?;
         let (active, fresh) = match current(&lineage)? {
             Some(active) => (active, false),
             // A checkpoint stages a generation of its own, so a new lineage
@@ -1519,6 +1590,7 @@ impl WorkspaceStore {
             lineage,
             active,
             fresh,
+            unsynced_parent,
             scratch,
             digest,
             bytes,
