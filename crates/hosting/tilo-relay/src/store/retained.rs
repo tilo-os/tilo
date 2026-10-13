@@ -2199,17 +2199,22 @@ pub(super) mod tests {
                 // generation's directory, its checkpoint and that
                 // directory, CURRENT and the lineage, and the lineage once
                 // the replaced generation is gone; Apple repeats the
-                // directory barrier of each `durable_write`. That last
-                // lineage barrier is a `sync_dir_once`: on a filesystem whose
-                // change times are coarser than this test, the lineage's
-                // stamp still matches the one synced with CURRENT and the
-                // barrier is rightly skipped (collection is redone after a
-                // crash), so it may or may not be counted.
+                // directory barrier of each `durable_write`. Two of the
+                // lineage's barriers are `sync_dir_once`: the one after the
+                // staged generation's directory is made, and the one after
+                // the replaced generation is gone. On a filesystem whose
+                // change times are coarser than this test, the lineage holds
+                // as many entries at each of them as it did at the same point
+                // of the previous checkpoint, so its stamp can match the one
+                // synced then and the barrier is skipped. Either skip is
+                // safe: CURRENT's `durable_write` syncs the lineage before
+                // the new generation is published, and collection is redone
+                // after a crash. Each may or may not be counted.
                 let barriers = if cfg!(target_vendor = "apple") { 8 } else { 6 };
                 let issued = crate::store::thread_fsyncs() - before;
                 assert!(
-                    (barriers - 1..=barriers).contains(&issued),
-                    "{issued} barriers, expected {barriers} or one fewer"
+                    (barriers - 2..=barriers).contains(&issued),
+                    "{issued} barriers, expected {barriers} or up to two fewer"
                 );
             }
         }
