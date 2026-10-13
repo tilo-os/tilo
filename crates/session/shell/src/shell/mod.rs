@@ -86,6 +86,7 @@ pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub(crate) mod launch_readiness;
 pub mod launcher;
+pub mod link_open;
 pub mod live_activities;
 pub mod live_presence;
 pub(crate) mod local_audio_graph;

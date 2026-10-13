@@ -19,9 +19,11 @@
 //! and only a newer statement replaces the kept one, so an old envelope
 //! (with a passkey since dropped) cannot be replayed over it.
 //! `POST /peer/v1/envelope/fetch` with the root public key (hex) as its body
-//! answers with the kept envelope's JSON, or 404. `/peer/v1/profile` and
-//! `/peer/v1/profile/fetch` do the same for a profile (`{profile,
-//! issued_at_ms, signature}`, signed under [`PROFILE_LABEL`]).
+//! answers `{"envelope": <the kept envelope>}`, or `{"envelope": null}` when
+//! none is kept (a new person: the usual case, not an error).
+//! `/peer/v1/profile` and `/peer/v1/profile/fetch` do the same for a
+//! profile (`{profile, issued_at_ms, signature}`, signed under
+//! [`PROFILE_LABEL`]; `{"profile": null}` when none is kept).
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -86,14 +88,8 @@ impl Kind {
                 }
                 let profile: Profile = serde_json::from_str(record)
                     .map_err(|_| Refusal::Malformed("not a profile"))?;
-                let name = &profile.display_name;
-                if profile.version != 1
-                    || name.is_empty()
-                    || name.trim() != name
-                    || name.len()
-                        > tilo_user_identity::projection::MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES
-                    || name.chars().any(char::is_control)
-                {
+                let name = profile.display_name.as_str();
+                if profile.version != 1 || tilo_user_identity::display_name(name) != Ok(name) {
                     return Err(Refusal::Malformed("not a profile"));
                 }
                 root_of(&profile.user_public_key)
@@ -187,9 +183,21 @@ impl Envelopes {
     }
 
     /// The kept envelope of the root named by `body` (hex), as JSON text.
-    pub(super) fn fetch(&self, body: &[u8]) -> Option<String> {
+    fn fetch(&self, body: &[u8]) -> Option<String> {
         let root = root_of(std::str::from_utf8(body).ok()?.trim())?;
         Self::kept(&self.path(&root)).map(|kept| kept.envelope)
+    }
+
+    /// The answer to a fetch of the root `body` names (hex): `{"<kind>":
+    /// record}`, or `{"<kind>": null}` when nothing is kept for it (a new
+    /// person, the usual case). `None` when `body` names no root.
+    pub(super) fn answer(&self, body: &[u8]) -> Option<Vec<u8>> {
+        root_of(std::str::from_utf8(body).ok()?.trim())?;
+        let kept = self
+            .fetch(body)
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+            .unwrap_or(serde_json::Value::Null);
+        serde_json::to_vec(&serde_json::json!({ self.kind.name(): kept })).ok()
     }
 
     /// Keep the envelope `body` publishes, when its root signed it, is
@@ -333,6 +341,7 @@ mod tests {
             Err(Refusal::Malformed(_))
         ));
         assert_eq!(envelopes.fetch(b"not hex"), None);
+        assert_eq!(envelopes.answer(b"not hex"), None);
     }
 
     #[tokio::test]
@@ -363,7 +372,20 @@ mod tests {
             })
             .await
             .expect("kept");
-        assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(ada));
+        assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(ada.clone()));
+        let answered: serde_json::Value =
+            serde_json::from_slice(&profiles.answer(hex_root.as_bytes()).expect("a root"))
+                .expect("json");
+        assert_eq!(
+            answered,
+            serde_json::json!({"profile": serde_json::from_str::<serde_json::Value>(&ada).expect("json")})
+        );
+        // Nothing kept for a root is an answer too, not a failure.
+        let stranger = hex::encode(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
+        assert_eq!(
+            profiles.answer(stranger.as_bytes()),
+            Some(br#"{"profile":null}"#.to_vec())
+        );
         for bad in [profile(""), profile(" Ada"), profile("A\u{7}da")] {
             assert!(matches!(
                 profiles

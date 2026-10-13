@@ -1112,7 +1112,7 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
             instance_id: 1,
             address: tilo_actions::ActionAddress::new(
                 crate::testing::item("messages", &shared.id),
-                "copy-resource-link",
+                "share-link",
             ),
         };
         let join = BoundActionAddress {
@@ -1138,8 +1138,8 @@ fn browser_catalogue_and_media_polls_preserve_each_others_requests() {
         };
         assert!(catalogues.iter().any(|message| matches!(message,
             RemoteActionMessage::CatalogueRequest {query, ..}
-                if query.provider.as_deref() == Some("record:so.tilo.chat:")
-                    && query.view_resource.as_ref().is_some_and(|resource| resource.id == "chat.message:target"))));
+                if query.provider.as_deref().is_some_and(|provider| provider.starts_with("record:so.tilo.chat:"))
+                    && query.view_resource.as_ref().is_some_and(|resource| resource.id == crate::testing::item("messages", &shared.id)))));
         assert!(
             media
                 .iter()

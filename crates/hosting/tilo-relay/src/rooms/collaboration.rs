@@ -28,6 +28,14 @@ use tilo_peer_state::StatePeer;
 
 use super::{GovernedRoom, RoomRecord, Rooms, system_time};
 
+/// A verified redemption to admit, and what its receipt answers for.
+pub(super) struct Redeeming<'a> {
+    pub remote_endpoint: [u8; 32],
+    pub request_id: [u8; 32],
+    pub proof_digest: [u8; 32],
+    pub redemption: &'a VerifiedRedemption,
+}
+
 /// A change to who is in a room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 enum Membership {
@@ -84,6 +92,14 @@ impl From<String> for CollaborationError {
     fn from(message: String) -> Self {
         Self(message)
     }
+}
+
+/// One waiting for its room's next write: whether it staged a change of
+/// the room's pre-admissions as well as of its record, and where the
+/// outcome goes.
+pub(super) struct Written {
+    admissions: bool,
+    answer: tokio::sync::oneshot::Sender<Result<(), CollaborationError>>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -283,6 +299,24 @@ impl Rooms {
     ) -> Result<IssuedInvitation, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         self.authorize(administrator, now, "invitation.issue")?;
+        let issued = self.stage_issue(
+            &mut *self.room(room).await?.lock().await,
+            administrator,
+            request,
+            now,
+        )?;
+        self.written(room, false).await?;
+        Ok(issued)
+    }
+
+    /// Record an invitation `request` asks of `room`, unwritten.
+    pub(super) fn stage_issue(
+        &self,
+        room: &mut GovernedRoom,
+        administrator: &DeviceCert,
+        request: IssueInvitationRequest,
+        now: u64,
+    ) -> Result<IssuedInvitation, CollaborationError> {
         let digest = request_digest(&(
             &request.role,
             &request.recipient_user_public_key,
@@ -290,8 +324,6 @@ impl Rooms {
             request.expires_at_ns,
             &request.inviter_name,
         ))?;
-        let room = self.room(room).await?;
-        let mut room = room.lock().await;
         if let Some(record) = room
             .collaboration()
             .invitations
@@ -320,7 +352,7 @@ impl Rooms {
             recipient_user_public_key: request.recipient_user_public_key,
             invitee_name: request.invitee_name,
             expires_at_ns: request.expires_at_ns,
-            transport: vec![self.transport_hint(&room)?],
+            transport: vec![self.transport_hint(room)?],
         };
         let signed_invitation = match request.inviter_name {
             Some(name) => issue_invitation_from(
@@ -337,15 +369,16 @@ impl Rooms {
             invite_id: *blake3::hash(&signed_invitation).as_bytes(),
             signed_invitation,
         };
-        let mut state = room.collaboration().clone();
-        state.invitations.push(InvitationRecord {
-            request_id: request.request_id,
-            request_digest: digest,
-            issued: issued.clone(),
-            grant,
-            cancellation: None,
-        });
-        room.commit_state(state)?;
+        room.record
+            .collaboration
+            .invitations
+            .push(InvitationRecord {
+                request_id: request.request_id,
+                request_digest: digest,
+                issued: issued.clone(),
+                grant,
+                cancellation: None,
+            });
         tracing::info!(
             room = %room.room(),
             invite_id = %hex::encode(issued.invite_id),
@@ -1103,10 +1136,8 @@ impl Rooms {
         )?)
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed, published and answered"
-    )]
+    /// Issue the device at `remote_endpoint` a challenge for `request`,
+    /// answered once the room has written it.
     pub(super) async fn challenge(
         &self,
         remote_endpoint: [u8; 32],
@@ -1118,10 +1149,86 @@ impl Rooms {
                 "join certificate does not match authenticated transport endpoint",
             ));
         }
-        let room = self
-            .room(&invitation_room(&request.signed_invitation)?)
-            .await?;
-        let mut room = room.lock().await;
+        let room_id = invitation_room(&request.signed_invitation)?;
+        let room = self.room(&room_id).await?;
+        let challenge =
+            Self::stage_challenge(&mut *room.lock().await, remote_endpoint, request, now)?;
+        self.written(&room_id, false).await?;
+        Ok(JoinChallengeResponse { challenge })
+    }
+
+    /// Wait until `room`'s next write, which takes the room once for every
+    /// change staged in it before: a crowd joining wrote the whole room once
+    /// per challenge, one after another under its lock.
+    /// With `admissions`, the write saves the room's pre-admissions too.
+    pub(super) async fn written(
+        &self,
+        room: &str,
+        admissions: bool,
+    ) -> Result<(), CollaborationError> {
+        let (answer, wait) = tokio::sync::oneshot::channel();
+        if self.queue_write(room, Written { admissions, answer }) {
+            // Its own task: a request that goes away mid-write must not cut
+            // off the answers of everyone else waiting on it.
+            let rooms = self.clone();
+            let room = room.to_owned();
+            tokio::spawn(async move { rooms.write_queued(&room).await });
+        }
+        wait.await
+            .map_err(|_| CollaborationError::new("the room stopped writing"))?
+    }
+
+    /// Queue `written` for `room`'s next write. True when it is the first
+    /// since the room last took them, so its sender starts the write.
+    fn queue_write(&self, room: &str, written: Written) -> bool {
+        let mut queued = self
+            .inner
+            .queued_writes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let waiting = queued.entry(room.to_owned()).or_default();
+        waiting.push(written);
+        let first = waiting.len() == 1;
+        drop(queued);
+        first
+    }
+
+    async fn write_queued(&self, room_id: &str) {
+        let take = || {
+            self.inner
+                .queued_writes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(room_id)
+                .unwrap_or_default()
+        };
+        let (result, waiting) = match self.room(room_id).await {
+            Err(error) => (Err(error), take()),
+            Ok(room) => {
+                let room = room.lock().await;
+                // Taken under the room: whoever queued staged their change
+                // before.
+                let waiting = take();
+                let mut result = room.persist();
+                if result.is_ok() && waiting.iter().any(|written| written.admissions) {
+                    result = room.admissions.save();
+                }
+                drop(room);
+                (result.map_err(CollaborationError::new), waiting)
+            }
+        };
+        for written in waiting {
+            let _ = written.answer.send(result.clone());
+        }
+    }
+
+    /// Record a challenge for `request` in `room`, unwritten.
+    fn stage_challenge(
+        room: &mut GovernedRoom,
+        remote_endpoint: [u8; 32],
+        request: JoinChallengeRequest,
+        now: u64,
+    ) -> Result<JoinChallenge, CollaborationError> {
         let digest = request_digest(&(remote_endpoint, &request))?;
         if let Some(prior) = room.collaboration().join_challenges.iter().find(|prior| {
             prior.challenge.request_id == request.request_id && prior.challenge.expires_at_ns > now
@@ -1131,11 +1238,9 @@ impl Rooms {
                     "join request ID already names a different challenge",
                 ));
             }
-            return Ok(JoinChallengeResponse {
-                challenge: prior.challenge.clone(),
-            });
+            return Ok(prior.challenge.clone());
         }
-        let verified = Self::inspect(&room, &request.signed_invitation, now)?;
+        let verified = Self::inspect(room, &request.signed_invitation, now)?;
         if verified
             .grant()
             .recipient_user_public_key
@@ -1159,23 +1264,20 @@ impl Rooms {
             expires_at_ns,
             now,
         )?;
-        let mut state = room.collaboration().clone();
-        state
-            .join_challenges
-            .retain(|record| record.challenge.expires_at_ns > now);
-        if state.join_challenges.len() >= MAX_PENDING_CHALLENGES {
+        let challenges = &mut room.record.collaboration.join_challenges;
+        challenges.retain(|record| record.challenge.expires_at_ns > now);
+        if challenges.len() >= MAX_PENDING_CHALLENGES {
             return Err(CollaborationError::new(
                 "pending join challenge limit reached",
             ));
         }
-        state.join_challenges.push(JoinChallengeRecord {
+        challenges.push(JoinChallengeRecord {
             remote_endpoint,
             request_digest: digest,
             device_cert: request.device_cert,
             challenge: challenge.clone(),
         });
-        room.commit_state(state)?;
-        Ok(JoinChallengeResponse { challenge })
+        Ok(challenge)
     }
 
     #[expect(
@@ -1291,71 +1393,122 @@ impl Rooms {
         redemption: &VerifiedRedemption,
         now: u64,
     ) -> Result<JoinBootstrap, CollaborationError> {
-        Self::redeemable(room, redemption.join().invite_id())?;
+        let join = Redeeming {
+            remote_endpoint,
+            request_id,
+            proof_digest,
+            redemption,
+        };
+        self.admit_redemptions(room, &[join], now)
+            .await?
+            .pop()
+            .unwrap_or_else(|| Err(CollaborationError::new("join bootstrap was not built")))
+    }
+
+    /// Admit the verified `joins` to `room` in one governance change. Each
+    /// is checked on its own and refused alone; everyone admitted is then
+    /// committed, recorded and published together, in order. People arriving
+    /// together cost the room one write and one publication instead of one
+    /// each, and each of those grows with the room.
+    ///
+    /// Answers each join in order. Fails as a whole when the change cannot
+    /// be committed or published.
+    pub(super) async fn admit_redemptions(
+        &self,
+        room: &mut GovernedRoom,
+        joins: &[Redeeming<'_>],
+        now: u64,
+    ) -> Result<Vec<Result<JoinBootstrap, CollaborationError>>, CollaborationError> {
         let mut candidate = room.peer().clone();
-        if let Err(error) =
-            candidate.admit_invited_member(redemption, &self.inner.host.key, system_time(now))
-        {
-            tracing::warn!(
-                room = %room.room(),
-                invite_id = %hex::encode(redemption.join().invite_id()),
-                person = %hex::encode(redemption.certificate().user_public_key),
-                outcome = "replay_rejected",
-                reason = %error,
-                "workspace invitation redemption rejected"
-            );
-            return Err(CollaborationError::new(error));
+        let mut refusals = Vec::with_capacity(joins.len());
+        for join in joins {
+            let redemption = join.redemption;
+            let admitted = Self::redeemable(room, redemption.join().invite_id()).and_then(|()| {
+                // A refused admission leaves the others' candidate as it was.
+                let mut next = candidate.clone();
+                next.admit_invited_member(redemption, &self.inner.host.key, system_time(now))
+                    .map_err(|error| {
+                        tracing::warn!(
+                            room = %room.room(),
+                            invite_id = %hex::encode(redemption.join().invite_id()),
+                            person = %hex::encode(redemption.certificate().user_public_key),
+                            outcome = "replay_rejected",
+                            reason = %error,
+                            "workspace invitation redemption rejected"
+                        );
+                        CollaborationError::new(error)
+                    })?;
+                candidate = next;
+                Ok(())
+            });
+            refusals.push(admitted.err());
+        }
+        if refusals.iter().all(Option::is_some) {
+            return Ok(refusals.into_iter().flatten().map(Err).collect());
         }
         let mut state = room.collaboration().clone();
-        // The receipt answers for this join from now on. The challenge it
-        // proved and the invitation it spent admit nobody else, and keeping
-        // them made every later write of the room carry each past join.
-        let invite_id = redemption.join().invite_id();
-        state.join_challenges.retain(|record| {
-            record.challenge.request_id != request_id || record.remote_endpoint != remote_endpoint
-        });
-        state
-            .invitations
-            .retain(|record| record.issued.invite_id != invite_id);
-        let mut delivered = None;
+        for (join, _) in joins
+            .iter()
+            .zip(&refusals)
+            .filter(|(_, refused)| refused.is_none())
+        {
+            // The receipt answers for this join from now on. The challenge it
+            // proved and the invitation it spent admit nobody else, and keeping
+            // them made every later write of the room carry each past join.
+            let invite_id = join.redemption.join().invite_id();
+            state.join_challenges.retain(|record| {
+                record.challenge.request_id != join.request_id
+                    || record.remote_endpoint != join.remote_endpoint
+            });
+            state
+                .invitations
+                .retain(|record| record.issued.invite_id != invite_id);
+        }
+        let mut delivered = Vec::with_capacity(joins.len());
         room.commit(
             candidate,
             &self.inner.host.key,
             system_time(now),
             |record, peer| {
-                let bootstrap = current_bootstrap(
-                    record,
-                    peer,
-                    redemption.join().invite_id(),
-                    redemption.certificate().clone(),
-                    redemption.join().grant().role,
-                );
-                state.join_completions.push(
-                    JoinCompletionRecord::receipt(
-                        remote_endpoint,
-                        request_id,
-                        proof_digest,
-                        &bootstrap,
-                    )
-                    .map_err(|error| error.to_string())?,
-                );
-                delivered = Some(bootstrap);
+                for (join, refused) in joins.iter().zip(&refusals) {
+                    if let Some(refused) = refused {
+                        delivered.push(Err(refused.clone()));
+                        continue;
+                    }
+                    let bootstrap = current_bootstrap(
+                        record,
+                        peer,
+                        join.redemption.join().invite_id(),
+                        join.redemption.certificate().clone(),
+                        join.redemption.join().grant().role,
+                    );
+                    state.join_completions.push(
+                        JoinCompletionRecord::receipt(
+                            join.remote_endpoint,
+                            join.request_id,
+                            join.proof_digest,
+                            &bootstrap,
+                        )
+                        .map_err(|error| error.to_string())?,
+                    );
+                    delivered.push(Ok(bootstrap));
+                }
                 Ok(state)
             },
         )?;
-        let bootstrap =
-            delivered.ok_or_else(|| CollaborationError::new("join bootstrap was not built"))?;
         self.settle(room).await?;
-        tracing::info!(
-            room = %bootstrap.room,
-            invite_id = %hex::encode(bootstrap.invite_id),
-            person = %hex::encode(bootstrap.device_cert.user_public_key),
-            device = %hex::encode(bootstrap.device_cert.device_public_key),
-            role = ?bootstrap.role,
-            outcome = "redeemed",
-            "workspace invitation redemption committed"
-        );
-        Ok(bootstrap)
+        for bootstrap in delivered.iter().flatten() {
+            tracing::info!(
+                room = %bootstrap.room,
+                invite_id = %hex::encode(bootstrap.invite_id),
+                person = %hex::encode(bootstrap.device_cert.user_public_key),
+                device = %hex::encode(bootstrap.device_cert.device_public_key),
+                role = ?bootstrap.role,
+                outcome = "redeemed",
+                "workspace invitation redemption committed"
+            );
+        }
+        Ok(delivered)
     }
 
     #[expect(
@@ -1586,9 +1739,9 @@ fn validate_issue_request(
         return Err(CollaborationError::new("invitation lifetime is invalid"));
     }
     if let Some(name) = request.invitee_name.as_deref()
-        && (name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control))
+        && let Err(error) = tilo_user_identity::display_name(name)
     {
-        return Err(CollaborationError::new("invitee name is invalid"));
+        return Err(CollaborationError::new(format!("invitee name: {error}")));
     }
     Ok(())
 }

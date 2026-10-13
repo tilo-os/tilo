@@ -107,6 +107,8 @@ tilo-sandbox = { path = "../../platform/tilo-sandbox" }
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
 seccompiler.workspace = true
 libc.workspace = true
+# A connector app, mounted only where a room's host runs its worker.
+discord = { path = "../../../apps/discord" }
 
 [dev-dependencies]
 # Session tests read Writer's typed rich-text body after carrying content.
@@ -134,6 +136,8 @@ channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }
 base64.workspace = true
+# Reads the links the host mints back the way a page does.
+tilo-reference = { path = "../../collab/reference" }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.

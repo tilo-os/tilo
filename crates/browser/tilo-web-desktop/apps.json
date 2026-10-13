@@ -252,6 +252,14 @@
       ]
     },
     {
+      "id": "so.tilo.discord",
+      "name": "Discord",
+      "category": "Network",
+      "platforms": [
+        "linux"
+      ]
+    },
+    {
       "id": "so.tilo.disk-usage",
       "name": "Disk Usage Analyzer",
       "category": "System",

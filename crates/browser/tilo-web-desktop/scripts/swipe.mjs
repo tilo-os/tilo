@@ -28,7 +28,7 @@ const server = await serve(resolve(bundle));
 async function chrome() {
   const browser = await launch();
   const tab = await browser.tab();
-  await tab.navigate(`${server.url}/index.html`);
+  await tab.navigate(`${server.url}/`);
   return {
     evaluate: tab.evaluate,
     errors: () => tab.log.filter(line => line.startsWith('EXC')),
@@ -49,7 +49,7 @@ async function playwrightWebkit() {
   const page = context.pages()[0] ?? await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(`EXC ${error.message}`));
-  await page.goto(`${server.url}/index.html`);
+  await page.goto(`${server.url}/`);
   return {
     evaluate: expression => page.evaluate(expression),
     errors: () => errors,

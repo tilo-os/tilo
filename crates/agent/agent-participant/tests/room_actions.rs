@@ -43,6 +43,9 @@ mod governed_agent;
 mod governed_sealed;
 #[path = "room_actions/resource_support.rs"]
 mod resource_support;
+#[cfg(test)]
+#[path = "room_actions/share_link.rs"]
+mod share_link;
 
 #[cfg(not(test))]
 pub mod mounted_resource;
@@ -436,7 +439,7 @@ impl tilo_agent_participant::room_actions::RoomRecordsLink for DeliveryReadFixtu
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Some(tilo_actions::remote::ResourceViewLocator {
             origin: "https://fixture.tilo.invalid".into(),
-            browser_page: Some("https://fixture.tilo.invalid/qos-runtime/resource.html".into()),
+            web_entry: Some("https://fixture.tilo.invalid/qos-runtime/".into()),
             room: room.into(),
             host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
             provider: provider.into(),
@@ -463,7 +466,7 @@ async fn start_browser(
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
         state_root: state.join("relay"),
-        resource_browser_page: page.map(|origin| format!("{origin}/resource.html")),
+        web_entry: page.map(|origin| format!("{origin}/")),
         ..Default::default()
     };
     cfg.workspaces.push(tilo_relay::WorkspaceBinding {

@@ -320,39 +320,16 @@ fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Of
         .iter()
         .filter(|surface| surface.live || surface.provider.is_some())
         .flat_map(|surface| {
-            surface.actions.iter().map(|action| {
-                let input = if action.input.kind == "text" {
-                    tilo_actions::InputSpec::Text {
-                        prompt: action.input.prompt.clone(),
-                        placeholder: action.input.placeholder.clone(),
-                        collects: if action.input.wants_content {
-                            tilo_actions::Collects::Content
-                        } else {
-                            tilo_actions::Collects::Words
-                        },
-                    }
-                } else {
-                    tilo_actions::InputSpec::None
-                };
-                Offer {
-                    app: surface.app_id.clone(),
-                    broker_peer_id: surface.provider.is_none().then_some(surface.peer_id),
-                    broker_provider: surface.provider.clone(),
-                    descriptor: ActionDescriptor {
-                        semantic_identity: action.semantic_identity.clone(),
-                        address: ActionAddress::new(&action.resource, &action.action),
-                        resource_kind: action.resource_kind.clone(),
-                        resource_label: action.resource_label.clone(),
-                        action_label: action.action_label.clone(),
-                        description: action.description.clone(),
-                        locus: tilo_actions::ExecutionLocus::ServerPreferred,
-                        kind: action.operation_kind,
-                        contract: action.contract.clone(),
-                        params: action.params.clone(),
-                        input,
-                        view: None,
-                    },
-                }
+            surface.actions.iter().map(|action| Offer {
+                app: surface.app_id.clone(),
+                broker_peer_id: surface.provider.is_none().then_some(surface.peer_id),
+                broker_provider: surface.provider.clone(),
+                descriptor: ActionDescriptor {
+                    // The pushed directory routes invocations; it does not
+                    // open views.
+                    view: None,
+                    ..action.descriptor(tilo_actions::ExecutionLocus::ServerPreferred)
+                },
             })
         })
         .collect()
@@ -902,7 +879,7 @@ mod tests {
                     "operation_kind": tilo_actions::OperationKind::Document,
                     "params": [],
                     "contract": tilo_actions::ActionContract::default(),
-                    "input": {"kind": "none"},
+                    "input": ui::collaboration::ExportedInput::None,
                 }],
             }))
             .unwrap()

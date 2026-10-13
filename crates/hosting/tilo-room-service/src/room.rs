@@ -138,11 +138,20 @@ fn deadline(after: Duration) -> tokio::time::Instant {
     now.checked_add(after).unwrap_or(now)
 }
 
-/// Reads the relay's stdout up to its [`RoomEvent::Started`] and returns the
-/// room's user root. Lines without the protocol prefix (logs) are passed
-/// over; any other protocol line first, or another protocol version, is an
-/// error.
-async fn read_started<R: AsyncRead + Unpin>(lines: &mut Lines<BufReader<R>>) -> Result<String> {
+/// What a room relay announced when it started.
+pub(crate) struct Started {
+    pub user_public_key: String,
+    pub origin: String,
+    /// The governed room of a persistent room's relay.
+    pub room: Option<String>,
+}
+
+/// Reads the relay's stdout up to its [`RoomEvent::Started`]. Lines without
+/// the protocol prefix (logs) are passed over; any other protocol line
+/// first, or another protocol version, is an error.
+pub(crate) async fn read_started<R: AsyncRead + Unpin>(
+    lines: &mut Lines<BufReader<R>>,
+) -> Result<Started> {
     let started = deadline(START_WAIT);
     loop {
         let line = tokio::time::timeout_at(started, lines.next_line())
@@ -155,6 +164,8 @@ async fn read_started<R: AsyncRead + Unpin>(lines: &mut Lines<BufReader<R>>) -> 
             Ok(RoomEvent::Started {
                 version,
                 user_public_key,
+                origin,
+                room,
                 ..
             }) => {
                 ensure!(
@@ -162,7 +173,11 @@ async fn read_started<R: AsyncRead + Unpin>(lines: &mut Lines<BufReader<R>>) -> 
                     "the room relay speaks operator protocol {version}, this service {}",
                     room_operator::VERSION
                 );
-                return Ok(user_public_key);
+                return Ok(Started {
+                    user_public_key,
+                    origin,
+                    room,
+                });
             }
             Ok(other) => bail!("the room relay reported {other:?} before it started"),
         }
@@ -249,7 +264,7 @@ impl Room {
         stdout: impl AsyncRead + Send + Unpin + 'static,
     ) -> Result<Arc<Self>> {
         let mut lines = BufReader::new(stdout).lines();
-        let user_public_key = read_started(&mut lines).await?;
+        let user_public_key = read_started(&mut lines).await?.user_public_key;
         let (events, _) = broadcast::channel(64);
         let room = Arc::new(Self {
             id: placement.id,
@@ -289,7 +304,8 @@ impl Room {
     /// Takes in one line of the relay's stdout.
     fn observe(&self, line: &str) -> Result<()> {
         match RoomEvent::from_line(line) {
-            Err(LineError::NotProtocol) => {}
+            // A short-lived room shows no presence count.
+            Err(LineError::NotProtocol) | Ok(RoomEvent::Online { .. }) => {}
             Err(error) => return Err(error.into()),
             Ok(RoomEvent::Started { .. }) => bail!("the room relay announced its start twice"),
             Ok(RoomEvent::MemberCertified {
@@ -314,6 +330,14 @@ impl Room {
                 pairing_code,
                 reason,
             }) => self.settle(&pairing_code, Err(reason)),
+            // A short-lived room never pre-admits, spectates or removes.
+            Ok(
+                event @ (RoomEvent::PreAdmitted { .. }
+                | RoomEvent::PreAdmitRefused { .. }
+                | RoomEvent::SpectatorCertified { .. }
+                | RoomEvent::SpectateRefused { .. }
+                | RoomEvent::MemberRemoved { .. }),
+            ) => bail!("a short-lived room relay reported {event:?}"),
         }
         Ok(())
     }
@@ -488,6 +512,11 @@ impl Room {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 mod tests {
     use super::*;
     use tokio::io::DuplexStream;
@@ -528,6 +557,7 @@ mod tests {
             user_public_key: user.into(),
             certificate_sha256: None,
             allowed_origins: Vec::new(),
+            room: None,
         }
     }
 
