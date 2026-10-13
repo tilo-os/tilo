@@ -6293,19 +6293,6 @@ impl CommandRunner for SystemRunner {
     }
 }
 
-/// Whether `path` is an editable document, per qdoc's codec registry.
-///
-/// A presentation fact only — it drives the document glyph in the icon
-/// column. It deliberately says nothing about *which* app opens the file:
-/// that is the desktop's answer, from the manifests of what is installed,
-/// and the explorer asks for it rather than deciding it (see
-/// [`set_document_opener`]).
-pub fn is_document(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(tilo_doc_codecs::is_supported_ext)
-}
-
 /// Presentation-side lower bound for the daemon's fail-closed merge codecs.
 /// The daemon still validates exact bytes and may reject malformed qdoc,
 /// invalid UTF-8, overlapping edits, or a stale signed conflict.

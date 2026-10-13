@@ -149,9 +149,6 @@ pub struct LoadedDoc {
     pub raster: Rasterizer,
     /// The file's display name (for the window chrome / status bar).
     pub name: String,
-    /// The file's durable record identity ([`ui::RecordId::identify_file`]):
-    /// the same across renames and moves, so its markup follows it.
-    pub file: ui::RecordId,
 }
 
 /// Load a PDF from `path` through the shared PDF engine. Pages the shared
@@ -166,12 +163,10 @@ pub fn open(path: &Path, content: &ContentStore) -> anyhow::Result<LoadedDoc> {
     let t = ui::time::now();
     let bytes = read_file_bounded(path, MAX_OPEN_BYTES)?;
     prof("fs::read", t);
-    open_bytes_at(path, &bytes, content, ui::RecordId::identify_file(path))
+    open_bytes_at(path, &bytes, content)
 }
 
 /// Open a PDF the host handed over as bytes (a browser page has no paths).
-/// Its durable identity is its content, so reopening the same file finds the
-/// same markup.
 ///
 /// # Errors
 ///
@@ -184,17 +179,10 @@ pub fn open_contents(
     if bytes.len() > MAX_OPEN_BYTES {
         anyhow::bail!("the document is too large");
     }
-    let hash = blake3::hash(bytes).to_hex();
-    let path = Path::new("picked").join(hash.as_str()).join(name);
-    open_bytes_at(&path, bytes, content, ui::RecordId::for_file(&path))
+    open_bytes_at(Path::new(name), bytes, content)
 }
 
-fn open_bytes_at(
-    path: &Path,
-    bytes: &[u8],
-    content: &ContentStore,
-    file: ui::RecordId,
-) -> anyhow::Result<LoadedDoc> {
+fn open_bytes_at(path: &Path, bytes: &[u8], content: &ContentStore) -> anyhow::Result<LoadedDoc> {
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -223,7 +211,6 @@ fn open_bytes_at(
         doc,
         raster: r,
         name,
-        file,
     })
 }
 
@@ -1746,8 +1733,6 @@ pub enum RasterEvent {
         document: Document,
         name: String,
         raster: RasterDocument,
-        /// The file's durable record identity.
-        file: ui::RecordId,
     },
     OpenFailed {
         request: OpenRequest,
@@ -1772,7 +1757,6 @@ pub enum RasterEvent {
     },
     TileFailed {
         request: TileRequest,
-        error: String,
     },
     RenderFailed {
         request: RenderRequest,
@@ -1784,7 +1768,6 @@ pub enum RasterEvent {
     },
     LinksFailed {
         request: LinksRequest,
-        error: String,
     },
     TextFailed {
         request: TextRequest,
@@ -2782,12 +2765,7 @@ impl SourceWorker {
                     None => open(&request.path, &content),
                 };
                 match opened {
-                    Ok(LoadedDoc {
-                        doc,
-                        raster,
-                        name,
-                        file,
-                    }) => {
+                    Ok(LoadedDoc { doc, raster, name }) => {
                         let page_sizes = (0..raster.page_count())
                             .map(|page| raster.page_size(page))
                             .collect();
@@ -2813,7 +2791,6 @@ impl SourceWorker {
                             document: doc,
                             name,
                             raster,
-                            file,
                         }
                     }
                     Err(error) => RasterEvent::OpenFailed {
@@ -2891,10 +2868,7 @@ impl SourceWorker {
                         request.row,
                     ),
                 },
-                _ => RasterEvent::TileFailed {
-                    request,
-                    error: "the requested raster document is no longer active".to_string(),
-                },
+                _ => RasterEvent::TileFailed { request },
             },
             // Batches are unpacked at admission and never reach the worker.
             RasterCommand::Tiles(_) => return,
@@ -2919,10 +2893,7 @@ impl SourceWorker {
                     request,
                     links: backend.page_links(request.page),
                 },
-                _ => RasterEvent::LinksFailed {
-                    request,
-                    error: "the requested raster document is no longer active".to_string(),
-                },
+                _ => RasterEvent::LinksFailed { request },
             },
             RasterCommand::Reconcile(request) => match active
                 .get_mut(&session_id)
@@ -3189,10 +3160,7 @@ fn bound_page_event(event: RasterEvent) -> RasterEvent {
             request,
             error: "the extracted text layer exceeds the UI result memory limit".to_string(),
         },
-        RasterEvent::TileRendered { request, .. } => RasterEvent::TileFailed {
-            request,
-            error: "the rendered tile exceeds the UI result memory limit".to_string(),
-        },
+        RasterEvent::TileRendered { request, .. } => RasterEvent::TileFailed { request },
         _ => event,
     }
 }
