@@ -24,7 +24,7 @@ use automerge::{
     AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, transaction::Transactable,
 };
 use collab_types::caps::CapOverride;
-use tilo_action_policy::{Grant, GrantId, Preset, Role};
+use tilo_action_policy::{Grant, GrantId, Preset, Role, RoomPolicy, Subject};
 
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
@@ -438,16 +438,17 @@ fn read_keyed_blob_map<T: serde::de::DeserializeOwned>(
 }
 
 /// A workspace's owner, members and grants as the document records them.
-type StoredPolicy = (Option<UserId>, Vec<(String, Role)>, Vec<Grant>);
+/// An absent grants map leaves a freshly created room's default grants intact;
+/// an existing empty map records a deliberate removal of every grant.
+type StoredPolicy = (Option<UserId>, Vec<(String, Role)>, Option<Vec<Grant>>);
 
-/// A workspace's members and grants as the document records them. Grants
-/// absent from the document are absent from the answer — what makes a
-/// revocation take effect.
-fn read_policy(doc: &AutoCommit, entry: &ObjId) -> Option<StoredPolicy> {
+/// Read policy fields independently: a new room has an owner before its
+/// grants map exists, while an explicit empty grants map revokes all grants.
+fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
     let owner = doc.str_at(entry, "owner");
     let members = read_keyed_blob_map(doc, entry, MEMBERS_KEY).unwrap_or_default();
-    let grants = read_blob_map(doc, entry, GRANTS_KEY)?;
-    Some((owner, members, grants))
+    let grants = read_blob_map(doc, entry, GRANTS_KEY);
+    (owner, members, grants)
 }
 
 fn read_presets(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<Preset>> {
@@ -526,12 +527,18 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
         {
             ws.set_room(room);
         }
-        if let Some((owner, members, grants)) = read_policy(doc, entry) {
-            if owner.is_some() {
-                ws.policy.owner = owner;
-            }
-            ws.policy.members = members.into_iter().collect();
+        let (owner, members, grants) = read_policy(doc, entry);
+        if let Some(owner) = owner {
+            ws.policy.owner = Some(owner);
+        }
+        ws.policy.members = members.into_iter().collect();
+        if let Some(grants) = grants {
             ws.policy.grants = grants;
+        } else {
+            // Old appended entries had no grants map. Reconstruct their
+            // canonical defaults even when this tree reuses a cached room.
+            ws.policy.grants =
+                RoomPolicy::unowned(ws.room.to_string(), &Subject::Role(Role::Owner)).grants;
         }
         if let Some(sandbox) = read_blob_map(doc, entry, SANDBOX_KEY) {
             ws.sandbox = sandbox;
@@ -654,11 +661,11 @@ fn workspace_entry(doc: &AutoCommit, workspace_id: WorkspaceId) -> Option<ObjId>
         .map(|(_, entry)| entry)
 }
 
-/// Append a new workspace entry — id, name and room only; its strips reach
-/// the document through later edits or the next [`seed`]. The room goes in
-/// with the workspace, so a reader learns the identity in the same change
-/// that tells it the workspace exists. Creates the list for an unseeded
-/// document.
+/// Append a new workspace entry with its room's default grants. Its strips
+/// reach the document through later edits or the next [`seed`]. The room and
+/// its initial authority travel in the same change that creates the entry,
+/// so a later grant revocation can remove a real document key. Creates the
+/// list for an unseeded document.
 pub fn append_workspace(
     doc: &mut AutoCommit,
     workspace_id: WorkspaceId,
@@ -677,6 +684,18 @@ pub fn append_workspace(
     let _ = doc.put(&entry, "id", ScalarValue::Uint(workspace_id.raw()));
     let _ = doc.put(&entry, "name", name.to_string());
     let _ = doc.put(&entry, "room", room.to_string());
+    let mut workspace = Workspace::new(workspace_id, name);
+    workspace.set_room(room);
+    sync_blob_map(
+        doc,
+        &entry,
+        GRANTS_KEY,
+        workspace
+            .policy
+            .grants
+            .iter()
+            .map(|grant| (grant.id.as_str().to_owned(), grant)),
+    );
     true
 }
 
