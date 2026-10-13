@@ -312,44 +312,43 @@ impl Dmabufs {
     ) {
         self.buffers
             .retain(|buffer| buffer.busy || buffer.size == size);
-        let index = match self.buffers.iter().position(|buffer| !buffer.busy) {
-            Some(index) => index,
-            None => {
-                let bo = self
-                    .gbm
-                    .create_buffer_object_with_modifiers2::<()>(
-                        size.0,
-                        size.1,
-                        gbm::Format::Xrgb8888,
-                        [gbm::Modifier::Linear].into_iter(),
-                        gbm::BufferObjectFlags::RENDERING,
-                    )
-                    .expect("a LINEAR dma-buf");
-                let params = self.state.create_params(qh).expect("dmabuf params");
-                let fd = bo.fd_for_plane(0).expect("dma-buf fd");
-                params.add(
-                    std::os::fd::AsFd::as_fd(&fd),
-                    0,
-                    bo.offset(0),
-                    bo.stride_for_plane(0),
-                    u64::from(gbm::Modifier::Linear),
-                );
-                let (wl, _) = params.create_immed(
-                    i32::try_from(size.0).expect("w"),
-                    i32::try_from(size.1).expect("h"),
-                    gbm::Format::Xrgb8888 as u32,
-                    zwp_linux_buffer_params_v1::Flags::empty(),
-                    qh,
-                );
-                self.buffers.push(DmabufBuffer {
-                    bo,
-                    wl,
-                    size,
-                    busy: false,
-                    shows: None,
-                });
-                self.buffers.len() - 1
-            }
+        let index = if let Some(index) = self.buffers.iter().position(|buffer| !buffer.busy) {
+            index
+        } else {
+            let bo = self
+                .gbm
+                .create_buffer_object_with_modifiers2::<()>(
+                    size.0,
+                    size.1,
+                    gbm::Format::Xrgb8888,
+                    [gbm::Modifier::Linear].into_iter(),
+                    gbm::BufferObjectFlags::RENDERING,
+                )
+                .expect("a LINEAR dma-buf");
+            let params = self.state.create_params(qh).expect("dmabuf params");
+            let fd = bo.fd_for_plane(0).expect("dma-buf fd");
+            params.add(
+                std::os::fd::AsFd::as_fd(&fd),
+                0,
+                bo.offset(0),
+                bo.stride_for_plane(0),
+                u64::from(gbm::Modifier::Linear),
+            );
+            let (wl, _) = params.create_immed(
+                i32::try_from(size.0).expect("w"),
+                i32::try_from(size.1).expect("h"),
+                gbm::Format::Xrgb8888 as u32,
+                zwp_linux_buffer_params_v1::Flags::empty(),
+                qh,
+            );
+            self.buffers.push(DmabufBuffer {
+                bo,
+                wl,
+                size,
+                busy: false,
+                shows: None,
+            });
+            self.buffers.len() - 1
         };
         let buffer = &mut self.buffers[index];
         let (clear, from) = match buffer.shows {

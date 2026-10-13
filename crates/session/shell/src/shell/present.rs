@@ -1051,7 +1051,7 @@ impl PresentPipe {
     /// Put `frame` in place of the newest frame still waiting for the render thread, keeping
     /// its admission. `Err` hands the frame back when none waits any more.
     fn replace_queued(
-        &mut self,
+        &self,
         frame: FramePaint,
         output: OutputId,
         input_age_at_enqueue: Option<Duration>,
@@ -1089,7 +1089,7 @@ impl PresentPipe {
 
     /// Queue `frame` behind the frames handed over before it.
     fn enqueue(
-        &mut self,
+        &self,
         frame: FramePaint,
         output: OutputId,
         input_age_at_enqueue: Option<Duration>,

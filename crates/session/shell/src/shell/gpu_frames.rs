@@ -490,34 +490,8 @@ impl UploadRing {
             };
         }
         let changed: Option<Vec<FrameRegion>> = changed.map(<[_]>::to_vec);
+        let index = self.free_slot(&present.device);
         // Every texture but the one written lacks what changed.
-        let free = self
-            .slots
-            .iter()
-            .position(|slot| slot.frame.strong_count() == 0);
-        let index = free.unwrap_or_else(|| {
-            self.slots.push(UploadSlot {
-                texture: present.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("shm client frame"),
-                    size: wgpu::Extent3d {
-                        width: size.0,
-                        height: size.1,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::COPY_DST
-                        | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
-                }),
-                frame: Weak::new(),
-                stale: None,
-            });
-            self.slots.len().saturating_sub(1)
-        });
         for (other, slot) in self.slots.iter_mut().enumerate() {
             if other == index {
                 continue;
@@ -541,44 +515,13 @@ impl UploadRing {
         // Written below: up to date with this frame.
         slot.stale = Some(Vec::new());
         let whole = [(0, 0, size.0, size.1)];
-        let regions = write.as_deref().unwrap_or(&whole);
-        let mut bytes = 0u64;
-        for &(x, y, width, height) in regions {
-            let right = x.saturating_add(width).min(size.0);
-            let bottom = y.saturating_add(height).min(size.1);
-            if x >= right || y >= bottom {
-                continue;
-            }
-            let (width, height) = (right.saturating_sub(x), bottom.saturating_sub(y));
-            let offset = u64::from(y)
-                .saturating_mul(u64::from(size.0))
-                .saturating_add(u64::from(x))
-                .saturating_mul(4);
-            present.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &slot.texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x, y, z: 0 },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                pixels,
-                wgpu::TexelCopyBufferLayout {
-                    offset,
-                    bytes_per_row: Some(size.0.saturating_mul(4)),
-                    rows_per_image: Some(height),
-                },
-                wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-            );
-            bytes = bytes.saturating_add(
-                u64::from(width)
-                    .saturating_mul(u64::from(height))
-                    .saturating_mul(4),
-            );
-        }
+        let bytes = write_regions(
+            &present.queue,
+            &slot.texture,
+            pixels,
+            size,
+            write.as_deref().unwrap_or(&whole),
+        );
         SHM_UPLOAD_BYTES.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
         #[cfg(test)]
         THREAD_SHM_UPLOAD_BYTES.with(|count| count.set(count.get().saturating_add(bytes)));
@@ -590,6 +533,89 @@ impl UploadRing {
         slot.frame = Arc::downgrade(&frame);
         Some(frame)
     }
+
+    /// A texture no frame draws any more, made when every one is still drawn.
+    fn free_slot(&mut self, device: &wgpu::Device) -> usize {
+        if let Some(free) = self
+            .slots
+            .iter()
+            .position(|slot| slot.frame.strong_count() == 0)
+        {
+            return free;
+        }
+        let (width, height) = self.size;
+        self.slots.push(UploadSlot {
+            texture: device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("shm client frame"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            }),
+            frame: Weak::new(),
+            stale: None,
+        });
+        self.slots.len().saturating_sub(1)
+    }
+}
+
+/// Write `regions` of `pixels`, a tightly packed RGBA frame of `size`, into
+/// the same place of `texture`. Returns the bytes written.
+#[cfg(target_os = "linux")]
+fn write_regions(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    pixels: &[u8],
+    size: (u32, u32),
+    regions: &[FrameRegion],
+) -> u64 {
+    let mut bytes = 0u64;
+    for &(x, y, width, height) in regions {
+        let right = x.saturating_add(width).min(size.0);
+        let bottom = y.saturating_add(height).min(size.1);
+        if x >= right || y >= bottom {
+            continue;
+        }
+        let (width, height) = (right.saturating_sub(x), bottom.saturating_sub(y));
+        let offset = u64::from(y)
+            .saturating_mul(u64::from(size.0))
+            .saturating_add(u64::from(x))
+            .saturating_mul(4);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset,
+                bytes_per_row: Some(size.0.saturating_mul(4)),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        bytes = bytes.saturating_add(
+            u64::from(width)
+                .saturating_mul(u64::from(height))
+                .saturating_mul(4),
+        );
+    }
+    bytes
 }
 
 /// A frame's leases, waiting for the GPU marker submitted when it went.
@@ -1404,7 +1430,7 @@ mod tests {
         };
         *PRESENT_DEVICE
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(present.clone());
+            .unwrap_or_else(PoisonError::into_inner) = Some(present);
         let (width, height) = (64u32, 48u32);
         let row = u64::from(width) * 4;
         let whole = row * u64::from(height);

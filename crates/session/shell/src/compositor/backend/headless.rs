@@ -771,7 +771,11 @@ impl SimulatedVblankPresenter {
         let Some((_, slot)) = self.slots.get(self.next_slot) else {
             return false;
         };
-        self.next_slot = (self.next_slot + 1) % self.slots.len().max(1);
+        self.next_slot = self
+            .next_slot
+            .saturating_add(1)
+            .checked_rem(self.slots.len())
+            .unwrap_or(0);
         let started = Instant::now();
         let painted = self.bridge.paint_output_into(
             &frame.scene,

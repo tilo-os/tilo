@@ -1319,7 +1319,7 @@ fn one_line_of_client_damage_repaints_only_that_line() {
     assert_foreign_pixel(
         &mut oracle,
         &typed,
-        Point::new(placement.center().x, (line_top + line_bottom) / 2.0),
+        Point::new(placement.center().x, f64::midpoint(line_top, line_bottom)),
         [224, 224, 224],
     );
     store.forget(surface);
