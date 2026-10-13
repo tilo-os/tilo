@@ -336,9 +336,17 @@ impl NotificationStack {
             // The stack owns what to show and click routing; the toast
             // widget owns the card's look and hands back the close rect.
             let mut card = ToastCard::new(&n.title, n.severity.toast_kind())
+                .icon(n.icon_kind.icon())
+                .monogram(n.app_name.as_deref().unwrap_or(""))
                 .body(if n.show_preview { &n.body } else { "" })
                 .caption(n.app_name.as_deref().unwrap_or(""))
-                .closable(true)
+                // A card that offers its own way out ("Not now", "Dismiss")
+                // needs no second one in its corner.
+                .closable(
+                    !actions
+                        .iter()
+                        .any(|(key, _)| key == super::model::NOT_NOW_ACTION || key == "dismiss"),
+                )
                 .actionable(!n.actions.is_empty());
             let close = self.targets.interaction(&BannerTarget::Dismiss(n.id).key());
             card.close_hovered = close.hovered;
@@ -362,9 +370,8 @@ impl NotificationStack {
                 card.primary_action_hovered = state.hovered;
                 card.primary_action_pressed = state.pressed;
             }
-            let height =
-                ui::widget::toast::minimum_card_height(ctx.text_renderer, ctx.theme, &card)
-                    .max(TOAST_HEIGHT);
+            let height = ui::widget::toast::card_height(ctx.text_renderer, ctx.theme, &card, width)
+                .max(TOAST_HEIGHT);
             if y + height > self.viewport.y1 - EDGE_INSET {
                 break;
             }
@@ -387,11 +394,13 @@ impl NotificationStack {
             );
             self.register_target(BannerTarget::Open(n.id), card_rect, &n.title);
             self.action_buttons.push((card_rect, n.title.clone()));
-            self.register_target(
-                BannerTarget::Dismiss(n.id),
-                hit.close_rect,
-                &t("notification-center-dismiss"),
-            );
+            if card.closable {
+                self.register_target(
+                    BannerTarget::Dismiss(n.id),
+                    hit.close_rect,
+                    &t("notification-center-dismiss"),
+                );
+            }
             if let Some((key, label)) = actions.first() {
                 let rect = if actions.len() >= 2 {
                     hit.secondary_action_rect
