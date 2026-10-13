@@ -19,12 +19,12 @@ impl OwnerOnlyProvisioning {
     ///
     /// # Errors
     ///
-    /// Returns an [`AdmissionError`] retaining `directory` when it is not
-    /// currently owner-only.
+    /// Returns an [`AdmissionError`] when the directory is not currently
+    /// owner-only.
     pub fn admit(directory: StorageDirectory) -> Result<Self, AdmissionError> {
         match directory.validate_privacy(crate::native::atomic::Privacy::OwnerOnly) {
             Ok(()) => Ok(Self { directory }),
-            Err(source) => Err(AdmissionError { source, directory }),
+            Err(source) => Err(AdmissionError { source }),
         }
     }
     /// Exclusively create an absent child under the already admitted parent.
