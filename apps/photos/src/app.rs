@@ -12978,7 +12978,7 @@ mod history_reconcile_tests {
         crate::test_doc::set_library(doc, &library);
     }
     fn setup() -> (PhotosApp, AutoCommit, String) {
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let image = OpenImage::fixture("historical-missing.png", 4, 3);
         let id = crate::test_doc::put_image(&mut doc, &image);
         let mut app = test_app();
@@ -12992,7 +12992,7 @@ mod history_reconcile_tests {
             "phase newly_visible_timeline_photo_uses_immutable_thumbnail_outside_queued_window"
         );
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let mut library = crate::model::PhotoLibrary::default();
             for index in 0..80 {
                 let mut photo = crate::model::LibraryPhoto::from_image(OpenImage::new(
@@ -13296,7 +13296,7 @@ mod history_reconcile_tests {
 
         eprintln!("phase failed_import_reports_failure_even_when_previous_photo_is_still_decoded");
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let store = ContentStore::memory();
             let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
             let open = OpenImage::new("existing.png", 6, 4, store.put(&bytes).unwrap());
@@ -13326,7 +13326,7 @@ mod history_reconcile_tests {
 
         eprintln!("phase content_restore_drops_active_viewer_drag_before_next_pointer_move");
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let store = ContentStore::memory();
             let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
             let open = OpenImage::new("same.png", 6, 4, store.put(&bytes).unwrap());
@@ -13416,7 +13416,7 @@ mod history_reconcile_tests {
     }
 
     fn album_membership_fixture() -> (PhotosApp, AutoCommit, [String; 4]) {
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         // Browse order deliberately differs from lexical identity order.
         let photos: Vec<_> = ["c", "a", "d", "b"]
             .into_iter()

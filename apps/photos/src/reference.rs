@@ -88,7 +88,7 @@ mod tests {
     }
 
     fn doc_with(photo: &LibraryPhoto) -> AutoCommit {
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let mut library = crate::test_doc::library(&doc);
         library.add_photo(photo.clone());
         crate::test_doc::set_library(&mut doc, &library);

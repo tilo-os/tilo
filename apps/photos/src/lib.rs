@@ -185,6 +185,14 @@ pub(crate) mod test_doc {
 
     use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary};
 
+    /// A new library's document, started the way a new record is: the
+    /// resource's initial state at its current storage version.
+    pub(crate) fn new_doc() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        PhotoLibrary::initialize(&mut doc).expect("a new library initializes");
+        doc
+    }
+
     /// The library `doc` holds.
     pub(crate) fn library(doc: &AutoCommit) -> PhotoLibrary {
         PhotoLibrary::read(doc).expect("the library reads")
@@ -195,8 +203,6 @@ pub(crate) mod test_doc {
         library
             .write_fields(doc, &ROOT)
             .expect("the library writes");
-        ui::tilo_resource::evolution::write_version(doc, PhotoLibrary::VERSION)
-            .expect("the library writes its storage version");
     }
 
     /// Add the photograph `image` to `doc`'s library; its id.

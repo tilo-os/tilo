@@ -41,6 +41,14 @@ use photos::model::PhotoLibrary;
 use tilo_actions::ActionRegistry;
 use ui::tilo_resource::Resource as _;
 
+/// A new library's document, started the way a new record is: the
+/// resource's initial state at its current storage version.
+fn new_doc() -> AutoCommit {
+    let mut doc = AutoCommit::new();
+    PhotoLibrary::initialize(&mut doc).expect("a new library initializes");
+    doc
+}
+
 /// The library `doc` holds.
 fn library(doc: &AutoCommit) -> PhotoLibrary {
     PhotoLibrary::read(doc).expect("the library reads")
@@ -107,7 +115,7 @@ impl Session {
         std::fs::write(&path, bytes).expect("the session stages its own copy");
         let path = path.to_string_lossy().into_owned();
 
-        let mut doc = AutoCommit::new();
+        let mut doc = new_doc();
         let content = tilo_content::ContentStore::memory();
         let dispatch = ui::framework::testing::dispatcher("so.tilo.photos");
         let mut app = PhotosApp::with_content(content.clone()).with_dispatcher(dispatch.clone());

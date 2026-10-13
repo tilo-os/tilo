@@ -192,7 +192,7 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
     eprintln!("phase unavailable_bytes_and_bad_bytes_have_distinct_honest_canvas_states");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let waiting = OpenImage::new("/not-present/yet.png", 1200, 800, "0".repeat(64));
         app.show_photo(&crate::test_doc::put_image(&mut doc, &waiting));
         sync(&mut app, &mut doc);
@@ -273,7 +273,7 @@ fn people_review_commits_only_explicit_canonical_actions() {
     eprintln!("phase people_review_commits_only_an_explicit_membership_action");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let photo = LibraryPhoto::from_image(OpenImage::new(
             "/photos/person.png",
             20,
@@ -316,7 +316,7 @@ fn people_review_commits_only_explicit_canonical_actions() {
     );
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let first = LibraryPhoto::from_image(OpenImage::new(
             "/photos/first.png",
             20,
@@ -385,7 +385,7 @@ fn people_review_commits_only_explicit_canonical_actions() {
     eprintln!("phase people_rejection_is_reversible_and_accessibility_activates_the_same_control");
     {
         let mut app = test_app();
-        let doc = AutoCommit::new();
+        let doc = crate::test_doc::new_doc();
         assert!(
             app.people_controller_mut().add_cluster(
                 "dismiss-me",
@@ -449,7 +449,7 @@ fn header_controls_never_paint_through_each_other() {
         let path = dir.path().join("header.png");
         std::fs::write(&path, pixels::encode_png(&shots_pattern(40, 20)).unwrap()).unwrap();
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         app.open_path(&path.to_string_lossy());
         settle(&mut app, &mut doc);
         if library {
@@ -552,7 +552,7 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
 
     eprintln!("phase canonical_timeline_day_operation_jumps_to_its_shared_capture_boundary");
     {
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let mut newer = LibraryPhoto::from_image(OpenImage::fixture("newer.png", 20, 10));
         newer.captured_at = Some("2026-09-07 08:14".into());
         let mut older = LibraryPhoto::from_image(OpenImage::fixture("older.png", 20, 10));
@@ -613,7 +613,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         let mut app = test_app();
         let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         app.analysis_rx = receiver;
-        let doc = AutoCommit::new();
+        let doc = crate::test_doc::new_doc();
 
         let cancelled = tilo_actions::InvocationId::new();
         app.cancelled_analysis.insert(cancelled);
@@ -665,7 +665,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         let mut app = test_app();
         let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         app.analysis_rx = receiver;
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let content = "a".repeat(64);
         let photo = LibraryPhoto::from_image(OpenImage::new(
             "drain-components.png",
@@ -748,7 +748,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
     eprintln!("phase library_analysis_commits_each_real_result_with_provenance_and_finishes");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let content = "a".repeat(64);
         let image = OpenImage::new("/photos/one.png", 20, 10, &content);
         let photo = LibraryPhoto::from_image(image);
@@ -823,7 +823,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         let mut app = test_app();
         app.library_mode = true;
         app.canvas_rect = Rect::new(0.0, 48.0, 1_280.0, 800.0);
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let pinch = ui::testing::Dispatch::new().doc(&mut doc).send(
             &mut app,
             &WindowEvent::PinchGesture {
@@ -850,7 +850,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
     eprintln!("phase density_reanchors_the_same_first_photo");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..90 {
             let mut photo = LibraryPhoto::from_image(OpenImage::fixture(
@@ -895,7 +895,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
     eprintln!("phase enlarged_library_keeps_photos_first_with_density_navigation");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..5 {
             let mut photo = LibraryPhoto::from_image(OpenImage::fixture(
@@ -957,7 +957,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
     );
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let photo = LibraryPhoto::from_image(OpenImage::fixture("/photos/one.png", 20, 10));
         let mut library = crate::model::PhotoLibrary::default();
         library.add_photo(photo.clone());
@@ -1005,7 +1005,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
     eprintln!("phase opening_favorites_uses_a_local_view_and_refuses_an_empty_stale_collection");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let mut favorite =
             LibraryPhoto::from_image(OpenImage::fixture("/photos/favorite.png", 20, 10));
         favorite.favorite = true;
@@ -1046,7 +1046,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
     eprintln!("phase metadata_views_are_local_filters_with_honest_stale_results");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let mut in_folder = LibraryPhoto::from_image(OpenImage::fixture("/photos/one.png", 20, 10));
         in_folder.folder = Some("Travel".into());
         in_folder.people = crate::model::labels(["Élodie".to_owned()]);
@@ -1105,7 +1105,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
     eprintln!("phase people_and_places_keep_complete_paged_collections");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..29 {
             let mut photo = LibraryPhoto::from_image(OpenImage::fixture(
@@ -1160,7 +1160,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
     eprintln!("phase selection_is_local_but_its_favorite_and_album_results_are_canonical_actions");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let first = LibraryPhoto::from_image(OpenImage::fixture("/photos/first.png", 20, 10));
         let second = LibraryPhoto::from_image(OpenImage::fixture("/photos/second.png", 20, 10));
         crate::test_doc::set_library(
@@ -1269,7 +1269,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
     eprintln!("phase destination_chooser_lists_every_album_and_refuses_a_stale_target");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let photo = LibraryPhoto::from_image(OpenImage::fixture("/photos/one.png", 20, 10));
         let albums: Vec<_> = (1..=7)
             .map(|number| Album {
@@ -1329,7 +1329,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
     eprintln!("phase album_editor_keeps_its_draft_local_while_the_timeline_scrolls");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..49 {
             let mut photo = LibraryPhoto::from_image(OpenImage::fixture(
@@ -1418,7 +1418,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
     eprintln!("phase albums_destination_materializes_bounded_covers_and_semantic_routes");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let photo = LibraryPhoto::from_image(OpenImage::fixture("/pictures/cover.png", 800, 600));
         let photo_id = photo.id.clone();
         let album_id = "photos.album:weekend".to_owned();
@@ -1463,7 +1463,7 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
     eprintln!("phase unresolved_share_reference_returns_a_canonical_operation_failure");
     {
         let mut app = test_app();
-        let doc = AutoCommit::new();
+        let doc = crate::test_doc::new_doc();
         let payload = PhotosEffect::ShareReference {
             resource_id: "photos.photo:missing".into(),
         };
@@ -1508,7 +1508,7 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
     eprintln!("phase library_removal_requires_confirmation_and_routes_through_the_action_host");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let photo = LibraryPhoto::from_image(OpenImage::fixture("/photos/remove.png", 20, 10));
         let id = photo.id.clone();
         crate::test_doc::set_library(
@@ -1533,7 +1533,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     eprintln!("phase accessibility_exposes_and_routes_every_header_command");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         sync(&mut app, &mut doc);
 
         let empty = app.accessibility_tree();
@@ -1668,7 +1668,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     {
         for (scale, (w, h)) in [(1.0_f32, (1200.0_f32, 800.0_f32)), (2.0, (800.0, 900.0))] {
             let mut app = test_app();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             app.show_library();
             stage(&mut app, &mut doc, "metadata-edit");
             let theme = Theme::dark().with_text_scale(scale);
@@ -1755,7 +1755,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     );
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let image = OpenImage::fixture("/tmp/harbour.png", 1_200, 800);
         app.show_photo(&crate::test_doc::put_image(&mut doc, &image));
         let mut library = crate::test_doc::library(&doc);
@@ -1815,7 +1815,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     eprintln!("phase the_system_searches_the_library_and_the_window_keeps_its_own_filter");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let image = OpenImage::fixture("/pictures/München-夏.png", 800, 400);
         app.show_photo(&crate::test_doc::put_image(&mut doc, &image));
         sync(&mut app, &mut doc);
@@ -1844,7 +1844,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     {
         use ui::search::{FacetFilter, SearchProvider, SearchQuery};
 
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let mut beach = LibraryPhoto::from_image(OpenImage::fixture("/photos/beach.png", 40, 20));
         beach.people = crate::model::labels(["Noor".to_owned()]);
         beach.tags = crate::model::labels(["summer".to_owned()]);
@@ -1892,7 +1892,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     eprintln!("phase rejected_search_refresh_keeps_last_good_index_and_exports_diagnostic");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let first = LibraryPhoto::from_image(OpenImage::fixture("/photos/first.png", 20, 10));
         let first_id = first.id.clone();
         crate::test_doc::set_library(
@@ -1951,7 +1951,7 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
     eprintln!("phase a_large_library_fills_a_bounded_background_thumbnail_queue");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..500 {
             library.add_photo(LibraryPhoto::from_image(OpenImage::fixture(
@@ -2060,7 +2060,7 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
         for scale in [1.0, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
             let mut app = PhotosApp::new();
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             stage(&mut app, &mut doc, "opened");
             sync(&mut app, &mut doc);
             let mut text = TextRenderer::new();
@@ -2083,7 +2083,7 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
     eprintln!("phase library_card_actions_share_one_edge_inset");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         app.show_library();
         stage(&mut app, &mut doc, "library");
         let theme = Theme::dark();
@@ -2145,7 +2145,7 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
     eprintln!("phase album_management_lives_in_the_header_and_the_inspector");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let photo = LibraryPhoto::from_image(OpenImage::fixture("/photos/one.png", 20, 10));
         let mut library = crate::model::PhotoLibrary::default();
         library.add_photo(photo.clone());
@@ -2274,7 +2274,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             .expect("stop button");
         assert!(stop.width() >= 32.0 && stop.height() >= 32.0);
 
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         app.answer_effect(
             PhotosEffect::StopImport,
             tilo_actions::InvocationId::new(),
@@ -2438,7 +2438,7 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
             },
             rotate_quarters: 1,
         };
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let resource_id = crate::test_doc::put_image(&mut doc, &open);
         crate::test_doc::set_photo_edits(&mut doc, &resource_id, edits);
 
@@ -2523,7 +2523,7 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
     {
         let missing = "f".repeat(64);
         let open = OpenImage::new("missing.png", 3, 2, missing);
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let photo_id = crate::test_doc::put_image(&mut doc, &open);
         let encoded = |resource_id: String| PhotosEffect::ExportEditedContent {
             photo: ui::tilo_resource::Id::from_raw(resource_id),
@@ -2553,7 +2553,7 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
 #[test]
 fn sync_never_frees_a_laid_out_child() {
     let mut app = PhotosApp::new();
-    let mut doc = AutoCommit::new();
+    let mut doc = crate::test_doc::new_doc();
     stage(&mut app, &mut doc, "people");
     sync(&mut app, &mut doc);
     app.refresh_people_controls();
@@ -2570,7 +2570,7 @@ fn sync_never_frees_a_laid_out_child() {
     );
 
     let mut app = PhotosApp::new();
-    let mut doc = AutoCommit::new();
+    let mut doc = crate::test_doc::new_doc();
     stage(&mut app, &mut doc, "opened");
     sync(&mut app, &mut doc);
     assert!(
