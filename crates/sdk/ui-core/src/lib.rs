@@ -220,6 +220,7 @@ pub mod presence;
 pub mod priority_contacts;
 pub mod profiling;
 pub mod query_text;
+pub mod raster;
 pub mod realtime_continuity;
 pub mod standalone_history_pane;
 pub mod storage;

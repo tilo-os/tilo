@@ -14,9 +14,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -26,7 +24,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
@@ -423,10 +421,7 @@ fn probe_topbar(
     let vp = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(probe_w),
-                    height: Dimension::length(H),
-                },
+                size: Size::from_lengths(probe_w, H),
                 ..Default::default()
             },
             &[node],
@@ -547,10 +542,6 @@ fn render_frame_to(
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the drag-reorder integration scenario couples input, layout, and golden-frame assertions"
-)]
 #[test]
 fn e2e_tab_drag_reorder() {
     let _guard = TEST_LOCK

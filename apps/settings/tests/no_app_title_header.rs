@@ -12,16 +12,6 @@
 //! pill. The selected category's label is the page's heading, not a duplicate
 //! app header, and there is no subtitle under it.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use settings::SettingsApp;
 use settings::categories::Category;
 use ui::headless::Framed;

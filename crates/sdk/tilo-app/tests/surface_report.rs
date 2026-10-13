@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! What `tilo-app surface` and `tilo-app check` read from an app's binary:
 //! the resource's public surface, and the controls bound to what it does
 //! not publish.

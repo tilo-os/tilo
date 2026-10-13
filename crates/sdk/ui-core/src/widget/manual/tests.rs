@@ -675,10 +675,7 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
                     top: taffy::LengthPercentageAuto::length(y),
                     ..taffy::Rect::auto()
                 },
-                size: Size {
-                    width: Dimension::length(width),
-                    height: Dimension::length(height),
-                },
+                size: Size::from_lengths(width, height),
                 ..Style::default()
             }
         }

@@ -1280,10 +1280,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn player_reports_are_portable_signed_and_reject_unsafe_sources() {
         fn generic_player_becomes_a_portable_signed_app_report() {
             let observed = observation("https://media.example/film.mp4");

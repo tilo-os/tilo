@@ -2,10 +2,7 @@
 //! marks it made, the area it selected, and a warning when what it drew
 //! cannot be seen; and a mask that goes with its layer's marks as they move.
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
     clippy::float_cmp,
-    clippy::indexing_slicing,
     clippy::panic,
     reason = "test assertions over exact, hand-written fixtures"
 )]

@@ -1598,10 +1598,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
     fn vm_uninstall_refresh_and_disconnect_keep_the_cache_honest() {
         // Case `running_vm_uninstall_keeps_the_launcher_visible_and_disables_actions`.
         {

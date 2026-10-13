@@ -4396,10 +4396,7 @@ mod responsive_body_tests {
             let frame = taffy
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(width),
-                            height: Dimension::length(height),
-                        },
+                        size: Size::from_lengths(width, height),
                         ..Default::default()
                     },
                     &[node],

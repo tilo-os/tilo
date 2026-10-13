@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use ui::ColorCompat;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+use vello::peniko::{Blob, Color, Fill, ImageBrush};
 
 /// Cursor ink comes from the shared dark desktop theme rather than bypassing
 /// the design-token contract. The system pointer deliberately keeps the same
@@ -397,13 +397,7 @@ pub fn draw_scene(scene: &mut Scene, cursor: &CursorBitmap, at: vello::kurbo::Po
         return;
     }
     let data: Arc<dyn AsRef<[u8]> + Send + Sync> = cursor.rgba.clone();
-    let image = ImageData {
-        data: Blob::new(data),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width: cursor.width,
-        height: cursor.height,
-    };
+    let image = ui::raster::rgba8_premultiplied(Blob::new(data), cursor.width, cursor.height);
     let origin = (
         at.x - f64::from(cursor.hotspot.0),
         at.y - f64::from(cursor.hotspot.1),

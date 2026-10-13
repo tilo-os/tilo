@@ -1,8 +1,3 @@
-#![allow(
-    clippy::expect_used,
-    reason = "test fixture operations must succeed before assertions"
-)]
-
 use super::ContactDirectory;
 use tilo_resource::{Id, Replica};
 

@@ -2348,7 +2348,6 @@ impl Inner {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "test assertions")]
 mod tests {
     use super::*;
     use tilo_resource::{Model, Reader, resource};

@@ -20,12 +20,11 @@
     reason = "frame sizes and cycle counters of a few hundred, far from overflow"
 )]
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::Affine;
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::ImageData;
 
 use super::VelloDrmBridge;
 use crate::compositor::surface_readback::OwnedShmFrame;
@@ -40,13 +39,7 @@ const COMMITS: u8 = 10;
 const IDLE_PAINTS: u32 = 80;
 
 fn image(width: u32, height: u32, value: u8) -> ImageData {
-    ImageData {
-        data: Blob::new(Arc::new(vec![value; (width * height * 4) as usize])),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width,
-        height,
-    }
+    ui::raster::rgba8_premultiplied(vec![value; (width * height * 4) as usize], width, height)
 }
 
 fn paint(bridge: &mut VelloDrmBridge, wallpaper: &ImageData, window: Option<&ImageData>) {

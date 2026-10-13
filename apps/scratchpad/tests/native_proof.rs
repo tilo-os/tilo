@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 #[path = "support/native_fixture.rs"]
 mod native_fixture;

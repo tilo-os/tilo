@@ -11,12 +11,7 @@
 //!    1/120 fixed-point encoding), confirming fractional scaling.
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -158,10 +153,6 @@ fn pump(
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn fractional_scale_globals_are_advertised_and_follow_the_display_scale() {
     // Phase `compositor_advertises_fractional_scale_and_viewporter_globals`.
     {
