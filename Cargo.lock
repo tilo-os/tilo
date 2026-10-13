@@ -6188,16 +6188,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hot-reload-demo"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "tilo-app",
- "tilo-history",
- "workspace-hack",
-]
-
-[[package]]
 name = "hpke-rs"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12555,8 +12545,10 @@ checksum = "4b967ec6489a42067a20724f11987bb96178ea796873cbe1afd25fb93ee6f85f"
 dependencies = [
  "calloop",
  "enumflags2",
+ "futures-util",
  "log",
  "rustix 1.1.4",
+ "tokio",
 ]
 
 [[package]]
@@ -14219,6 +14211,7 @@ dependencies = [
  "agent-provider-config",
  "app-cli",
  "ash",
+ "ashpd",
  "base64",
  "blake3",
  "bounded-command",
@@ -15889,7 +15882,9 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-content",
  "tilo-test-env",
+ "unicode-normalization",
  "uuid",
 ]
 
@@ -16457,7 +16452,6 @@ dependencies = [
  "tilo-files",
  "tilo-paths",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -18463,6 +18457,7 @@ dependencies = [
  "two-face",
  "unic-langid",
  "unicode-linebreak",
+ "unicode-normalization",
  "unicode-properties",
  "unicode-script",
  "url",
@@ -22335,7 +22330,6 @@ dependencies = [
  "unic-langid",
  "unic-langid-impl",
  "unicode-bidi",
- "unicode-normalization",
  "unicode-properties",
  "url",
  "usvg",

@@ -9,7 +9,8 @@ use super::{NetCmd, PersonalFabricPayload, ShellNetwork};
 use crate::shell::continuity_policy::ContinuityPolicySnapshot;
 use crate::shell::device_fabric::{InputLease, PersonalFabricAction, PersonalFabricActionEnvelope};
 use crate::shell::device_fabric_runtime::{
-    grant_input_control, person_layout, revoke_input_control,
+    grant_input_control, grant_input_control_bounded, person_layout, revoke_input_control,
+    revoke_input_control_bound,
 };
 use crate::shell::personal_continuity::DeviceId;
 use std::collections::BTreeSet;
@@ -24,8 +25,12 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_person(0xB1)
+    }
+
+    fn with_person(root_seed: u8) -> Self {
         let home = tilo_test_env::TestHome::new().unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
+        let root = ed25519_dalek::SigningKey::from_bytes(&[root_seed; 32]);
         let peer = iroh::SecretKey::from_bytes(&[0xB2; 32]);
         let local_device = iroh::SecretKey::from_bytes(&[0xB3; 32]);
         let (mut network, commands) = personal_workspaces_network_for_test(
@@ -105,6 +110,261 @@ impl Fixture {
             })
             .collect()
     }
+}
+
+#[test]
+fn bounded_input_control_preserves_preferences_and_refuses_existing_authority() {
+    let mut fixture = Fixture::with_person(0xC1);
+    Fixture::policy(true);
+    grant_input_control(&fixture.network, &fixture.controller).unwrap();
+    revoke_input_control(&fixture.network, &fixture.controller).unwrap();
+    fixture.actions();
+    assert_eq!(
+        fixture.network.load_display_input_declines().unwrap(),
+        BTreeSet::from([fixture.controller.clone()])
+    );
+    let (path, _) = fixture.network.display_input_declines_path().unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let lease = grant_input_control_bounded(&fixture.network, &fixture.controller).unwrap();
+    assert_eq!(lease.expires_unix_ms - lease.issued_unix_ms, 15 * 60 * 1000);
+    assert_eq!(fixture.grants(), vec![lease.clone()]);
+    assert!(grant_input_control_bounded(&fixture.network, &fixture.controller).is_err());
+    fixture.refresh();
+    assert!(
+        fixture.actions().is_empty(),
+        "no replacement or automatic renewal"
+    );
+    assert!(
+        revoke_input_control_bound(&fixture.network, &fixture.controller, lease.nonce).unwrap()
+    );
+    assert!(
+        matches!(fixture.actions().as_slice(), [PersonalFabricAction::InputLeaseRevoked { nonce }] if nonce == &lease.nonce)
+    );
+    assert!(
+        !revoke_input_control_bound(&fixture.network, &fixture.controller, lease.nonce).unwrap()
+    );
+    fixture.refresh();
+    assert!(
+        fixture.actions().is_empty(),
+        "the original persisted decline still applies"
+    );
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    drop(fixture);
+}
+
+#[test]
+fn bounded_input_control_does_not_replace_or_adopt_automatic_authority() {
+    let mut fixture = Fixture::with_person(0xC2);
+    Fixture::policy(true);
+    fixture.refresh();
+    let existing = fixture.grants().pop().unwrap();
+    assert!(grant_input_control_bounded(&fixture.network, &fixture.controller).is_err());
+    assert!(fixture.actions().is_empty());
+    assert!(
+        revoke_input_control_bound(&fixture.network, &fixture.controller, existing.nonce).unwrap()
+    );
+    fixture.actions();
+    fixture.refresh();
+    let replacement = fixture.grants().pop().unwrap();
+    assert_ne!(existing.nonce, replacement.nonce);
+    assert!(
+        !revoke_input_control_bound(&fixture.network, &fixture.controller, existing.nonce).unwrap()
+    );
+    assert!(fixture.actions().is_empty());
+    assert!(
+        fixture
+            .network
+            .load_display_input_declines()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        revoke_input_control_bound(&fixture.network, &fixture.controller, replacement.nonce)
+            .unwrap()
+    );
+    drop(fixture);
+}
+
+#[test]
+fn bounded_input_cleanup_preserves_replacement_seat_and_wrong_controller() {
+    let mut fixture = Fixture::with_person(0xC3);
+    Fixture::policy(false);
+    let mut seat = SpatialSeat::new();
+    let old = grant_input_control_bounded(&fixture.network, &fixture.controller).unwrap();
+    admit_spatial(&fixture, old.nonce, spatial_key(30, true));
+    seat.pump();
+    let replacement = grant_input_control(&fixture.network, &fixture.controller).unwrap();
+    admit_spatial(&fixture, replacement.nonce, spatial_key(32, true));
+    seat.pump();
+    fixture.actions();
+    assert!(!revoke_input_control_bound(&fixture.network, &fixture.controller, old.nonce).unwrap());
+    assert!(
+        !revoke_input_control_bound(
+            &fixture.network,
+            &DeviceId::new("other-controller").unwrap(),
+            replacement.nonce
+        )
+        .unwrap()
+    );
+    seat.pump();
+    assert_eq!(seat.keys(), BTreeSet::from([32]));
+    assert!(fixture.actions().is_empty());
+    assert!(
+        revoke_input_control_bound(&fixture.network, &fixture.controller, replacement.nonce)
+            .unwrap()
+    );
+    seat.pump();
+    assert!(seat.keys().is_empty());
+    drop(fixture);
+}
+
+#[test]
+fn bounded_input_cleanup_failed_delivery_and_withdrawn_policy_release_real_seat() {
+    let mut fixture = Fixture::with_person(0xC4);
+    Fixture::policy(false);
+    let lease = grant_input_control_bounded(&fixture.network, &fixture.controller).unwrap();
+    fixture.actions();
+    let mut seat = SpatialSeat::new();
+    admit_spatial(&fixture, lease.nonce, spatial_key(30, true));
+    admit_spatial(&fixture, lease.nonce, spatial_button(0x110, true));
+    seat.pump();
+    assert_eq!(seat.keys(), BTreeSet::from([30]));
+    fill_transport(&fixture);
+    settings_store::update_section(
+        "continuity",
+        serde_json::json!({"enabled":false})
+            .as_object()
+            .unwrap()
+            .clone(),
+    )
+    .unwrap();
+    assert!(
+        revoke_input_control_bound(&fixture.network, &fixture.controller, lease.nonce).is_err()
+    );
+    assert!(fixture.actions().is_empty());
+    admit_spatial(&fixture, lease.nonce, spatial_key(32, true));
+    seat.pump();
+    assert!(seat.keys().is_empty());
+    assert!(
+        !revoke_input_control_bound(&fixture.network, &fixture.controller, lease.nonce).unwrap()
+    );
+    assert!(
+        fixture
+            .network
+            .load_display_input_declines()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(grant_input_control_bounded(&fixture.network, &fixture.controller).is_err());
+    drop(fixture);
+}
+
+#[test]
+fn bounded_input_control_requires_current_enrolment_and_route() {
+    let mut fixture = Fixture::with_person(0xC5);
+    Fixture::policy(false);
+    let routes = fixture
+        .network
+        .authenticated_personal_routes
+        .lock()
+        .unwrap()
+        .clone();
+    fixture
+        .network
+        .authenticated_personal_routes
+        .lock()
+        .unwrap()
+        .clear();
+    assert!(grant_input_control_bounded(&fixture.network, &fixture.controller).is_err());
+    *fixture
+        .network
+        .authenticated_personal_routes
+        .lock()
+        .unwrap() = routes;
+    fixture
+        .network
+        .registered_home_device_ids
+        .lock()
+        .unwrap()
+        .clear();
+    fixture
+        .network
+        .personal_device_peers
+        .lock()
+        .unwrap()
+        .invalidate_recipients();
+    assert!(
+        fixture
+            .network
+            .current_personal_route(&fixture.controller)
+            .is_some()
+    );
+    assert!(grant_input_control_bounded(&fixture.network, &fixture.controller).is_err());
+    assert!(fixture.actions().is_empty());
+    assert!(
+        fixture
+            .network
+            .load_display_input_declines()
+            .unwrap()
+            .is_empty()
+    );
+    drop(fixture);
+}
+
+#[test]
+fn bounded_input_cleanup_preserves_sibling_controller_seat() {
+    let mut fixture = Fixture::with_person(0xC6);
+    Fixture::policy(false);
+    let root = ed25519_dalek::SigningKey::from_bytes(&[0xC6; 32]);
+    let peer = iroh::SecretKey::from_bytes(&[0xB4; 32]);
+    fixture
+        .network
+        .registered_home_device_ids
+        .lock()
+        .unwrap()
+        .insert(*peer.public().as_bytes());
+    authenticated_personal_peer(&fixture.network, &root, &peer);
+    let sibling = DeviceId::new(hex::encode(peer.public().as_bytes())).unwrap();
+    let (mut snapshot, _) = rich_display_network_snapshot(sibling.clone());
+    snapshot.presence.capabilities.pointer = true;
+    snapshot.presence.capabilities.keyboard = true;
+    fixture
+        .network
+        .device_fabric
+        .lock()
+        .unwrap()
+        .upsert(snapshot)
+        .unwrap();
+    let owned = grant_input_control_bounded(&fixture.network, &fixture.controller).unwrap();
+    let other = grant_input_control_bounded(&fixture.network, &sibling).unwrap();
+    let mut seat = SpatialSeat::new();
+    admit_spatial(&fixture, owned.nonce, spatial_key(30, true));
+    let route = fixture.network.current_personal_route(&sibling).unwrap();
+    let target = fixture.network.local_device_fabric_identity().unwrap().0;
+    crate::shell::device_fabric_runtime::handle_spatial_action(
+        &fixture.network,
+        &route,
+        &target,
+        PersonalFabricAction::Input {
+            lease_nonce: other.nonce,
+            event: spatial_key(32, true),
+        },
+    );
+    seat.pump();
+    assert_eq!(seat.keys(), BTreeSet::from([30, 32]));
+    fixture.actions();
+    assert!(
+        revoke_input_control_bound(&fixture.network, &fixture.controller, owned.nonce).unwrap()
+    );
+    seat.pump();
+    assert_eq!(seat.keys(), BTreeSet::from([32]));
+    assert!(
+        matches!(fixture.actions().as_slice(), [PersonalFabricAction::InputLeaseRevoked { nonce }] if nonce == &owned.nonce)
+    );
+    assert!(revoke_input_control_bound(&fixture.network, &sibling, other.nonce).unwrap());
+    seat.pump();
+    assert!(seat.keys().is_empty());
+    drop(fixture);
 }
 
 #[test]

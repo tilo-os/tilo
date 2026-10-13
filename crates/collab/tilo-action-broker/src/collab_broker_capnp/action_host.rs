@@ -86,6 +86,12 @@ impl BrokerActor {
                 }
             }
             CallerPrincipal::App(id) => Self::agent(format!("app:{id}")),
+            CallerPrincipal::Bot(id) => match caller.user_public_key() {
+                Some(root) => Self::bot(id, super::principal_id_for_root(*root)),
+                // A bot nobody installed has no authority to borrow: acting
+                // for nobody, it gets nothing.
+                None => Self::bot(id, String::new()),
+            },
         }
     }
 }
@@ -554,13 +560,15 @@ impl CapnpBrokerState {
                         CallerPrincipal::Agent(_) => {
                             BrokerActor::for_caller(caller).reads_in(workspace, now)
                         }
-                        CallerPrincipal::Person(_) | CallerPrincipal::App(_) => true,
+                        CallerPrincipal::Person(_)
+                        | CallerPrincipal::App(_)
+                        | CallerPrincipal::Bot(_) => true,
                     }
             }
             None => match caller.principal() {
-                // An application is always admitted into one room;
+                // An application or a bot is always admitted into one room;
                 // unconfined, it takes part in none.
-                CallerPrincipal::App(_) => false,
+                CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => false,
                 // Anyone else takes part in a room they may read; a foreign
                 // device reads wherever its person does.
                 CallerPrincipal::Person(_) | CallerPrincipal::Agent(_) => {
@@ -1241,6 +1249,9 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Err(refused) = tilo_actions::appearance::refuse_here(request) {
+            return Pending::ready(Err(refused));
+        }
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
@@ -1756,7 +1767,7 @@ impl CapnpBrokerState {
             CallerPrincipal::App(app_id) => LaunchPlace::Beside {
                 app_id: app_id.clone(),
             },
-            CallerPrincipal::Agent(_) => self
+            CallerPrincipal::Agent(_) | CallerPrincipal::Bot(_) => self
                 .launchable
                 .view_of(room, &BrokerActor::for_caller(caller).id)
                 .map_or(LaunchPlace::Focus, |app_id| LaunchPlace::Beside { app_id }),
@@ -3082,6 +3093,29 @@ mod foreign_caller_tests {
     use std::sync::{Arc, Mutex};
     use tilo_action_policy::roles;
     use tilo_actions::remote::Caller;
+
+    #[test]
+    fn an_admitted_bot_sees_only_its_confined_room() {
+        let user = [27; 32];
+        let mut tree = WorkspaceTree::default();
+        for id in [7, 8] {
+            let mut workspace = Workspace::new(WorkspaceId(id), "Bot room");
+            workspace.set_owner(hex::encode(user));
+            tree.workspaces.push(workspace);
+        }
+        let room = tree.workspaces[0].room.to_string();
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared()),
+            None,
+        );
+        let bot = Caller::bot("bridge", user, [9; 32]);
+        assert!(state.rooms_for(&bot).is_empty());
+        assert_eq!(state.rooms_for(&bot.clone().in_room(&room)), vec![room]);
+        assert!(state.rooms_for(&bot.in_room("unknown-room")).is_empty());
+    }
 
     /// Every room is governed by one device.
     struct GovernedBy([u8; 32]);

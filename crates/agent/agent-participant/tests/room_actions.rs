@@ -754,6 +754,7 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
         confirmation: None,
         revision: None,
         wait_ms: None,
+        appearance: None,
     }
 }
 
