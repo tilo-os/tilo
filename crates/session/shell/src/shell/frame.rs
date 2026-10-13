@@ -9302,11 +9302,78 @@ mod tests {
             assert!(!fb.chrome().is_fullscreen());
         }
 
+        /// Super+F on a foreign window of a desktop partitioned across two
+        /// outputs gives it that whole output, not its strip band under the
+        /// hidden top bar, and leaving fullscreen restores its tile.
+        fn super_f_foreign_window_covers_its_output_in_a_partitioned_desktop() {
+            use crate::shell::output_scene::OutputGeometry;
+            use crate::shell::tab_binding::{self, Placement};
+
+            const SURFACE: u64 = 0xfedc_0012;
+            const APP: &str = "tilo.test.fullscreen-partition";
+            let store = crate::shell::foreign::store();
+            store.forget(SURFACE);
+            crate::shell::launcher::clear_pending_placements();
+            let mut tree = WorkspaceTree::bootstrap_default();
+            let room = tree.desktop.workspaces[0].room;
+            crate::shell::launcher::set_pending_placement(APP, Placement::NewGroup);
+            assert!(
+                tab_binding::adopt_toplevel_in_room(&mut tree, SURFACE, Some(APP.into()), room)
+                    .is_some()
+            );
+            store.note_adopted(SURFACE);
+            // Frames on a pinned clock that advances a frame interval each,
+            // so the strip's springs run to rest in simulated time: every
+            // rect compared below is a settled layout, not a frame of motion.
+            let mut at = ui::time::now();
+            let settle = |fb: &mut FrameBuilder, at: &mut ui::time::Instant| {
+                for _ in 0..120 {
+                    *at += ui::time::Duration::from_millis(16);
+                    ui::time::testing::with_monotonic_time(*at, || {
+                        let _ = fb.paint_settled();
+                    });
+                }
+            };
+            let mut fb = FrameBuilder::with_tree(tree, (2944, 1080));
+            fb.set_output_geometry(vec![
+                OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
+                OutputGeometry::unscaled(1920.0, 0.0, 1024.0, 640.0).with_id(1),
+            ]);
+            settle(&mut fb, &mut at);
+            let before = fb
+                .foreign_surface_rect(SURFACE)
+                .expect("tiled foreign window");
+            assert!(before.y0 > 0.0);
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            fb.set_fullscreen(None);
+            settle(&mut fb, &mut at);
+            let fullscreen = fb
+                .foreign_surface_rect(SURFACE)
+                .expect("fullscreen foreign window");
+            assert!(
+                fullscreen.y0.abs() < 0.5 && (fullscreen.height() - 1080.0).abs() < 0.5,
+                "Super+F must give the client the whole output height: {fullscreen:?}"
+            );
+            assert!(
+                fullscreen.x0.abs() < 0.5 && (fullscreen.width() - 1920.0).abs() < 0.5,
+                "Super+F must give the client the whole output width: {fullscreen:?}"
+            );
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            settle(&mut fb, &mut at);
+            let restored = fb
+                .foreign_surface_rect(SURFACE)
+                .expect("restored foreign window");
+            assert_eq!(restored, before, "leaving fullscreen restores the tile");
+            store.forget(SURFACE);
+            crate::shell::launcher::clear_pending_placements();
+        }
+
         restored_native_tab_gets_a_configure_rect_before_its_first_buffer();
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
         super_f_on_a_tilo_group_covers_the_wheel();
         an_expanded_window_tucks_the_wheel_and_keeps_the_top_bar();
+        super_f_foreign_window_covers_its_output_in_a_partitioned_desktop();
     }
 
     fn both_directions_carry_the_desktop() {
