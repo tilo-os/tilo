@@ -217,7 +217,15 @@ and a digest receipt; deployments pin the digest. `container/test-image.sh`
 is the image's smoke test. Run it on a branch with
 `fgj workflow run room-service-image.yml -R tilo/tilo --ref <branch>`.
 
-Locally, serve the output of
+Locally, `dev/run.py` runs the persistent room as production does: this
+service in persistent mode with its child relay, and the web entry laid out
+by the web entry image's `layout.py` with the `entry.json` that opens the
+room, on plain `localhost` origins (`TILO_ROOMS_LOCAL=1`). It builds what it
+needs or reuses prebuilt binaries and a bundle, prints the URL to open and
+stops everything on Ctrl-C; `dev/run.py --help` describes the edit loop and
+driving it with headless Chromium.
+
+For short-lived rooms, serve the output of
 `crates/browser/tilo-browser-runtime/scripts/build.sh DIR --bundle desktop`
 plus `web/*` as `TILO_ROOMS_ASSETS`, and run `target/release/tilo-room-service`
 with `TILO_ROOMS_RELAY_BIN=target/release/tilo-relay` and
