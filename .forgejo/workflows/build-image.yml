@@ -228,17 +228,21 @@ jobs:
       desktop_payload_url_aarch64: ${{ steps.pins.outputs.desktop_payload_url_aarch64 }}
       desktop_payload_sha256_aarch64: ${{ steps.pins.outputs.desktop_payload_sha256_aarch64 }}
     steps:
-      - name: Checkout main ancestry for a pinned dev source
+      - name: Checkout current source verification policy
         if: inputs.source_revision != ''
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
+          path: source-policy
           persist-credentials: false
-          fetch-depth: 0
+          sparse-checkout: tools/ci/verify_main_source.py
+          sparse-checkout-cone-mode: false
 
       - name: Verify and resolve the exact image source
         id: source
         env:
           REQUESTED_SOURCE: ${{ inputs.source_revision || '' }}
+          TOKEN: ${{ github.token }}
           DEV_ARCHES: ${{ inputs.arches || '["x86_64","aarch64"]' }}
         run: |
           set -euo pipefail
@@ -250,10 +254,8 @@ jobs:
             jq -e '. == ["x86_64"]' <<< "$DEV_ARCHES" >/dev/null || {
               echo '::error::source_revision requires the x86-only dev matrix'; exit 1;
             }
-            git merge-base --is-ancestor "$REQUESTED_SOURCE" "$GITHUB_SHA" || {
-              echo '::error::source_revision is not an ancestor of the dispatched main commit'; exit 1;
-            }
-            git checkout --detach "$REQUESTED_SOURCE"
+            python3 -I source-policy/tools/ci/verify_main_source.py \
+              --source "$REQUESTED_SOURCE" --head "$GITHUB_SHA"
           fi
           echo "source-short=${TILO_IMAGE_SOURCE:0:7}" >> "$GITHUB_OUTPUT"
 
