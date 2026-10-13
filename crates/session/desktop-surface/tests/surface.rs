@@ -1406,3 +1406,64 @@ fn published_selection_prefers_keyboard_focus_inside_the_window() {
     assert_eq!(published_selection(own.clone(), &[]), own);
     assert_eq!(published_selection(None, &[]), None);
 }
+
+/// A window's new-tab control asks which application to open, as the
+/// native shell's does, and the one chosen opens as a tab of that window.
+#[test]
+fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
+    // Mounted as its own type, so the test can find the control to press.
+    let mut minter = IdMinter::new(7);
+    let tabs = vec![tab(&mut minter, "Notes"), tab(&mut minter, "Scratch")];
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1200, 800),
+        ui::Theme::dark(),
+    );
+    driver.set_caller_palette_enabled(false);
+    driver.relayout();
+    let before = handle.snapshot("g", vec![]);
+    let group = before.active.clone().unwrap().group;
+    let windows = |snapshot: &tilo_desktop_surface::navigation::Snapshot| {
+        snapshot
+            .entries
+            .iter()
+            .map(|e| e.route.group.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let plus = driver
+        .root::<DesktopSurface>()
+        .new_tab_rect(group.parse().unwrap())
+        .expect("the focused window offers a new tab");
+    driver.click_at(plus.center().x, plus.center().y);
+    driver.relayout();
+    assert!(handle.search_open(), "the control opens search");
+    assert_eq!(
+        labels(&handle.snapshot("g", vec![])),
+        labels(&before),
+        "nothing opens before an application is chosen"
+    );
+    driver.type_text("sheets");
+    driver.key("Enter");
+    driver.relayout();
+    assert!(!handle.search_open());
+    let after = handle.snapshot("g", vec![]);
+    let active = after.active.clone().unwrap();
+    let opened = after.entries.iter().find(|e| e.route == active).unwrap();
+    assert_eq!(opened.label, "sheets", "the chosen app is focused");
+    assert_eq!(active.group, group, "it opens as a tab of that window");
+    assert_eq!(windows(&after), windows(&before), "no window is added");
+
+    // Search opened otherwise opens an application as its own window.
+    handle.toggle_search();
+    driver.relayout();
+    driver.type_text("writer");
+    driver.key("Enter");
+    driver.relayout();
+    let last = handle.snapshot("g", vec![]);
+    assert_ne!(last.active.as_ref().unwrap().group, group);
+    assert_eq!(windows(&last).len(), windows(&before).len() + 1);
+}

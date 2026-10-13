@@ -876,8 +876,23 @@ where
                     continue;
                 }
                 if let Some(state) = deferred_state.take() {
-                    write_state_delivery(
-                        state,
+                    // What else is queued for the same room goes with it.
+                    let room = delivery_room(&state);
+                    let mut run = vec![state];
+                    while run.len() < STATE_RUN {
+                        match state_rx.try_recv() {
+                            Ok(next) if room.is_some() && delivery_room(&next) == room => {
+                                run.push(next);
+                            }
+                            Ok(next) => {
+                                deferred_state = Some(next);
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    write_state_deliveries(
+                        run,
                         &peer,
                         &session,
                         &mut coding,
@@ -1263,14 +1278,22 @@ async fn authorize_state_frame(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<(), PeerError> {
-    let (id, subscribed) = match frame {
-        Envelope::Delta { workspace_id, .. }
-        | Envelope::Ready { workspace_id, .. }
-        | Envelope::Presence { workspace_id, .. } => (*workspace_id, true),
-        Envelope::SyncResponse { workspace_id, .. } => (*workspace_id, false),
-        _ => return Ok(()),
+    let Some((id, subscribed)) = state_frame_room(frame) else {
+        return Ok(());
     };
     authorize_state_recipient(id, subscribed, peer, session).await
+}
+
+/// The room a state frame goes to, and whether it needs this connection to
+/// be the room's current subscriber; `None` for frames that need neither.
+const fn state_frame_room(frame: &Envelope) -> Option<(u64, bool)> {
+    match frame {
+        Envelope::Delta { workspace_id, .. }
+        | Envelope::Ready { workspace_id, .. }
+        | Envelope::Presence { workspace_id, .. } => Some((*workspace_id, true)),
+        Envelope::SyncResponse { workspace_id, .. } => Some((*workspace_id, false)),
+        _ => None,
+    }
 }
 
 /// [`authorize_state_frame`] for a frame to room `id`; `subscribed` frames
@@ -1344,6 +1367,20 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             match replay_direct_wait(preparing, peer, session, private_rx, write).await? {
                 ReplayAdvance::Preparing => {}
                 ReplayAdvance::Batch(mut frames) => {
+                    // A batch is authorised once, as presence authorises each
+                    // room's run: checked per frame, a crowd's replays queued
+                    // every writer in the room on its lock for every frame.
+                    let mut rooms: Vec<(u64, bool)> = Vec::new();
+                    for room in frames.frames().filter_map(state_frame_room) {
+                        if !rooms.contains(&room) {
+                            rooms.push(room);
+                        }
+                    }
+                    for (id, subscribed) in rooms {
+                        authorize_state_recipient(id, subscribed, peer, session).await?;
+                    }
+                    authorize_replay(&ws, &StateSource::new(peer, session), &ticket.authority)
+                        .await?;
                     while let Some(frame) = frames.front() {
                         for _ in 0..8 {
                             let Ok(private) = private_rx.try_recv() else {
@@ -1351,9 +1388,6 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                             };
                             write_private(private, peer, session, write).await?;
                         }
-                        authorize_state_frame(frame, peer, session).await?;
-                        let source = StateSource::new(peer, session);
-                        authorize_replay(&ws, &source, &ticket.authority).await?;
                         write
                             .write_all(&encode_charged(frame, session, false)?)
                             .await?;
@@ -1380,53 +1414,72 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                     let checking_workspace = ws.clone();
                     let checking_source = source.clone();
                     let cleanup_handle = handle.clone();
-                    let cleanup = owner.submit_replay_resumable_wait(
-                        false,
-                        1,
-                        async move {
-                            authorize_replay(&workspace, &source, &authority).await?;
-                            Ok(authority)
-                        },
-                        move |state, authority| {
-                            state.finish_replay(
-                                authority.as_ref().invariant("replay cleanup")?,
-                                &cleanup_handle,
-                                |store| {
+                    if boundary_done {
+                        let cleanup = owner.submit_replay_resumable_wait(
+                            false,
+                            1,
+                            async move {
+                                authorize_replay(&workspace, &source, &authority).await?;
+                                Ok(authority)
+                            },
+                            move |state, authority| {
+                                let authority = authority.as_ref().invariant("replay cleanup")?;
+                                state.finish_replay(authority, &cleanup_handle, |store| {
                                     authorize_replay_now(
                                         store,
                                         &checking_workspace,
                                         &checking_source,
-                                        authority.as_ref().invariant("replay cleanup")?,
+                                        authority,
                                     )
-                                },
-                            )
-                        },
-                        |result| async { result },
-                    );
-                    let _ =
-                        Box::pin(replay_wait(cleanup, peer, session, private_rx, write)).await?;
-                    if !boundary_done {
-                        let authority = ticket.authority.clone();
-                        let capture = authority.clone();
-                        let boundary_authority = authority.clone();
-                        let source = StateSource::new(peer, session);
-                        let workspace = ws.clone();
-                        let boundary_workspace = ws.clone();
-                        let boundary_source = source.clone();
+                                })
+                            },
+                            |result| async { result },
+                        );
+                        let _ = Box::pin(replay_wait(cleanup, peer, session, private_rx, write))
+                            .await?;
+                    } else {
+                        // The first replay's cleanup and the cut of what
+                        // committed while it ran are one turn of the owner:
+                        // two, a newcomer waited behind every queued commit
+                        // twice before it was caught up.
                         let checking = catchup.clone();
                         let completing = catchup.clone();
+                        let boundary_workspace = ws.clone();
+                        let boundary_source = source.clone();
+                        let boundary_authority = authority.clone();
+                        let mut finished = false;
                         let boundary = owner.submit_replay_resumable_wait(
                             true,
                             1,
                             async move {
                                 authorize_replay(&workspace, &source, &authority).await?;
-                                Ok(())
+                                Ok(authority)
                             },
-                            move |state, _| {
+                            move |state, authority| {
+                                let authority = authority.as_ref().invariant("replay boundary")?;
+                                if !finished {
+                                    let step = state.finish_replay(
+                                        authority,
+                                        &cleanup_handle,
+                                        |store| {
+                                            authorize_replay_now(
+                                                store,
+                                                &checking_workspace,
+                                                &checking_source,
+                                                authority,
+                                            )
+                                        },
+                                    )?;
+                                    if matches!(step, Step::More) {
+                                        return Ok(Step::More);
+                                    }
+                                    finished = true;
+                                }
                                 if !checking.dirty.load(std::sync::atomic::Ordering::SeqCst) {
                                     return Ok(Step::Done(None));
                                 }
-                                let step = state.capture_pending_replay(&capture)?;
+                                let step =
+                                    state.capture_pending_replay(authority, &checking.held)?;
                                 match step {
                                     Step::More => Ok(Step::More),
                                     Step::Done(handle) => Ok(Step::Done(Some(handle))),
@@ -2100,6 +2153,7 @@ async fn handle_subscribe(
         .map(|sub| sub.tx.clone());
     let store = wr.store.clone();
     drop(wr);
+    let work = store.root().join(crate::store::replay::WORK_DIR);
     let skip = open_resume(session, peer, workspace_id, store, resume).await?;
     let owner = crate::persistence::handle(&ws).await;
     let source = StateSource::new(peer, session);
@@ -2112,7 +2166,7 @@ async fn handle_subscribe(
         ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned()).await?;
     let capture = ticket.authority.clone();
     let bind = ticket.authority.clone();
-    let catchup = Arc::new(ReplayCatchup::new());
+    let catchup = Arc::new(ReplayCatchup::new(&work));
     let session_catchup = catchup.clone();
     let session_lag = session.lag.clone();
     let presence = session.presence.cloned();
@@ -2299,16 +2353,46 @@ impl Lag {
 struct ReplayCatchup {
     phase: std::sync::atomic::AtomicU8,
     dirty: std::sync::atomic::AtomicBool,
+    /// Where what the workspace commits while this replay runs waits for
+    /// the replay's final cut. It is this session's alone and the commits
+    /// are already durable in retained history, so nothing here is synced:
+    /// a crash ends the session, and its next one replays retained history.
+    /// The store's work reclamation discards what a crash leaves.
+    held: std::path::PathBuf,
 }
 impl ReplayCatchup {
     const ACTIVE: u8 = 0;
     const BOUNDARY: u8 = 1;
     const READY: u8 = 2;
 
-    fn new() -> Self {
+    /// A catch-up whose held commits go under `work`, the store's work
+    /// directory.
+    fn new(work: &std::path::Path) -> Self {
         Self {
             phase: std::sync::atomic::AtomicU8::new(Self::ACTIVE),
             dirty: std::sync::atomic::AtomicBool::new(false),
+            held: work.join(crate::store::replay::held_work_name(rand::random())),
+        }
+    }
+
+    /// Hold `bytes`, the commit at host order `sequence`, for the final cut.
+    fn hold(&self, sequence: u64, bytes: &[u8]) -> Result<(), crate::store::StoreError> {
+        std::fs::create_dir_all(&self.held)?;
+        // Named as the device's queue names its entries, so the cut takes
+        // them in host order.
+        let name = format!("{sequence:016x}-{}.delta", blake3::hash(bytes).to_hex());
+        std::fs::write(self.held.join(name), bytes)?;
+        Ok(())
+    }
+}
+impl Drop for ReplayCatchup {
+    fn drop(&mut self) {
+        match std::fs::remove_dir_all(&self.held) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::debug!(%error, "a finished catch-up's held commits were left for reclamation");
+            }
         }
     }
 }
@@ -2822,9 +2906,10 @@ impl ReplayPendingWork {
                     .store
                     .enqueue_continuity_pending(&target.device, &frame.bytes, receipt)?;
             } else {
-                state
-                    .store
-                    .enqueue_pending(&target.device, sequence, &frame.bytes)?;
+                // Not the device's durable queue: one fsynced file per
+                // catching-up session for each commit made a crowd joining
+                // at once write the room's every change once per newcomer.
+                target.catchup.hold(sequence, &frame.bytes)?;
             }
             self.written = self.written.saturating_add(frame.bytes.len() as u64);
         }
@@ -5310,10 +5395,18 @@ async fn encode_presence(
     Ok(out)
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
-)]
+/// The most queued deliveries of one room a writer takes in one turn.
+const STATE_RUN: usize = 32;
+
+/// The room a live delivery is for; `None` for what is not a delta.
+fn delivery_room(delivery: &StateDelivery) -> Option<u64> {
+    match &*delivery.envelope {
+        Envelope::Delta { workspace_id, .. } => Some(*workspace_id),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
 async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     delivery: StateDelivery,
     peer: &AuthenticatedPeer,
@@ -5322,63 +5415,100 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
     presence: &crate::presence_mailbox::PresenceMailbox,
     write: &mut W,
 ) -> Result<(), PeerError> {
-    let Envelope::Delta { workspace_id, .. } = &*delivery.envelope else {
+    write_state_deliveries(vec![delivery], peer, session, coding, presence, write).await
+}
+
+/// Write `run`, queued deliveries of one room in order, authorised under
+/// one membership read: authorised one by one, a room's every commit took
+/// its lock once per member, and a crowd's writers queued on it.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the flagged value is a shared workspace handle (an Arc clone); dropping it earlier releases no lock"
+)]
+async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
+    run: Vec<StateDelivery>,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    coding: &mut SessionCoding,
+    presence: &crate::presence_mailbox::PresenceMailbox,
+    write: &mut W,
+) -> Result<(), PeerError> {
+    let Some(workspace_id) = run.first().and_then(delivery_room) else {
         return Ok(());
     };
     let workspace = session
         .workspaces
         .lock()
         .await
-        .get(workspace_id)
+        .get(&workspace_id)
         .cloned()
         .ok_or_else(|| PeerError::Protocol("state workspace disappeared".into()))?;
-    if crate::persistence::correlated_diagnostics()
-        && let Envelope::Delta {
-            workspace_id,
-            authored_at_ns,
-            ..
-        } = &*delivery.envelope
-    {
-        tracing::info!(phase="server_delta_writer", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
+    if crate::persistence::correlated_diagnostics() {
+        for delivery in &run {
+            if let Envelope::Delta { authored_at_ns, .. } = &*delivery.envelope {
+                tracing::info!(phase="server_delta_writer", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
+            }
+        }
     }
     let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
-    // A connection can unsubscribe and subscribe again on the same channel.
-    // Check the captured lease after the membership wait, before either writing
-    // or fencing: stale work must not affect the replacement subscription.
-    if !session.admits(&runtime, peer, RoomOperation::State)
-        || !delivery.current_subscription(&runtime, peer, session.outbound)
-    {
+    if !session.admits(&runtime, peer, RoomOperation::State) {
         return Ok(());
     }
-    if delivery
-        .source
-        .as_ref()
-        .is_some_and(|source| !source.authorized(&runtime))
-    {
-        if matches!(&delivery.envelope, LiveEnvelope::Selected(_)) {
-            // CURRENT already committed this activation. A missing half cannot
-            // be retried live after semantic suppression; reconnect needs the
-            // durable basis. The exact recipient lease was checked above.
-            let _ = session.disconnect.try_send(());
-            runtime.remove_subscriber_session(&peer.device_public_key, session.outbound);
+    let mut accepted = Vec::with_capacity(run.len());
+    for delivery in run {
+        // A connection can unsubscribe and subscribe again on the same
+        // channel. Check the captured lease after the membership wait, before
+        // either writing or fencing: stale work must not affect the
+        // replacement subscription.
+        if delivery_room(&delivery) != Some(workspace_id)
+            || !delivery.current_subscription(&runtime, peer, session.outbound)
+        {
+            continue;
         }
-        return Ok(());
+        if delivery
+            .source
+            .as_ref()
+            .is_some_and(|source| !source.authorized(&runtime))
+        {
+            if matches!(&delivery.envelope, LiveEnvelope::Selected(_)) {
+                // CURRENT already committed this activation. A missing half
+                // cannot be retried live after semantic suppression; reconnect
+                // needs the durable basis. The exact recipient lease was
+                // checked above.
+                let _ = session.disconnect.try_send(());
+                runtime.remove_subscriber_session(&peer.device_public_key, session.outbound);
+            }
+            continue;
+        }
+        accepted.push(delivery);
     }
     drop(runtime);
-    if crate::persistence::correlated_diagnostics()
-        && let Envelope::Delta {
-            workspace_id,
-            authored_at_ns,
-            ..
-        } = &*delivery.envelope
-    {
-        tracing::info!(phase="server_delta_wire", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
+    if accepted.is_empty() {
+        return Ok(());
     }
-    // One write, so one packet where it fits: the delta, its position, and
-    // the presence that may ride along, above all the author's caret and
+    if crate::persistence::correlated_diagnostics() {
+        for delivery in &accepted {
+            if let Envelope::Delta { authored_at_ns, .. } = &*delivery.envelope {
+                tracing::info!(phase="server_delta_wire", workspace_id, authored_at_ns, recipient=%hex::encode(&peer.device_public_key[..4]));
+            }
+        }
+    }
+    // One write, so one packet where it fits: the deltas, their position,
+    // and the presence that may ride along, above all the author's caret and
     // typing for this keystroke, held for it.
-    let mut out = encode_delta_charged(&delivery.envelope, session, &mut coding.deltas)?;
-    if let Some(position) = resume_record(session, *workspace_id, [&*delivery.envelope]) {
+    let mut out = Vec::new();
+    for delivery in &accepted {
+        out.extend(encode_delta_charged(
+            &delivery.envelope,
+            session,
+            &mut coding.deltas,
+        )?);
+    }
+    if let Some(position) = resume_record(
+        session,
+        workspace_id,
+        accepted.iter().map(|delivery| &*delivery.envelope),
+    ) {
         out.extend(encode_charged(&position, session, false)?);
     }
     out.extend(
@@ -5391,27 +5521,50 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
         .await?,
     );
     write.write_all(&out).await?;
-    trace_native_publication("written", &delivery.envelope, Some(&peer.device_public_key));
-    if let Some(path) = &delivery.cleanup {
-        let path = path.clone();
-        // Enqueue is never receipt. Exact cleanup is admitted only after the
-        // complete frame write, and is ordered against commits/replay.
-        let owner = crate::persistence::handle(&workspace).await;
-        let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
-        if session.admits(&runtime, peer, RoomOperation::State)
-            && delivery.current_subscription(&runtime, peer, session.outbound)
-        {
-            owner.read(1, move |_| {
-                if !delivery.live.load(std::sync::atomic::Ordering::SeqCst) {
-                    return Ok(());
-                }
-                match std::fs::remove_file(path) {
-                    Ok(()) => Ok(()),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                    Err(e) => Err(e.into()),
-                }
-            })?;
+    for delivery in &accepted {
+        trace_native_publication("written", &delivery.envelope, Some(&peer.device_public_key));
+    }
+    let cleanups: Vec<_> = accepted
+        .into_iter()
+        .filter(|delivery| delivery.cleanup.is_some())
+        .collect();
+    retire_written(cleanups, &workspace, peer, session).await
+}
+
+/// Retire the durable queue entries of `written` deliveries. Enqueue is
+/// never receipt: exact cleanup is admitted only after the complete frame
+/// write, and is ordered against commits and replay.
+async fn retire_written(
+    written: Vec<StateDelivery>,
+    workspace: &SharedWorkspace,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<(), PeerError> {
+    if written.is_empty() {
+        return Ok(());
+    }
+    let owner = crate::persistence::handle(workspace).await;
+    let runtime = crate::workspace_io::fresh_membership(workspace).await?;
+    if !session.admits(&runtime, peer, RoomOperation::State) {
+        return Ok(());
+    }
+    for delivery in written {
+        if !delivery.current_subscription(&runtime, peer, session.outbound) {
+            continue;
         }
+        let Some(path) = delivery.cleanup.clone() else {
+            continue;
+        };
+        owner.read(1, move |_| {
+            if !delivery.live.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            match std::fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.into()),
+            }
+        })?;
     }
     Ok(())
 }

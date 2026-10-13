@@ -3228,6 +3228,42 @@ impl PhotosApp {
         self.bind_controls();
     }
 
+    /// Ask for the open photograph's link: the framework mints it from the
+    /// photograph's view and copies it, as for an agent asking for
+    /// `share-link`, so every path shares the same URL.
+    fn share_open_photo(&mut self) {
+        match (&self.open_photo, &self.dispatch) {
+            (Some(photo), Some(dispatch)) => {
+                dispatch.share_link(&crate::resource::photo_resource_id(photo.as_str()));
+            }
+            _ => self.notice = Some(tr("photos-share-failed")),
+        }
+    }
+
+    /// Say what asking for a photograph's link came to, once.
+    fn drain_share_outcome(&mut self) {
+        let Some(dispatch) = &self.dispatch else {
+            return;
+        };
+        let share = ui::tilo_resource::share::SHARE_LINK;
+        let landed = dispatch.landed();
+        if landed.with(|landed| landed.as_ref().is_some_and(|landed| landed.action == share)) {
+            landed.set(None);
+            self.notice = Some(tr("photos-share-copied"));
+        }
+        let refused = dispatch.refused();
+        let reason = refused.with(|refused| {
+            refused
+                .as_ref()
+                .filter(|refused| refused.action == share)
+                .map(|refused| refused.reason.clone())
+        });
+        if let Some(reason) = reason {
+            refused.set(None);
+            self.notice = Some(reason);
+        }
+    }
+
     /// Build the retained controls again, bound to their effects.
     fn bind_controls(&mut self) {
         self.invalidate_toolbar();
@@ -4469,21 +4505,6 @@ impl PhotosApp {
             PhotosEffect::Copy => {
                 self.copy_to_clipboard();
             }
-            PhotosEffect::ShareReference { resource_id } => {
-                let exists = library.photo(&resource_id).cloned().is_some();
-                if exists {
-                    // This is deliberately a local clipboard handoff, not an
-                    // invented upload or recipient-delivery success. The
-                    // address identifies either the open editor image or an
-                    // unselected, addressable library card.
-                    ui::clipboard_copy(&format!("tilo://resource/{resource_id}"));
-                    self.notice = Some(tr("photos-share-copied"));
-                } else {
-                    let error = tr("photos-share-failed");
-                    self.notice = Some(error.clone());
-                    return Err(error);
-                }
-            }
             PhotosEffect::Save { path } => {
                 if let Some(open) = self.shown_photo_in(library) {
                     self.save_to(
@@ -4836,18 +4857,7 @@ impl PhotosApp {
             Hit::Copy => {
                 let _ = self.perform_effect(PhotosEffect::Copy, &self.presented());
             }
-            Hit::Share => {
-                if let Some(photo_id) = self.open_photo.clone() {
-                    let _ = self.perform_effect(
-                        PhotosEffect::ShareReference {
-                            resource_id: photo_id,
-                        },
-                        &self.presented(),
-                    );
-                } else {
-                    self.notice = Some(tr("photos-share-failed"));
-                }
-            }
+            Hit::Share => self.share_open_photo(),
             Hit::Save => {
                 let _ = self.perform_effect(PhotosEffect::Save { path: None }, &self.presented());
             }
@@ -10936,6 +10946,7 @@ impl Widget for PhotosApp {
         self.drain_action_control_pending();
         self.drain_opens();
         self.drain_analysis_results();
+        self.drain_share_outcome();
         if let Some((invocation, path)) = self.pending_resource_open.take() {
             self.import_content = None;
             self.open_path(&path);

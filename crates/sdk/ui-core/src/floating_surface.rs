@@ -644,7 +644,15 @@ impl FloatingSurfaceServiceClient {
         None
     }
 
-    #[cfg(any(test, feature = "local-daemons"))]
+    /// Construct an explicit fixture connection through the production stream adapter.
+    /// # Errors
+    /// Returns the same stream configuration failures as native service admission.
+    #[cfg(feature = "test-support")]
+    pub fn from_test_stream(stream: UnixStream) -> std::io::Result<Self> {
+        Self::from_stream(stream)
+    }
+
+    #[cfg(any(test, feature = "local-daemons", feature = "test-support"))]
     pub(crate) fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
         stream.set_nonblocking(true)?;
         Ok(Self {
@@ -653,6 +661,7 @@ impl FloatingSurfaceServiceClient {
             outgoing: VecDeque::new(),
             outgoing_offset: 0,
             outgoing_bytes: 0,
+            #[cfg(any(test, feature = "local-daemons"))]
             rearm_wake: None,
         })
     }

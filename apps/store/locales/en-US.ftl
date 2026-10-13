@@ -94,6 +94,8 @@ store-record-moderation-case = The registry opened case { $case_id }: { $status 
 store-report-note = Described the concern of a report
 store-reports-reports = Edited a report
 
+store-source-partial = Some repositories are unavailable. Other apps remain available.
+
 store-bot-label = BOT
 store-bot-what-it-does = What it does
 store-bot-needs-apps = Needs apps: { $apps }

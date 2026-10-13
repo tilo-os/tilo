@@ -302,6 +302,7 @@ fn build_item(
     for view in (vocabulary.item_views)(field, id) {
         child = child.with_view(view);
     }
+    crate::share::offer(&mut child);
     if let Some(rename) = rename_spec(vocabulary, field, id)
         && !child.actions.iter().any(|action| action.id == rename.id)
     {

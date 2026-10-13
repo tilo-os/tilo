@@ -524,6 +524,7 @@ mod tests {
             url: "https://tools.example/repo".into(),
             disabled: false,
             user_managed: true,
+            catalogue_error: None,
         };
         let rows = "org.example.Editor\tEditor\tEdit local documents\t2.0\tbeta\ttools\n";
         let mut items = super::remote_catalogue_items(rows, &remote, &[]);
@@ -568,6 +569,7 @@ mod tests {
             url: "https://dl.flathub.org/repo/".into(),
             disabled: false,
             user_managed: false,
+            catalogue_error: None,
         };
         let rows = "org.example.Editor\tEditor\tEdit documents\t2.0\tstable\tflathub\n";
         let item = super::remote_catalogue_items(rows, &remote, &[]).remove(0);

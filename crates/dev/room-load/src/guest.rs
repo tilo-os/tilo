@@ -172,6 +172,7 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     stats.join(admitted_ms, begun.elapsed().as_secs_f64() * 1000.0);
+    let joined_at = now_ms(shared.started);
 
     let desktop = rooms.first().map(|room| room.workspace_id);
     let chat = rooms.last().map(|room| DocumentRoute {
@@ -270,8 +271,12 @@ pub async fn run(shared: Arc<Shared>, index: usize) {
                         let mut at = [0u8; 8];
                         at.copy_from_slice(bytes.get(..8).unwrap_or(&[0; 8]));
                         let sent = u64::from_be_bytes(at);
-                        let latency = now_ms(shared.started).saturating_sub(sent);
-                        stats.chat(latency as f64);
+                        if sent < joined_at {
+                            stats.chat_history();
+                        } else {
+                            let latency = now_ms(shared.started).saturating_sub(sent);
+                            stats.chat(sent, latency as f64);
+                        }
                     }
                     other => stats.fail(format!(
                         "document without a readable change (sealed: {}, mutation: {})",

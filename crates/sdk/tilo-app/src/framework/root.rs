@@ -111,6 +111,8 @@ pub(crate) struct ResourceRoot {
     history: bool,
     /// Platform presentation actions; the browser implementation has no state.
     native_presentation: crate::runner::Presentation,
+    /// The links `share-link` is minting.
+    share: super::share_link::ShareLinks,
 }
 
 impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
@@ -231,6 +233,8 @@ pub fn reserved_action_ids() -> Vec<String> {
     .collect();
     ids.push(open_spec().id);
     ids.push(read_spec().id);
+    ids.push(tilo_resource::share::SHARE_LINK.to_owned());
+    ids.push(tilo_resource::share::SHARE_INVITE_LINK.to_owned());
     ids.extend(super::history::specs().into_iter().map(|spec| spec.id));
     ids.extend(
         with_native_presentations(tilo_actions::Resource::new("", "", ""))
@@ -449,6 +453,7 @@ impl ResourceRoot {
             nested_views: std::cell::RefCell::new(None),
             history: true,
             native_presentation,
+            share: super::share_link::ShareLinks::default(),
         }
     }
 
@@ -1546,7 +1551,7 @@ impl ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl RootModel for ResourceRoot {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation; inner = content);
 
     fn view(&self) -> &(dyn Widget + 'static) {
         match &self.unreadable {
@@ -1656,6 +1661,8 @@ impl RootModel for ResourceRoot {
         handlers.insert(super::history::VIEW_TYPE.to_owned());
         handlers.insert(super::person::HISTORY_TYPE.to_owned());
         handlers.insert(super::record::RECORD_ACTION_TYPE.to_owned());
+        handlers.insert(tilo_resource::share::SHARE_TYPE.to_owned());
+        handlers.insert(tilo_resource::share::SHARE_INVITE_TYPE.to_owned());
         if self.stages.opens() {
             handlers.insert(OPEN_TYPE.to_owned());
         }
@@ -1690,6 +1697,13 @@ impl RootModel for ResourceRoot {
         doc: &AutoCommit,
         path: &ui_core::automerge::ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        if let Some((update, copied)) = self.share.poll(invocation, cancellation_requested) {
+            if copied && let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &update {
+                self.dispatch
+                    .note_landed(tilo_resource::share::SHARE_LINK, output);
+            }
+            return Some(update);
+        }
         self.typed
             .poll_effect(invocation, cancellation_requested)
             .or_else(|| {
@@ -1725,6 +1739,11 @@ impl RootModel for ResourceRoot {
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
+        }
+        if let Some(request) = op.unscoped()
+            && super::share_link::handles(request.type_id)
+        {
+            return self.start_share(request.invocation, request.payload);
         }
         if let Some(request) = op.unscoped()
             && request.type_id == OPEN_TYPE
@@ -1872,6 +1891,65 @@ impl ResourceRoot {
             building: None,
         });
         indexed
+    }
+}
+
+impl ResourceRoot {
+    /// Start minting a link to one of the resources this root publishes.
+    fn start_share(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        payload: &[u8],
+    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+        let record = self
+            .run
+            .launched
+            .record
+            .as_ref()
+            .map(|record| record.as_str().to_owned());
+        let publisher = super::share_link::Publisher {
+            app: self.dispatch.app_id(),
+            record: record.as_deref(),
+            root: self.dispatch.resource_id(),
+        };
+        let may_invite = self.dispatch.may_invite();
+        let started = self
+            .share
+            .start(invocation, payload, &publisher, may_invite)?;
+        Ok(Some(match started {
+            Some(minted) => {
+                if minted.copied {
+                    self.dispatch
+                        .note_landed(tilo_resource::share::SHARE_LINK, &minted.output);
+                }
+                ui_core::host_operation::ResourceOperationStart::Completed(minted.output)
+            }
+            None => ui_core::host_operation::ResourceOperationStart::Accepted,
+        }))
+    }
+}
+
+// The root's own client for the action door (minting links) shares the
+// app's collaboration connection with whatever the view keeps there.
+impl ui_core::widget::Collaborative for ResourceRoot {
+    fn take_collab_requests(&mut self) -> Vec<ui_core::collaboration::CollabRequest> {
+        let mut requests =
+            ui_core::widget::Collaborative::take_collab_requests(self.share.remote_mut());
+        if let Some(content) =
+            capability_mut::<dyn ui_core::widget::Collaborative>(self.content.as_mut())
+        {
+            requests.extend(content.take_collab_requests());
+        }
+        requests
+    }
+
+    fn handle_collab_event(&mut self, event: &ui_core::collaboration::CollabEvent) {
+        ui_core::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
+        if let Some(content) =
+            capability_mut::<dyn ui_core::widget::Collaborative>(self.content.as_mut())
+        {
+            content.handle_collab_event(event);
+        }
     }
 }
 
@@ -2079,9 +2157,13 @@ impl RootControls for ResourceRoot {
     fn take_attributed_control_invocation(
         &mut self,
     ) -> Option<ui_core::widget::controls::AttributedControlInvocation> {
-        self.dispatch.take_attributed().or_else(|| {
+        let taken = self.dispatch.take_attributed().or_else(|| {
             ui_core::widget::controls::take_attributed_control_invocation(self.content.as_mut())
-        })
+        });
+        if let Some((invocation, _)) = &taken {
+            self.share.note_view_invocation(invocation);
+        }
+        taken
     }
     /// An edit this resource's dispatcher submitted was refused, or is held
     /// for the user's confirmation. Nothing changed in the document, so a

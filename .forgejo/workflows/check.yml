@@ -226,6 +226,17 @@ jobs:
           python3 crates/session/tilo-ntfs-helper/source_artifact.py
           printf 'TILO_NTFS_SOURCE_CACHE=%s/target/ntfs-source\nTILO_NTFS_SOURCE_OFFLINE=1\n' "$PWD" >> "$GITHUB_ENV"
 
+      # The live transport suites import the MoQ library, generated from the
+      # @moq/net pinned in scripts/moq-browser/package-lock.json as the
+      # browser runtime build does; it is never committed. ci-fast ships node
+      # without npm.
+      - name: Prepare pinned MoQ library for offline suites
+        if: contains(needs.select.outputs.suites, 'live-fake-relay.test.mjs') || contains(needs.select.outputs.suites, 'live-transport.test.mjs')
+        run: |
+          dnf install -y --setopt=install_weak_deps=False npm
+          npm ci --prefix scripts/moq-browser --no-audit --no-fund --silent
+          node scripts/moq-browser/build.mjs
+
       - name: Run selected suites
         id: suites-run
         env:

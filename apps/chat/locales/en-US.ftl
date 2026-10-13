@@ -170,6 +170,8 @@ chat-agent-start-unavailable = Select a saved task that is ready to start.
 chat-agent-stop = Stop
 chat-agent-select-task = Select task { $task }
 chat-agent-stop-current = Stop current task
+chat-resource-link-copied = Link copied
+chat-resource-link-unavailable = Link unavailable
 chat-voice-unavailable = Voice calls are unavailable until a media service is connected.
 chat-attachment-import-unavailable = Attachment import is unavailable on this host.
 

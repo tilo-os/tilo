@@ -353,7 +353,7 @@ grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 
 ! grep -Fq 'cron:' "$os" \
   && grep -Fq "if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$os" \
   && grep -Fq 'elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then' "$os" \
-  && grep -Fq '$PUBLISHED_REVISION == "$GITHUB_SHA"' "$os" \
+  && grep -Fq '$PUBLISHED_REVISION == "$TILO_IMAGE_SOURCE"' "$os" \
   && grep -Fq "needs.plan.outputs.skip != 'true'" "$os" \
   && grep -Fq '&& ${PLANNED_PUBLISH:-false} == true ) \' "$os" \
   && grep -Fq "(github.event_name == 'schedule' && github.ref == 'refs/heads/main')" "$os" \

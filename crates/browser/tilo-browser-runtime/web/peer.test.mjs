@@ -557,6 +557,10 @@ test('httpsPost and the live plane accept a loopback http room for local review'
   assert.deepEqual(liveEndpoints('https://host.example:8443', {webtransportPort: 9700}), {
     endpoint: 'https://host.example:8443/moq/live', fallback: 'https://host.example:8443/moq/live',
   });
+  // Behind an HTTP-only proxy: QUIC goes to the direct origin, the stream stays proxied.
+  assert.deepEqual(liveEndpoints('https://rooms.example', {webtransportPort: 9781, webtransportOrigin: 'https://live.rooms.example'}), {
+    endpoint: 'https://live.rooms.example/moq/live', fallback: 'https://rooms.example/moq/live',
+  });
 });
 
 test('the live grant waits until the room admitted the device', async () => {
@@ -895,7 +899,7 @@ test('resource hydration can be cancelled and leaving the peer refuses pending o
   await assert.rejects(peer.whenRecord('so.tilo.notes', 'missing'), /connection closed/);
 });
 
-test('resource-link connection never certifies or renews a device implicitly', async () => {
+test('a member opening a link never certifies or renews a device implicitly', async () => {
   const runtime = fakeRuntime(), store = memoryStore();
   await assert.rejects(connect(options(runtime, store, {requireExistingCertificate: true})), /obtain admission/);
   assert.equal(runtime.calls.certify.length, 0);
@@ -946,8 +950,7 @@ test('feedback startup waits for owner admission and never joins another room', 
   await assert.rejects(peer.configureFeedback(destination), /owner refused/);
 });
 
-for (const attachSignal of [false, true]) test(`resource close joins peer storage release (signal=${attachSignal})`, async () => {
-  const {closeResourceOperation} = await import('./resource-session.mjs');
+for (const attachSignal of [false, true]) test(`leaving a page joins peer storage release (signal=${attachSignal})`, async () => {
   const runtime = fakeRuntime();
   const values = new Map();
   runtime.profile_value = (profile, device, key) => values.get(`${profile}/${device}/${key}`);
@@ -967,14 +970,15 @@ for (const attachSignal of [false, true]) test(`resource close joins peer storag
   const peer = await connect(options(runtime, undefined, {profile: 'overlap', device: 'owned', desktop,
     vaultStorage: vaultMemory(),...(attachSignal ? {signal: controller.signal} : {})}));
   let completed = false;
-  const closing = closeResourceOperation({controller, peer}).then(() => { completed = true; });
+  controller.abort();
+  const closing = peer.dispose().then(() => { completed = true; });
   try {
     await started;
     const repeated = peer.dispose();
     assert.equal(peer.dispose(), repeated, 'repeated disposal shares one completion');
     assert.equal(reentered, repeated, 'reentrant disposal joins the installed completion');
     await settle();
-    assert.equal(completed, false, 'resource close must await storage release');
+    assert.equal(completed, false, 'leaving must await storage release');
   } finally {
     release();
     await closing;

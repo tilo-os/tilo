@@ -847,7 +847,7 @@ dynamic linking, so an app's web build is the runtime bundle with the app
 linked in and registered:
 
 ```bash
-tilo-app build --platform web      # <target>/tilo-app/web/<pkg>/bundle, index.html?app=<id>
+tilo-app build --platform web      # <target>/tilo-app/web/<pkg>/bundle, app/#/me/<id>
 tilo-app dev --platform web        # serve it, rebuild and reload on save
 tilo-app package --target web      # the bundle in the immutable layout Cloud serves
 ```

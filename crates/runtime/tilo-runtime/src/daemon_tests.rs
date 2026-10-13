@@ -402,6 +402,40 @@ fn standalone_is_the_clients_own_explicit_choice_for_connect() {
     assert!(args(&["--connect", "--standalone", "--standalone"]).is_err());
 }
 
+#[test]
+fn admission_daemon_requires_an_explicit_non_root_owner_and_no_dev_bypass() {
+    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+    let parsed = args(&["--profile", "/run/admission", "--admission-daemon", "1000"]).unwrap();
+    assert_eq!(parsed.mode, Mode::AdmissionDaemon { owner_uid: 1000 });
+    for invalid in [
+        vec!["--admission-daemon", "1000"],
+        vec!["--profile", "/run/admission", "--admission-daemon"],
+        vec!["--profile", "/run/admission", "--admission-daemon", "0"],
+        vec![
+            "--profile",
+            "/run/admission",
+            "--admission-daemon",
+            "unknown",
+        ],
+        vec![
+            "--profile",
+            "/run/admission",
+            "--admission-daemon",
+            "1000",
+            "--dev",
+        ],
+        vec![
+            "--profile",
+            "/run/admission",
+            "--admission-daemon",
+            "1000",
+            "--daemon",
+        ],
+    ] {
+        assert!(args(&invalid).is_err(), "{invalid:?}");
+    }
+}
+
 /// One page resource with an `open` view action, offered by publisher `7`,
 /// and every invocation the host was asked to run.
 #[derive(Clone, Default)]

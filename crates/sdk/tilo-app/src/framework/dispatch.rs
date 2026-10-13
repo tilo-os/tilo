@@ -420,6 +420,13 @@ impl DispatchCore {
         ))
     }
 
+    /// Whether the participant may invite people to the room.
+    pub(crate) fn may_invite(&self) -> bool {
+        self.may_scope(&PermissionScope::governance(
+            policy::roles::governance::INVITE,
+        ))
+    }
+
     fn may_scope(&self, scope: &PermissionScope) -> bool {
         match self.permissions.borrow().as_ref() {
             Some(permissions) => permissions.check(scope),
@@ -926,6 +933,18 @@ impl<R: Resource> Dispatcher<R> {
             ui_core::search::open_search_invocation(request),
             super::effect::acting_for(),
         ));
+    }
+
+    /// Ask for the link to `resource` (this resource or one nested in it,
+    /// such as an item) as a control bound to its `share-link` would: the
+    /// framework copies it to the clipboard and reports it in
+    /// [`Self::landed`], or why there is none in [`Self::refused`]. A link
+    /// grants nothing, so a participant who may only view asks too.
+    pub fn share_link(&self, resource: &str) {
+        self.core.queue_invocation(
+            ActionAddress::new(resource, tilo_resource::share::SHARE_LINK),
+            serde_json::Map::new(),
+        );
     }
 
     /// Invoke an action published on a nested resource, such as one item of

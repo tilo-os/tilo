@@ -539,34 +539,7 @@ pub struct BrokerActionSurface {
     pub cluster_id: String,
     pub record_id: String,
     pub live: bool,
-    pub actions: Vec<BrokerActionDescriptor>,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct BrokerActionDescriptor {
-    pub resource: String,
-    #[serde(default)]
-    pub semantic_identity: Option<tilo_actions::ResourceSemanticIdentity>,
-    pub action: String,
-    pub resource_kind: String,
-    pub resource_label: String,
-    pub action_label: String,
-    pub description: Option<String>,
-    pub operation_kind: tilo_actions::OperationKind,
-    pub params: Vec<tilo_actions::ActionParam>,
-    pub contract: tilo_actions::ActionContract,
-    pub input: BrokerActionInput,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-pub struct BrokerActionInput {
-    pub kind: String,
-    #[serde(default)]
-    pub prompt: String,
-    #[serde(default)]
-    pub placeholder: String,
-    #[serde(default)]
-    pub wants_content: bool,
+    pub actions: Vec<ExportedAction>,
 }
 
 #[derive(serde::Deserialize)]

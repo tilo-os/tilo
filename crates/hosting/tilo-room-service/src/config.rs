@@ -84,6 +84,9 @@ pub struct PersistentConfig {
     pub relay_origin: Option<String>,
     /// The relay's plain HTTP listener that the ingress forwards to.
     pub relay_plain: SocketAddr,
+    /// The Tilo app's web entry (`https://app.example/`) the relay announces,
+    /// so `share-link` and bots mint links that open the room there.
+    pub web_entry: Option<String>,
     /// WebTransport reached directly, beside an ingress that passes HTTP
     /// only.
     pub live: Option<LiveListener>,
@@ -333,8 +336,11 @@ impl Config {
     }
 }
 
-/// The relay's public origin, checked for shape.
-fn relay_origin(var: &impl Fn(&str) -> Option<String>) -> Result<Option<String>> {
+/// The relay's public origin and the Tilo app's web entry its links open
+/// in, each checked for shape.
+fn public_origins(
+    var: &impl Fn(&str) -> Option<String>,
+) -> Result<(Option<String>, Option<String>)> {
     let relay_origin =
         var("TILO_ROOMS_RELAY_ORIGIN").map(|origin| origin.trim_end_matches('/').to_owned());
     if let Some(origin) = &relay_origin {
@@ -347,7 +353,17 @@ fn relay_origin(var: &impl Fn(&str) -> Option<String>) -> Result<Option<String>>
             "TILO_ROOMS_RELAY_ORIGIN must be an origin like https://rooms.example"
         );
     }
-    Ok(relay_origin)
+    let web_entry = var("TILO_ROOMS_WEB_ENTRY");
+    if let Some(entry) = &web_entry {
+        let loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+            .iter()
+            .any(|prefix| entry.starts_with(prefix));
+        ensure!(
+            (entry.starts_with("https://") || loopback) && entry.ends_with('/'),
+            "TILO_ROOMS_WEB_ENTRY must be an https URL ending in /, like https://app.example/"
+        );
+    }
+    Ok((relay_origin, web_entry))
 }
 
 /// The persistent room's settings, when `TILO_ROOMS_PERSISTENT` names one.
@@ -381,7 +397,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         );
         Ok(keys)
     };
-    let relay_origin = relay_origin(var)?;
+    let (relay_origin, web_entry) = public_origins(var)?;
     let live = live_listener(var, relay_origin.as_deref())?;
     let max_spectators = parsed(var, "TILO_ROOMS_MAX_SPECTATORS", 1000_usize)?;
     ensure!(
@@ -424,6 +440,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         moderation_model,
         max_spectators,
         relay_origin,
+        web_entry,
         relay_plain: parsed(
             var,
             "TILO_ROOMS_RELAY_PLAIN",
@@ -524,6 +541,7 @@ mod tests {
             // The room API and the relay share one origin; the ingress
             // sends `/peer/` to the relay.
             ("TILO_ROOMS_PUBLIC_API", "https://rooms.example"),
+            ("TILO_ROOMS_WEB_ENTRY", "https://app.example/"),
         ])
         .unwrap();
         assert_eq!(config.api_origin(), config.persistent_origin());
@@ -537,6 +555,10 @@ mod tests {
             vec!["so.tilo.bots.discord-bridge guild=1".to_owned()]
         );
         assert_eq!(persistent.root_file, PathBuf::from("/secrets/root"));
+        assert_eq!(
+            persistent.web_entry.as_deref(),
+            Some("https://app.example/")
+        );
         assert_eq!(persistent.max_spectators, 1000);
         assert_eq!(
             persistent.relay_plain,
@@ -700,6 +722,22 @@ mod tests {
         );
         assert!(config(&[plaza, ingress, ("TILO_ROOMS_MAX_SPECTATORS", "0")]).is_err());
         assert!(config(&[plaza, ("TILO_ROOMS_RELAY_ORIGIN", "https://a/b")]).is_err());
+        assert!(
+            config(&[
+                plaza,
+                ingress,
+                ("TILO_ROOMS_WEB_ENTRY", "https://app.example")
+            ])
+            .is_err()
+        );
+        assert!(
+            config(&[
+                plaza,
+                ingress,
+                ("TILO_ROOMS_WEB_ENTRY", "http://app.example/")
+            ])
+            .is_err()
+        );
         // A persistent room is reached through the ingress, directly or
         // locally, never through the short rooms' TLS front.
         assert!(config(&[plaza]).is_err());

@@ -87,6 +87,11 @@ struct Placement {
 
 type OperatorInput = Box<dyn AsyncWrite + Send + Unpin>;
 
+/// The `--state` of a room's relay, under the room's directory.
+pub(crate) fn relay_state(directory: &Path) -> PathBuf {
+    directory.join("state")
+}
+
 pub struct Room {
     pub id: String,
     pub port: u16,
@@ -205,7 +210,7 @@ impl Room {
             .env("TILO_RELAY_LOG", "warn")
             .arg("room")
             .arg("--state")
-            .arg(directory.join("state"))
+            .arg(relay_state(&directory))
             .arg("--web")
             .arg(if config.direct_ports {
                 format!("0.0.0.0:{port}")
@@ -512,6 +517,11 @@ impl Room {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 mod tests {
     use super::*;
     use tokio::io::DuplexStream;

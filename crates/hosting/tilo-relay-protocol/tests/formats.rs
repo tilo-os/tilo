@@ -348,7 +348,7 @@ fn toml_encodings_are_pinned() {
             priority: 100,
         }],
         environments: None,
-        resource_browser_page: None,
+        web_entry: None,
         member_limits: None,
         max_room_grants: None,
     };
