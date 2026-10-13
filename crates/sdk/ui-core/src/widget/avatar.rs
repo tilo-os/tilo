@@ -706,13 +706,7 @@ impl Widget for Avatar {
         );
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 
     /// Keyed off the laid-out rect, never a draw-time cache: an avatar
     /// culled off-screen is never drawn, and must not report a pending

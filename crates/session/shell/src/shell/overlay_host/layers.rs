@@ -435,7 +435,7 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
     use taffy::TaffyTree;
-    use winit::event::{DeviceId, MouseButton};
+    use winit::event::MouseButton;
 
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
@@ -448,11 +448,7 @@ mod tests {
     }
 
     fn button(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        ui::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
     /// Route `event` to `band` with the pointer at `cursor`;

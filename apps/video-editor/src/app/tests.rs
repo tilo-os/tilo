@@ -4502,36 +4502,13 @@ fn dispatch(app: &mut VideoEditorApp, doc: &mut AutoCommit, ev: WindowEvent) {
 }
 
 fn move_to(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
-    dispatch(
-        app,
-        doc,
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        },
-    );
+    dispatch(app, doc, ui::synthetic_input::cursor_moved(x, y));
 }
 fn press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
-    dispatch(
-        app,
-        doc,
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-    );
+    dispatch(app, doc, ui::synthetic_input::mouse_press());
 }
 fn release(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
-    dispatch(
-        app,
-        doc,
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-    );
+    dispatch(app, doc, ui::synthetic_input::mouse_release());
 }
 /// A full click at (x,y): move (sets `last_mouse`, as the live loop does),
 /// then press.
@@ -4543,11 +4520,7 @@ fn right_press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
     dispatch(
         app,
         doc,
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Right,
-        },
+        ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
     );
 }
 fn char_ev(s: &str) -> WindowEvent {
@@ -4619,11 +4592,7 @@ fn shift_press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
     dispatch_mods(
         app,
         doc,
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
+        ui::synthetic_input::mouse_press(),
         ModifiersState::SHIFT,
     );
 }
@@ -4635,16 +4604,7 @@ fn shift_click(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
 }
 
 fn wheel(app: &mut VideoEditorApp, doc: &mut AutoCommit, dx: f32, dy: f32, mods: ModifiersState) {
-    dispatch_mods(
-        app,
-        doc,
-        WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(dx, dy),
-            phase: winit::event::TouchPhase::Moved,
-        },
-        mods,
-    );
+    dispatch_mods(app, doc, ui::synthetic_input::mouse_wheel(dx, dy), mods);
 }
 
 /// Run the app's real `draw` pass. No GPU and no window: the Vello scene is

@@ -51,6 +51,7 @@ mod device;
 #[cfg(test)]
 mod forwarded_port_tests;
 mod kernel;
+mod local_layer;
 mod reach;
 mod scenario;
 mod userspace;
@@ -883,6 +884,7 @@ impl App {
             Some(Command::Slot(SlotCommand::Apps(SlotAppsCommand::List))) => Ok(apps_list()),
             Some(Command::Slot(command)) => self.slot(command),
             Some(Command::SwapArtifact(request)) => self.swap_artifact(&request),
+            Some(Command::ImportLayer(request)) => self.import_local_layer(&request),
             Some(Command::Swap {
                 component,
                 slot,

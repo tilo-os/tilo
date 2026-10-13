@@ -50,7 +50,7 @@ run 'Every test suite outside Cargo is gated or explained' python3 tools/ci/suit
 run 'Codex hook manifest' bash -c 'python3 -m json.tool .codex/hooks.json >/dev/null'
 run 'Codex CI watcher tests' python3 -m unittest discover -s .codex/hooks -p 'test_*.py'
 run 'Application text-stack contract' python3 tools/policy/check_app_text_contract.py
-run 'Settings copy used by source is translated' python3 tools/policy/check_settings_i18n.py
+run 'Copy used by source is in every shipped catalogue' python3 tools/policy/check_app_copy.py
 run 'Application resource/action contract' \
   python3 tools/policy/check_app_resource_action_contract.py
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py

@@ -19,11 +19,6 @@ pub fn catalog() -> &'static EmbeddedCatalog {
     &CATALOG
 }
 
-/// Load the catalogue on this thread if it is not loaded yet.
-pub fn ensure() {
-    CATALOG.ensure();
-}
-
 /// Resolve a Mail string key.
 pub fn t(key: &str) -> String {
     CATALOG.t(key)

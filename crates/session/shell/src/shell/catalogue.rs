@@ -154,6 +154,7 @@ pub fn resolve_catalogue_bin() -> Option<PathBuf> {
 /// Install an owned service through the same normal registry verifier used
 /// by app search, without opening a window or changing workspace capabilities.
 /// Call only on a worker after the original host's enrollment approval.
+#[cfg(target_os = "linux")]
 pub(crate) fn install_service_package(package: &str) -> std::io::Result<()> {
     let bin = resolve_catalogue_bin().ok_or(std::io::ErrorKind::NotFound)?;
     let mut command = std::process::Command::new(bin);

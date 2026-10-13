@@ -626,7 +626,10 @@ impl App {
         }
         // Before-action diagnostics use the existing launcher-owned startup
         // checkpoint, never a published resource or a document mutation.
-        if crate::host::environment().diagnostics.presentation_profile {
+        let diagnostics = &crate::host::environment().diagnostics;
+        // Ordinary launched workers have no synthetic native scenario. Their
+        // explicit timing flag must still export the before-action checkpoint.
+        if diagnostics.presentation_timing || diagnostics.presentation_profile {
             tilo_startup_metrics::checkpoint_native_admission(self.native_admission_snapshot());
         }
         (any, directory)

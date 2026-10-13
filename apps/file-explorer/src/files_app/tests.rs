@@ -47,7 +47,6 @@ mod open_with_tests {
     #[test]
     fn files_are_classified_for_open_and_merge_by_extension() {
         merge_is_never_offered_for_binary_or_unsupported_names();
-        document_extensions_are_recognised_as_documents();
     }
 
     fn merge_is_never_offered_for_binary_or_unsupported_names() {
@@ -55,14 +54,6 @@ mod open_with_tests {
         assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
         assert!(!merge_supported_path(std::path::Path::new("photo.png")));
         assert!(!merge_supported_path(std::path::Path::new("unknown")));
-    }
-
-    fn document_extensions_are_recognised_as_documents() {
-        for f in ["report.odt", "memo.docx", "notes.md", "readme.markdown"] {
-            assert!(is_document(Path::new(f)), "{f}");
-        }
-        assert!(!is_document(Path::new("photo.png")));
-        assert!(!is_document(Path::new("main.rs")));
     }
 
     /// Each phase installs (or clears) its own thread-local opener and clears it
@@ -4434,34 +4425,22 @@ mod responsive_body_tests {
         }
 
         fn cursor(&mut self, x: f64, y: f64) {
-            self.dispatch(&winit::event::WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(x, y),
-            });
+            self.dispatch(&ui::synthetic_input::cursor_moved(x, y));
         }
 
         fn right_press(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Right,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_input(
+                winit::event::ElementState::Pressed,
+                winit::event::MouseButton::Right,
+            ));
         }
 
         fn left_release(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_release());
         }
 
         fn left_press(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_press());
         }
 
         /// The labels of the currently-open context/favourite menu, if any.
@@ -4517,11 +4496,7 @@ mod responsive_body_tests {
                 None,
                 winit::event::ElementState::Pressed,
             );
-            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            });
+            self.dispatch(&ui::synthetic_input::keyboard_input(ev));
         }
 
         fn type_char(&mut self, s: &str) {
@@ -4530,11 +4505,7 @@ mod responsive_body_tests {
                 Some(winit::keyboard::SmolStr::new(s)),
                 winit::event::ElementState::Pressed,
             );
-            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            });
+            self.dispatch(&ui::synthetic_input::keyboard_input(ev));
         }
     }
 

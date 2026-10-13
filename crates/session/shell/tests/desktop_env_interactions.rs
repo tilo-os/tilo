@@ -32,7 +32,7 @@ use ui::synthetic_input::PointerAction;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::event::{Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{Modifiers, MouseButton, WindowEvent};
 
 use crate::support::host;
 
@@ -1476,11 +1476,7 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
         dispatch(
             &mut host,
             &layout,
-            &WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
+            &ui::synthetic_input::mouse_wheel(0.0, -3.0),
         );
         // Give any wrongly-started eased travel every chance to show itself
         // before reading the position.

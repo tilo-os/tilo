@@ -553,7 +553,6 @@ pub fn load_sample_library() -> Vec<Book> {
         "book:field-notes",
         "Field Notes on Quiet Machines",
         "Pell Marchetti",
-        "Iris House",
         7,
         "Essays",
         FIELD_NOTES,
@@ -562,7 +561,6 @@ pub fn load_sample_library() -> Vec<Book> {
         "book:tideglass",
         "The Tideglass Letters",
         "Oda Fenwick",
-        "Marrow & Vane",
         9,
         "Correspondence",
         TIDEGLASS,
@@ -575,7 +573,6 @@ fn authored(
     id: &str,
     title: &str,
     author: &str,
-    publisher: &str,
     tint: usize,
     subject: &str,
     chapters: &[(&str, &str)],
@@ -584,7 +581,6 @@ fn authored(
         .iter()
         .map(|(t, body)| Chapter {
             title: t.to_string(),
-            href: format!("{t}.xhtml"),
             blocks: parse_xhtml(body),
         })
         .collect();
@@ -592,9 +588,7 @@ fn authored(
         id: id.to_string(),
         title: title.to_string(),
         author: author.to_string(),
-        publisher: publisher.to_string(),
         language: "en-US".to_string(),
-        description: String::new(),
         chapters,
         cover_tint: tint,
         subject: subject.to_string(),

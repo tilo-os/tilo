@@ -4,27 +4,3 @@
 
 ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
-/// One constant per message of locales/en-US.ftl, for labels and placeholders.
-pub mod keys {
-    use ui::i18n::LabelKey;
-    pub const CLOCKS_ADD_ALARM: LabelKey = LabelKey::new("clocks-add-alarm");
-    pub const CLOCKS_ADD_MINUTE: LabelKey = LabelKey::new("clocks-add-minute");
-    pub const CLOCKS_ADD_TIMER: LabelKey = LabelKey::new("clocks-add-timer");
-    pub const CLOCKS_ADD_WORLD_CLOCK: LabelKey = LabelKey::new("clocks-add-world-clock");
-    pub const CLOCKS_ALARM_HOUR: LabelKey = LabelKey::new("clocks-alarm-hour");
-    pub const CLOCKS_ALARM_LABEL: LabelKey = LabelKey::new("clocks-alarm-label");
-    pub const CLOCKS_ALARM_MINUTE: LabelKey = LabelKey::new("clocks-alarm-minute");
-    pub const CLOCKS_ALARM_REPEAT: LabelKey = LabelKey::new("clocks-alarm-repeat");
-    pub const CLOCKS_LAP: LabelKey = LabelKey::new("clocks-lap");
-    pub const CLOCKS_PAUSE_STOPWATCH: LabelKey = LabelKey::new("clocks-pause-stopwatch");
-    pub const CLOCKS_PAUSE_TIMER: LabelKey = LabelKey::new("clocks-pause-timer");
-    pub const CLOCKS_REMOVE_ALARM: LabelKey = LabelKey::new("clocks-remove-alarm");
-    pub const CLOCKS_REMOVE_TIMER: LabelKey = LabelKey::new("clocks-remove-timer");
-    pub const CLOCKS_REMOVE_WORLD_CLOCK: LabelKey = LabelKey::new("clocks-remove-world-clock");
-    pub const CLOCKS_RESET_STOPWATCH: LabelKey = LabelKey::new("clocks-reset-stopwatch");
-    pub const CLOCKS_RESUME_TIMER: LabelKey = LabelKey::new("clocks-resume-timer");
-    pub const CLOCKS_SET_ALARM_ENABLED: LabelKey = LabelKey::new("clocks-set-alarm-enabled");
-    pub const CLOCKS_START_STOPWATCH: LabelKey = LabelKey::new("clocks-start-stopwatch");
-    pub const CLOCKS_TIMER_LABEL: LabelKey = LabelKey::new("clocks-timer-label");
-    pub const CLOCKS_WORLD_CLOCK_CITY: LabelKey = LabelKey::new("clocks-world-clock-city");
-}

@@ -3581,7 +3581,7 @@ impl Continuable for BrowserWidget {
         _root: &ObjId,
     ) -> Option<ui::collaboration::ContinuationMetadata> {
         Some(ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
+            schema_version: ui::collaboration::semantic_schema::WEB_LOCATION_V1,
             bytes: self.restorable_page()?,
         })
     }
@@ -3592,7 +3592,8 @@ impl Continuable for BrowserWidget {
         _state: &mut ui::widget::Edits<'_>,
         _root: &ObjId,
     ) -> bool {
-        metadata.schema_version == 1 && self.restore_page(&metadata.bytes)
+        metadata.schema_version == ui::collaboration::semantic_schema::WEB_LOCATION_V1
+            && self.restore_page(&metadata.bytes)
     }
 }
 
@@ -3844,7 +3845,7 @@ impl Widget for BrowserWidget {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.window_scale = ctx.scale_factor as f32;
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         if let Some((node, id)) = self.pending_chrome_focus.take() {
             self.focus_control_preserving_selection(id);
@@ -6085,10 +6086,7 @@ mod architecture_tests {
             widget.cursor = Point::new(850.0, 650.0);
             dispatch_back_event(
                 &mut widget,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
-                },
+                &ui::synthetic_input::cursor_moved(850.0, 650.0),
             );
             assert!(dispatch_back_event(
                 &mut widget,
@@ -6754,20 +6752,9 @@ mod tests {
             .layout(tree, node);
         let mut release_handled = false;
         for event in [
-            WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
+            ui::synthetic_input::cursor_moved(point.x, point.y),
+            ui::synthetic_input::mouse_press(),
+            ui::synthetic_input::mouse_release(),
         ] {
             release_handled = at.send(widget, &event).handled;
         }
@@ -8926,7 +8913,7 @@ mod tests {
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
             let (mut doc, root) = synced(&mut widget);
             let metadata = ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
+                schema_version: ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                 bytes: br#"{"url":"https://example.test/reading"}"#.to_vec(),
             };
             assert!(widget.restore_continuation_metadata(
@@ -9299,7 +9286,7 @@ mod tests {
                     .is_none()
             );
             let metadata = ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
+                schema_version: ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                 bytes: br#"{"url":"https://normal.test"}"#.to_vec(),
             };
             assert!(!widget.restore_continuation_metadata(

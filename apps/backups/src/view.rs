@@ -313,7 +313,6 @@ fn health_status(health: Health) -> Option<ui::widget::RowStatus<'static>> {
     match health {
         Health::Ok => None,
         Health::Warning => Some(ui::widget::RowStatus::Warning),
-        Health::Error => Some(ui::widget::RowStatus::Error),
     }
 }
 

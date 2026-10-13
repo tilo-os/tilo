@@ -365,10 +365,7 @@ fn naming_a_layer_folder_is_one_edit_with_one_undo_step() {
             break;
         }
         app.harness()
-            .send(&ui::winit::event::WindowEvent::CursorMoved {
-                device_id: ui::winit::event::DeviceId::dummy(),
-                position: ui::winit::dpi::PhysicalPosition::new(target.center().x, 850.0),
-            });
+            .send(&ui::synthetic_input::cursor_moved(target.center().x, 850.0));
         app.harness().scroll(0.0, -2.0);
     }
     assert!(

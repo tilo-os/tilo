@@ -239,15 +239,6 @@ impl Widget for Columns {
         }
     }
 
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let main = self.main.update(state, path);
-        let aside = self
-            .aside
-            .as_mut()
-            .is_some_and(|aside| aside.update(state, path));
-        main || aside
-    }
-
     fn children(&self) -> Vec<&dyn Widget> {
         std::iter::once(self.main.as_ref())
             .chain(self.aside.as_deref())

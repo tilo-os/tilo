@@ -2695,11 +2695,7 @@ mod tests {
             let modifiers = winit::event::Modifiers::default();
             let mut doc = crate::resource::TestMail::doc();
             let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-            let press = WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            };
+            let press = ui::synthetic_input::mouse_press();
             let (consumed, action) = w.handle_event(
                 &press,
                 &mut ComposeEventContext {
@@ -2776,10 +2772,7 @@ mod tests {
         let mut doc = crate::resource::TestMail::doc();
         let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let node = taffy::NodeId::new(0);
-        let mv = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        };
+        let mv = ui::synthetic_input::cursor_moved(p.x, p.y);
         w.handle_event(
             &mv,
             &mut ComposeEventContext {
@@ -2791,11 +2784,7 @@ mod tests {
                 taffy: &taffy,
             },
         );
-        let pr = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        let pr = ui::synthetic_input::mouse_press();
         w.handle_event(
             &pr,
             &mut ComposeEventContext {

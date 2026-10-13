@@ -69,7 +69,6 @@ impl Header {
 pub struct SidePanel {
     drawer: SidebarDrawer,
     leading: bool,
-    area: Rect,
     column: Rect,
     content: Rect,
     toggle: Rect,
@@ -91,7 +90,6 @@ impl SidePanel {
         Self {
             drawer: SidebarDrawer::new().side(side).docked_width(docked),
             leading,
-            area: Rect::ZERO,
             column: Rect::ZERO,
             content: Rect::ZERO,
             toggle: Rect::ZERO,
@@ -120,7 +118,6 @@ impl SidePanel {
 
     /// Resolve the panel, content column and button for the window `area`.
     pub fn layout(&mut self, area: Rect) {
-        self.area = area;
         self.content = self.drawer.resolve(area);
         let visible = self.drawer.reveal() > 0.001 && self.drawer.sidebar_rect().width() > 0.5;
         self.column = if visible {
@@ -192,10 +189,6 @@ impl SidePanel {
         self.drawer.is_overlay()
     }
 
-    pub fn is_docked(&self) -> bool {
-        self.drawer.is_docked()
-    }
-
     pub fn is_animating(&self) -> bool {
         self.drawer.is_animating()
     }
@@ -219,11 +212,6 @@ impl SidePanel {
     /// reach what is beneath it).
     pub fn covers(&self, p: Point) -> bool {
         self.drawer.is_overlay() && self.drawer.sidebar_contains(p)
-    }
-
-    /// Whether the panel (docked or floating) covers `p`.
-    pub fn contains(&self, p: Point) -> bool {
-        self.column != Rect::ZERO && self.column.contains(p)
     }
 
     pub fn toggle(&mut self) {
@@ -265,10 +253,5 @@ impl SidePanel {
             self.drawer
                 .draw_toggle(scene, transform, text, theme, self.toggle, hovered);
         }
-    }
-
-    /// The window area the panel was last resolved for.
-    pub fn area(&self) -> Rect {
-        self.area
     }
 }

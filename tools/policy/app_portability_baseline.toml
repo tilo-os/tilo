@@ -6,7 +6,7 @@
 
 [apps.agent]
 D1 = 3
-D2 = 9
+D2 = 8
 
 [apps.backups]
 D1 = 1
@@ -52,7 +52,7 @@ D2 = 6
 
 [apps.file-explorer]
 D1 = 2
-D2 = 11
+D2 = 10
 R3 = 3
 
 [apps.firewall]

@@ -454,11 +454,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             Some("x".into()),
             ElementState::Pressed,
         );
-        let character = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        };
+        let character = crate::synthetic_input::keyboard_input(event);
         editor.begin_edit();
         for event in [character, WindowEvent::Ime(Ime::Commit("hidden".into()))] {
             let handled = dispatch(&mut editor, &event);
@@ -471,11 +467,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             None,
             ElementState::Pressed,
         );
-        let event = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: key,
-            is_synthetic: false,
-        };
+        let event = crate::synthetic_input::keyboard_input(key);
         editor.begin_edit();
         dispatch(&mut editor, &event);
         assert_eq!(
@@ -1030,11 +1022,7 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
                 text.map(Into::into),
                 ElementState::Pressed,
             );
-            WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event,
-                is_synthetic: false,
-            }
+            crate::synthetic_input::keyboard_input(event)
         }
 
         let mut editor = BlockEditor::new();

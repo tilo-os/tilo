@@ -1773,7 +1773,7 @@ impl Widget for FilePicker {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.on_cursor_moved(p, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -3260,7 +3260,7 @@ impl FilePicker {
         use winit::keyboard::{Key, NamedKey};
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 let hover = if self.keep_existing_rect.contains(p) {
                     Some(PickerFocus::KeepExisting)
@@ -3351,10 +3351,7 @@ mod tests {
     use winit::event::ElementState;
 
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
 
     use crate::synthetic_input::mouse_press;
@@ -4347,14 +4344,7 @@ mod tests {
             // A modest dialog: only a handful of rows fit.
             picker.set_rect(Rect::new(0.0, 0.0, 560.0, 420.0));
             assert!(picker.entry_rect(0).is_some());
-            dispatch(
-                &mut picker,
-                &WindowEvent::MouseWheel {
-                    device_id: winit::event::DeviceId::dummy(),
-                    delta: winit::event::MouseScrollDelta::LineDelta(0.0, -5.0),
-                    phase: winit::event::TouchPhase::Moved,
-                },
-            );
+            dispatch(&mut picker, &crate::synthetic_input::mouse_wheel(0.0, -5.0));
             assert!(picker.entry_rect(0).is_none(), "row 0 scrolled out of view");
             assert!(picker.entry_rect(6).is_some(), "a later row is now visible");
         }

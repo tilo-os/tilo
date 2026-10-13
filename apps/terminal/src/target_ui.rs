@@ -762,8 +762,7 @@ impl TerminalWidget {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor_pos =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor_pos = ctx.logical(position);
         }
         if let WindowEvent::KeyboardInput {
             event:

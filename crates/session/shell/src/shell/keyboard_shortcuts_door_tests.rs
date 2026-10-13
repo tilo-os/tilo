@@ -187,11 +187,7 @@ fn press(
     host.apply_layout(&taffy, child, vello::kurbo::Point::ORIGIN);
 
     let event = ui::synthetic_input::key_event(key, None, winit::event::ElementState::Pressed);
-    let event = winit::event::WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    };
+    let event = ui::synthetic_input::keyboard_input(event);
     ui::testing::Dispatch::new()
         .modifiers(modifiers)
         .layout(&taffy, child)

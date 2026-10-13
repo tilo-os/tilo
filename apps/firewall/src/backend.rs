@@ -96,16 +96,6 @@ impl Backend {
         &self.last_plan
     }
 
-    /// Generate the full `firewall-cmd` plan for `cfg` without running it.
-    /// Stores the plan in `last_plan` and returns a reference to it.
-    pub fn plan(&mut self, cfg: &FirewallConfig) -> &[String] {
-        self.last_plan = build_invocations(cfg).map_or_else(
-            |error| vec![format!("Blocked: invalid configuration — {error}")],
-            |plan| plan.iter().map(Invocation::display).collect(),
-        );
-        &self.last_plan
-    }
-
     /// Apply the plan for `cfg`. In [`Mode::DryRun`] this only regenerates
     /// the plan (no side effects) and returns `Ok(())`. In [`Mode::Live`]
     /// it executes each command, stopping at the first failure.
