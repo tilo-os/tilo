@@ -125,12 +125,8 @@ fn after(now: Instant, delay: Duration) -> Instant {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "the assertions add fixed durations to a paused clock"
-)]
 mod tests {
-    use tilo_relay_protocol::agents::{AgentDelegation, AgentScope};
+    use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
     use tilo_user_identity::UserIdentity;
 
     use super::*;
@@ -207,13 +203,15 @@ mod tests {
         assert!(audit.due() <= Instant::now() + Duration::from_secs(5) + AUDIT_SETTLE);
         assert!(audit.due() > Instant::now() + Duration::from_secs(4));
 
-        let delegation = AgentDelegation::sign(
+        let delegation = Delegation::sign(
             &root,
             peer.device_public_key,
-            "helper",
+            tilo_relay_protocol::delegation::Delegate::Agent {
+                agent_id: "helper".into(),
+            },
             "Helper",
             [1, 2, 3],
-            AgentScope {
+            DelegateScope {
                 rooms: vec![uuid::Uuid::from_u128(7).to_string()],
                 apps: Vec::new(),
             },

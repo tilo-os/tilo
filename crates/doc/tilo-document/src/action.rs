@@ -553,20 +553,14 @@ fn target_block(
     id: &str,
 ) -> Option<(usize, Vec<u8>)> {
     use automerge::{ObjType, ScalarValue, Value};
-    use tilo_doc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
+    use tilo_doc::schema::{BLOCK_ORDER, BLOCK_TEXT};
 
-    let optional_region = |cached: &Option<ObjId>, key: &str| {
-        cached.clone().or_else(|| match doc.get(&c.root, key) {
-            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
-            _ => None,
-        })
-    };
     let container = match region {
-        RegionKind::Body => c.blocks.clone(),
-        RegionKind::Header => optional_region(&c.header, KEY_HEADER)?,
-        RegionKind::Footer => optional_region(&c.footer, KEY_FOOTER)?,
+        RegionKind::Body => &c.blocks,
+        RegionKind::Header => &c.header,
+        RegionKind::Footer => &c.footer,
     };
-    let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(&container, id) else {
+    let Ok(Some((Value::Object(ObjType::Map), block))) = doc.get(container, id) else {
         return None;
     };
     let key = match doc.get(&block, BLOCK_ORDER) {
@@ -1785,11 +1779,7 @@ fn apply_split_block(
 
 fn apply_generate_toc(dm: &mut DocMut, entries: &[TocTarget]) {
     let snapshot = tilo_doc::model::materialize(dm.doc, dm.c);
-    for block in snapshot
-        .blocks
-        .iter()
-        .filter(|block| matches!(block.attrs.get("toc"), Some(tilo_doc::AttrVal::Bool(true))))
-    {
+    for block in snapshot.blocks.iter().filter(|block| block.flag("toc")) {
         dm.tombstone_block_in(Region::Body, &block.id);
     }
     let mut previous = None;
@@ -2194,17 +2184,16 @@ fn apply_resolve_comment(dm: &mut DocMut, id: &str) {
     {
         dm.remove_mark(&block, start, end, tilo_doc::schema::MARK_COMMENT);
     }
-    if let Some(comments) = dm.c.comments.as_ref() {
-        // Thread replies are sibling records in the canonical comments map,
-        // not dangling private overlay state. Remove them deterministically
-        // before their parent so a resolved thread leaves no orphan resources.
-        let mut replies = tilo_doc::model::comment_reply_ids(dm.doc, dm.c, id);
-        replies.sort();
-        for reply in replies {
-            let _ = dm.doc.delete(comments, reply);
-        }
-        let _ = dm.doc.delete(comments, id);
+    // Thread replies are sibling records in the canonical comments map,
+    // not dangling private overlay state. Remove them deterministically
+    // before their parent so a resolved thread leaves no orphan resources.
+    let comments = &dm.c.comments;
+    let mut replies = tilo_doc::model::comment_reply_ids(dm.doc, dm.c, id);
+    replies.sort();
+    for reply in replies {
+        let _ = dm.doc.delete(comments, reply);
     }
+    let _ = dm.doc.delete(comments, id);
 }
 
 fn apply_add_comment(
@@ -2987,23 +2976,6 @@ pub fn split_block_action(
     }
 }
 
-/// [`split_block_action`], naming the block that follows `block`, as a view
-/// holding the document's order knows it.
-pub fn split_block_before_action(
-    region: RegionKind,
-    block: &str,
-    at: usize,
-    kind: &str,
-    ordered: Option<bool>,
-    next: Option<String>,
-) -> RichTextAction {
-    let mut action = split_block_action(region, block, at, kind, ordered);
-    if let RichTextAction::SplitBlock { next: slot, .. } = &mut action {
-        *slot = next;
-    }
-    action
-}
-
 /// An image already in the caller's content store, as an [`RichTextAction::InsertImage`] refers to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageInput {
@@ -3055,10 +3027,6 @@ pub fn continue_paragraph_action(text: &str) -> RichTextAction {
     RichTextAction::ContinueParagraph {
         text: text.to_string(),
     }
-}
-
-pub fn remove_blocks_action(blocks: Vec<String>) -> RichTextAction {
-    RichTextAction::RemoveBlocks { blocks }
 }
 
 /// Replace the whole document body with `markdown`.

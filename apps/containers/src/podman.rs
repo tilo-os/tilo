@@ -586,23 +586,6 @@ pub fn inspect_into(container: &mut Container) {
 // Image operations
 // =====================================================================
 
-/// A lifecycle verb the UI can request against an image.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ImageAction {
-    Remove,
-}
-
-impl ImageAction {
-    pub fn is_destructive(self) -> bool {
-        matches!(self, ImageAction::Remove)
-    }
-    pub fn label(self) -> &'static str {
-        match self {
-            ImageAction::Remove => "Remove image",
-        }
-    }
-}
-
 /// Remove a local image by id or reference. `force` removes even when a
 /// stopped container references it. Returns stderr on failure.
 ///

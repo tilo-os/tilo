@@ -16,6 +16,8 @@ pub mod fields;
 pub mod footprint;
 #[path = "golden_path.rs"]
 pub mod golden_path;
+#[path = "incoming_message.rs"]
+pub mod incoming_message;
 #[path = "incremental.rs"]
 pub mod incremental;
 #[path = "keyed.rs"]

@@ -104,6 +104,63 @@ pub(crate) struct HostHistoryLayout {
     content: NodeId,
 }
 
+impl HostHistoryLayout {
+    /// Whether `node` is History chrome: a button, the pane or the preview.
+    pub(crate) fn contains(&self, taffy: &TaffyTree<()>, node: NodeId) -> bool {
+        let mut pending: Vec<_> = self.toolbar.into_iter().collect();
+        pending.extend(self.search);
+        pending.extend(self.pane);
+        pending.extend(self.preview);
+        while let Some(next) = pending.pop() {
+            if next == node {
+                return true;
+            }
+            if let Ok(children) = taffy.children(next) {
+                pending.extend(children);
+            }
+        }
+        false
+    }
+}
+
+/// The document History browses: the preferred (focused or root) binding,
+/// else the one binding laid out, else the active record. Two bindings laid
+/// out at once are ambiguous, as is an open record set with none active.
+pub(crate) fn capture_history_target(
+    preferred: Option<crate::bound_dispatch::CallbackBinding>,
+    bindings: &crate::bound_dispatch::BoundNodeMap,
+    laid_out: impl IntoIterator<Item = NodeId>,
+    records: Option<&crate::record::RecordSet>,
+    document_identity: uuid::Uuid,
+) -> Result<HistoryTarget, HistoryError> {
+    let mut binding = preferred;
+    if binding.is_none() {
+        for node in laid_out {
+            let Some(candidate) = bindings.binding_for(node) else {
+                continue;
+            };
+            if binding
+                .as_ref()
+                .is_some_and(|current| current.lifetime_id != candidate.lifetime_id)
+            {
+                return Err(HistoryError::Unavailable);
+            }
+            binding = Some(candidate);
+        }
+    }
+    if binding.is_none() && records.is_some_and(|records| records.active().is_none()) {
+        return Err(HistoryError::Unavailable);
+    }
+    Ok(binding.map_or_else(
+        || HistoryTarget::Legacy {
+            app_id: crate::collaboration::local_app_id(),
+            record: records.and_then(|records| records.active()).cloned(),
+            document_identity,
+        },
+        |binding| HistoryTarget::Bound(Box::new(binding)),
+    ))
+}
+
 pub(crate) struct StandaloneHistoryHost {
     session: Option<StandaloneHistory>,
     session_id: Option<uuid::Uuid>,
@@ -334,9 +391,46 @@ impl StandaloneHistoryHost {
         self.structure_dirty |= had_toolbar || had_search;
     }
 
-    /// The in-window buttons, for draining and refreshing their invocations.
-    pub(crate) fn in_window_controls_mut(&mut self) -> impl Iterator<Item = &mut Button> {
-        self.toolbar.iter_mut().chain(self.search.iter_mut())
+    /// The in-window buttons and the open pane: every control History owns.
+    pub(crate) fn controls_mut(&mut self) -> impl Iterator<Item = &mut dyn Widget> {
+        let pane = self.session.is_some().then_some(&mut self.pane);
+        self.toolbar
+            .iter_mut()
+            .chain(self.search.iter_mut())
+            .map(|button| button as &mut dyn Widget)
+            .chain(pane.map(|pane| pane as &mut dyn Widget))
+    }
+
+    /// Drain the invocations History's controls queued.
+    pub(crate) fn take_control_invocations(&mut self) -> Vec<tilo_actions::ControlInvocation> {
+        let mut pending = Vec::new();
+        for control in self.controls_mut() {
+            while let Some(intent) = crate::widget::controls::take_control_invocation(control) {
+                pending.push(intent);
+            }
+        }
+        pending
+    }
+
+    /// Tell History's controls how an invocation they queued finished.
+    pub(crate) fn report_control_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &crate::widget::controls::ControlResult,
+    ) {
+        for control in self.controls_mut() {
+            crate::widget::controls::on_control_invocation_result(control, address, result);
+        }
+    }
+
+    /// Enable History's controls whose actions the door currently offers.
+    pub(crate) fn refresh_control_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for control in self.controls_mut() {
+            crate::widget::controls::refresh_control_action_availability(control, allowed);
+        }
     }
 
     /// Presence is a host capability, not an OS check. Hosts without the
@@ -384,7 +478,7 @@ impl StandaloneHistoryHost {
         StandaloneHistory::open(
             self.content_target.clone().ok()?,
             context,
-            AuthorDirectory::new(),
+            AuthorDirectory::with_room_agents(),
         )
         .ok()?;
         Some(focus)
@@ -497,7 +591,7 @@ impl StandaloneHistoryHost {
         command: HistoryCommand,
         context: &HistoryReadContext<'_>,
     ) -> Result<(), HistoryHostError> {
-        if let HistoryCommand::Hide = command {
+        if command == HistoryCommand::Hide {
             if self.session.is_some() {
                 self.close();
             }
@@ -514,14 +608,15 @@ impl StandaloneHistoryHost {
                 context,
             );
         }
-        if let HistoryCommand::Open = command {
+        if command == HistoryCommand::Open {
             // Repeated Open retains the original captured document and focus.
             if self.session.is_some() {
                 self.refresh(context)?;
                 return Ok(());
             }
             let target = self.content_target.clone()?;
-            let session = StandaloneHistory::open(target, context, AuthorDirectory::new())?;
+            let session =
+                StandaloneHistory::open(target, context, AuthorDirectory::with_room_agents())?;
             self.pane.clear();
             self.pane.set_entries(session.rows());
             self.session = Some(session);
@@ -942,10 +1037,7 @@ impl StandaloneHistoryHost {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
-                min_size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
+                min_size: Size::from_lengths(0.0, 0.0),
                 flex_grow: 1.0,
                 flex_basis: Dimension::length(0.0),
                 gap: Size {
@@ -958,10 +1050,7 @@ impl StandaloneHistoryHost {
         );
         let root = taffy.parent_node(
             Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 flex_direction: taffy::FlexDirection::Column,
                 align_items: Some(taffy::AlignItems::FlexStart),
                 ..Default::default()
@@ -1018,11 +1107,8 @@ impl StandaloneHistoryHost {
     }
 
     pub(crate) fn sync(&mut self, doc: &AutoCommit, path: &ObjId) {
-        for button in self.in_window_controls_mut() {
-            button.sync(doc, path);
-        }
-        if self.is_open() {
-            self.pane.sync(doc, path);
+        for control in self.controls_mut() {
+            control.sync(doc, path);
         }
     }
 

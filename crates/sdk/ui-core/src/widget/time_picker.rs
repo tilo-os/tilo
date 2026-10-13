@@ -11,7 +11,7 @@
 //! app-owned durable mutation.
 
 use crate::widget::{AppModel, ModelPath};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
@@ -492,10 +492,7 @@ impl Widget for TimePicker {
         let n_spinners: f32 = if self.seconds.is_some() { 3.0 } else { 2.0 };
         let total_w = n_spinners * SPINNER_WIDTH + (n_spinners - 1.0) * COLON_WIDTH;
         let style = Style {
-            size: Size {
-                width: Dimension::length(total_w),
-                height: Dimension::length(PICKER_HEIGHT),
-            },
+            size: Size::from_lengths(total_w, PICKER_HEIGHT),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
@@ -616,8 +613,7 @@ impl Widget for TimePicker {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 self.pointer_inside = self.rect.contains(self.last_cursor);
             }
             WindowEvent::CursorLeft { .. } => self.pointer_inside = false,
@@ -682,11 +678,11 @@ impl Widget for TimePicker {
                 .with_action_target(&self.id)
                 .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(value)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused()),
+                ),
         )
     }
 
@@ -948,11 +944,7 @@ mod tests {
     use crate::synthetic_input::cursor_moved;
 
     fn wheel(dy: f32) -> WindowEvent {
-        WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, dy),
-            phase: winit::event::TouchPhase::Moved,
-        }
+        crate::synthetic_input::mouse_wheel(0.0, dy)
     }
 
     /// Populates `hour_rect`/`minute_rect`/`second_rect` by running
@@ -1043,14 +1035,7 @@ mod tests {
 
             let centre = tp.hour_rect.center();
             dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
-            dispatch(
-                &mut tp,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            dispatch(&mut tp, &crate::synthetic_input::mouse_press());
             assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
         }
 

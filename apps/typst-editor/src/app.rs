@@ -43,7 +43,7 @@ use ui::widget::{AppModel, ModelPath};
 
 #[cfg(test)]
 use automerge::AutoCommit;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
@@ -457,7 +457,7 @@ impl TypstApp {
             page_count: self.preview.page_count(),
         })
         .into_iter()
-        .map(crate::actions::live_row)
+        .map(ui::framework::LiveRow::from_resource)
         .collect()
     }
 
@@ -1096,10 +1096,7 @@ impl Widget for TypstApp {
         // `new_with_children` only fails when a child belongs to a different
         // tree; every entry in `child_nodes` was just built in this one above.
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &child_nodes, node_map, self)

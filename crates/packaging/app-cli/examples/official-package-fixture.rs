@@ -50,31 +50,32 @@ fn prepare(output: &Path) -> Result<()> {
         output.join("verified-version-index.json"),
         serde_json::to_vec_pretty(&entry)?,
     )?;
-    let offer = entry
+    let (offer, tapp) = entry
         .entry
         .versions
         .iter()
-        .filter(|version| {
-            version.target.platform == registry_types::TILO_OS_PLATFORM
-                && version.target.architecture == std::env::consts::ARCH
+        .filter_map(|version| version.tapp().map(|tapp| (version, tapp)))
+        .filter(|(_, tapp)| {
+            tapp.target.platform == registry_types::TILO_OS_PLATFORM
+                && tapp.target.architecture == std::env::consts::ARCH
         })
-        .max_by(|a, b| tilo_app_package::version::compare(&a.version, &b.version))
+        .max_by(|(a, _), (b, _)| tilo_app_package::version::compare(&a.version, &b.version))
         .ok_or("no genuine native Calculator offer for this architecture")?;
     require(
-        offer.tapp_size_bytes > 0
-            && offer.tapp_size_bytes
+        tapp.tapp_size_bytes > 0
+            && tapp.tapp_size_bytes
                 <= tilo_app_package::platform_size_limit(registry_types::TILO_OS_PLATFORM),
         "official app exceeds canonical size boundary",
     )?;
     let full = output.join("calculator-full.tapp");
-    let size = app_cli::install::download(&offer.tapp_url, &full)?;
+    let size = app_cli::install::download(&tapp.tapp_url, &full)?;
     require(
-        size == offer.tapp_size_bytes,
+        size == tapp.tapp_size_bytes,
         "official download size differs",
     )?;
     let (archive, _) = BlobHash::of_reader(&mut File::open(&full)?)?;
     require(
-        archive.to_hex() == offer.tapp_blake3_hex,
+        archive.to_hex() == tapp.tapp_blake3_hex,
         "official download archive hash differs",
     )?;
     let decoded = tapp::read(File::open(&full)?, &mut DiscardBlobs)?;
@@ -89,14 +90,13 @@ fn prepare(output: &Path) -> Result<()> {
         "official package signature refused",
     )?;
     require(
-        hex::encode(decoded.meta.id.as_bytes()) == offer.tapp_root_hash_hex
-            && decoded.is_complete(),
+        hex::encode(decoded.meta.id.as_bytes()) == tapp.tapp_root_hash_hex && decoded.is_complete(),
         "official package root/payload differs",
     )?;
     require(
         decoded.meta.manifest.package.id == APP
             && decoded.meta.manifest.package.version == offer.version
-            && decoded.meta.manifest.package.runtime == offer.target.runtime,
+            && decoded.meta.manifest.package.runtime == tapp.target.runtime,
         "signed manifest identity/runtime differs from offer",
     )?;
     let thin = output.join("calculator-thin.tapp");
@@ -106,7 +106,7 @@ fn prepare(output: &Path) -> Result<()> {
         thin_package.meta.id == decoded.meta.id && thin_package.carried.is_empty(),
         "thin conversion changed signed identity",
     )?;
-    let sdk_offer = offer
+    let sdk_offer = tapp
         .target
         .runtime
         .as_ref()
@@ -115,7 +115,7 @@ fn prepare(output: &Path) -> Result<()> {
     let receipt = json!({"package_id": APP, "independent_owner": OWNER, "publisher": entry.entry.publisher_pubkey_hex,
         "offer": offer, "full": {"path": full, "size": size, "archive_blake3": archive.to_hex(), "complete": true},
         "thin": {"path": thin, "root": hex::encode(thin_package.meta.id.as_bytes())},
-        "required_sdk": offer.target.runtime, "sdk_offer": sdk_offer, "architecture": std::env::consts::ARCH,
+        "required_sdk": tapp.target.runtime, "sdk_offer": sdk_offer, "architecture": std::env::consts::ARCH,
         "verification": "canonical-owner-snapshot-and-index/publisher-signature/root/all-payload-blobs"});
     std::fs::write(
         output.join("verified-offer.json"),

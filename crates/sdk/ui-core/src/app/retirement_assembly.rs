@@ -61,7 +61,7 @@ impl Drop for AppAssemblyCustody {
 #[derive(Default)]
 pub(super) struct AppAssemblyValues {
     #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
-    pub startup_renderer: Option<Option<native_runner::RendererPreparation>>,
+    pub startup_renderer: Option<Option<native_runner::startup::RendererPreparation>>,
     pub history: Option<Option<Box<crate::history_mode::host::HistoryHost>>>,
     #[cfg(any(test, feature = "test-support"))]
     pub controlled_installed_history_definition:

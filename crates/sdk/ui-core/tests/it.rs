@@ -63,8 +63,6 @@ mod design_token_audit;
 #[cfg(unix)]
 #[path = "diagnostics_outlive_a_closed_log_pipe.rs"]
 mod diagnostics_outlive_a_closed_log_pipe;
-#[path = "dnd_test.rs"]
-mod dnd_test;
 #[path = "file_picker_render_test.rs"]
 mod file_picker_render_test;
 #[path = "filled_control_labels_are_readable.rs"]
@@ -77,8 +75,6 @@ mod ghost_cursor_render_test;
 mod group_row_visual_journey;
 #[path = "host_entry_points.rs"]
 mod host_entry_points;
-#[path = "icon_grid_test.rs"]
-mod icon_grid_test;
 #[path = "immersive_widget_geometry.rs"]
 mod immersive_widget_geometry;
 #[path = "incremental_render_regressions.rs"]

@@ -3,7 +3,7 @@
 impl App {
     fn configured_screen_reader() -> crate::screen_reader::ScreenReader {
         let mut reader = crate::screen_reader::ScreenReader::new();
-        reader.configure(&settings_store::screen_reader::ScreenReaderSettings::load());
+        reader.configure(&settings_store::accessibility::ScreenReaderSettings::load());
         reader
     }
 
@@ -209,7 +209,7 @@ impl App {
             return false;
         };
 
-        if let Key::Named(NamedKey::Insert) = ke.logical_key {
+        if ke.logical_key == Key::Named(NamedKey::Insert) {
             self.accessibility.screen_reader_modifier_down = ke.state == ElementState::Pressed;
             return false;
         }
@@ -283,6 +283,7 @@ impl App {
         }
     }
     fn update_focusable_order(&mut self) {
+        let _profile = tilo_resource::profiling::Phase::start("ui.focus_order");
         if self
             .actions
             .action_palette
@@ -1248,20 +1249,9 @@ impl App {
             return false;
         }
         let events = [
-            WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: PhysicalPosition::new(x, y),
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
+            crate::synthetic_input::cursor_moved(x, y),
+            crate::synthetic_input::mouse_press(),
+            crate::synthetic_input::mouse_release(),
         ];
         let mut handled_any = false;
         for event in events {

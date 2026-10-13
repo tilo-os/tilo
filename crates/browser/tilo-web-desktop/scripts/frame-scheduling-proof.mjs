@@ -3,7 +3,7 @@
 // CDP_PORT=9333 node frame-scheduling-proof.mjs http://127.0.0.1:8765/
 const base = process.argv[2];
 if (!base) throw Error('A built desktop bundle URL is required');
-const pageURL = new URL('index.html', base.endsWith('/') ? base : `${base}/`).href;
+const pageURL = base.endsWith('/') ? base : `${base}/`;
 const version = await (await fetch(`http://127.0.0.1:${process.env.CDP_PORT ?? 9333}/json/version`)).json();
 const ws = new WebSocket(version.webSocketDebuggerUrl);
 await new Promise(resolve => ws.addEventListener('open', resolve, {once: true}));

@@ -11,18 +11,13 @@
 //! by-eye inspection.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
@@ -116,10 +111,7 @@ fn render_group_themed(
     // the canvas, and the "maximized" frame proves nothing about them.
     let root = taffy.parent_node(
         Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
+            size: Size::from_lengths(w as f32, h as f32),
             ..Style::default()
         },
         &[node],
@@ -173,10 +165,6 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
     eprintln!("wrote {} to {}", name, path.display());
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-)]
 #[test]
 fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes() {
     // Case `window_group_visual_journey_distinguishes_all_states`.

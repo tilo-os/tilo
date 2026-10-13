@@ -11,7 +11,7 @@
 //! link fired.
 
 use crate::widget::ModelPath;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -201,10 +201,7 @@ impl Widget for Link {
             self.dirty = true;
         }
         let style = Style {
-            size: Size {
-                width: Dimension::auto(),
-                height: Dimension::auto(),
-            },
+            size: Size::auto(),
             flex_shrink: 0.0,
             flex_grow: 0.0,
             ..Default::default()
@@ -315,7 +312,7 @@ impl Widget for Link {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 let hover = self.rect.contains(p);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
@@ -407,12 +404,12 @@ impl Widget for Link {
             AccessNode::new(Role::Link)
                 .with_name(self.label.clone())
                 .with_optional_value((!self.url.is_empty()).then(|| self.url.clone()))
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused())
+                        .disabled(!self.is_enabled()),
+                ),
         )
     }
 }

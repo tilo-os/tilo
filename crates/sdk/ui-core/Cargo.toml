@@ -188,6 +188,9 @@ unic-langid.workspace = true
 # cosmic-text uses the same crate internally; naming it directly lets toolkit
 # code that must mirror shaped rows avoid ASCII-space heuristics.
 unicode-linebreak = "0.1.5"
+# Confusable skeletons: a bot's shown name that looks like a room member's
+# is labelled with its service.
+unicode-normalization = "0.1.25"
 # ICU grapheme clusters, plus dictionary/LSTM segmentation for scripts whose
 # word boundaries cannot be inferred from whitespace (Thai, Lao, Khmer,
 # Myanmar, CJK); natively only, see text_break.rs.
@@ -414,7 +417,6 @@ tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 # The paint stream's host side turns SVG images into vector items, so a page's
 # logos reach every client as paths rather than as bytes it cannot decode.
 tilo-paint-stream = { version = "0.1.0", path = "../../browser/paint-stream", features = ["svg"] }
-private-fs = { version = "0.1.0", path = "../../system/private-fs" }
 # Hyphenation patterns for every language. The browser toolkit core keeps
 # English and German only (the common table): the rest would add about 1 MB
 # downloaded before anything runs; other languages there are not hyphenated.

@@ -239,7 +239,7 @@ plain text. Its stream adapter bounds frame allocation, preserves interleaved
 incoming events, and requires a journal before any write. Interruptions and
 incorrect correlation retire the stream and report uncertainty, never delivery.
 
-The production encrypted journal reuses `tilo-secret-vault`, `private-fs` and
+The production encrypted journal reuses `tilo-secret-vault`, `tilo_files::native::private` and
 `tilo-advisory-lock`. A host-supplied vault key seals exact route/payload and
 service-specific acknowledgment references. It offers no plaintext key fallback.
 An exclusive lock prevents concurrent writers; atomic publication includes file

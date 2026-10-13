@@ -11,14 +11,9 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use automerge::{ChangeHash, ObjId, Patch, PatchAction, Prop, ReadDoc};
+use automerge::{ChangeHash, ObjId, Prop, ReadDoc};
 
 use crate::model::Doc;
-
-/// Above this many patches a delta stops indexing them and asks readers to
-/// read everything: a change that large (a whole-document import, a long
-/// offline session merging in) costs about as much to index as to re-read.
-const MAX_INDEXED_PATCHES: usize = 50_000;
 
 /// How the keys of one map object were touched.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -133,47 +128,6 @@ impl Delta {
                 Kind::Indexed(index)
             }
         };
-    }
-
-    /// The delta Automerge's patches describe.
-    #[must_use]
-    pub fn from_patches(patches: &[Patch]) -> Self {
-        if patches.is_empty() {
-            return Self::nothing();
-        }
-        if patches.len() > MAX_INDEXED_PATCHES {
-            return Self::everything();
-        }
-        let mut index: HashMap<ObjId, Touched> = HashMap::new();
-        for patch in patches {
-            for (parent, prop) in &patch.path {
-                let entry = index.entry(parent.clone()).or_default();
-                match prop {
-                    Prop::Map(key) => {
-                        entry.below.insert(key.clone());
-                    }
-                    Prop::Seq(_) => entry.all = true,
-                }
-            }
-            let entry = index.entry(patch.obj.clone()).or_default();
-            match &patch.action {
-                PatchAction::PutMap { key, .. }
-                | PatchAction::DeleteMap { key }
-                | PatchAction::Conflict {
-                    prop: Prop::Map(key),
-                }
-                | PatchAction::Increment {
-                    prop: Prop::Map(key),
-                    ..
-                } => {
-                    entry.written.insert(key.clone());
-                }
-                _ => entry.all = true,
-            }
-        }
-        Self {
-            kind: Kind::Indexed(index),
-        }
     }
 
     /// Nothing changed.

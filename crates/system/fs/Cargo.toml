@@ -31,6 +31,7 @@ filesystem = [
     "dep:iroh",
     "dep:iroh-base",
     "dep:iroh-gossip",
+    "dep:tilo-endpoint-reachability",
     "dep:automerge",
     "dep:tilo-automerge",
     "dep:tilo-automerge-isolate",
@@ -99,6 +100,11 @@ path = "tests/held_memory.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "document_media_footprint"
+path = "tests/document_media_footprint.rs"
+required-features = ["filesystem"]
+
+[[test]]
 name = "integration_test"
 path = "tests/integration_test.rs"
 required-features = ["filesystem"]
@@ -143,6 +149,7 @@ bao-tree = { workspace = true }
 irpc = { workspace = true }
 ref-cast = { workspace = true }
 iroh-gossip = { workspace = true, optional = true }
+tilo-endpoint-reachability = { version = "0.1.0", path = "../endpoint-reachability", optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
 # Conflict members can come from peers: the qdoc merge decodes them only here.

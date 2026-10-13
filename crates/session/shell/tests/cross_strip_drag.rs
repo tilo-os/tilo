@@ -8,16 +8,6 @@
 //! that hook the source row's local resolver silently loses the "move to
 //! the OTHER strip" case.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 

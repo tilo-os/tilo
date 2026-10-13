@@ -118,6 +118,7 @@ impl ShortcutsProvider {
                     confirmation: None,
                     revision: None,
                     wait_ms: None,
+                    appearance: None,
                 };
                 let mut admitted =
                     BrokerActionHost::new(broker.clone()).invoke_job(&caller, request);

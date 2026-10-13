@@ -31,6 +31,10 @@ pub const GROUP_PARAM: &str = "actions";
 /// member mints from its [`ActionCx`](crate::ActionCx) are seeded by the
 /// group and the member's position, so every replica mints the same ones.
 /// A member that refuses refuses the whole group, and nothing is applied.
+/// Its payload is the list of its members; [`tilo_actions::group_form`]
+/// writes what they share once when it is encoded and restores it when it
+/// is read, on the encoded payload, so a group adds no serde code of its own
+/// per action type.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
 pub struct ActionGroup<A> {
@@ -186,6 +190,14 @@ where
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         group_change_kind(&self.members())
     }
+
+    /// A gesture that records a received message among others still
+    /// records one.
+    fn incoming_message(&self) -> bool {
+        self.actions
+            .iter()
+            .any(tilo_actions::Action::incoming_message)
+    }
 }
 
 /// Apply `members`, a group encoded as `payload`, in order as one.
@@ -271,7 +283,7 @@ pub fn group_type<R: Resource>() -> String {
 /// The registry type id groups of the actions of the type `action_type`
 /// are replayed under.
 pub(crate) fn group_type_of(action_type: &str) -> String {
-    format!("{action_type}+group")
+    format!("{action_type}{}", tilo_actions::group_form::GROUP_SUFFIX)
 }
 
 /// Register everything a replica of `R` replays: the resource's own actions

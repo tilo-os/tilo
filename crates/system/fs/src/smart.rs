@@ -152,7 +152,7 @@ impl Heuristics {
                 // unbounded task-per-open backlog.
                 tokio::spawn(async move {
                     let _permit = permit;
-                    if hydrator.sync_state(job.hash).await != crate::syncstate::SyncState::Local {
+                    if hydrator.sync_state(job.hash).await != fs_protocol::SyncState::Local {
                         // Best effort by design: a foreground read owns
                         // user-visible errors and retries; prediction must
                         // never make open fail.
@@ -180,7 +180,7 @@ impl Heuristics {
         }
     }
 
-    /// Whether a file was opened since the last call (TIL-774).
+    /// Whether a file was opened since the last call.
     pub fn take_opened(&self) -> bool {
         self.opened.swap(false, Ordering::AcqRel)
     }
@@ -334,7 +334,7 @@ mod tests {
         }
     }
 
-    /// TIL-774. The policy monitor sleeps until a file is opened: the first
+    /// #4224. The policy monitor sleeps until a file is opened: the first
     /// open after a quiet interval wakes it, and opens are reported once
     /// per interval however many there were.
     #[tokio::test]
@@ -383,7 +383,7 @@ mod tests {
 
         assert_eq!(
             hydrator.sync_state(sibling_hash).await,
-            crate::syncstate::SyncState::Projected
+            fs_protocol::SyncState::Projected
         );
         heuristics.on_open(7, vec![(sibling_hash, sibling.len() as u64)]);
         assert_eq!(
@@ -394,7 +394,7 @@ mod tests {
 
         tilo_test_env::within("the open-triggered sibling prefetch", async {
             loop {
-                if hydrator.sync_state(sibling_hash).await == crate::syncstate::SyncState::Local
+                if hydrator.sync_state(sibling_hash).await == fs_protocol::SyncState::Local
                     && heuristics.pending_work() == (0, 0)
                 {
                     break;

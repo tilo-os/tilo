@@ -290,11 +290,11 @@ impl HistoryOpener {
                 ))
                 .with_action_target(HISTORY_TARGET)
                 .with_bounds(rect)
-                .with_state(AccessState {
-                    focusable: true,
-                    checked: Some(control.is_open()),
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(control.is_open()),
+                )
         })
     }
 

@@ -513,7 +513,7 @@ a thread blocked again), above `IDLE_CPU_BUDGET` percent of a core, or if the
 compositor painted while nobody touched it. It also holds the in-process apps'
 collaboration shovel and the identity service's client thread to
 `KEY_ASK_BUDGET` together, so a route asking for its channel keys on a 1 s
-timer again (TIL-754) fails by name.
+timer again fails by name.
 
 ```bash
 cargo test --locked -p shell --test it idle_wakeups:: -- --nocapture
@@ -540,7 +540,7 @@ bar's clock repaint when a minute turns in the window. It counts the
 compositor's `paint-tick` lines (`TILO_PAINT_STATS=ticks`), one per loop
 iteration with what woke it, read inside the window: a 2-second `paint-stats`
 summary counts every tick since the previous one, so the first one printed in
-the window can carry startup's ticks (TIL-756). Pull requests run it whenever
+the window can carry startup's ticks. Pull requests run it whenever
 `shell` changes; the scheduled lane (`kpis=wakeups`) runs it with a 60 s window
 (`TILO_IDLE_WAKEUP_WINDOW_SECS`) and records `wakeups.*`. When a change
 removes a waker, lower `IDLE_WAKEUP_BUDGET` in the same pull request to the new
@@ -559,7 +559,7 @@ other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
 counts only voluntary switches, one per wakeup. Both gates in
 `idle_quiet_tests`, the lone desktop and the converged pair, use it, each
 together with a CPU bound that catches a thread spinning without blocking
-(TIL-749, TIL-752).
+.
 
 ## Idle memory
 
@@ -582,6 +582,29 @@ works on Tilo's kernel, which has no smaps (`CONFIG_PROC_PAGE_MONITOR=n`), so
 vm-acceptance R01 records the same report (`memory.shell_parts_mib.*`). The
 test then reads `/proc/<pid>/smaps` beside it for RSS, PSS and private dirty
 pages per mapping, which CI's kernel has.
+
+### Correlating app startup attempts
+
+The compositor's `tilo::launch_latency` events carry `launch_id` and
+`launch_generation`. The generation is a diagnostic timestamp fixed at that
+process's first launch observation; it changes on a compositor restart and is
+not a VM layer generation or an authority token. Group events by both fields,
+not by app name: several windows can launch the same app concurrently.
+
+With `tilo::launch_latency=info` enabled in the session's existing `RUST_LOG`
+filter, each attempt reports request, spawn, map, first presented frame, or
+retirement with its elapsed time and whether it spawned or mapped. Retirement
+can be placement cleanup and does not establish a process failure. The always
+recorded `app-spawn:` and `app-exit:` lines carry the same pair plus the launcher
+PID; `launch_id=None` explicitly means there was no staged window timing record.
+Existing `[app ... stderr] APP-STARTUP` and GPU lines retain their format.
+
+Use the launcher PID and generation to relate these events to kernel-attested
+process-binding diagnostics, then confirm the exit status and direct process
+output. Flight-recorder replay time and a saved timeout card do not establish
+the timestamp or cause of a fresh failed launch. This telemetry records no
+document, workspace, credential or grant contents and changes no startup or
+authentication deadlines.
 
 ## Where to look in source
 
@@ -737,7 +760,7 @@ passes while proving nothing.
 
 ## Opening an app the machine does not have
 
-`scripts/demo/install-on-open.py` drives the one flow that cannot be
+`scripts/headless-examples/install-on-open.py` drives the one flow that cannot be
 exercised from an installed package, because its subject is a package
 that is not installed: typing the name of an app the configured
 registries offer, pressing Enter, and getting a tab.
@@ -746,8 +769,8 @@ registries offer, pressing Enter, and getting a tab.
 cargo build -p shell -p sheets -p install -p launcher
 cargo build -p app-cli --bins --examples
 
-scripts/demo/install-on-open.py --out target/install-on-open
-scripts/demo/install-on-open.py --backend winit --stage-only   # drive it yourself
+scripts/headless-examples/install-on-open.py --out target/install-on-open
+scripts/headless-examples/install-on-open.py --backend winit --stage-only   # drive it yourself
 ```
 
 It packs the real Sheets binary into a signed `.tapp`, serves it from a

@@ -133,7 +133,6 @@ struct NativeProcessEnvironment {
     surface_hash: Option<String>,
     quick_app_id: Option<String>,
     workspace_id: Option<String>,
-    quick_workspace_id: Option<String>,
     participation: Option<String>,
     continuity_instance: Option<String>,
     person_dir: Option<PathBuf>,
@@ -176,7 +175,6 @@ impl NativeProcessEnvironment {
             surface_hash: string(crate::app_surface::SURFACE_HASH_ENV),
             quick_app_id: string("QUICK_APP_ID"),
             workspace_id: string("TILO_WORKSPACE_ID"),
-            quick_workspace_id: string("QUICK_CLUSTER_ID"),
             participation: string("TILO_PARTICIPATION"),
             continuity_instance: string("TILO_CONTINUITY_INSTANCE"),
             person_dir: path(PERSON_DIR_ENV),
@@ -221,11 +219,7 @@ impl NativeProcessEnvironment {
         }
         let profile_root = self.persistent_profile_root()?;
         let device_id = persistent_device_id(&profile_root)?;
-        let workspace = self
-            .workspace_id
-            .as_deref()
-            .or(self.quick_workspace_id.as_deref());
-        let (workspace_id, workspace_scoped) = launcher_workspace(workspace)?;
+        let (workspace_id, workspace_scoped) = launcher_workspace(self.workspace_id.as_deref())?;
         let mut permissions = permissions_for_participation(
             author,
             &workspace_id,
@@ -355,11 +349,7 @@ impl NativeProfile {
         let environment = NativeProcessEnvironment::capture();
         let instance = environment.continuity_instance.as_deref()?.parse().ok()?;
         let root = environment.persistent_profile_root().ok()?;
-        let room = environment
-            .workspace_id
-            .as_deref()
-            .or(environment.quick_workspace_id.as_deref());
-        Self::open(&root, room)
+        Self::open(&root, environment.workspace_id.as_deref())
             .ok()
             .map(|profile| (profile, instance))
     }
@@ -797,7 +787,9 @@ impl ApplicationHost {
     ) -> Result<PreparedComponentInputs, LaunchError> {
         let records = self.records_for(definition)?;
         if definition.keeps_room_record() {
-            let target = definition.unsaved_target(&records);
+            let target = definition
+                .unsaved_target(&records)
+                .map_err(LaunchError::Record)?;
             let context = HostContext::prepare(
                 definition,
                 HostContextInputs {
@@ -1117,6 +1109,87 @@ mod native_process_tests {
             .unwrap();
         assert!(prepared.context.record().id.is_package_primary());
         assert!(matches!(prepared.target, LaunchTarget::PrimaryNew));
+    }
+
+    #[test]
+    fn a_live_primary_kind_mismatch_reports_the_original_error_and_preserves_data() {
+        use crate::application_test_support as probe;
+        use automerge::{ReadDoc, transaction::Transactable};
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut original = definition(probe::APP);
+        original.room_record = true;
+        let launch = |definition: &ApplicationDefinition| {
+            NativeProcessHost::open_with(
+                definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some("3f2b1c00-0000-4000-8000-00000000000c".into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some("61".into()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        let mut native = launch(&original);
+        let mut prepared = native
+            .prepare_launch(&original, None, probe::runner_inputs())
+            .unwrap();
+        prepared
+            .context
+            .initialize_new_record(|doc| {
+                doc.put(automerge::ROOT, "body", "retained original")
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        prepared
+            .context
+            .records
+            .try_flush_record(&prepared.context.record().id)
+            .unwrap();
+        let mut incompatible = definition(probe::APP);
+        incompatible.room_record = true;
+        incompatible.record_kind = crate::record::RecordKind::new("host.changed");
+        let existing = native.host.records_for(&incompatible).unwrap();
+        assert!(
+            existing.same_owner(&prepared.context.records),
+            "the new definition must address the original live owner"
+        );
+        drop(existing);
+        let error = native
+            .prepare_launch(&incompatible, None, probe::runner_inputs())
+            .err()
+            .expect("a live owner cannot be reopened as another kind");
+        assert!(
+            matches!(
+                error,
+                LaunchError::Record(crate::record::RecordOpenError::IdentityMismatch)
+            ),
+            "{error}"
+        );
+        drop(prepared);
+        drop(native);
+
+        let mut native = launch(&original);
+        let restored = native
+            .prepare_launch(&original, None, probe::runner_inputs())
+            .unwrap();
+        assert!(matches!(restored.target, LaunchTarget::Record { .. }));
+        assert_eq!(
+            restored
+                .context
+                .read_record(|doc| {
+                    doc.get(automerge::ROOT, "body")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .into_string()
+                        .unwrap()
+                })
+                .unwrap(),
+            "retained original"
+        );
     }
 
     #[test]

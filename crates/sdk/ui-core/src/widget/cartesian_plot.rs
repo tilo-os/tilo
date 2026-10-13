@@ -13,7 +13,6 @@
 use crate::time::{Duration, Instant};
 use crate::widget::ModelPath;
 use std::cell::RefCell;
-use std::collections::HashSet;
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -678,9 +677,7 @@ pub struct CartesianPlot {
     x_view: Option<Domain>,
     y_view: Option<Domain>,
     view_changed: bool,
-    hidden_series: HashSet<String>,
-    legend_hits: Vec<(String, Rect)>,
-    visibility_changed: Option<(String, bool)>,
+    toggles: chart_legend::SeriesToggles,
     keyboard_inspection: bool,
     brush_start: Option<Point>,
     brush_current: Point,
@@ -766,9 +763,7 @@ impl CartesianPlot {
             x_view: None,
             y_view: None,
             view_changed: false,
-            hidden_series: HashSet::new(),
-            legend_hits: Vec::new(),
-            visibility_changed: None,
+            toggles: chart_legend::SeriesToggles::default(),
             keyboard_inspection: false,
             brush_start: None,
             brush_current: Point::ZERO,
@@ -785,13 +780,9 @@ impl CartesianPlot {
     }
 
     #[must_use]
-    pub fn styled(mut self, style: CartesianStyle) -> Self {
+    pub fn with_style(mut self, style: CartesianStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: CartesianStyle) -> Self {
-        self.styled(style)
     }
     #[must_use]
     pub fn with_annotations(
@@ -831,8 +822,8 @@ impl CartesianPlot {
         } else {
             self.transition_from = None;
         }
-        self.hidden_series
-            .retain(|id| self.series.iter().any(|series| series.id == *id));
+        self.toggles
+            .retain(|id| self.series.iter().any(|series| series.id == id));
         self.hovered = None;
         self.invalidate_domains();
     }
@@ -841,8 +832,8 @@ impl CartesianPlot {
     pub fn set_series_immediate(&mut self, series: Vec<PlotSeries>) {
         self.series = series;
         self.transition_from = None;
-        self.hidden_series
-            .retain(|id| self.series.iter().any(|series| series.id == *id));
+        self.toggles
+            .retain(|id| self.series.iter().any(|series| series.id == id));
         self.hovered = None;
         self.invalidate_domains();
     }
@@ -892,20 +883,15 @@ impl CartesianPlot {
         ))
     }
     pub fn is_series_visible(&self, id: &str) -> bool {
-        self.series.iter().any(|series| series.id == id) && !self.hidden_series.contains(id)
+        self.series.iter().any(|series| series.id == id) && !self.toggles.is_hidden(id)
     }
     pub fn set_series_visible(&mut self, id: &str, visible: bool) -> bool {
         if !self.series.iter().any(|series| series.id == id) {
             return false;
         }
-        let changed = if visible {
-            self.hidden_series.remove(id)
-        } else {
-            self.hidden_series.insert(id.to_owned())
-        };
+        let changed = self.toggles.set(id, visible);
         if changed {
             self.hovered = None;
-            self.visibility_changed = Some((id.to_owned(), visible));
             self.invalidate_domains();
         }
         changed
@@ -915,11 +901,11 @@ impl CartesianPlot {
         self.set_series_visible(id, visible)
     }
     pub fn take_visibility_changed(&mut self) -> Option<(String, bool)> {
-        self.visibility_changed.take()
+        self.toggles.take_changed()
     }
     pub fn inspect(&mut self, series_id: &str, datum_id: &str) -> bool {
         let target = self.series.iter().enumerate().find_map(|(series, values)| {
-            if self.hidden_series.contains(&values.id) || values.id != series_id {
+            if self.toggles.is_hidden(&values.id) || values.id != series_id {
                 return None;
             }
             values
@@ -1096,13 +1082,6 @@ impl CartesianPlot {
     pub fn zoom_to_selection(&mut self, selection: CartesianBrushSelection) -> bool {
         self.set_viewport(Some(selection.x), selection.y)
     }
-    pub fn style_mut(&mut self) -> &mut CartesianStyle {
-        self.invalidate_domains();
-        &mut self.style
-    }
-    pub fn style(&self) -> &CartesianStyle {
-        &self.style
-    }
     pub fn take_activated(&mut self) -> Option<(String, String)> {
         self.activated.take()
     }
@@ -1263,7 +1242,7 @@ impl CartesianPlot {
         let values = self
             .series
             .iter()
-            .filter(|series| !self.hidden_series.contains(&series.id))
+            .filter(|series| !self.toggles.is_hidden(&series.id))
             .flat_map(|series| series.data.iter())
             .map(|datum| if x_axis { datum.x } else { datum.y })
             .filter(|value| Self::transform(*value, axis.scale).is_some());
@@ -1595,7 +1574,7 @@ impl CartesianPlot {
         let now = crate::time::now();
         let mut nearest: Option<(f64, Hovered)> = None;
         for (series_index, series) in self.series.iter().enumerate() {
-            if self.hidden_series.contains(&series.id) {
+            if self.toggles.is_hidden(&series.id) {
                 continue;
             }
             for datum_index in self.hover_range(series, plot, xd) {
@@ -2002,7 +1981,7 @@ impl CartesianPlot {
         now: Instant,
     ) {
         for (series_index, series) in self.series.iter().enumerate() {
-            if self.hidden_series.contains(&series.id) {
+            if self.toggles.is_hidden(&series.id) {
                 continue;
             }
             let projected = self
@@ -2466,7 +2445,7 @@ impl CartesianPlot {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.legend_hits.clear();
+        self.toggles.clear_hits();
         if self.style.legend == LegendPosition::Hidden {
             return;
         }
@@ -2492,7 +2471,7 @@ impl CartesianPlot {
         for (series, item) in self.series.iter().zip(items) {
             let x = item.x0;
             let y = item.y0;
-            let hidden = self.hidden_series.contains(&series.id);
+            let hidden = self.toggles.is_hidden(&series.id);
             let color = if hidden {
                 with_alpha(series.color, 70)
             } else {
@@ -2518,7 +2497,7 @@ impl CartesianPlot {
                 Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
                 &theme.text(TextRole::Caption),
             );
-            self.legend_hits.push((series.id.clone(), item));
+            self.toggles.push_hit(series.id.clone(), item);
         }
     }
 
@@ -2755,11 +2734,7 @@ impl CartesianPlot {
             return true;
         }
         if self.style.interactive_legend
-            && let Some(id) = self
-                .legend_hits
-                .iter()
-                .find(|(_, rect)| rect.contains(self.pointer))
-                .map(|(id, _)| id.clone())
+            && let Some(id) = self.toggles.hit(self.pointer)
         {
             return self.toggle_series(&id);
         }
@@ -2773,7 +2748,7 @@ impl CartesianPlot {
             .series
             .iter()
             .enumerate()
-            .filter(|(_, series)| !self.hidden_series.contains(&series.id))
+            .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
             .flat_map(|(series_index, series)| {
                 series
                     .data
@@ -3051,8 +3026,7 @@ impl Widget for CartesianPlot {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let point = ctx.logical(position);
                 if self.update_pointer(point) {
                     *ctx.handled = true;
                 }
@@ -3131,7 +3105,7 @@ impl Widget for CartesianPlot {
         let mut children: Vec<AccessNode> = self
             .series
             .iter()
-            .filter(|series| !self.hidden_series.contains(&series.id))
+            .filter(|series| !self.toggles.is_hidden(&series.id))
             .flat_map(|series| {
                 series
                     .data
@@ -3154,25 +3128,16 @@ impl Widget for CartesianPlot {
                             } else {
                                 datum.detail.clone()
                             })
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true))
                     })
             })
             .collect();
         if self.style.interactive_legend && self.style.legend != LegendPosition::Hidden {
-            children.extend(self.series.iter().map(|series| {
-                AccessNode::new(Role::ToggleButton)
-                    .with_action_target(format!("plot-legend:{}", series.id))
-                    .with_name(format!("Show {}", series.name))
-                    .with_description("Toggle this series in the plot")
-                    .with_state(AccessState {
-                        focusable: true,
-                        checked: Some(!self.hidden_series.contains(&series.id)),
-                        ..Default::default()
-                    })
-            }));
+            children.extend(
+                self.series
+                    .iter()
+                    .map(|series| self.toggles.access_node(&series.id, &series.name)),
+            );
         }
         children.extend(
             self.annotations
@@ -3191,10 +3156,7 @@ impl Widget for CartesianPlot {
                         } else {
                             annotation.detail.clone()
                         })
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                 }),
         );
         Some(
@@ -3220,14 +3182,13 @@ impl Widget for CartesianPlot {
         let Some(key) = key_path.last() else {
             return false;
         };
-        if self.style.interactive_legend {
-            let legend_id = self.series.iter().find_map(|series| {
-                let target = format!("plot-legend:{}", series.id);
-                (crate::a11y::hash_key(&target) == *key).then(|| series.id.clone())
-            });
-            if let Some(id) = legend_id {
-                return self.toggle_series(&id);
-            }
+        if self.style.interactive_legend
+            && let Some(id) = chart_legend::SeriesToggles::activated(
+                self.series.iter().map(|series| series.id.as_str()),
+                *key,
+            )
+        {
+            return self.toggle_series(&id);
         }
         if let Some(annotation) = self.annotations.iter().find(|annotation| {
             annotation.interactive

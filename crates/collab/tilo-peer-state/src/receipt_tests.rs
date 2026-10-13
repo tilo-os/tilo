@@ -227,9 +227,40 @@ fn guest_write(
     let heads = doc.get_heads();
     write(&mut doc);
     step(&mut doc, what, item);
-    // Signed as the author's device signs it, which a receiver does not
-    // trust to have checked its own grants.
-    let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&heads));
+    signed_write(&mut doc, &heads, key)
+}
+
+/// The guest's signed write, committed as `what` by `invoker`.
+fn guest_write_by(
+    peer: &StatePeer,
+    key: &SigningKey,
+    write: impl FnOnce(&mut AutoCommit),
+    what: Did,
+    invoker: tilo_actions::ActionInvoker,
+) -> NeighbourMsg {
+    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = doc.get_heads();
+    write(&mut doc);
+    let context = ActionContext {
+        what: Some(what),
+        ..ActionContext::for_resource(RECORD, KIND, "Test")
+    }
+    .with_invoker(invoker);
+    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    signed_write(&mut doc, &heads, key)
+}
+
+/// What `doc` changed since `heads`, signed as the author's device signs
+/// it, which a receiver does not trust to have checked its own grants.
+fn signed_write(
+    doc: &mut AutoCommit,
+    heads: &[automerge::ChangeHash],
+    key: &SigningKey,
+) -> NeighbourMsg {
+    let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(heads));
     let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().unwrap(),
@@ -354,6 +385,27 @@ fn a_granted_action_writing_another_unit_is_refused() {
     assert!(refused.contains("do not name exactly"), "{refused}");
 }
 
+/// An item kept as its order key alone (a list of plain ids, rows of a
+/// grid) is the scalar under its id: writing it writes that item's unit,
+/// exactly as writing an entry map does.
+#[test]
+fn an_item_stored_as_its_order_key_writes_its_own_unit() {
+    let order_key = |id: &'static str| {
+        move |doc: &mut AutoCommit| {
+            let Some((_, comments)) = doc.get(ROOT, "comments").unwrap() else {
+                panic!("the record keeps comments")
+            };
+            doc.put(&comments, id, "a0").unwrap();
+        }
+    };
+    let (mut peer, key, guest) = room_with(MemberRole::Commenter);
+    let own = guest_write(&peer, &key, order_key("c1"), comment(), Some("c1"));
+    receive(&mut peer, &guest, own).expect("commenting on c1 may write c1");
+    let other = guest_write(&peer, &key, order_key("c2"), comment(), Some("c1"));
+    let refused = receive(&mut peer, &guest, other).unwrap_err();
+    assert!(refused.contains("may not write"), "{refused}");
+}
+
 /// Without the app's surface a change is held, never merged on trust, and
 /// decided once the surface is here.
 #[test]
@@ -462,4 +514,97 @@ fn an_op_naming_another_surface_than_its_record_is_refused() {
         },
     )
     .expect("an editor names the newer surface");
+}
+
+/// A person's device that writes a change showing another name, as only a
+/// bot allowed it may, is refused by every receiver.
+#[test]
+fn a_persons_change_showing_another_name_is_refused() {
+    let (mut peer, key, guest) = room_with(MemberRole::Editor);
+    let impostor = tilo_actions::ActionInvoker::actor("person:guest").with_appearance(Some(
+        tilo_actions::Appearance::new("Owner", None, None).unwrap(),
+    ));
+    let edited = guest_write_by(
+        &peer,
+        &key,
+        |doc| doc.put(ROOT, "value", "x").unwrap(),
+        edit_value(),
+        impostor,
+    );
+    let refused = receive(&mut peer, &guest, edited).unwrap_err();
+    assert!(refused.contains("appearance"), "{refused}");
+    let plain = guest_write_by(
+        &peer,
+        &key,
+        |doc| doc.put(ROOT, "value", "y").unwrap(),
+        edit_value(),
+        tilo_actions::ActionInvoker::actor("person:guest"),
+    );
+    receive(&mut peer, &guest, plain).expect("an editor's own edit is admitted");
+}
+
+/// The bot device whose installation allows Personas may show another
+/// name; the same bot installed with its own appearance only may not.
+#[test]
+fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
+    use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
+    let edit = Rule::new(
+        TreePath::root()
+            .any(Level::Room)
+            .app(APP)
+            .kind(KIND)
+            .resource(RECORD)
+            .field("value")
+            .action("field-edit"),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+    );
+    let program = crate::state::bot_members_tests::program_invoking(
+        ActionKey::new(APP, KIND, "field-edit"),
+        vec![edit],
+    );
+    for (policy, admitted) in [
+        (crate::AppearancePolicy::Personas, true),
+        (crate::AppearancePolicy::Own, false),
+    ] {
+        let (mut peer, _, _) = room_with(MemberRole::Viewer);
+        let owner_key = SigningKey::from_bytes(&[2; 32]);
+        let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
+        let (key, device) = crate::state::bot_members_tests::installed_bot(
+            &mut peer,
+            &owner_key,
+            &owner,
+            &program,
+            policy,
+            now(),
+        );
+        let actor = format!("bot:{}", crate::state::bot_members_tests::BOT);
+        let invoker = |appearance: Option<tilo_actions::Appearance>| {
+            tilo_actions::ActionInvoker::actor(actor.clone())
+                .with_kind(tilo_actions::ActorKind::Bot)
+                .with_appearance(appearance)
+        };
+        let shown = guest_write_by(
+            &peer,
+            &key,
+            |doc| doc.put(ROOT, "value", "hi").unwrap(),
+            edit_value(),
+            invoker(Some(
+                tilo_actions::Appearance::new("alice", None, None).unwrap(),
+            )),
+        );
+        assert_eq!(
+            receive(&mut peer.clone(), &device, shown).is_ok(),
+            admitted,
+            "{policy:?}"
+        );
+        let plain = guest_write_by(
+            &peer,
+            &key,
+            |doc| doc.put(ROOT, "value", "own name").unwrap(),
+            edit_value(),
+            invoker(None),
+        );
+        receive(&mut peer, &device, plain).expect("a bot writes under its own name");
+    }
 }

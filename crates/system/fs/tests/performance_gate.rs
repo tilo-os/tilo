@@ -11,9 +11,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use fs::document_media::DocumentMedia;
 use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS, ROOT_INO, ThumbProvider};
 use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
+use runtime_fs::blobs::{BlobScope, MAX_BLOB_BYTES, MAX_READ_CHUNK, ReadOutcome};
 use thumbnail::FileCategory;
 
 const ENABLE_ENV: &str = "TILO_FS_PERF_GATE";
@@ -31,7 +33,7 @@ const WARM_THUMB_LOOKUPS: usize = 1_000;
 // nearest-rank p99 of the `real-fuse` job of ci-filesystem.yml (debug test
 // profile, shared `runner` class), rounded up to 10 ms (1 ms below 10 ms).
 // Measured 2026-10-09 over 56 runs, main pushes and pull requests between
-// 3bc23c4b40 and b0aee36a66 plus the eight TIL-595 cites; at that N the p99
+// 3bc23c4b40 and b0aee36a66 plus the eight #3956 cites; at that N the p99
 // is the slowest run, so every ceiling is 2x the worst run seen. The trailing
 // comment is that p99 and the median. Revise by the same rule, and keep
 // fixture sizes stable when you do; tools/perf/kpi-budgets.toml mirrors them.
@@ -47,6 +49,24 @@ const RANGED_READ_SLO: Duration = Duration::from_millis(400); // p99 197.7, p50 
 const REMOTE_APPLY_RANGED_READ_SLO: Duration = Duration::from_millis(680); // p99 337.2, p50 231.1
 const COLD_THUMBNAIL_SLO: Duration = Duration::from_millis(550); // p99 271.3, p50 171.0
 const WARM_THUMBNAIL_SLO: Duration = Duration::from_millis(12); // p99 5.76, p50 2.85
+/// Document media on a cold store (reopened, as after a daemon restart): an
+/// app's status check, the empty range `state()` sends, and one 4 MiB range
+/// near the end of a 64 MiB attachment, the largest the capability accepts,
+/// as a seek to the end of a video asks for. Reads verify only the chunk
+/// groups they return; before, each loaded and verified the whole
+/// attachment, which the first `real-fuse` run measured at 464.5 ms.
+/// The status ceiling is provisional until CI runs give a p99, and stays
+/// above one scheduler slice, as for `IDLE_SYNC_SLO`.
+const MEDIA_STATUS_SLO: Duration = Duration::from_millis(5); // first run 0.75
+/// The tail read is gated against the same run rather than an absolute
+/// ceiling: it may take at most this share of loading the whole attachment
+/// right after it, which a slow or contended runner slows alike. It reads
+/// and verifies a sixteenth of the attachment. On the first CI run it took
+/// 17.6 ms against the whole load's 464.5 ms (a 26th); three runs on a shared
+/// build host gave a 21st to a 34th. A read that loads and verifies the whole
+/// attachment again takes about as long as the whole load and fails. An
+/// absolute 40 ms ceiling failed a slow runner at 43.7 ms.
+const MEDIA_TAIL_READ_SHARE_OF_WHOLE_LOAD: f64 = 1.0 / 8.0;
 
 /// Namespace changes behind the two writers of the idle anti-entropy pass.
 const IDLE_SYNC_HISTORY: u64 = 50_000;
@@ -59,7 +79,7 @@ const IDLE_SYNC_BYTES: usize = 296;
 /// scheduler time slice would fail whenever the runner preempts the pass, so
 /// time only bounds a stall here; `IDLE_SYNC_BYTES` catches a regression.
 const IDLE_SYNC_SLO: Duration = Duration::from_millis(5);
-/// The workspace behind the conflict-watch scenario (TIL-608): 50,000
+/// The workspace behind the conflict-watch scenario: 50,000
 /// files in 500 directories.
 const CONFLICT_DIRECTORIES: usize = 500;
 const CONFLICT_FILES_PER_DIRECTORY: usize = 100;
@@ -70,28 +90,28 @@ const CONFLICT_FILES_PER_DIRECTORY: usize = 100;
 const IDLE_CONFLICT_SLO: Duration = Duration::from_millis(5);
 /// A conflict scan over that workspace holds the namespace lock one step
 /// of `fs::conflict::SCAN_STEP_NODES` nodes at a time, at any workspace
-/// size. Before TIL-608 the whole walk was one hold: 2.5 s on the CI runner
+/// size. Before #3985 the whole walk was one hold: 2.5 s on the CI runner
 /// (1.4 s on an M-series laptop), both debug builds. The mean hold per step
 /// is the steady gate: 3.3 ms on the runner, 1.8 ms on the laptop. The
 /// longest step of the first two CI runs held 50 and 77 ms (3-5 ms on the
 /// laptop): the shared runner's tail, so the longest hold only bounds a
 /// stall, and its ceiling still fails a walk under one hold 12 times over.
-/// Both are provisional until CI runs give a p99 (TIL-595's rule).
+/// Both are provisional until CI runs give a p99 (#3956's rule).
 const CONFLICT_SCAN_MEAN_HOLD_SLO: Duration = Duration::from_millis(10);
 const CONFLICT_SCAN_LONGEST_HOLD_SLO: Duration = Duration::from_millis(200);
-/// Files in the namespace behind the restart-resync scenario (TIL-745).
+/// Files in the namespace behind the restart-resync scenario.
 const RESTART_RESYNC_FILES: u64 = 50_000;
 /// A device's first exchange with a peer after a restart, from the sync
 /// progress it persisted: heads only, as an idle pass, so
 /// `IDLE_SYNC_BYTES` is its tight gate and, as for `IDLE_SYNC_SLO`, time
-/// only bounds a stall. Provisional until CI runs give a p99 (TIL-595).
+/// only bounds a stall. Provisional until CI runs give a p99.
 const RESTART_RESYNC_SLO: Duration = Duration::from_millis(5);
 /// The device keys the two writers know each other by.
 const IDLE_SYNC_HOST: [u8; 32] = [1; 32];
 const IDLE_SYNC_DEVICE: [u8; 32] = [2; 32];
 
 fn require_enabled() -> bool {
-    if let Ok("1") = std::env::var(ENABLE_ENV).as_deref() {
+    if std::env::var(ENABLE_ENV).as_deref() == Ok("1") {
         true
     } else {
         eprintln!("collaborative FS performance gate disabled; set {ENABLE_ENV}=1 to enforce SLOs");
@@ -108,6 +128,26 @@ fn report(name: &str, elapsed: Duration, ceiling: Duration) {
     assert!(
         elapsed <= ceiling,
         "{name} exceeded release SLO: {elapsed:?} > {ceiling:?}"
+    );
+}
+
+/// Like [`report`], with the ceiling a share of a baseline measured in the
+/// same run.
+fn report_relative(name: &str, elapsed: Duration, baseline: (&str, Duration), share: f64) {
+    let (baseline_name, baseline) = baseline;
+    let ceiling = baseline.mul_f64(share);
+    eprintln!(
+        "PERF {name}: {:.3} ms (SLO <= {:.3} ms)",
+        elapsed.as_secs_f64() * 1_000.0,
+        ceiling.as_secs_f64() * 1_000.0
+    );
+    eprintln!(
+        "RATIO {name}: {:.4} of {baseline_name} (at most {share:.4})",
+        elapsed.as_secs_f64() / baseline.as_secs_f64()
+    );
+    assert!(
+        elapsed <= ceiling,
+        "{name} exceeded its share of {baseline_name} in the same run: {elapsed:?} > {share} of {baseline:?}"
     );
 }
 
@@ -182,7 +222,7 @@ fn idle_namespace_pass(
     None
 }
 
-/// TIL-584: the anti-entropy pass every writer runs with every peer every
+/// #3858: the anti-entropy pass every writer runs with every peer every
 /// few seconds, with nothing changed. Starting each pass from a fresh sync
 /// state sent a Bloom filter over the namespace's whole history; resuming
 /// from the last completed pass sends heads, at any history length.
@@ -214,7 +254,7 @@ fn idle_namespace_anti_entropy_performance_gate() {
     )
     .expect("fresh idle pass");
     eprintln!(
-        "PERF idle-namespace-pass-fresh-state-50k: {fresh_bytes} B, {:.3} ms (before TIL-584)",
+        "PERF idle-namespace-pass-fresh-state-50k: {fresh_bytes} B, {:.3} ms (before #3858)",
         fresh_time.as_secs_f64() * 1_000.0
     );
 
@@ -242,7 +282,7 @@ fn idle_namespace_anti_entropy_performance_gate() {
     report("idle-namespace-pass-resumed-50k", time, IDLE_SYNC_SLO);
 }
 
-/// TIL-745: a device restarts (an update, a reboot) with 50,000 files in
+/// #4113: a device restarts (an update, a reboot) with 50,000 files in
 /// its workspace and resumes its exchange with a peer. Without the sync
 /// progress persisted beside the document, the restarted side started from
 /// a fresh sync state and summarised the whole history again; with it, the
@@ -283,7 +323,7 @@ fn restart_resync_performance_gate() {
     )
     .expect("restart without progress");
     eprintln!(
-        "PERF restart-resync-without-progress-50k-files: {full_bytes} B, {:.3} ms (before TIL-745)",
+        "PERF restart-resync-without-progress-50k-files: {full_bytes} B, {:.3} ms (before #4113)",
         full_time.as_secs_f64() * 1_000.0
     );
 
@@ -308,7 +348,7 @@ fn restart_resync_performance_gate() {
     report("restart-resync-50k-files", time, RESTART_RESYNC_SLO);
 }
 
-/// TIL-608: the conflict step every writer's reconciliation loop runs every
+/// #3985: the conflict step every writer's reconciliation loop runs every
 /// few seconds. It used to walk every node under one hold of the namespace
 /// lock on every pass. Now a pass with nothing merged since the last scan
 /// reads the namespace's merge generation and examines no node, and a scan
@@ -339,7 +379,7 @@ fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
     let started = Instant::now();
     assert!(fs::conflict::detect(&namespace).is_empty());
     eprintln!(
-        "PERF conflict-detect-50k: {:.3} ms under one lock hold (each pass before TIL-608)",
+        "PERF conflict-detect-50k: {:.3} ms under one lock hold (each pass before #3985)",
         started.elapsed().as_secs_f64() * 1_000.0
     );
 
@@ -486,6 +526,91 @@ async fn mount_ranged_read_under_remote_apply_performance_gate() {
     );
     drop(mount);
     router.shutdown().await.expect("stop local endpoint");
+}
+
+/// Document media an app reads after a daemon restart: the status check its
+/// draw path makes and a range near the end of the largest attachment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn document_media_cold_range_performance_gate() {
+    if !require_enabled() {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("media store tempdir");
+    let photos = BlobScope::new("room-1", "so.tilo.photos").expect("media scope");
+    let len = usize::try_from(MAX_BLOB_BYTES).expect("media limit fits usize");
+    let chunk = MAX_READ_CHUNK as usize;
+    let data = deterministic_bytes(len);
+    // Near the end, and not on a 16 KiB chunk-group boundary.
+    let offset = len - chunk - 12_345;
+    let tail = data[offset..offset + chunk].to_vec();
+    let hash = {
+        let store = Arc::new(
+            ContentStore::open(dir.path())
+                .await
+                .expect("open media store"),
+        );
+        let media = DocumentMedia::new(Arc::clone(&store));
+        let hash = media
+            .store(&photos, data)
+            .await
+            .expect("store media fixture");
+        store.store().shutdown().await.expect("close media store");
+        hash
+    };
+    let store = Arc::new(
+        ContentStore::open(dir.path())
+            .await
+            .expect("reopen media store"),
+    );
+    let media = DocumentMedia::new(Arc::clone(&store));
+
+    let started = Instant::now();
+    let status = media.read_range(photos.clone(), hash, 0, 0).await;
+    let status_time = started.elapsed();
+    assert_eq!(
+        status,
+        ReadOutcome::Ready {
+            bytes: Vec::new(),
+            total_len: MAX_BLOB_BYTES
+        }
+    );
+
+    let started = Instant::now();
+    let read = media
+        .read_range(photos, hash, offset as u64, MAX_READ_CHUNK)
+        .await;
+    let tail_time = started.elapsed();
+    assert_eq!(
+        read,
+        ReadOutcome::Ready {
+            bytes: tail,
+            total_len: MAX_BLOB_BYTES
+        }
+    );
+
+    // The same blob loaded whole, as every read was answered before ranges
+    // were verified on their own: the tail read's baseline.
+    let started = Instant::now();
+    let whole = store.local(hash).await.expect("whole media blob");
+    let whole_time = started.elapsed();
+    assert_eq!(whole.len(), len);
+    eprintln!(
+        "PERF document-media-whole-blob-load-64m: {:.3} ms (before ranged reads)",
+        whole_time.as_secs_f64() * 1_000.0
+    );
+    store.store().shutdown().await.expect("close media store");
+
+    report(
+        "document-media-cold-64m-status",
+        status_time,
+        MEDIA_STATUS_SLO,
+    );
+    report_relative(
+        "document-media-cold-64m-tail-4m-read",
+        tail_time,
+        ("document-media-whole-blob-load-64m", whole_time),
+        MEDIA_TAIL_READ_SHARE_OF_WHOLE_LOAD,
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

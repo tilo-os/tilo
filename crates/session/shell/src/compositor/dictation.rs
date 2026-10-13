@@ -28,6 +28,7 @@ pub(crate) mod frontend;
 pub(crate) mod host;
 pub mod runtime;
 mod speech;
+pub use super::dictation_status::{DictationError, DictationStatus, RecoveryReason, SessionId};
 pub use speech::{PhononTranscript, SpeechError, SpeechUpdate};
 
 /// Maximum lifetime, including final recognition, without retaining audio.
@@ -63,55 +64,6 @@ impl DictationMicrophone {
     pub fn drain(&mut self) -> Result<Vec<u8>, String> {
         self.0.drain(true)
     }
-}
-
-/// Identifies one recognizer request. Late callbacks cannot affect its successor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SessionId(u64);
-
-/// Failures contain no audio, transcript, or field contents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DictationError {
-    Busy,
-    NoEditableField,
-    SensitiveField,
-    /// A terminal exposes process input, not a qualified editable inner field.
-    UnsupportedField,
-    InputMethodUnavailable,
-    StaleSession,
-    TargetChanged,
-    TimedOut,
-    DraftTooLarge,
-    ControlCharacter,
-    SessionIdsExhausted,
-    RecognizerUnavailable,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecoveryReason {
-    VocabularyChanged,
-    TooLong,
-    Rejected,
-    UnknownDelivery,
-}
-
-/// Status exposes no recording or draft to a remote collaborator.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DictationStatus {
-    #[default]
-    Idle,
-    Preparing,
-    Loading,
-    Listening,
-    StoppingRecording,
-    Finishing,
-    Stopping,
-    Unavailable(runtime::RuntimeError),
-    Recovery {
-        reason: RecoveryReason,
-        copied: bool,
-        copy_failed: bool,
-    },
 }
 
 struct Recognition {
@@ -912,10 +864,7 @@ impl State {
             actor,
             phase: DictationStatus::Loading,
             language: language.to_owned(),
-            literal: settings_store::load_section("accessibility")
-                .get("dictation_literal")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
+            literal: tilo_accessibility_settings::AccessibilitySettings::load().dictation_literal,
         });
         Ok(())
     }

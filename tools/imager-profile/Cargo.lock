@@ -160,6 +160,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "install-profile-model"
+version = "0.1.0"
+
+[[package]]
 name = "itoa"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -337,6 +341,7 @@ name = "tilo-imager-profile"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "install-profile-model",
  "libc",
  "serde",
  "serde_json",

@@ -51,6 +51,27 @@ pub struct HistoryAuthor {
     /// Who the author is to whoever reads the history: themselves, another
     /// person, or software acting for someone.
     pub relation: AuthorRelation,
+    /// Who acted and for whom, when the author is an agent, a Shortcut or an
+    /// app acting for a person: the same facts [`Self::name`] reads as a
+    /// sentence, kept as data for the action surface and assistive tech.
+    pub attribution: Option<HistoryAttribution>,
+}
+
+/// An author that acted for someone: an agent's change is the agent's, on
+/// behalf of its person, in every history (an app's, the Files history, and
+/// what the history actions return).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryAttribution {
+    /// The acting principal as it was authenticated (`agent:scribe`).
+    pub actor: String,
+    /// What the actor is.
+    pub kind: tilo_actions::ActorKind,
+    /// The actor's display name, without the person it acted for.
+    pub actor_name: String,
+    /// The principal of the person it acted for, when it acted for one.
+    pub on_behalf_of: Option<String>,
+    /// That person's display name.
+    pub on_behalf_of_name: Option<String>,
 }
 
 /// Who an author is to the person reading the history. Rows draw the
@@ -79,12 +100,20 @@ impl HistoryAuthor {
             identity_short: identity_short.into(),
             avatar_rgb: hue_to_rgb(avatar_hue),
             relation: AuthorRelation::Person,
+            attribution: None,
         }
     }
 
     #[must_use]
     pub fn with_relation(mut self, relation: AuthorRelation) -> Self {
         self.relation = relation;
+        self
+    }
+
+    /// Record who acted and for whom.
+    #[must_use]
+    pub fn with_attribution(mut self, attribution: HistoryAttribution) -> Self {
+        self.attribution = Some(attribution);
         self
     }
 
@@ -448,25 +477,13 @@ impl EntryKind {
     }
 }
 
-/// Used by both widgets so the wording stays uniform. Re-renders every
-/// frame, so the label freshens naturally as `now` advances — no clock
-/// plumbing needed.
+/// Used by both widgets so the wording stays uniform with every other
+/// "time ago" label ([`crate::format::relative`]). Re-renders every frame,
+/// so the label freshens naturally as `now` advances — no clock plumbing
+/// needed.
 pub fn format_relative_time(ts: SystemTime, now: SystemTime) -> String {
-    use crate::i18n::widget_format;
-    let delta = now.duration_since(ts).unwrap_or_default();
-    let secs = delta.as_secs();
-    if secs < 60 {
-        return widget_format("relative-time-just-now", &[]);
-    }
-    let mins = secs / 60;
-    let (key, count) = if mins < 60 {
-        ("relative-time-minutes", mins)
-    } else if mins < 60 * 24 {
-        ("relative-time-hours", mins / 60)
-    } else {
-        ("relative-time-days", mins / (60 * 24))
-    };
-    widget_format(key, &[("count", count.into())])
+    let secs = now.duration_since(ts).unwrap_or_default().as_secs();
+    crate::format::relative(i64::try_from(secs).unwrap_or(i64::MAX))
 }
 
 /// Rounds a normalized `[0, 1]` colour channel to a `u8` byte. The `clamp`
@@ -708,11 +725,11 @@ mod tests {
             );
             assert_eq!(
                 format_relative_time(base, base + Duration::from_secs(2 * 3600 + 5)),
-                "2 h ago"
+                "2 hr ago"
             );
             assert_eq!(
                 format_relative_time(base, base + Duration::from_secs(259_200)),
-                "3 d ago"
+                "3 days ago"
             );
         }
 

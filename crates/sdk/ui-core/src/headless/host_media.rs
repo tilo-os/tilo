@@ -166,6 +166,10 @@ impl MediaLane {
     }
 }
 
+/// The provider of a room's own governance resource
+/// (`workspace.permissions:<room>`).
+const GOVERNANCE_PROVIDER: &str = "tilo.workspace";
+
 fn queue_catalogue(
     catalogues: &mut Vec<(CallbackBinding, tilo_actions::remote::RemoteActionMessage)>,
     binding: &CallbackBinding,
@@ -173,6 +177,21 @@ fn queue_catalogue(
     message: tilo_actions::remote::RemoteActionMessage,
 ) {
     use tilo_actions::remote::{ActionHostError, RemoteActionMessage};
+    // The room's membership actions (removing, banning, unbanning someone)
+    // travel this lane too: the host turns them into its governed room
+    // requests and the room's policy decides them there. So does a record
+    // resource's `share-link`, which reads where it is shown and grants
+    // nothing: the page asks the room's host for it as the person.
+    if let RemoteActionMessage::Invoke(request) = &message
+        && (request.target.provider == GOVERNANCE_PROVIDER
+            || (request.target.address.action == tilo_resource::share::SHARE_LINK
+                && request.target.provider.starts_with("record:")))
+    {
+        if catalogues.len() < 16 {
+            catalogues.push((binding.clone(), message));
+        }
+        return;
+    }
     let RemoteActionMessage::CatalogueRequest { correlation, .. } = &message else {
         return;
     };

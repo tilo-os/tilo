@@ -342,23 +342,6 @@ impl PageText {
     }
 }
 
-/// Search every page's text layer, returning hits in document order. `pages`
-/// is indexed 0-based; the emitted [`TextMatch::page`] is 1-based.
-pub fn search_pages(pages: &[PageText], query: &str, opts: SearchOptions) -> Vec<TextMatch> {
-    let mut out = Vec::new();
-    if query.trim().is_empty() {
-        return out;
-    }
-    for (i, pt) in pages.iter().enumerate() {
-        let remaining = crate::model::MAX_SEARCH_RESULTS.saturating_sub(out.len());
-        out.extend(pt.search(i + 1, query, opts).into_iter().take(remaining));
-        if out.len() >= crate::model::MAX_SEARCH_RESULTS {
-            break;
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,12 +479,6 @@ mod tests {
             "band spans four 8pt glyphs"
         );
         assert!((bands[0].y - 10.0).abs() < 0.01, "band sits on row 1");
-
-        let pages = vec![PageText::default(), pt.clone()];
-        let hits = search_pages(&pages, "layer", SearchOptions::default());
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].page, 2, "second page is page 2, not index 1");
-        assert!(search_pages(&[pt], "", SearchOptions::default()).is_empty());
     }
 
     #[test]
@@ -568,9 +545,5 @@ mod tests {
         let hits = page.search(1, "a", SearchOptions::default());
         assert_eq!(hits.len(), crate::model::MAX_SEARCH_RESULTS);
         assert_eq!(hits.last().unwrap().char_start, hits.len() - 1);
-        let pages = vec![page.clone(), page];
-        let hits = search_pages(&pages, "a", SearchOptions::default());
-        assert_eq!(hits.len(), crate::model::MAX_SEARCH_RESULTS);
-        assert!(hits.iter().all(|hit| hit.page == 1));
     }
 }

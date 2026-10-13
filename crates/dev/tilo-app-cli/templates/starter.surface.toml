@@ -1,21 +1,14 @@
-# The app's public surface, written by `tilo-app surface`: its resources' verbs
-# and stored fields. Review changes to it like an API change; `tilo-app check`
-# fails when the code and this file disagree.
+# Written by `tilo-app surface`; review changes like an API change.
 
 [[resources]]
 kind = "generated.greeting"
 label = "Greeting"
 version = 1
-
-[[resources.fields]]
-owner = "greeting"
-path = "name"
-stored = "value"
-title = "Collaborative text: two people typing in it merge character by character"
-type = "String"
+fields = [
+  { path = "name", type = "String" },
+]
 
 [[resources.verbs]]
 id = "clear"
 kind = "undoable"
-label = "Forget the name"
-params = []
+

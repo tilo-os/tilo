@@ -4,6 +4,8 @@
 //! inside the state file ([`TreeStore`]), so every owner publication also
 //! binds an enrolled slot, projects the room into the tree and exports the
 //! resulting file-system capabilities under the same writer lock.
+#[cfg(test)]
+mod frame_loop_tests;
 mod local_filesystem_consents;
 pub(crate) mod publication;
 #[cfg(test)]
@@ -79,8 +81,7 @@ impl Store for TreeStore {
         // Everything but the documents: encoded once below, and installed
         // with the live documents moved into it only once it is published.
         let mut candidate = tree.clone_without_documents();
-        let mut bound = false;
-        if let Change::Room {
+        let bound = if let Change::Room {
             room,
             bind: Some(target),
             ..
@@ -96,24 +97,22 @@ impl Store for TreeStore {
             if candidate.room_of(target.workspace) != Some(room) {
                 return Err("enrollment local slot cannot be bound".into());
             }
-            bound = true;
-        }
+            true
+        } else {
+            false
+        };
         candidate.native_authority = next.clone();
         if let Change::Room { room, peer, .. } = change {
             candidate.project_native_room(room, peer);
         }
         // The encode is bounded: an oversized candidate is refused here.
-        let bytes = persist::encode_tree(&candidate).map_err(|e| e.to_string())?;
+        let encoded = persist::encode_tree(&candidate).map_err(|e| e.to_string())?;
+        // What the file must still hold: the record this tree last installed.
+        let base = store::digest(&tree.native_authority).map_err(|e| e.to_string())?;
         let sequence = tree.native_runtime.next_sequence();
         let published = tree
             .native_runtime
-            .publish(
-                &path,
-                &tree.native_authority,
-                &candidate.native_authority,
-                &bytes,
-                sequence,
-            )
+            .publish(&path, base, &candidate.native_authority, &encoded, sequence)
             .map_err(|e| e.to_string())?;
         // The tree is held from the sequence through here, so no later
         // snapshot of it can have reached the file first.
@@ -187,15 +186,16 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
         std::time::SystemTime::now(),
     )?;
     // Re-establish the publication barrier before exposing a reopened generation.
-    let bytes = persist::encode_tree(&reopened).map_err(|e| e.to_string())?;
+    // The reopened record is the one the file holds.
+    let encoded = persist::encode_tree(&reopened).map_err(|e| e.to_string())?;
     let sequence = native.native_runtime.next_sequence();
     let published = native
         .native_runtime
         .publish(
             &path,
-            &native.native_authority,
+            encoded.authority,
             &reopened.native_authority,
-            &bytes,
+            &encoded,
             sequence,
         )
         .map_err(|e| e.to_string())?;

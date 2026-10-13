@@ -167,7 +167,7 @@ pub enum StoreEffect {
     /// Open.
     ///
     /// A Tilo app is fetched when it is not on this device yet.
-    #[effect(job)]
+    #[effect(job, returns)]
     OpenApp {
         #[param("App identity")]
         app: String,
@@ -224,6 +224,15 @@ pub enum StoreEffect {
     #[effect(job)]
     FlatpakSetup {
         #[param("App identity")]
+        app: String,
+    },
+    /// Add a directory bot to a room.
+    ///
+    /// Bots run in rooms, not on this device; this stays unavailable until a
+    /// room offers its install-bot action to you.
+    #[effect(job)]
+    AddBot {
+        #[param("Bot identity")]
         app: String,
     },
     /// Refresh remotes.
@@ -302,6 +311,7 @@ impl StoreEffect {
             ActionKind::FlatpakOpen => Self::FlatpakOpen { app },
             ActionKind::FlatpakRemove => Self::FlatpakRemove { app },
             ActionKind::NeedsFlatpakHost => Self::FlatpakSetup { app },
+            ActionKind::AddBot => Self::AddBot { app },
         }
     }
 
@@ -319,6 +329,7 @@ impl StoreEffect {
             Self::FlatpakOpen { app } => (app, ActionKind::FlatpakOpen),
             Self::FlatpakRemove { app } => (app, ActionKind::FlatpakRemove),
             Self::FlatpakSetup { app } => (app, ActionKind::NeedsFlatpakHost),
+            Self::AddBot { app } => (app, ActionKind::AddBot),
             _ => return None,
         };
         Some((app.as_str(), action))
@@ -382,14 +393,7 @@ const SCENARIOS: &[&str] = &[
 /// The app the moderation screenshots report.
 const SHOT_REPORTED_APP: &str = "so.tilo.notes";
 
-/// The Store's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[
-    ("en-US", include_str!("../locales/en-US.ftl")),
-    ("de-DE", include_str!("../locales/de-DE.ftl")),
-];
-
-pub(crate) static STORE_CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(pub(crate) static STORE_CATALOG, ["en-US", "de-DE"]);
 
 /// Framework app.
 pub struct StoreShell;
@@ -869,6 +873,57 @@ mod tests {
                 app_id: id.to_owned()
             }
         );
+    }
+
+    #[test]
+    fn native_open_declares_observed_window_json_and_flatpak_remains_unit_job() {
+        let _offline = offline();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        settle_catalogue_worker(&mut app);
+        let items = crate::fixture::fixture_catalog();
+        let native = items
+            .iter()
+            .find(|item| {
+                matches!(item.source, crate::model::StoreSource::Tilo { .. })
+                    && item.allows_action(ActionKind::Open, true)
+            })
+            .unwrap()
+            .id
+            .clone();
+        let flatpak = items
+            .iter()
+            .find(|item| item.allows_action(ActionKind::FlatpakOpen, true))
+            .unwrap()
+            .id
+            .clone();
+        app.with_surface::<StoreApp, _>(|surface| {
+            surface.set_flatpak_available(true);
+            surface.set_items(items);
+        })
+        .unwrap();
+        app.settle();
+        let resources = app.harness().resources();
+        let native = find(&resources, &format!("app:{native}"))
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "open-app")
+            .unwrap()
+            .contract;
+        assert!(matches!(
+            native.result,
+            ui::tilo_actions::ResultSpec::Json { .. }
+        ));
+        assert!(native.validate_declaration().is_empty());
+        native.result.validate(&ui::tilo_actions::ActionOutput {value: Some(serde_json::json!({"launch": {"adopted_window": {"surface_id": 73, "package_id": "so.tilo.calculator", "room": "room"}}})), ..Default::default()}).unwrap();
+        let flatpak = find(&resources, &format!("app:{flatpak}"))
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == "flatpak-open")
+            .unwrap()
+            .contract;
+        assert_eq!(flatpak.result, ui::tilo_actions::ResultSpec::Job);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Same-job A/B: prove a performance change despite runner noise (TIL-738).
+"""Same-job A/B: prove a performance change despite runner noise.
 
 The scheduled lane compares a run with earlier nights on other hosts, and on
 the shared `runner` class that spread is larger than most changes (the same
@@ -439,6 +439,20 @@ def run_fs(ctx: RunContext) -> list[record.Record]:
     return adapters.fs_gate([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
+FILES_NAME_INDEX_TEST = "shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild"
+
+
+def run_search(ctx: RunContext) -> list[record.Record]:
+    log = ctx.dir / "files-name-index.log"
+    # The nightly job's index size: the walk's MAX_ENTRIES. A cost over the
+    # test's own bound fails it but still measured; the adapter fails only
+    # when the run printed no measurement.
+    call(["bash", ctx.repo / "tools/with-test-environment.sh", ctx.bins["shell-lib"], FILES_NAME_INDEX_TEST,
+          "--exact", "--nocapture", "--test-threads=1"], log, ctx.cwd["shell-lib"],
+         {"TILO_FILES_NAME_INDEX_NAMES": "50000"}, check=False)
+    return adapters.files_name_index([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
+
+
 RELEASE_SHELL = ("cargo", "build", "--locked", "--release", "-p", "shell", "--bin", "shell",
                  "--features", "dev-overrides")
 
@@ -473,6 +487,9 @@ GROUPS: dict[str, Group] = {group.name: group for group in (
           {}, {"performance_gate": (("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_gate",
                                      "--no-run"), "performance_gate")},
           {}, run_fs),
+    Group("search", "dev", "none", (),
+          {}, {"shell-lib": (("cargo", "test", "--locked", "-p", "shell", "--lib", "--no-run"), "shell")},
+          {}, run_search),
 )}
 
 

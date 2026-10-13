@@ -175,6 +175,83 @@ pub struct LiveAnchor {
     pub cursor: Vec<u8>,
 }
 
+/// The editor a selection anchor names: its postcard scope key, or the key's
+/// 16-byte scope digest when the scoped form would not fit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnchorScope<'a> {
+    /// The editor's postcard scope key.
+    Key(&'a [u8]),
+    /// The 16-byte digest of the editor's scope key.
+    Digest([u8; 16]),
+}
+
+/// A selection from `start` to `end` in the editor whose postcard scope key
+/// is `key`, as an anchor and a same-scope head. `digest` is asked for only
+/// when the scoped anchor exceeds [`MAX_OBJECT_ID_BYTES`]; `None` when even
+/// the digest form does not fit.
+pub fn selection_anchors(
+    key: &[u8],
+    digest: impl FnOnce() -> Option<[u8; 16]>,
+    start: u64,
+    end: u64,
+) -> Option<(LiveAnchor, LiveAnchor)> {
+    let mut anchor = vec![ANCHOR_TAG_SCOPED];
+    push_uvarint(&mut anchor, start);
+    anchor.extend_from_slice(key);
+    if anchor.len() > MAX_OBJECT_ID_BYTES {
+        anchor = vec![ANCHOR_TAG_DIGEST];
+        push_uvarint(&mut anchor, start);
+        anchor.extend_from_slice(&digest()?);
+    }
+    let mut head = vec![ANCHOR_TAG_SAME_SCOPE];
+    push_uvarint(&mut head, end);
+    (anchor.len() <= MAX_OBJECT_ID_BYTES)
+        .then_some((LiveAnchor { cursor: anchor }, LiveAnchor { cursor: head }))
+}
+
+/// The editor scope and range of a pair made by [`selection_anchors`].
+pub fn read_selection_anchors<'a>(
+    anchor: &'a LiveAnchor,
+    head: &LiveAnchor,
+) -> Option<(AnchorScope<'a>, u64, u64)> {
+    let (&tag, rest) = anchor.cursor.split_first()?;
+    let (start, key) = read_uvarint(rest)?;
+    let scope = match tag {
+        ANCHOR_TAG_SCOPED => AnchorScope::Key(key),
+        ANCHOR_TAG_DIGEST => AnchorScope::Digest(key.try_into().ok()?),
+        _ => return None,
+    };
+    let (&tag, rest) = head.cursor.split_first()?;
+    if tag != ANCHOR_TAG_SAME_SCOPE {
+        return None;
+    }
+    let (end, _) = read_uvarint(rest)?;
+    Some((scope, start, end))
+}
+
+fn push_uvarint(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let byte = u8::try_from(value & 0x7f).unwrap_or(0);
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+fn read_uvarint(bytes: &[u8]) -> Option<(u64, &[u8])> {
+    let mut value = 0u64;
+    for (index, (byte, shift)) in bytes.iter().zip((0u32..64).step_by(7)).enumerate() {
+        value |= u64::from(byte & 0x7f).checked_shl(shift)?;
+        if byte & 0x80 == 0 {
+            return Some((value, bytes.get(index.checked_add(1)?..)?));
+        }
+    }
+    None
+}
+
 /// Drag lifecycle; `End` is followed by the durable change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DragPhase {
@@ -211,7 +288,7 @@ pub enum ParticipantKind {
 ///
 /// Self-asserted and cosmetic. Who a publisher is comes from the host-stamped
 /// device; that a device is an agent, and on whose behalf, comes from its
-/// root-signed [`AgentDelegation`](crate::agents::AgentDelegation).
+/// root-signed [`Delegation`](crate::delegation::Delegation).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveParticipant {

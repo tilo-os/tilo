@@ -253,25 +253,6 @@ impl EmojiPanel {
         self.tones = None;
     }
 
-    /// Show the group `text` belongs to, from its top. Returns whether the
-    /// catalogue knows the emoji.
-    pub fn show_group_of(&mut self, text: &str) -> bool {
-        let catalogue = self.catalogue;
-        let Some(found) = catalogue.lookup(text) else {
-            return false;
-        };
-        let base = found.emoji.text();
-        let Some(index) = catalogue
-            .groups()
-            .iter()
-            .position(|g| catalogue.group_emoji(g).iter().any(|e| e.text() == base))
-        else {
-            return false;
-        };
-        self.select_group(index);
-        true
-    }
-
     /// Append `text` to the query.
     pub fn type_text(&mut self, text: &str) {
         let mut query = self.search.value().to_owned();

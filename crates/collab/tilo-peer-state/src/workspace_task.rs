@@ -186,6 +186,22 @@ pub enum WorkspaceTaskCommand {
         expected_run_epoch: u64,
         after_revision: u64,
     },
+    /// Queue a private full instruction while keeping the public task title bounded.
+    /// Appended to preserve every existing postcard command variant index.
+    QueueInstruction {
+        title: String,
+        instruction: String,
+        assigned_agent: String,
+        route: WorkspaceTaskRoute,
+    },
+    /// Public agent-reported status/action text, never model reasoning.
+    /// Appended to preserve existing postcard indices.
+    PublicProgress {
+        task_id: String,
+        run_epoch: u64,
+        sequence: u64,
+        message: String,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -193,6 +209,7 @@ impl WorkspaceTaskCommand {
     pub fn agent(&self) -> Option<&str> {
         match self {
             Self::Queue { assigned_agent, .. }
+            | Self::QueueInstruction { assigned_agent, .. }
             | Self::StartRun {
                 agent_id: assigned_agent,
                 ..
@@ -307,20 +324,10 @@ fn dispatch(
         command @ WorkspaceTaskCommand::SetExecutionBudget { .. } => {
             dispatch_budget(tasks, controls, context, command)
         }
-        WorkspaceTaskCommand::Queue {
-            title,
-            assigned_agent,
-            route,
-            resource,
-        } => queue(
-            tasks,
-            controls,
-            context,
-            title,
-            assigned_agent,
-            *route,
-            resource.as_deref().cloned(),
-        ),
+        command @ (WorkspaceTaskCommand::Queue { .. }
+        | WorkspaceTaskCommand::QueueInstruction { .. }) => {
+            dispatch_queue(tasks, controls, context, command)
+        }
         command @ (WorkspaceTaskCommand::ApproveRun { .. }
         | WorkspaceTaskCommand::StartRun { .. }) => dispatch_run(tasks, controls, context, command),
         WorkspaceTaskCommand::Direction { task_id, text } => direct(
@@ -332,7 +339,9 @@ fn dispatch(
             text,
             context.now,
         ),
-        WorkspaceTaskCommand::AppliedAck { .. } | WorkspaceTaskCommand::ExecutionPhase { .. } => {
+        WorkspaceTaskCommand::AppliedAck { .. }
+        | WorkspaceTaskCommand::ExecutionPhase { .. }
+        | WorkspaceTaskCommand::PublicProgress { .. } => {
             dispatch_agent_report(tasks, controls, context, command)
         }
         WorkspaceTaskCommand::Finish {
@@ -390,6 +399,47 @@ fn dispatch(
             task_id,
             (*run_epoch, *after_revision),
         ),
+    }
+}
+
+fn dispatch_queue(
+    tasks: &mut Vec<WorkspaceTask>,
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    command: &WorkspaceTaskCommand,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    match command {
+        WorkspaceTaskCommand::Queue {
+            title,
+            assigned_agent,
+            route,
+            resource,
+        } => queue(
+            tasks,
+            controls,
+            context,
+            title,
+            assigned_agent,
+            *route,
+            resource.as_deref().cloned(),
+            None,
+        ),
+        WorkspaceTaskCommand::QueueInstruction {
+            title,
+            instruction,
+            assigned_agent,
+            route,
+        } => queue(
+            tasks,
+            controls,
+            context,
+            title,
+            assigned_agent,
+            *route,
+            None,
+            Some(instruction.as_str()),
+        ),
+        _ => Err("not a queue command".into()),
     }
 }
 
@@ -482,6 +532,61 @@ fn dispatch_agent_report(
             (*run_epoch, *sequence),
             *phase,
         ),
+        WorkspaceTaskCommand::PublicProgress {
+            task_id,
+            run_epoch,
+            sequence,
+            message,
+        } => {
+            bounded(
+                message,
+                tilo_desktop_model::task::MAX_WORKSPACE_TASK_PROGRESS_BYTES,
+                "public task progress",
+            )?;
+            let task = tasks
+                .iter()
+                .find(|task| task.id == *task_id)
+                .ok_or("task is absent")?;
+            if task
+                .audit
+                .iter()
+                .filter(|event| event.action() == "public-progress" && event.for_run(*run_epoch))
+                .count()
+                >= tilo_desktop_model::task::MAX_WORKSPACE_TASK_PUBLIC_UPDATES
+            {
+                return Err("public task progress limit reached".into());
+            }
+            let result = report_execution(
+                tasks,
+                controls,
+                context,
+                task_id,
+                (*run_epoch, *sequence),
+                WorkspaceTaskExecutionPhase::Executing,
+            )?;
+            let AdmittedTaskActor::Agent { id, .. } = context.actor else {
+                return Err("only an agent may report public task progress".into());
+            };
+            task_mut(tasks, task_id)?.audit.push(
+                WorkspaceTaskAuditEvent::new(
+                    context.now,
+                    format!("agent:{id}"),
+                    "public-progress",
+                    [
+                        (
+                            "run_epoch",
+                            tilo_actions::Scalar::text(&run_epoch.to_string()),
+                        ),
+                        (
+                            "sequence",
+                            tilo_actions::Scalar::text(&sequence.to_string()),
+                        ),
+                    ],
+                )
+                .noting(message),
+            );
+            Ok(result)
+        }
         _ => Err("command is not an agent report".into()),
     }
 }
@@ -704,6 +809,7 @@ fn queue(
     assigned_agent: &str,
     route: WorkspaceTaskRoute,
     resource: Option<WorkspaceTaskResource>,
+    instruction: Option<&str>,
 ) -> Result<(String, WorkspaceTaskMutationResult), String> {
     let AdmittedTaskActor::Person { id: author, device } = context.actor else {
         return Err("only a person may queue a workspace task".into());
@@ -717,6 +823,16 @@ fn queue(
         || route == WorkspaceTaskRoute::Manual
     {
         return Err("queued agent task has no valid agent route".into());
+    }
+    if let Some(instruction) = instruction {
+        bounded(
+            instruction,
+            MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
+            "task instruction",
+        )?;
+        if instruction.trim().is_empty() {
+            return Err("task instruction is empty".into());
+        }
     }
     if let Some(request) = resource
         .as_ref()
@@ -745,6 +861,12 @@ fn queue(
     if tasks.iter().any(|task| task.id == task_id) || controls.contains_key(&task_id) {
         return Err("deterministic task id is already occupied".into());
     }
+    let instruction = instruction.map(str::to_owned).or_else(|| {
+        resource
+            .as_ref()
+            .and_then(|value| value.agent_request.as_ref())
+            .map(|request| request.instruction.clone())
+    });
     tasks.push(WorkspaceTask {
         id: task_id.clone(),
         title: title.to_owned(),
@@ -762,7 +884,13 @@ fn queue(
             [("title", tilo_actions::Scalar::text(title))],
         )],
     });
-    controls.insert(task_id.clone(), WorkspaceTaskControl::default());
+    controls.insert(
+        task_id.clone(),
+        WorkspaceTaskControl {
+            instruction,
+            ..WorkspaceTaskControl::default()
+        },
+    );
     Ok((
         task_id.clone(),
         WorkspaceTaskMutationResult::Queued { task_id },
@@ -1167,7 +1295,13 @@ fn finish(
             now,
             format!("agent:{agent_id}"),
             "finish",
-            [("outcome", tilo_actions::Scalar::from(task.status.key()))],
+            [
+                ("outcome", tilo_actions::Scalar::from(task.status.key())),
+                (
+                    "run_epoch",
+                    tilo_actions::Scalar::text(&run_epoch.to_string()),
+                ),
+            ],
         )
         .noting(summary),
     );
@@ -1205,8 +1339,18 @@ fn abandon(
     control.execution = None;
     task.status = WorkspaceTaskStatus::Waiting;
     task.updated_at = now;
-    task.audit
-        .push(WorkspaceTaskAuditEvent::new(now, "host", "abandon", []).noting(reason));
+    task.audit.push(
+        WorkspaceTaskAuditEvent::new(
+            now,
+            "host",
+            "abandon",
+            [(
+                "run_epoch",
+                tilo_actions::Scalar::text(&run_epoch.to_string()),
+            )],
+        )
+        .noting(reason),
+    );
     Ok((
         task_id.to_owned(),
         WorkspaceTaskMutationResult::Abandoned {
@@ -1360,7 +1504,7 @@ pub fn controls_of(
     Ok(controls)
 }
 
-fn project_controls(
+pub(crate) fn project_controls(
     doc: &mut AutoCommit,
     controls: &std::collections::BTreeMap<String, WorkspaceTaskControl>,
 ) -> Result<(), String> {
@@ -1563,6 +1707,79 @@ mod tests {
             sequence,
             phase,
         }
+    }
+
+    #[test]
+    fn public_progress_is_durable_idempotent_and_stopped_runs_reject_it() {
+        let (mut doc, task) = task_with_applied_direction();
+        run(
+            &mut doc,
+            5,
+            5,
+            &agent(),
+            &phase_command(&task, 1, 0, WorkspaceTaskExecutionPhase::Accepted),
+        )
+        .unwrap();
+        let progress = WorkspaceTaskCommand::PublicProgress {
+            task_id: task.clone(),
+            run_epoch: 1,
+            sequence: 1,
+            message: "Updated the selected document through its append action.".into(),
+        };
+        assert!(run(&mut doc, 6, 6, &person(), &progress).is_err());
+        let wrong_epoch = WorkspaceTaskCommand::PublicProgress {
+            task_id: task.clone(),
+            run_epoch: 2,
+            sequence: 1,
+            message: "Wrong run".into(),
+        };
+        assert!(run(&mut doc, 6, 6, &agent(), &wrong_epoch).is_err());
+        run(&mut doc, 6, 6, &agent(), &progress).unwrap();
+        let mut doc = AutoCommit::load(&doc.save()).unwrap();
+        assert!(!run(&mut doc, 6, 6, &agent(), &progress).unwrap().changed);
+        let state = snapshot(&doc).unwrap();
+        let notes = state.tasks[0]
+            .audit
+            .iter()
+            .filter(|event| event.action() == "public-progress")
+            .collect::<Vec<_>>();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].for_run(1));
+        assert_eq!(
+            notes[0].note.as_deref(),
+            Some("Updated the selected document through its append action.")
+        );
+        assert_eq!(
+            state.controls[&task].execution.as_ref().unwrap().sequence,
+            1
+        );
+        run(
+            &mut doc,
+            7,
+            7,
+            &person(),
+            &WorkspaceTaskCommand::CancelForRun {
+                task_id: task.clone(),
+                run_epoch: 1,
+                after_revision: 1,
+            },
+        )
+        .unwrap();
+        assert!(
+            run(
+                &mut doc,
+                8,
+                8,
+                &agent(),
+                &WorkspaceTaskCommand::PublicProgress {
+                    task_id: task,
+                    run_epoch: 1,
+                    sequence: 2,
+                    message: "Too late".into(),
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1912,6 +2129,29 @@ mod tests {
     }
 
     #[test]
+    fn stopping_requires_the_exact_task_run_and_direction_frontier() {
+        let (mut doc, task_id) = task_with_applied_direction();
+        let stop = |task: &str, epoch, revision| WorkspaceTaskCommand::CancelForRun {
+            task_id: task.into(),
+            run_epoch: epoch,
+            after_revision: revision,
+        };
+        let before = doc.save();
+        for command in [
+            stop(&task_id, 2, 1),
+            stop(&task_id, 1, 0),
+            stop("task:other", 1, 1),
+        ] {
+            assert!(run(&mut doc, 90, 90, &person(), &command).is_err());
+            assert_eq!(doc.save(), before);
+        }
+        run(&mut doc, 91, 91, &person(), &stop(&task_id, 1, 1)).unwrap();
+        let current = snapshot(&doc).unwrap();
+        assert_eq!(current.tasks[0].status, WorkspaceTaskStatus::Cancelled);
+        assert!(current.controls[&task_id].active_run.is_none());
+    }
+
+    #[test]
     fn direction_fences_finish_until_the_exact_run_acknowledges_it() {
         let mut doc = AutoCommit::new();
         let queued = run(&mut doc, 1, 1, &person(), &queue_command()).unwrap();
@@ -2092,6 +2332,64 @@ mod tests {
                 .as_ref()
                 .map(|run| run.epoch),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn queued_instruction_is_retained_privately_without_truncating_to_the_title() {
+        let mut doc = AutoCommit::new();
+        let instruction =
+            "Inspect every section and preserve the complete private request. ".repeat(12);
+        assert!(instruction.chars().count() > MAX_TASK_TITLE_CHARS);
+        let applied = run(
+            &mut doc,
+            71,
+            71,
+            &person(),
+            &WorkspaceTaskCommand::QueueInstruction {
+                title: "Inspect the proposal".into(),
+                instruction: instruction.clone(),
+                assigned_agent: "scribe".into(),
+                route: WorkspaceTaskRoute::Model,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            postcard::to_allocvec(&WorkspaceTaskCommand::QueueInstruction {
+                title: "Inspect the proposal".into(),
+                instruction: instruction.clone(),
+                assigned_agent: "scribe".into(),
+                route: WorkspaceTaskRoute::Model,
+            })
+            .unwrap()[0],
+            14,
+            "the new command must remain appended after every established wire variant"
+        );
+        let WorkspaceTaskMutationResult::Queued { task_id } = applied.result else {
+            panic!("queue result")
+        };
+        let current = snapshot(&doc).unwrap();
+        assert_eq!(current.tasks[0].title, "Inspect the proposal");
+        assert_eq!(
+            current.controls[&task_id].instruction.as_deref(),
+            Some(instruction.as_str())
+        );
+
+        let oversized = "x".repeat(MAX_WORKSPACE_TASK_INSTRUCTION_BYTES + 1);
+        assert!(
+            run(
+                &mut doc,
+                72,
+                72,
+                &person(),
+                &WorkspaceTaskCommand::QueueInstruction {
+                    title: "Too large".into(),
+                    instruction: oversized,
+                    assigned_agent: "scribe".into(),
+                    route: WorkspaceTaskRoute::Model,
+                },
+            )
+            .is_err()
         );
     }
 }

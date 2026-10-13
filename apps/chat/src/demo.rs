@@ -411,6 +411,7 @@ pub fn demo(me: &str) -> Chat {
                 topic: (*topic).to_owned(),
                 kind: *kind,
                 archived: false,
+                conversation_with: None,
             },
         );
     }
@@ -574,7 +575,9 @@ pub fn apply_at(
     invoke: Invoke<Chat>,
 ) -> Result<(), DoorError> {
     initialized(doc).map_err(|error| DoorError::Failed(error.to_string()))?;
-    let mut replica = Replica::<Chat>::from_doc(std::mem::take(doc)).as_invoker(author);
+    let mut replica = Replica::<Chat>::from_doc(std::mem::take(doc))
+        .as_invoker(author)
+        .in_app(<crate::ChatShell as ui::framework::ResourceApp>::ID, "Chat");
     replica.set_now_ms(now_ms);
     // Asked for by name, as a person confirming it would.
     let applied = replica.apply_confirmed(invoke).map(drop);
@@ -763,19 +766,4 @@ pub fn insert_channel(
         )?;
     }
     Ok(())
-}
-
-/// Add `message` to `doc` under `id`, as its author wrote it at its time:
-/// a conversation a test or a tool starts from.
-///
-/// # Errors
-/// As [`apply_as`].
-pub fn insert_message(doc: &mut AutoCommit, id: &str, message: &Message) -> Result<(), DoorError> {
-    let at = crate::projection::read(doc).messages.len();
-    let insert = Chat::paths()
-        .messages
-        .insert_as(&Id::from_raw(id), at, message);
-    let insert =
-        Invoke::edit(&insert).map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
-    apply_as(doc, &message.author.0, insert)
 }

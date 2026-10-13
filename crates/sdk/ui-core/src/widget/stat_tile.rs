@@ -483,14 +483,6 @@ impl StatTile {
         }
     }
 
-    /// Replace or clear the unit.
-    pub fn set_unit(&mut self, unit: Option<String>) {
-        if unit != self.unit {
-            self.unit = unit;
-            self.dirty = true;
-        }
-    }
-
     /// Replace or clear the note.
     pub fn set_note(&mut self, note: Option<String>) {
         if note != self.note {
@@ -741,13 +733,7 @@ impl Widget for StatTile {
         self.activation.start_native(op)
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.rect == Rect::ZERO

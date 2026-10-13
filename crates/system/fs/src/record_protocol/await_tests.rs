@@ -16,7 +16,7 @@ use rand::{SeedableRng, rngs::StdRng};
 
 use super::tests::{AlwaysCurrent, Party, party};
 use super::*;
-use crate::record_replication::{RecordAction, RecordAuthorizer, RecordOperationV1};
+use crate::record_replication::{RecordOperationV1, test_authorizers::AllowAll};
 use crate::share_refresh::{
     ShareRefresh, ShareRefreshMode, ShareRefresher, SharedCredential, SharedFetchError,
     fetch_shared_snapshot,
@@ -29,19 +29,6 @@ const WRITE_BOUND: Duration = Duration::from_millis(100);
 /// How soon a revoked grant must end a held await: the bound the idle serve gate keeps
 /// for a revoked mount.
 const REVOKE_BOUND: Duration = Duration::from_secs(1);
-
-/// The host's own writes, as its file publisher makes them.
-struct HostWriter;
-
-impl RecordAuthorizer for HostWriter {
-    fn actor_is_certified(&self, _actor: &FileActor) -> bool {
-        true
-    }
-
-    fn allows(&self, _actor: &FileActor, _record_id: FileRecordId, _action: RecordAction) -> bool {
-        true
-    }
-}
 
 /// Counts the connections a host accepts.
 #[derive(Clone, Debug)]
@@ -261,7 +248,7 @@ impl Fixture {
         )
         .unwrap();
         self.repository
-            .apply(self.key, &envelope, &HostWriter)
+            .apply(self.key, &envelope, &AllowAll)
             .unwrap();
     }
 }

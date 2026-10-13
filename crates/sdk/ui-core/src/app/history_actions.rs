@@ -367,10 +367,22 @@ fn entry_json(entry: &HistoryEntry) -> serde_json::Value {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         });
+    // Who acted and for whom, as data: an agent's change is the agent's, on
+    // behalf of its person, for a script or a screen reader as on screen.
+    let attribution = entry.author.attribution.as_ref().map(|attribution| {
+        serde_json::json!({
+            "actor": attribution.actor,
+            "kind": attribution.kind,
+            "actor_name": attribution.actor_name,
+            "on_behalf_of": attribution.on_behalf_of,
+            "on_behalf_of_name": attribution.on_behalf_of_name,
+        })
+    });
     serde_json::json!({
         "entry": encode_entry(entry.id),
         "summary": entry.summary,
         "author": entry.author.name,
+        "attribution": attribution,
         "time_ms": time_ms,
     })
 }
@@ -378,8 +390,7 @@ fn entry_json(entry: &HistoryEntry) -> serde_json::Value {
 /// The document as JSON, or `None` when it exceeds [`MAX_SNAPSHOT_BYTES`].
 fn snapshot_json(doc: &AutoCommit) -> Option<serde_json::Value> {
     let value = serde_json::to_value(automerge::AutoSerde::from(doc)).ok()?;
-    let size = serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len());
-    (size <= MAX_SNAPSHOT_BYTES).then_some(value)
+    (runtime_collab::wire_json_len(&value) <= MAX_SNAPSHOT_BYTES).then_some(value)
 }
 
 fn output(value: serde_json::Value) -> ActionOutput {
@@ -425,7 +436,8 @@ impl App {
             record: active_record.cloned(),
             document_identity: context.document_identity,
         };
-        let mut model = StandaloneHistory::open(target, &context, AuthorDirectory::new())?;
+        let mut model =
+            StandaloneHistory::open(target, &context, AuthorDirectory::with_room_agents())?;
         visit(&mut model, &context)
     }
 

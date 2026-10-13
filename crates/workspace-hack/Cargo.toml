@@ -171,6 +171,7 @@ regex-automata = { version = "0.4", default-features = false, features = ["dfa",
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 resvg = { version = "0.47" }
+ring = { version = "0.17" }
 rqrr = { version = "0.10" }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustc-hash = { version = "1" }
@@ -215,6 +216,7 @@ tokio = { version = "1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
+tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml_parser = { version = "1" }
 tracing = { version = "0.1" }
 tracing-core = { version = "0.1" }
@@ -223,7 +225,6 @@ ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
 unic-langid = { version = "0.9", features = ["macros", "serde"] }
 unic-langid-impl = { version = "0.9", default-features = false, features = ["serde"] }
 unicode-bidi = { version = "0.3" }
-unicode-normalization = { version = "0.1" }
 unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
@@ -242,7 +243,7 @@ yoke = { version = "0.8", features = ["derive", "serde"] }
 zbus = { version = "5", default-features = false, features = ["blocking-api", "p2p", "tokio"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zerofrom = { version = "0.1", default-features = false, features = ["alloc", "derive"] }
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { version = "1", features = ["derive", "serde"] }
 zerotrie = { version = "0.2", default-features = false, features = ["serde", "yoke", "zerofrom", "zerovec"] }
 zerovec = { version = "0.11", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
 zune-jpeg = { version = "0.5" }
@@ -407,6 +408,7 @@ regex-automata = { version = "0.4", default-features = false, features = ["dfa",
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 resvg = { version = "0.47" }
+ring = { version = "0.17" }
 rqrr = { version = "0.10" }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustc-hash = { version = "1" }
@@ -453,6 +455,7 @@ tokio = { version = "1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
+tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml_parser = { version = "1" }
 tracing = { version = "0.1" }
 tracing-core = { version = "0.1" }
@@ -461,7 +464,6 @@ ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
 unic-langid = { version = "0.9", features = ["macros", "serde"] }
 unic-langid-impl = { version = "0.9", default-features = false, features = ["serde"] }
 unicode-bidi = { version = "0.3" }
-unicode-normalization = { version = "0.1" }
 unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
@@ -481,14 +483,14 @@ zbus = { version = "5", default-features = false, features = ["blocking-api", "p
 zbus_macros = { version = "5", features = ["blocking-api"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zerofrom = { version = "0.1", default-features = false, features = ["alloc", "derive"] }
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { version = "1", features = ["derive", "serde"] }
 zerotrie = { version = "0.2", default-features = false, features = ["serde", "yoke", "zerofrom", "zerovec"] }
 zerovec = { version = "0.11", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
 zune-jpeg = { version = "0.5" }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
+ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
@@ -513,7 +515,6 @@ serde_spanned = { version = "1", default-features = false, features = ["serde", 
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
-tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
@@ -525,7 +526,7 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["rand
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
+ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
@@ -550,7 +551,6 @@ serde_spanned = { version = "1", default-features = false, features = ["serde", 
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
-tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
@@ -562,7 +562,7 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["rand
 
 [target.aarch64-unknown-linux-gnu.dependencies]
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
+ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
@@ -587,7 +587,6 @@ serde_spanned = { version = "1", default-features = false, features = ["serde", 
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
-tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
@@ -599,7 +598,7 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["rand
 
 [target.aarch64-unknown-linux-gnu.build-dependencies]
 ash = { version = "0.38" }
-ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
+ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 half = { version = "2" }
@@ -624,7 +623,6 @@ serde_spanned = { version = "1", default-features = false, features = ["serde", 
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
-tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }

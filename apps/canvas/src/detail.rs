@@ -28,12 +28,13 @@ use tilo_wet_media::{
     Canvas, Heightfield, LayerPainter, MediumEngine, Painted, Rgb, Settings, Texture, windowed,
 };
 use ui::vello::kurbo::{Affine, Rect};
-use ui::vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use ui::vello::peniko::ImageData;
 
 /// A tile's side, in cells of its level.
 pub const TILE: usize = 256; // a simulation unit, not on-screen spacing
 /// The finest a painted layer is simulated, in cells per artwork unit.
 use crate::content_geometry::FINEST;
+use crate::picture::image_of;
 /// Tiles kept between frames.
 const KEEP: usize = 240;
 /// How much coarser than a pixel the coarse picture may be before a finer
@@ -149,7 +150,7 @@ fn halve(image: &ImageData) -> ImageData {
             byte(alpha / count.max(1.0)),
         ]);
     }
-    rgba(pixels, half_width, half_height)
+    image_of(pixels, half_width, half_height)
 }
 
 #[allow(
@@ -159,16 +160,6 @@ fn halve(image: &ImageData) -> ImageData {
 )]
 fn byte(value: f32) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
-}
-
-pub fn rgba(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
-    ImageData {
-        data: Blob::new(Arc::new(pixels)),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: u32::try_from(width).unwrap_or(1),
-        height: u32::try_from(height).unwrap_or(1),
-    }
 }
 
 /// A painted layer's marks at a finer level, kept while its marks stay.
@@ -253,7 +244,7 @@ impl Job {
                     1,
                 );
                 let lit = field.shade(*colour);
-                rgba(
+                image_of(
                     crop(&lit, width + left, (left, top), (width, height)),
                     width,
                     height,
@@ -276,7 +267,7 @@ impl Job {
                 let canvas = Canvas::window(scale, ground, origin);
                 let mut painter = LayerPainter::new(Arc::clone(engine), canvas, settings.clone());
                 let pixels = painter.paint(&windowed(marks, origin, span, rows));
-                rgba(
+                image_of(
                     crop(
                         pixels,
                         span,
@@ -590,7 +581,7 @@ impl Tiles {
                 }
             }
         }
-        rgba(pixels, width, height)
+        image_of(pixels, width, height)
     }
 }
 
@@ -614,7 +605,7 @@ mod tests {
     fn a_halving_keeps_colour_where_paint_meets_bare_ground() {
         // Red paint beside transparency halves to red at half alpha, not to
         // a darkened red.
-        let image = rgba(vec![255, 0, 0, 255, 0, 0, 0, 0], 2, 1);
+        let image = image_of(vec![255, 0, 0, 255, 0, 0, 0, 0], 2, 1);
         let half = halve(&image);
         assert_eq!(half.data.data(), &[255, 0, 0, 128]);
     }

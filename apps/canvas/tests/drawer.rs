@@ -1,10 +1,5 @@
 //! The inspector in a narrow window: a drawer over the artwork that holds
 //! its controls and the layers, none of them cut off by the window's edge.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test assertions over exact, hand-written fixtures"
-)]
 
 use canvas::App;
 use ui::prelude::TestApp;

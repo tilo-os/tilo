@@ -7,7 +7,7 @@
 //! common ones so the window, the scenarios and the tests say the same
 //! thing the same way.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +17,7 @@ use ui::tilo_resource::{Atom, Resource, Stamped, items};
 use ui::widget::marks::{Mark, MarkSpan};
 use ui::widget::{BlockContent, BlockKind};
 
-use crate::model::{PageId, PageMeta, TagId};
+use crate::model::{PageId, TagId};
 use crate::notebook::{self, Notebook, NotebookAction, Page, Tag, page_id};
 
 /// The notebook's action: a field edit or a verb, stamped with when it was
@@ -225,18 +225,6 @@ pub fn new_tag_action(id: TagId, name: &str) -> Action {
     ))
 }
 
-/// Rename tag `id`.
-#[must_use]
-pub fn rename_tag_action(id: TagId, name: &str) -> Action {
-    edit(
-        Notebook::paths()
-            .tags
-            .item(&page_id(id))
-            .name
-            .set(Atom(name.trim().to_owned())),
-    )
-}
-
 /// Delete tag `id` and take it off every note.
 #[must_use]
 pub fn delete_tag_action(id: TagId) -> Action {
@@ -254,15 +242,6 @@ pub fn set_tag_assignment_action(page: PageId, tag: TagId, assigned: bool) -> Ac
     } else {
         tags.remove(&page_id(tag))
     })
-}
-
-/// Give note `page` the tag named `name`, made when the notebook has none.
-#[must_use]
-pub fn tag_page_action(page: PageId, name: &str) -> Action {
-    stamped(NotebookAction::Tag(notebook::notebook::Tag {
-        page: page_id(page),
-        name: name.to_owned(),
-    }))
 }
 
 /// Serializable inline formatting of a Notes block, as tests and exports
@@ -420,72 +399,4 @@ pub fn page_markdown(workspace: &crate::Workspace, page: PageId) -> String {
         })
         .collect::<Vec<_>>();
     crate::markdown::serialize(&crate::markdown::blocks_to_specs(&blocks))
-}
-
-/// A block of another note that links to a note.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Backlink {
-    pub target: PageId,
-    pub source: PageId,
-    pub block_id: String,
-    pub source_title: String,
-    pub excerpt: String,
-}
-
-/// A one-line label for a page.
-fn page_label(m: &PageMeta) -> String {
-    let t = m.title.trim();
-    if t.is_empty() {
-        notebook::UNTITLED.to_string()
-    } else {
-        t.to_string()
-    }
-}
-
-/// The blocks of other notes linking to `target`.
-#[must_use]
-pub fn backlinks(bodies: &Bodies, pages: &[PageMeta], target: PageId) -> Vec<Backlink> {
-    backlink_index(bodies, pages)
-        .remove(&target)
-        .unwrap_or_default()
-}
-
-/// Every note's backlinks, by the note linked to.
-#[must_use]
-pub fn backlink_index(bodies: &Bodies, pages: &[PageMeta]) -> HashMap<PageId, Vec<Backlink>> {
-    let existing = pages.iter().map(|page| page.id).collect::<HashSet<_>>();
-    let mut by_target = HashMap::<PageId, Vec<Backlink>>::new();
-    for source in pages {
-        for block in bodies.get(&source.id).map_or(&[][..], Vec::as_slice) {
-            let excerpt = block.text.split_whitespace().collect::<Vec<_>>().join(" ");
-            let targets = block
-                .marks
-                .iter()
-                .filter_map(|span| match &span.mark {
-                    InlineMark::Link { page } => page.parse::<PageId>().ok(),
-                    _ => None,
-                })
-                .filter(|target| *target != source.id && existing.contains(target))
-                .collect::<HashSet<_>>();
-            for target in targets {
-                by_target.entry(target).or_default().push(Backlink {
-                    target,
-                    source: source.id,
-                    block_id: block.id.clone(),
-                    source_title: page_label(source),
-                    excerpt: excerpt.clone(),
-                });
-            }
-        }
-    }
-    for backlinks in by_target.values_mut() {
-        backlinks.sort_by(|a, b| {
-            (a.source_title.to_lowercase(), a.source, a.block_id.as_str()).cmp(&(
-                b.source_title.to_lowercase(),
-                b.source,
-                b.block_id.as_str(),
-            ))
-        });
-    }
-    by_target
 }

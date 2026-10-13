@@ -45,7 +45,9 @@ workspace's target directory as its own Cargo workspace (with that
 workspace's `[patch]`, profiles and lock file), so an app anywhere builds
 against the SDK checkout it names. The bundle lands in
 `<target>/tilo-app/web/<package>/bundle` in `build.sh`'s layout and opens at
-`index.html?app=<id>`; `--output` copies it. `package --target web` writes
+`app/#/me/<id>`; `--output` copies it. Page URLs (which room, app and
+resource a page opens, desktop or full-tab app mode, history, share links) follow
+`docs/architecture/web-routing.md`, which replaces these query parameters. `package --target web` writes
 it in the immutable layout Cloud serves.
 
 ## Mounting

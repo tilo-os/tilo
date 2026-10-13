@@ -1009,19 +1009,6 @@ impl<M: ListModel> VirtualList<M> {
             });
     }
 
-    fn reconcile_after_reorder(&mut self, anchor: Option<&SparseAnchor<M::Key>>) {
-        self.viewport
-            .reconcile(self.model.len(), |key| self.model.index_of(key), anchor);
-        self.selection
-            .reconcile(|key| self.model.index_of(key).is_some());
-        self.focused_key = self
-            .focused_key
-            .take()
-            .filter(|key| self.model.index_of(key).is_some());
-        self.request_dirty = true;
-        self.visible_window_changed();
-    }
-
     fn commit_reorder(&mut self, dropped: ReorderDrop<M::Key>) -> bool {
         let anchor = self.capture_anchor();
         let changed = self
@@ -1029,7 +1016,7 @@ impl<M: ListModel> VirtualList<M> {
             .as_mut()
             .is_some_and(|commit| commit(&mut self.model, dropped));
         if changed {
-            self.reconcile_after_reorder(anchor.as_ref());
+            self.reconcile_model(anchor.as_ref());
         }
         changed
     }
@@ -1619,8 +1606,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let point = ctx.logical(position);
                 if self.reorder.is_tracking() {
                     self.momentum.stop();
                     self.update_reorder_pointer(point, crate::time::now());
@@ -1903,13 +1889,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 let mut item = AccessNode::new(Role::ListItem)
                     .with_optional_name(name)
                     .with_position(row.index.saturating_add(1), count)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
-                        selected: self.selection.is_selected(&row.key),
-                        disabled: !self.is_enabled(),
-                        ..Default::default()
-                    });
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.is_focused && self.focused_key.as_ref() == Some(&row.key))
+                            .selected(self.selection.is_selected(&row.key))
+                            .disabled(!self.is_enabled()),
+                    );
                 match &row.state {
                     MountedRowState::Ready => {}
                     MountedRowState::Loading => item.state.busy = true,
@@ -1947,12 +1933,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                         .as_deref()
                         .map(crate::i18n::I18nManager::lookup_plain),
                 )
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.is_focused,
-                    disabled: !self.is_enabled(),
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.is_focused)
+                        .disabled(!self.is_enabled()),
+                )
                 .with_children(children),
         )
     }
@@ -2030,12 +2016,9 @@ mod tests {
     use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use winit::event::MouseScrollDelta;
 
     use crate::testing::Dispatch;
     use taffy::AvailableSpace;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::DeviceId;
 
     struct HugeList {
         count: usize,
@@ -2202,9 +2185,7 @@ mod tests {
             taffy.widget_leaf(style, node_map, self)
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             if self.consumes_press
@@ -2224,10 +2205,6 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "ProbeRow"
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
         }
 
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -2258,18 +2235,11 @@ mod tests {
     }
 
     fn cursor(y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(20.0, y),
-        }
+        crate::synthetic_input::cursor_moved(20.0, y)
     }
 
     fn left(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        crate::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
     fn dispatch<M: ListModel + 'static>(
@@ -2837,11 +2807,7 @@ mod tests {
             list.reduce_motion = true;
 
             dispatch(&mut list, &cursor(50.0), &taffy, node);
-            let wheel = WindowEvent::MouseWheel {
-                device_id: DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
             assert!(dispatch(&mut list, &wheel, &taffy, node));
             assert_eq!(list.scroll_offset(), 60.0);
             assert!(!list.momentum.is_active());
@@ -2971,10 +2937,7 @@ mod tests {
             let parent = taffy
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: length(300.0_f32),
-                            height: length(600.0_f32),
-                        },
+                        size: Size::from_lengths(300.0_f32, 600.0_f32),
                         ..Default::default()
                     },
                     &[node],
@@ -3062,11 +3025,7 @@ mod tests {
         dispatch(&mut list, &cursor(row_three), &taffy, node);
         assert!(dispatch(
             &mut list,
-            &WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-            },
+            &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
             &taffy,
             node,
         ));

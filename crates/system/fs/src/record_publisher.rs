@@ -641,6 +641,17 @@ impl RecordPublisher {
         };
         let authorizer = self.local_authorizer(record_id);
         let initial = self.snapshot_if_present(key, &authorizer)?;
+        let current_metadata = initial
+            .as_ref()
+            .and_then(|snapshot| snapshot.metadata.as_ref());
+        if current_metadata != Some(metadata)
+            && current_metadata
+                .is_some_and(|current| current.observed_at_ms > metadata.observed_at_ms)
+        {
+            // A refused namespace tuple must not publish its content first:
+            // that would leave accepted metadata attached to a different edit.
+            return Err(RecordPublisherError::StaleMetadata);
+        }
         let mut existing_versions: HashMap<_, _> = initial
             .as_ref()
             .map(|snapshot| {
@@ -683,11 +694,28 @@ impl RecordPublisher {
 
         // The current namespace tuple is a separately signed operation so its
         // byte length is authenticated rather than merely associated with a
-        // signed version UUID. History snapshots are sorted by timestamp/id;
-        // recomputing the same maximum makes retries and restarts idempotent.
-        if let Some(current_version) = versions
+        // signed version UUID. Select only causal tips with matching content;
+        // timestamp/id orders incomparable tips, never an edit and its parent.
+        // The signed IDs and times remain unchanged across retries/restarts.
+        let matching_versions: Vec<_> = versions
             .iter()
             .filter(|version| version.content_hash == metadata.content_hash)
+            .collect();
+        let mut ancestors = std::collections::HashSet::new();
+        let mut pending_parents: Vec<_> = matching_versions
+            .iter()
+            .flat_map(|version| version.parents.iter().copied())
+            .collect();
+        while let Some(parent) = pending_parents.pop() {
+            if ancestors.insert(parent)
+                && let Some(version) = existing_versions.get(&parent)
+            {
+                pending_parents.extend(version.parents.iter().copied());
+            }
+        }
+        if let Some(current_version) = matching_versions
+            .into_iter()
+            .filter(|version| !ancestors.contains(&version.id))
             .max_by_key(|version| (version.timestamp_ms, version.id))
         {
             let revision = ContentRevisionV1 {
@@ -739,12 +767,7 @@ impl RecordPublisher {
             }
         }
 
-        let current_metadata = initial.and_then(|snapshot| snapshot.metadata);
-        let stale = current_metadata.as_ref() != Some(metadata)
-            && current_metadata
-                .as_ref()
-                .is_some_and(|current| current.observed_at_ms > metadata.observed_at_ms);
-        if current_metadata.as_ref() != Some(metadata) && !stale {
+        if current_metadata != Some(metadata) {
             pending.push((
                 Pending::Metadata,
                 RecordOperationV1::SetMetadata(metadata.clone()),
@@ -768,9 +791,6 @@ impl RecordPublisher {
                 (Pending::Metadata, true) => report.metadata = MetadataPublishStatus::Published,
                 (Pending::Revision | Pending::Metadata, _) => {}
             }
-        }
-        if stale {
-            return Err(RecordPublisherError::StaleMetadata);
         }
         Ok(report)
     }
@@ -1146,6 +1166,96 @@ mod tests {
                 record_id: self.record_id,
             }
         }
+    }
+
+    #[test]
+    fn equal_time_native_edit_keeps_signed_revision_with_current_metadata() {
+        let fixture = Fixture::new();
+        let publisher = fixture.publisher();
+        let first = fixture.version(FileVersionId(Uuid::from_u128(2)), 1);
+        let mut second = fixture.version(FileVersionId(Uuid::from_u128(1)), 2);
+        second.parents = vec![first.id];
+        second.timestamp_ms = first.timestamp_ms;
+        publisher
+            .publish(&fixture.metadata(1), std::slice::from_ref(&first))
+            .unwrap();
+        let mut metadata = fixture.metadata(2);
+        metadata.observed_at_ms = first.timestamp_ms;
+        publisher
+            .publish(&metadata, &[first, second.clone()])
+            .unwrap();
+        let snapshot = fixture
+            .repository
+            .snapshot(
+                fixture.key(),
+                &fixture.actor,
+                &publisher.local_authorizer(fixture.record_id),
+            )
+            .unwrap();
+        assert_eq!(snapshot.metadata, Some(metadata));
+        assert_eq!(snapshot.content_revision.unwrap().version_id, second.id);
+    }
+
+    #[test]
+    fn repeated_content_keeps_the_signed_descendant_identity() {
+        let fixture = Fixture::new();
+        let publisher = fixture.publisher();
+        let first = fixture.version(FileVersionId(Uuid::from_u128(2)), 1);
+        let mut second = fixture.version(FileVersionId(Uuid::from_u128(1)), 2);
+        second.parents = vec![first.id];
+        second.timestamp_ms = first.timestamp_ms;
+        second.content_hash = first.content_hash;
+        let metadata = fixture.metadata(1);
+        publisher
+            .publish(&metadata, std::slice::from_ref(&first))
+            .unwrap();
+        publisher
+            .publish(&metadata, &[first, second.clone()])
+            .unwrap();
+        let snapshot = fixture
+            .repository
+            .snapshot(
+                fixture.key(),
+                &fixture.actor,
+                &publisher.local_authorizer(fixture.record_id),
+            )
+            .unwrap();
+        assert_eq!(snapshot.metadata, Some(metadata));
+        assert_eq!(snapshot.content_revision.unwrap().version_id, second.id);
+        let key = fixture.key();
+        let actor = fixture.actor;
+        let authorizer = publisher.local_authorizer(fixture.record_id);
+        drop(publisher);
+        let Fixture {
+            _dir,
+            root,
+            repository,
+            ..
+        } = fixture;
+        drop(repository);
+        let reopened = RecordRepository::open(root).unwrap();
+        assert_eq!(
+            reopened.snapshot(key, &actor, &authorizer).unwrap(),
+            snapshot
+        );
+    }
+
+    #[test]
+    fn stale_metadata_refuses_before_signed_content_changes() {
+        let fixture = Fixture::new();
+        let publisher = fixture.publisher();
+        let first = fixture.version(FileVersionId(Uuid::from_u128(2)), 2);
+        publisher
+            .publish(&fixture.metadata(2), std::slice::from_ref(&first))
+            .unwrap();
+        let before = publisher.snapshot(fixture.record_id).unwrap().unwrap();
+        let mut stale = fixture.version(FileVersionId(Uuid::from_u128(1)), 1);
+        stale.parents = vec![first.id];
+        assert!(matches!(
+            publisher.publish(&fixture.metadata(1), &[first, stale]),
+            Err(RecordPublisherError::StaleMetadata)
+        ));
+        assert_eq!(publisher.snapshot(fixture.record_id).unwrap(), Some(before));
     }
 
     #[test]

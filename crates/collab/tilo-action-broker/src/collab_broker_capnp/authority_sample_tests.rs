@@ -209,6 +209,7 @@ fn invoke_request() -> InvokeRequest {
         confirmation: None,
         revision: None,
         wait_ms: None,
+        appearance: None,
     }
 }
 

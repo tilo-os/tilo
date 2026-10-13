@@ -163,11 +163,7 @@ impl RetainedEditor {
             .layout(&self.tree, self.root)
             .send(
                 &mut *self.editor,
-                &WindowEvent::KeyboardInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    event,
-                    is_synthetic: false,
-                },
+                &crate::synthetic_input::keyboard_input(event),
             )
             .handled;
         assert!(handled, "editor must receive each test keystroke");

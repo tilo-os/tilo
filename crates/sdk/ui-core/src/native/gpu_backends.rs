@@ -5,7 +5,7 @@
 //! wgpu initialises every backend it is asked for as the instance is made,
 //! and for OpenGL that means EGL, a Mesa driver and a GL context: on lavapipe
 //! +25 ms, +17 threads and +28 MB per process, in every app, on the thread
-//! whose device the first frame waits for (TIL-775). The adapter is Vulkan's
+//! whose device the first frame waits for. The adapter is Vulkan's
 //! whenever both backends offer one of the same kind, so OpenGL only wins when
 //! a GPU has an OpenGL driver and no Vulkan one. That cannot be the case when
 //!
@@ -47,6 +47,12 @@ pub(crate) fn backends_for(vulkan_pinned: bool, render_node: bool) -> BackendCho
 
 /// Whether this process's Vulkan loader was told which driver to load: the
 /// launcher's GPU pin, or a person's own choice.
+/// Whether `WGPU_ADAPTER_NAME` names the adapter wgpu must pick
+/// (`wgpu::util::initialize_adapter_from_env_or_default`).
+pub(crate) fn adapter_named() -> bool {
+    std::env::var_os("WGPU_ADAPTER_NAME").is_some()
+}
+
 fn vulkan_driver_pinned() -> bool {
     ["VK_DRIVER_FILES", "VK_ICD_FILENAMES"]
         .into_iter()

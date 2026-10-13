@@ -54,7 +54,7 @@ struct FullReplicaStatusProof {
 /// replica holds its liveness lock beside the file
 /// ([`fs::full_replica::replica_is_running`]), which the kernel releases
 /// when it exits however it exits; a stamp recent by `clock` also counts,
-/// for a replica that keeps no lock (TIL-774: the replica used to restamp
+/// for a replica that keeps no lock (#4224: the replica used to restamp
 /// the file every second to stay recent).
 #[derive(Clone)]
 struct ReplicaProof {
@@ -743,6 +743,9 @@ impl Relay {
                 identity.device_signing_key.clone(),
                 identity.device_cert.clone(),
             ),
+            member_limits: cfg
+                .member_limits
+                .map(|limits| Arc::new(crate::member_limits::MemberLimits::new(limits))),
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -814,6 +817,9 @@ impl Relay {
                         cert: identity.device_cert.clone(),
                         key: identity.device_signing_key.clone(),
                         revocations: revocations.clone(),
+                        max_pre_admissions: cfg
+                            .max_room_grants
+                            .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
                         #[cfg(feature = "agents")]
                         trust_policy: handler.trust_policy.clone(),
                         #[cfg(feature = "agents")]
@@ -1067,8 +1073,8 @@ impl Relay {
     /// Returns why the delegation is not usable now.
     pub fn register_agent(
         &self,
-        delegation: tilo_relay_protocol::agents::AgentDelegation,
-    ) -> Result<(), tilo_relay_protocol::agents::DelegationError> {
+        delegation: tilo_relay_protocol::delegation::Delegation,
+    ) -> Result<(), tilo_relay_protocol::delegation::DelegationError> {
         delegation.verify(
             &self.web.relay.identity.user_public_key,
             tilo_clock::unix_now_ns(),
@@ -1078,7 +1084,7 @@ impl Relay {
             .agents
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(delegation.agent_device_public_key, Some(delegation));
+            .insert(delegation.device_public_key, Some(delegation));
         // A replacement may narrow an earlier delegation's rooms.
         crate::authority_epoch::bump();
         Ok(())
@@ -1171,26 +1177,6 @@ impl Relay {
             .await
     }
 
-    /// Replace the standing of each member device of `workspace_id`'s room,
-    /// as its governor projects them: the relay then decides each change it
-    /// receives against its author's grants for the action it claims.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RelayError::GovernedAccess`] outside this relay's mutation
-    /// scope, and [`RelayError::Store`] when the workspace cannot be opened.
-    pub async fn replace_governed_workspace_standings(
-        &self,
-        workspace_id: u64,
-        pinned: bool,
-        standings: crate::workspace::Standings,
-    ) -> Result<(), RelayError> {
-        self.ensure_workspace_mutation_scope(workspace_id)?;
-        self.governed_access_writer()
-            .replace_standings(workspace_id, pinned, standings)
-            .await
-    }
-
     fn governed_access_writer(&self) -> GovernedAccessWriter {
         GovernedAccessWriter {
             workspaces: self.workspaces.clone(),
@@ -1204,6 +1190,12 @@ impl Relay {
     #[must_use]
     pub const fn rooms(&self) -> Option<&crate::rooms::Rooms> {
         self.rooms.as_ref()
+    }
+
+    /// Where this relay keeps its state.
+    #[cfg(feature = "web")]
+    pub(crate) fn state_root(&self) -> &std::path::Path {
+        &self.state_root
     }
 
     fn ensure_workspace_mutation_scope(&self, workspace_id: u64) -> Result<(), RelayError> {
@@ -2125,6 +2117,7 @@ pub(crate) struct RelayProtocol {
     pub(crate) live_bridge: Arc<std::sync::OnceLock<crate::peer::LiveBridge>>,
     pub(crate) agents: crate::peer::AgentRegistry,
     pub(crate) compactor: crate::compaction::Compactor,
+    pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
 }
 
 impl RelayProtocol {
@@ -2157,6 +2150,7 @@ impl RelayProtocol {
                 &self.identity.signing_key.to_bytes(),
             )),
             compactor: Some(self.compactor.clone()),
+            member_limits: self.member_limits.clone(),
         }
     }
 }
@@ -3208,7 +3202,7 @@ mod tests {
         assert!(proof_at(stamped.saturating_add(5_001)).is_none());
     }
 
-    /// TIL-774. A replica that holds its liveness lock keeps its ready
+    /// #4224. A replica that holds its liveness lock keeps its ready
     /// proof without restamping it; the proof lapses the moment the lock
     /// is released (the replica exited), however old the stamp.
     #[test]

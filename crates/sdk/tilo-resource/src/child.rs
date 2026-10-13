@@ -87,7 +87,7 @@ fn wrap_encoded<C: Resource, R: Resource>(
                 crate::resource::encode::<R>(&wrap(action)).map_err(|error| error.to_string())
             })
     } else if encoded.type_id == group_type::<C>() {
-        tilo_actions::decode_json::<ActionGroup<C::Action>>(&encoded.payload)
+        tilo_actions::decode_payload::<ActionGroup<C::Action>>(&encoded.type_id, &encoded.payload)
             .map_err(|error| error.to_string())
             .and_then(|group| {
                 let group = ActionGroup {

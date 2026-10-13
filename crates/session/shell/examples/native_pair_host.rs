@@ -74,7 +74,7 @@ async fn invitations(
         )
         .await?;
     rooms
-        .prepare_application(&room.room, host, &chat_catalogue(), "so.tilo.chat")
+        .prepare_application(&room.room, host, &chat_catalogue(), "so.tilo.chat", "")
         .await?;
     let expires = tilo_clock::unix_now_ns()
         .checked_add(600_000_000_000)
@@ -191,10 +191,13 @@ async fn serve(root: &Path, same_person: bool) -> Result<(), Box<dyn std::error:
             },
             allowed_origins: Vec::new(),
             plain_listen: None,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
         .await?;
     let bootstrap = invitations(&relay, &identities, &cert).await?;
-    if !private_fs::create_atomic(
+    if !tilo_files::native::private::create_atomic(
         &root.join("bootstrap.json"),
         &serde_json::to_vec(&bootstrap)?,
     )? {
@@ -257,7 +260,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .ok_or("private scratch root required")?;
     let root = Path::new(&root).canonicalize()?;
-    if !private_fs::is_owner_only(&std::fs::metadata(&root)?) {
+    if !tilo_files::native::private::is_owner_only(&std::fs::metadata(&root)?) {
         return Err("fixture root must already be private".into());
     }
     if std::env::var_os("TILO_RELAY_PHASE_DIAGNOSTICS").is_some() {

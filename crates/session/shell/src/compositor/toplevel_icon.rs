@@ -29,7 +29,7 @@ use smithay::reexports::wayland_server::{
 };
 use smithay::wayland::compositor as wl_compositor;
 use ui::icons::{AppImage, AppImageSource};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::ImageData;
 
 use crate::compositor::state::State;
 
@@ -436,14 +436,8 @@ fn client_image(buffer: &WlBuffer) -> Option<ImageData> {
     if width == 0 || width != height || width > MAX_EDGE {
         return None;
     }
-    Some(ImageData {
-        data: Blob::new(Arc::new(rgba)),
-        format: ImageFormat::Rgba8,
-        // `wl_shm` ARGB is premultiplied.
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width,
-        height,
-    })
+    // `wl_shm` ARGB is premultiplied.
+    Some(ui::raster::rgba8_premultiplied(rgba, width, height))
 }
 
 #[cfg(test)]
@@ -451,17 +445,11 @@ mod tests {
     use super::*;
 
     fn square(edge: u32) -> ImageData {
-        ImageData {
-            data: Blob::new(Arc::new(vec![
-                0;
-                usize::try_from(edge.pow(2).saturating_mul(4))
-                    .unwrap()
-            ])),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
-            width: edge,
-            height: edge,
-        }
+        ui::raster::rgba8_premultiplied(
+            vec![0; usize::try_from(edge.pow(2).saturating_mul(4)).unwrap()],
+            edge,
+            edge,
+        )
     }
 
     #[test]

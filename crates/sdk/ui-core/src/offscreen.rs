@@ -561,7 +561,7 @@ pub fn shared_gpu() -> Result<SharedGpu, OffscreenError> {
     // Acquiring the device waits on it, which a browser page cannot do: the
     // caller gets the same answer as a machine without an adapter and falls
     // back, instead of the page panicking.
-    if tilo_rt::availability(tilo_rt::Feature::BlockOn) != tilo_rt::Availability::Available {
+    if !tilo_rt::available(tilo_rt::Feature::BlockOn) {
         return Err(OffscreenError::NoAdapter);
     }
     let context = shared_render_context();
@@ -656,6 +656,49 @@ pub struct OffscreenRenderer {
 }
 
 impl OffscreenRenderer {
+    /// This renderer's device and queue, cloned out of the shared context so
+    /// its lock (host-side bookkeeping only) is not held while rendering.
+    #[allow(
+        clippy::expect_used,
+        reason = "a poisoned shared context or a missing device entry is an environment failure the headless harness has no fallback for"
+    )]
+    fn device_queue(&self) -> (wgpu::Device, wgpu::Queue) {
+        let ctx = self.context.lock().expect("shared RenderContext poisoned");
+        let handle = ctx
+            .devices
+            .get(self.dev_id)
+            .expect("this renderer's device entry is missing from the shared RenderContext");
+        (handle.device.clone(), handle.queue.clone())
+    }
+
+    /// Render all of `scene` over `bg` into the target texture.
+    #[allow(
+        clippy::expect_used,
+        reason = "the harness cannot produce a meaningful frame after vello fails to render"
+    )]
+    fn render_full(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene: &Scene,
+        bg: Color,
+    ) {
+        self.renderer
+            .render_to_texture(
+                device,
+                queue,
+                scene,
+                &self.view,
+                &RenderParams {
+                    base_color: bg,
+                    width: self.width,
+                    height: self.height,
+                    antialiasing_method: AaConfig::Area,
+                },
+            )
+            .expect("render_to_texture");
+    }
+
     /// The Vello renderer underneath, for its feature and diagnostic
     /// queries.
     #[doc(hidden)]
@@ -1124,7 +1167,6 @@ impl OffscreenRenderer {
 
     #[allow(
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         reason = "pixel-test readback cannot recover from a failed GPU mapping"
     )]
     fn read_target(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<u8> {
@@ -1200,30 +1242,13 @@ impl OffscreenRenderer {
     /// an environment failure this headless test/screenshot harness has no
     /// meaningful fallback for — it fails loudly rather than handing back a
     /// silently-empty buffer a comparison could misread as a real frame.
-    #[allow(
-        clippy::expect_used,
-        reason = "render() is the harness's core primitive, called only from tests/shots; every expect() here guards an environment failure (poisoned lock, missing device, GPU/readback error) with no recoverable fallback — matching render_png's existing panic-on-failure contract below"
-    )]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "already as tight as the borrow allows: `handle` below borrows from \
-                  `ctx`, so `ctx` can't drop until the clones are taken, and the block \
-                  already ends (dropping it) right after that"
-    )]
     fn render_with_overflow(&mut self, scene: &Scene, bg: Color) -> (Vec<u8>, bool) {
         // The lock only guards host-side DeviceHandle bookkeeping, not
         // rendering — vello's kernels run GPU-side. Clone the cheap,
         // Arc-backed `Device`/`Queue` handles out and drop the guard
         // immediately, rather than holding the shared context locked for
         // every other `OffscreenRenderer` through the whole render + readback.
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
 
         if let Some(backdrop) = self.backdrop.as_deref().filter(|frame| !frame.is_empty()) {
             self.backdrop_blur
@@ -1237,20 +1262,7 @@ impl OffscreenRenderer {
                     bg,
                 );
         }
-        self.renderer
-            .render_to_texture(
-                &device,
-                &queue,
-                scene,
-                &self.view,
-                &RenderParams {
-                    base_color: bg,
-                    width: self.width,
-                    height: self.height,
-                    antialiasing_method: AaConfig::Area,
-                },
-            )
-            .expect("render_to_texture");
+        self.render_full(&device, &queue, scene, bg);
         if let Some(blur) = self.backdrop_blur.as_mut() {
             blur.release(&mut self.renderer);
         }
@@ -1281,20 +1293,8 @@ impl OffscreenRenderer {
     /// # Panics
     ///
     /// Panics if the shared GPU context or target readback fails.
-    #[allow(
-        clippy::expect_used,
-        clippy::significant_drop_tightening,
-        reason = "pixel-test readback cannot recover from unavailable shared GPU state"
-    )]
     pub fn readback_current(&mut self) -> Vec<u8> {
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
         self.read_target(&device, &queue)
     }
 
@@ -1307,11 +1307,6 @@ impl OffscreenRenderer {
     ///
     /// # Panics
     /// If shared GPU state is poisoned/missing or Vello rejects the render.
-    #[allow(
-        clippy::expect_used,
-        clippy::significant_drop_tightening,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_gpu_wait(&mut self, scene: &Scene, bg: Color) {
         let mut timing = None;
         let _ = self.render_gpu_wait_count(scene, bg, &mut timing);
@@ -1366,25 +1361,13 @@ impl OffscreenRenderer {
 
     /// The same completed full render as [`Self::render_gpu_wait`], returning
     /// every full-target pass issued while Vello grows a bump allocation.
-    #[allow(
-        clippy::expect_used,
-        clippy::significant_drop_tightening,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     fn render_gpu_wait_count(
         &mut self,
         scene: &Scene,
         bg: Color,
         timing: &mut Option<OffscreenRenderTiming>,
     ) -> u64 {
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
 
         let mut overflowed;
         let mut attempts = 0u64;
@@ -1392,46 +1375,16 @@ impl OffscreenRenderer {
         loop {
             attempts = attempts.saturating_add(1);
             let reserved = self.renderer.memory_stats().bump_budget_bytes;
-            if timing.is_some() {
-                let start = crate::time::now();
-                self.renderer
-                    .render_to_texture(
-                        &device,
-                        &queue,
-                        scene,
-                        &self.view,
-                        &RenderParams {
-                            base_color: bg,
-                            width: self.width,
-                            height: self.height,
-                            antialiasing_method: AaConfig::Area,
-                        },
-                    )
-                    .expect("render_to_texture");
-                if let Some(profile) = timing.as_mut() {
-                    profile.vello_submit_us = profile
-                        .vello_submit_us
-                        .saturating_add(start.elapsed().as_micros());
-                    profile.full_attempts = profile.full_attempts.saturating_add(1);
-                    profile.coarse_prefix_pixels = profile.coarse_prefix_pixels.saturating_add(
-                        u64::from(self.width).saturating_mul(u64::from(self.height)),
-                    );
-                }
-            } else {
-                self.renderer
-                    .render_to_texture(
-                        &device,
-                        &queue,
-                        scene,
-                        &self.view,
-                        &RenderParams {
-                            base_color: bg,
-                            width: self.width,
-                            height: self.height,
-                            antialiasing_method: AaConfig::Area,
-                        },
-                    )
-                    .expect("render_to_texture");
+            let start = timing.is_some().then(crate::time::now);
+            self.render_full(&device, &queue, scene, bg);
+            if let (Some(start), Some(profile)) = (start, timing.as_mut()) {
+                profile.vello_submit_us = profile
+                    .vello_submit_us
+                    .saturating_add(start.elapsed().as_micros());
+                profile.full_attempts = profile.full_attempts.saturating_add(1);
+                profile.coarse_prefix_pixels = profile
+                    .coarse_prefix_pixels
+                    .saturating_add(u64::from(self.width).saturating_mul(u64::from(self.height)));
             }
             self.record_canonical_segment_order_full_selection(timing);
             self.record_area_ppt8_full_selection(timing);
@@ -1491,11 +1444,6 @@ impl OffscreenRenderer {
     /// Panics if the shared GPU context is unavailable or Vello rejects the
     /// render. This is a benchmark/test primitive and cannot produce a valid
     /// timing sample after either failure.
-    #[allow(
-        clippy::expect_used,
-        clippy::significant_drop_tightening,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_damage_gpu_wait(&mut self, scene: &Scene, bg: Color, damage: Rect) -> u64 {
         self.render_damage_regions_gpu_wait(scene, bg, std::slice::from_ref(&damage))
     }
@@ -1515,7 +1463,6 @@ impl OffscreenRenderer {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         clippy::too_many_lines,
         reason = "damage bounds are clamped to non-negative u32 target dimensions before narrowing; the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
     )]
@@ -1537,11 +1484,6 @@ impl OffscreenRenderer {
     /// # Panics
     ///
     /// Panics under the same conditions as [`Self::render_damage_gpu_wait`].
-    #[allow(
-        clippy::expect_used,
-        clippy::significant_drop_tightening,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_copies_and_damage_gpu_wait(
         &mut self,
         scene: &Scene,
@@ -1550,13 +1492,7 @@ impl OffscreenRenderer {
         damage: &[Rect],
     ) -> u64 {
         if !copies.is_empty() {
-            let (device, queue) = {
-                let ctx = self.context.lock().expect("shared RenderContext poisoned");
-                let handle = ctx.devices.get(self.dev_id).expect(
-                    "this renderer's device entry is missing from the shared RenderContext",
-                );
-                (handle.device.clone(), handle.queue.clone())
-            };
+            let (device, queue) = self.device_queue();
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("offscreen scroll copies"),
             });
@@ -1598,7 +1534,6 @@ impl OffscreenRenderer {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         clippy::too_many_lines,
         reason = "damage bounds are clamped to non-negative u32 target dimensions before narrowing; the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
     )]
@@ -1631,14 +1566,7 @@ impl OffscreenRenderer {
             return self.render_gpu_wait_count(scene, bg, timing);
         }
 
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
         let setup_start = timing.is_some().then(crate::time::now);
         let texture_limit = device.limits().max_texture_dimension_2d;
         let regions = coalesce_regions(
@@ -2153,7 +2081,6 @@ impl OffscreenRenderer {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use super::{
         AreaPpt8AttemptAccounting, CanonicalSegmentOrderAttemptAccounting,
@@ -2166,9 +2093,59 @@ mod tests {
     };
     use vello::Scene;
     use vello::kurbo::{Affine, BezPath, Rect};
-    use vello::peniko::{
-        BlendMode, Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
-    };
+    use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
+
+    #[test]
+    fn an_image_after_text_and_an_empty_sub_scene_lands_where_it_is_painted() {
+        // Chat paints a line of text, appends a sub-scene that holds nothing,
+        // then an attachment. The text's glyph run leaves its own transform
+        // last in the stream; the empty append must not make the picture
+        // inherit it (that moved it off its card, so it never showed).
+        use std::sync::Arc;
+        use vello::peniko::{Blob, ImageAlphaType, ImageFormat};
+        const W: u32 = 256;
+        const H: u32 = 192;
+        let image = ImageData {
+            data: Blob::new(Arc::new(
+                [230_u8, 40, 40, 255]
+                    .into_iter()
+                    .cycle()
+                    .take(8 * 8 * 4)
+                    .collect::<Vec<u8>>(),
+            )),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 8,
+            height: 8,
+        };
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0, 0, 1),
+            None,
+            &Rect::new(0.0, 0.0, 4.0, 4.0),
+        );
+        crate::text_render::TextRenderer::new().draw_text(
+            &mut scene,
+            "Screen recording",
+            14.0,
+            Color::from_rgb8(0, 0, 2),
+            Affine::translate((10.0, 100.0)),
+            None,
+        );
+        scene.append(&Scene::new(), None);
+        let card = Rect::new(100.0, 20.0, 160.0, 80.0);
+        crate::image_store::paint_image_cover(&mut scene, Affine::IDENTITY, card, &image, 6.0);
+        let pixels = OffscreenRenderer::new(W, H).render(&scene, Color::BLACK);
+        let (r, g, b, _) = OffscreenRenderer::sample(&pixels, W, 130, 50);
+        assert!(
+            r > 200 && g < 80 && b < 80,
+            "the picture on its card: {r},{g},{b}"
+        );
+        let (r, ..) = OffscreenRenderer::sample(&pixels, W, 150, 170);
+        assert!(r < 20, "nothing under the text's transform: {r}");
+    }
 
     #[test]
     fn offscreen_publication_is_send_resilient_and_decodable() {
@@ -2740,17 +2717,15 @@ mod tests {
         {
             const W: u32 = 256;
             const H: u32 = 192;
-            let image = |rgba: [u8; 4]| ImageData {
-                data: Blob::new(Arc::new(
+            let image = |rgba: [u8; 4]| {
+                crate::raster::rgba8(
                     rgba.into_iter()
                         .cycle()
                         .take(4 * 4 * 4)
                         .collect::<Vec<u8>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
+                    4,
+                    4,
+                )
             };
             let blue = image([20, 120, 255, 190]);
             let orange = image([255, 100, 30, 170]);
@@ -3140,19 +3115,15 @@ mod tests {
             oracle.set_defer_bump_readback_enabled(false);
             oracle.set_sparse_fine_enabled(false);
 
-            let image = ImageData {
-                data: Blob::new(Arc::new(
-                    [30_u8, 180, 250, 180]
-                        .into_iter()
-                        .cycle()
-                        .take(4 * 4 * 4)
-                        .collect::<Vec<_>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
-            };
+            let image = crate::raster::rgba8(
+                [30_u8, 180, 250, 180]
+                    .into_iter()
+                    .cycle()
+                    .take(4 * 4 * 4)
+                    .collect::<Vec<_>>(),
+                4,
+                4,
+            );
             let scene_for = |accent: Rect, image_rect: Rect| {
                 let mut scene = Scene::new();
                 let full = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
@@ -3996,19 +3967,15 @@ mod tests {
             oracle.set_cpu_metadata_enabled(false);
             oracle.set_cpu_pathtag_enabled(false);
             oracle.set_cpu_draw_prefix_enabled(false);
-            let image = ImageData {
-                data: Blob::new(Arc::new(
-                    [30_u8, 170, 240, 180]
-                        .into_iter()
-                        .cycle()
-                        .take(64)
-                        .collect::<Vec<_>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
-            };
+            let image = crate::raster::rgba8(
+                [30_u8, 170, 240, 180]
+                    .into_iter()
+                    .cycle()
+                    .take(64)
+                    .collect::<Vec<_>>(),
+                4,
+                4,
+            );
             let scene_for = |offset: f64, add_tag: bool| {
                 let mut scene = Scene::new();
                 let clip = Rect::new(12.0, 10.0, 180.0, 150.0);

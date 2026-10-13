@@ -103,9 +103,13 @@ pub mod legacy_route;
 #[cfg(target_os = "linux")]
 pub mod legacy_vm_host;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod member_limits;
+#[cfg(not(target_arch = "wasm32"))]
 mod membership_watch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
+#[cfg(feature = "agents")]
+pub mod moderation;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
@@ -113,9 +117,13 @@ mod persistence;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod presence_mailbox;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod public_avatars;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod relay_offers;
 #[cfg(not(target_arch = "wasm32"))]
 mod room_access;
+#[cfg(feature = "agents")]
+pub mod room_bots;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod room_records;
 #[cfg(not(target_arch = "wasm32"))]
@@ -203,3 +211,6 @@ pub use tilo_relay_protocol::{
     personal_continuity_workspace_id, personal_continuity_workspace_id_matches, room_workspace_id,
     room_workspace_id_matches,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod root_signer;

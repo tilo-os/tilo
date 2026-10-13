@@ -1,6 +1,8 @@
 use crate::managed::*;
+#[cfg(target_os = "linux")]
 use package_store::InstalledPackage;
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 #[test]
@@ -107,6 +109,7 @@ type = "cli"
     (root, package, trust)
 }
 
+#[cfg(target_os = "linux")]
 fn assert_normal_launch_expected_root(installed: &InstalledPackage) {
     let original = &installed.package_id_hex;
     let verify = |expected: &str| {
@@ -191,6 +194,7 @@ fn managed_package_verifies_actual_content_addressed_install() {
         .unwrap()
         .package;
     assert!(!installed.payload_root.join("manifest.toml").exists());
+    #[cfg(target_os = "linux")]
     assert_normal_launch_expected_root(&installed);
     assert!(
         package_store::integrity::record_dir(&installed)
@@ -296,8 +300,11 @@ fn managed_descriptors_are_bound_and_consumed_once() {
     )
     .unwrap();
     let required = [
-        ("collab".into(), "required@1".into()),
-        ("model-gateway".into(), "required@1".into()),
+        ("collab".into(), crate::manifest::service_req("required@1")),
+        (
+            "model-gateway".into(),
+            crate::manifest::service_req("required@1"),
+        ),
     ]
     .into_iter()
     .collect();
@@ -343,6 +350,10 @@ fn runtime(root: &std::path::Path) -> ManagedRuntime {
     )
     .unwrap();
     ManagedRuntime {
+        runtime_identity: runtime_bundle::component_pins::RetainedBundleTrust::from_verified(
+            &built,
+        )
+        .unwrap(),
         bundle_root: runtime_root,
         runtime_publisher: built.publisher_hex.unwrap(),
         sandbox_shim: std::env::current_exe().unwrap(),
@@ -350,6 +361,7 @@ fn runtime(root: &std::path::Path) -> ManagedRuntime {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn managed_runtime_resolves_the_declared_bundle_only_with_host_policy() {
     let (root, package, trust) = installed();
@@ -371,6 +383,19 @@ fn managed_runtime_resolves_the_declared_bundle_only_with_host_policy() {
     let selected = resolve(&options).unwrap();
     assert_eq!(selected.bundle_root, fixture.bundle_root);
     assert_eq!(selected.runtime_publisher, fixture.runtime_publisher);
+    let mut mismatched = selected;
+    mismatched.runtime_identity.root_hash = "00".repeat(32);
+    assert!(
+        ManagedLauncher::new(
+            package,
+            trust,
+            mismatched,
+            std::sync::Arc::new(CurrentAuthority(true.into()))
+        )
+        .err()
+        .unwrap()
+        .contains("identity differs")
+    );
     options.require_runtime_publisher = Some("00".repeat(32));
     assert!(resolve(&options).is_err());
     options.require_runtime_publisher = Some(fixture.runtime_publisher);

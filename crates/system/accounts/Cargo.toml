@@ -32,9 +32,10 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 
 # getrandom's `SysRng` draws generated passwords from the OS CSPRNG;
-# `zeroize` wipes decrypted plaintext from the heap.
+# `zeroize` wipes decrypted plaintext from the heap, including the secrets a
+# handoff credential deserializes into.
 getrandom.workspace = true
-zeroize.workspace = true
+zeroize = { workspace = true, features = ["serde"] }
 uuid.workspace = true
 url.workspace = true
 # The storage daemon reads short-lived credentials through the cloud source
@@ -48,11 +49,6 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional 
 
 [features]
 person = ["dep:tilo-resource"]
-
-[dev-dependencies]
-# Tests stage and inspect key files through the vault's own private-file
-# checks, and edit Windows ACLs through a bounded `icacls` call.
-private-fs = { path = "../private-fs" }
 
 [lints]
 workspace = true

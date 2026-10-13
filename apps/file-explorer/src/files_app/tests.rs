@@ -47,7 +47,6 @@ mod open_with_tests {
     #[test]
     fn files_are_classified_for_open_and_merge_by_extension() {
         merge_is_never_offered_for_binary_or_unsupported_names();
-        document_extensions_are_recognised_as_documents();
     }
 
     fn merge_is_never_offered_for_binary_or_unsupported_names() {
@@ -55,14 +54,6 @@ mod open_with_tests {
         assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
         assert!(!merge_supported_path(std::path::Path::new("photo.png")));
         assert!(!merge_supported_path(std::path::Path::new("unknown")));
-    }
-
-    fn document_extensions_are_recognised_as_documents() {
-        for f in ["report.odt", "memo.docx", "notes.md", "readme.markdown"] {
-            assert!(is_document(Path::new(f)), "{f}");
-        }
-        assert!(!is_document(Path::new("photo.png")));
-        assert!(!is_document(Path::new("main.rs")));
     }
 
     /// Each phase installs (or clears) its own thread-local opener and clears it
@@ -1403,22 +1394,22 @@ mod command_path_tests {
         std::fs::write(&path, b"x").unwrap();
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.path = path;
-        entry.availability = Some(crate::model::AvailabilityProjection {
+        entry.availability = Some(fs_protocol::AvailabilityProjectionV1 {
             schema_version: 1,
-            record_id: "record".into(),
-            current_version: Some("v1".into()),
-            residency: crate::model::Residency::Partial { resident_bytes: 1 },
-            transfer: crate::model::ProjectedTransfer {
-                phase: crate::model::TransferPhase::Idle,
+            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(1)),
+            current_version: Some(fs_protocol::FileVersionId(uuid::Uuid::from_u128(2))),
+            residency: fs_protocol::Residency::Partial { resident_bytes: 1 },
+            transfer: fs_protocol::ProjectedTransfer {
+                phase: fs_protocol::TransferPhase::Idle,
                 progress: None,
                 last_error: None,
                 last_error_at_ms: None,
                 error_truncated: false,
             },
-            policy: crate::model::AvailabilityPolicy::Automatic,
+            policy: fs_protocol::AvailabilityPolicy::Automatic,
             policy_inherited: false,
-            replicas: crate::model::ReplicaEvidence::Unknown,
-            freshness: crate::model::AvailabilityFreshness::default(),
+            replicas: fs_protocol::ProjectedReplicaEvidence::Unknown,
+            freshness: fs_protocol::ProjectedFreshness::default(),
         });
         let mut w = FileExplorerWidget::new();
         w.current_path = d.path().to_path_buf();
@@ -3046,7 +3037,7 @@ mod command_path_tests {
                 "replicas_observed_at_ms": null}
         }))
         .unwrap();
-        xattr::set(&file, crate::model::AVAILABILITY_XATTR, &availability).unwrap();
+        xattr::set(&file, fs_protocol::AVAILABILITY_XATTR, &availability).unwrap();
 
         let mut w = FileExplorerWidget::new();
         w.current_path = dir.path().to_path_buf();
@@ -3061,7 +3052,7 @@ mod command_path_tests {
         }));
         assert!(w.apply_command(FileCommand::KeepOffline));
         assert_eq!(
-            xattr::get(&file, crate::model::PIN_XATTR)
+            xattr::get(&file, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"pinned".as_slice())
@@ -3093,13 +3084,13 @@ mod command_path_tests {
         };
         xattr::set(
             &local,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability(serde_json::json!({"state": "resident", "bytes": 5})),
         )
         .unwrap();
         xattr::set(
             &remote,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability(serde_json::json!({"state": "not_resident"})),
         )
         .unwrap();
@@ -3127,13 +3118,13 @@ mod command_path_tests {
         );
         assert!(widget.apply_command(FileCommand::FreeLocalSpace));
         assert_eq!(
-            xattr::get(&local, crate::model::AVAILABILITY_CONTROL_XATTR)
+            xattr::get(&local, fs_protocol::AVAILABILITY_CONTROL_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"evict".as_slice())
         );
         assert_eq!(
-            xattr::get(&remote, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),
+            xattr::get(&remote, fs_protocol::AVAILABILITY_CONTROL_XATTR).unwrap(),
             None
         );
     }
@@ -3150,8 +3141,8 @@ mod command_path_tests {
         let after = dir.path().join("after.txt");
         std::fs::write(&before, b"shared").unwrap();
         let record = uuid::Uuid::from_u128(0x5151);
-        xattr::set(&before, crate::model::RECORD_ID_XATTR, record.as_bytes()).unwrap();
-        xattr::set(&before, crate::model::SYNC_XATTR, b"projected").unwrap();
+        xattr::set(&before, fs_protocol::RECORD_ID_XATTR, record.as_bytes()).unwrap();
+        xattr::set(&before, fs_protocol::SYNC_XATTR, b"projected").unwrap();
 
         let mut widget = FileExplorerWidget::new();
         widget.load(dir.path().to_path_buf());
@@ -3161,14 +3152,14 @@ mod command_path_tests {
         widget.selection.select_only(0);
         widget.scroll_offset.set((0.0, 137.0));
         std::fs::rename(&before, &after).unwrap();
-        xattr::set(&after, crate::model::SYNC_XATTR, b"local").unwrap();
+        xattr::set(&after, fs_protocol::SYNC_XATTR, b"local").unwrap();
         widget.next_metadata_refresh = Some(ui::time::now());
 
         assert!(widget.refresh_metadata_if_due(ui::time::now()));
         assert_eq!(widget.entries[0].path, after);
         assert_eq!(
             widget.entries[0].sync_state,
-            Some(crate::model::SyncState::Local)
+            Some(fs_protocol::SyncState::Local)
         );
         assert_eq!(widget.selection.selected(), vec![0]);
         assert_eq!(widget.selection.primary(), Some(0));
@@ -3202,13 +3193,13 @@ mod command_path_tests {
         };
         xattr::set(
             &automatic,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability("automatic", false),
         )
         .unwrap();
         xattr::set(
             &pinned,
-            crate::model::AVAILABILITY_XATTR,
+            fs_protocol::AVAILABILITY_XATTR,
             &availability("pinned", false),
         )
         .unwrap();
@@ -3240,16 +3231,13 @@ mod command_path_tests {
 
         w.apply_command(FileCommand::KeepOffline);
         assert_eq!(
-            xattr::get(&automatic, crate::model::PIN_XATTR)
+            xattr::get(&automatic, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"pinned".as_slice())
         );
-        assert_eq!(xattr::get(&pinned, crate::model::PIN_XATTR).unwrap(), None);
-        assert_eq!(
-            xattr::get(&ordinary, crate::model::PIN_XATTR).unwrap(),
-            None
-        );
+        assert_eq!(xattr::get(&pinned, fs_protocol::PIN_XATTR).unwrap(), None);
+        assert_eq!(xattr::get(&ordinary, fs_protocol::PIN_XATTR).unwrap(), None);
 
         // `refresh` deliberately treats this temp directory as an ordinary
         // non-workspace path. Restore the directly-read projections so the
@@ -3260,22 +3248,19 @@ mod command_path_tests {
         w.selection.select_all(w.entries.len());
         w.apply_command(FileCommand::RemoveOfflinePin);
         assert_eq!(
-            xattr::get(&pinned, crate::model::PIN_XATTR)
+            xattr::get(&pinned, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"automatic".as_slice())
         );
         assert_eq!(
-            xattr::get(&automatic, crate::model::PIN_XATTR)
+            xattr::get(&automatic, fs_protocol::PIN_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"pinned".as_slice()),
             "the opposite policy action must not rewrite an automatic record"
         );
-        assert_eq!(
-            xattr::get(&ordinary, crate::model::PIN_XATTR).unwrap(),
-            None
-        );
+        assert_eq!(xattr::get(&ordinary, fs_protocol::PIN_XATTR).unwrap(), None);
     }
 
     #[cfg(unix)]
@@ -3297,7 +3282,7 @@ mod command_path_tests {
                 "replicas_observed_at_ms": null}
         }))
         .unwrap();
-        xattr::set(&file, crate::model::AVAILABILITY_XATTR, &availability).unwrap();
+        xattr::set(&file, fs_protocol::AVAILABILITY_XATTR, &availability).unwrap();
 
         let mut w = FileExplorerWidget::new();
         w.current_path = dir.path().to_path_buf();
@@ -3319,16 +3304,16 @@ mod command_path_tests {
                 .any(|(_, command)| { *command == Some(FileCommand::RemoveOfflinePin) })
         );
         w.apply_command(FileCommand::RemoveOfflinePin);
-        assert_eq!(xattr::get(&file, crate::model::PIN_XATTR).unwrap(), None);
+        assert_eq!(xattr::get(&file, fs_protocol::PIN_XATTR).unwrap(), None);
     }
 
     fn failed_projected_file_offers_retry_and_availability_details() {
         let mut entry = ent("offline.txt", false, "text/plain");
-        entry.availability = crate::model::AvailabilityProjection::parse(
+        entry.availability = fs_protocol::AvailabilityProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
-                "current_version": null,
+                "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
                 "residency": {"state": "not_resident"},
                 "transfer": {"phase": "idle", "progress": null,
                     "last_error": "No available replica could provide this file",
@@ -3339,7 +3324,8 @@ mod command_path_tests {
                     "local_verified_at_ms": null, "replicas_observed_at_ms": 11}
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut w = FileExplorerWidget::new();
         w.entries = vec![entry];
         w.selection.select_only(0);
@@ -3385,7 +3371,7 @@ mod command_path_tests {
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.record_id =
             Some(*uuid::Uuid::from_u128(0xb0d4_e23f_c7cb_4ded_a427_b32c_f9da_9341).as_bytes());
-        entry.rich_metadata = crate::model::MetadataProjection::parse(
+        entry.rich_metadata = fs_protocol::MetadataProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3394,8 +3380,9 @@ mod command_path_tests {
                     "page_count": 4, "codec": "h264", "container": "mp4"}
             }))
             .unwrap(),
-        );
-        entry.share = crate::model::ShareProjection::parse(
+        )
+        .ok();
+        entry.share = fs_protocol::ShareProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3415,8 +3402,9 @@ mod command_path_tests {
                 }]
             }))
             .unwrap(),
-        );
-        entry.history = crate::model::HistoryProjection::parse(
+        )
+        .ok();
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3437,7 +3425,8 @@ mod command_path_tests {
                 "conflicts": []
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut w = FileExplorerWidget::new();
         w.entries = vec![entry];
         w.selection.select_only(0);
@@ -3480,12 +3469,89 @@ mod command_path_tests {
         assert!(w.collab_panel.is_none());
     }
 
+    /// A version an agent's own device signed reaches Workspace Activity as
+    /// the agent's, on behalf of its person, as the file's History names it.
+    #[test]
+    fn history_activity_names_an_agents_version_as_the_agent_for_its_person() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
+        let person = root.verifying_key().to_bytes();
+        let agent_key = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: person,
+            device_public_key: agent_key.verifying_key().to_bytes(),
+            device_label: "Agent: Scribe".into(),
+            capabilities: tilo_user_identity::CertificationPolicy::agent().ceiling,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        let device = certificate.device_public_key;
+        let version = "c0d4e23f-c7cb-4ded-a427-b32cf9da9342";
+        let record = "c0d4e23f-c7cb-4ded-a427-b32cf9da9341";
+        let mut entry = ent("report.txt", false, "text/plain");
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1, "record_id": record, "total_versions": 1,
+                "versions_truncated": false, "heads": [version],
+                "versions": [
+                    {"id": version, "record_id": record, "parents": [],
+                     "actor": {"person": person.to_vec(), "device": device.to_vec()},
+                     "timestamp_ms": 9, "content_hash": vec![3; 32], "metadata_hash": vec![4; 32], "provenance": "Edit"}
+                ], "conflicts_truncated": false, "conflicts": []
+            }))
+            .unwrap(),
+        ).ok();
+        let mut w = FileExplorerWidget::new();
+        w.trusted_humans = crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
+                    root_public_key: person,
+                    display_name: "Ada Lovelace".to_string(),
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: Some(tilo_user_identity::GovernedAgentIdentityV2 {
+                            agent_id: "scribe".into(),
+                            label: "Scribe".into(),
+                            color: [10, 20, 30],
+                        }),
+                    }],
+                }],
+            },
+        )
+        .unwrap();
+        w.entries = vec![entry];
+        w.selection.select_only(0);
+        let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(version).unwrap());
+        w.apply_command(FileCommand::ShowInWorkspaceActivity {
+            record_id: record.into(),
+            version_id: selected,
+        });
+        let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
+            entry: Some(entry), ..
+        }) = w.take_host_intent()
+        else {
+            panic!("Files hands the selected version to Workspace Activity");
+        };
+        assert_eq!(entry.author.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
+        let attribution = entry.author.attribution.expect("who acted for whom");
+        assert_eq!(attribution.actor, "agent:scribe");
+        assert_eq!(attribution.actor_name, "Scribe");
+        assert_eq!(attribution.on_behalf_of, Some(hex::encode(person)));
+        assert_eq!(
+            attribution.on_behalf_of_name.as_deref(),
+            Some("Ada Lovelace")
+        );
+    }
+
     fn history_activity_intent_preserves_selected_version_and_signed_identity() {
         let older = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
         let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
         let mut entry = ent("report.txt", false, "text/plain");
-        entry.history = crate::model::HistoryProjection::parse(
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1, "record_id": record, "total_versions": 2,
                 "versions_truncated": false, "heads": [current],
@@ -3499,7 +3565,7 @@ mod command_path_tests {
                 ], "conflicts_truncated": false, "conflicts": []
             }))
             .unwrap(),
-        );
+        ).ok();
         let mut w = FileExplorerWidget::new();
         w.entries = vec![entry];
         w.selection.select_only(0);
@@ -3538,7 +3604,7 @@ mod command_path_tests {
         std::fs::write(&file, b"report").unwrap();
         xattr::set(
             dir.path(),
-            crate::model::SHARE_CONTROL_XATTR,
+            fs_protocol::SHARE_CONTROL_XATTR,
             b"/run/tilo/app/tilo-fs-share.sock",
         )
         .unwrap();
@@ -3566,7 +3632,10 @@ mod command_path_tests {
                 humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key: person_bytes,
                     display_name: "Ada Lovelace".to_string(),
-                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 { certificate }],
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }],
                 }],
             },
         )
@@ -3614,22 +3683,20 @@ mod command_path_tests {
                     ))
         }));
 
-        w.entries[0].share = Some(crate::model::ShareProjection {
+        w.entries[0].share = Some(fs_protocol::ShareProjectionV1 {
             schema_version: 1,
-            record_id: uuid::Uuid::from_u128(82).to_string(),
+            record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(82)),
             observed_at_ms: 1,
-            grants: vec![crate::model::ShareGrantProjection {
-                grant_id: uuid::Uuid::from_u128(83).to_string(),
-                subject: crate::model::ShareSubject::Person {
-                    person: *person.as_bytes(),
-                },
-                permission: crate::model::FilePermission::Edit,
+            grants: vec![fs_protocol::ShareGrantProjectionV1 {
+                grant_id: uuid::Uuid::from_u128(83),
+                subject: fs_protocol::ShareSubjectProjection::Person { person },
+                permission: fs_protocol::FilePermission::Edit,
                 expires_at_ms: None,
                 revoked: false,
                 expired: false,
                 used: false,
                 exhausted: false,
-                status: crate::model::ShareGrantStatus::Active,
+                status: fs_protocol::ShareGrantStatus::Active,
                 redemptions: 0,
                 max_redemptions: None,
             }],
@@ -3664,7 +3731,10 @@ mod command_path_tests {
                         signature: [0; 64],
                     };
                     tilo_user_identity::sign_device_cert(&mut certificate, root).unwrap();
-                    tilo_user_identity::GovernedDeviceIdentityV2 { certificate }
+                    tilo_user_identity::GovernedDeviceIdentityV2 {
+                        certificate,
+                        agent: None,
+                    }
                 })
                 .collect();
             tilo_user_identity::TrustedIdentityProjectionV2 {
@@ -3743,7 +3813,7 @@ mod command_path_tests {
         let file = nested.join("renamed.txt");
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(&file, b"hello").unwrap();
-        xattr::set(&file, crate::model::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
+        xattr::set(&file, fs_protocol::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
         let projection = serde_json::json!({
             "schema_version": 1,
             "truncated": false,
@@ -3755,7 +3825,7 @@ mod command_path_tests {
         });
         xattr::set(
             dir.path(),
-            crate::model::RECORD_INDEX_XATTR,
+            fs_protocol::projection::RECORD_INDEX_XATTR,
             &serde_json::to_vec(&projection).unwrap(),
         )
         .unwrap();
@@ -3809,7 +3879,7 @@ mod command_path_tests {
         std::fs::write(&file, b"report").unwrap();
         xattr::set(
             dir.path(),
-            crate::model::SHARE_CONTROL_XATTR,
+            fs_protocol::SHARE_CONTROL_XATTR,
             socket.as_os_str().as_encoded_bytes(),
         )
         .unwrap();
@@ -3897,7 +3967,7 @@ mod command_path_tests {
         let previous = "a0d4e23f-c7cb-4ded-a427-b32cf9da9342";
         let current = "a0d4e23f-c7cb-4ded-a427-b32cf9da9344";
         let mut entry = ent("history.txt", false, "text/plain");
-        entry.history = crate::model::HistoryProjection::parse(
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3927,7 +3997,8 @@ mod command_path_tests {
                 "conflicts": []
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut widget = FileExplorerWidget::new();
         widget.entries = vec![entry];
         widget.selection.select_only(0);
@@ -3959,7 +4030,7 @@ mod command_path_tests {
         let conflict = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
         let mut entry = ent("conflicted.qdoc", false, "application/x-qdoc");
         entry.content_hash = Some([5; 32]);
-        entry.history = crate::model::HistoryProjection::parse(
+        entry.history = fs_protocol::HistoryProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3995,7 +4066,8 @@ mod command_path_tests {
                 }]
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut widget = FileExplorerWidget::new();
         widget.entries = vec![entry];
         widget.selection.select_only(0);
@@ -4041,7 +4113,6 @@ mod command_path_tests {
         let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(43));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Review merge".into(),
             summary: "Checking".into(),
             lines: Vec::new(),
@@ -4101,7 +4172,6 @@ mod command_path_tests {
         let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(52));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Delete permanently?".into(),
             summary: "This cannot be undone".into(),
             lines: Vec::new(),
@@ -4137,14 +4207,14 @@ mod command_path_tests {
         let socket = root.path().join("share-control.sock");
         xattr::set(
             root.path(),
-            crate::model::SHARE_CONTROL_XATTR,
+            fs_protocol::SHARE_CONTROL_XATTR,
             socket.as_os_str().as_encoded_bytes(),
         )
         .unwrap();
         let grant = uuid::Uuid::parse_str("c0d4e23f-c7cb-4ded-a427-b32cf9da9343").unwrap();
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.path = file;
-        entry.share = crate::model::ShareProjection::parse(
+        entry.share = fs_protocol::ShareProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -4164,7 +4234,8 @@ mod command_path_tests {
                 }]
             }))
             .unwrap(),
-        );
+        )
+        .ok();
         let mut w = FileExplorerWidget::new();
         w.workspace_roots = vec![root.path().to_path_buf()];
         w.entries = vec![entry];
@@ -4314,10 +4385,7 @@ mod responsive_body_tests {
             let frame = taffy
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(width),
-                            height: Dimension::length(height),
-                        },
+                        size: Size::from_lengths(width, height),
                         ..Default::default()
                     },
                     &[node],
@@ -4355,34 +4423,22 @@ mod responsive_body_tests {
         }
 
         fn cursor(&mut self, x: f64, y: f64) {
-            self.dispatch(&winit::event::WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(x, y),
-            });
+            self.dispatch(&ui::synthetic_input::cursor_moved(x, y));
         }
 
         fn right_press(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Right,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_input(
+                winit::event::ElementState::Pressed,
+                winit::event::MouseButton::Right,
+            ));
         }
 
         fn left_release(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_release());
         }
 
         fn left_press(&mut self) {
-            self.dispatch(&winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            });
+            self.dispatch(&ui::synthetic_input::mouse_press());
         }
 
         /// The labels of the currently-open context/favourite menu, if any.
@@ -4438,11 +4494,7 @@ mod responsive_body_tests {
                 None,
                 winit::event::ElementState::Pressed,
             );
-            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            });
+            self.dispatch(&ui::synthetic_input::keyboard_input(ev));
         }
 
         fn type_char(&mut self, s: &str) {
@@ -4451,11 +4503,7 @@ mod responsive_body_tests {
                 Some(winit::keyboard::SmolStr::new(s)),
                 winit::event::ElementState::Pressed,
             );
-            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            });
+            self.dispatch(&ui::synthetic_input::keyboard_input(ev));
         }
     }
 
@@ -5351,7 +5399,6 @@ mod accessibility_tests {
     fn collaboration_sheet_is_a_focused_modal_semantic_subtree() {
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Sharing — report.pdf".into(),
             summary: "Shared with 2 people".into(),
             lines: vec!["Alice can view".into(), "Bob can edit".into()],
@@ -5384,7 +5431,6 @@ mod accessibility_tests {
         std::fs::write(&file, b"only local copy").unwrap();
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: t("files-destructive-eviction-title"),
             summary: t_args("files-destructive-eviction-summary", &[arg("count", 1_i64)]),
             lines: vec![t("files-destructive-eviction-loss")],
@@ -5399,7 +5445,7 @@ mod accessibility_tests {
             Some(t("files-destructive-eviction-confirm").as_str())
         );
         assert_eq!(
-            xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),
+            xattr::get(&file, fs_protocol::AVAILABILITY_CONTROL_XATTR).unwrap(),
             None,
             "opening the warning must not perform the destructive operation"
         );
@@ -5410,7 +5456,7 @@ mod accessibility_tests {
         widget.close_collab_panel();
         assert!(widget.apply_command(command));
         assert_eq!(
-            xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR)
+            xattr::get(&file, fs_protocol::AVAILABILITY_CONTROL_XATTR)
                 .unwrap()
                 .as_deref(),
             Some(b"evict-destructive".as_slice())

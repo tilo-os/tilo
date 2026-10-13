@@ -791,7 +791,8 @@ impl PropertyList {
         self
     }
 
-    /// A stable id for tests, inspection and the accessibility tree.
+    /// A stable id for semantic resources, inspection and accessibility.
+    /// Trailing property actions need this identity to be published as resources.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
@@ -968,8 +969,7 @@ impl Widget for PropertyList {
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 let hovered = target_at(&self.layout, self.cursor);
                 if hovered != self.hovered_action {
                     self.hovered_action = hovered;
@@ -1029,13 +1029,7 @@ impl Widget for PropertyList {
         Some((rect, label))
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 
     /// Laid out again when a list sharing its label column widened it.
     fn is_layout_dirty(&self) -> bool {
@@ -1068,6 +1062,10 @@ impl Widget for PropertyList {
             .enumerate()
             .map(|(index, property)| {
                 let mut node = row_node(&property.row(), property.accessible_value.as_deref());
+                node.key = Some(index as u64);
+                for (action, child) in node.children.iter_mut().enumerate() {
+                    child.key = Some(action as u64);
+                }
                 if let Some(layout) = self.layout.rows.get(index) {
                     node = node.with_bounds(layout.rect);
                     for (action, rect) in node
@@ -1087,7 +1085,7 @@ impl Widget for PropertyList {
         if let Some(id) = &self.id {
             node = node.with_semantic_key(id);
         }
-        Some(node)
+        Some(node.with_keyed_action_routes(self.id.as_deref().unwrap_or("property-list")))
     }
 
     /// An action addressed to one of a row's action buttons: `[row,
@@ -1141,6 +1139,7 @@ impl PropertyList {
 /// primary ink with its kind's text treatment and an optional trailing copy
 /// action. Unbreakable kinds are elided before the action.
 pub struct PropertyValue {
+    id: Option<String>,
     value: String,
     kind: TextKind,
     copyable: bool,
@@ -1155,6 +1154,7 @@ pub struct PropertyValue {
 impl PropertyValue {
     pub fn new(value: impl Into<String>) -> Self {
         Self {
+            id: None,
             value: value.into(),
             kind: TextKind::Prose,
             copyable: false,
@@ -1165,6 +1165,13 @@ impl PropertyValue {
             pressed: crate::pointer_replay::HeldPress::default(),
             metrics: None,
         }
+    }
+
+    /// A stable identity for resource publication and accessibility actions.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     #[must_use]
@@ -1205,6 +1212,10 @@ impl PropertyValue {
 }
 
 impl Widget for PropertyValue {
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1330,8 +1341,7 @@ impl Widget for PropertyValue {
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let point = ctx.logical(position);
                 self.hovered = target.contains(point);
             }
             WindowEvent::MouseInput {
@@ -1396,11 +1406,15 @@ impl Widget for PropertyValue {
         if self.copyable {
             node = node.with_children(vec![
                 AccessNode::new(Role::Button)
+                    .with_key(0)
                     .with_name("Copy")
                     .with_state(AccessState::new().focusable(true)),
             ]);
         }
-        Some(node)
+        if let Some(id) = &self.id {
+            node = node.with_semantic_key(id);
+        }
+        Some(node.with_keyed_action_routes(self.id.as_deref().unwrap_or("property-value")))
     }
 
     fn perform_action(

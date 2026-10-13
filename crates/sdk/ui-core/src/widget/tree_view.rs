@@ -3204,10 +3204,6 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     .and_then(|decoration| decoration.presence.as_ref())
                 {
                     // Mist is painted in device space.
-                    #[allow(
-                        clippy::arithmetic_side_effects,
-                        reason = "kurbo Affine application is floating-point matrix math; it cannot overflow or panic"
-                    )]
                     let device = transform.transform_rect_bbox(row_rect);
                     for user in presence.peers_on(key) {
                         presence.draw_peer_mist(scene, theme, user, device);
@@ -3793,12 +3789,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     .or_else(|| self.heading.clone()),
             )
             .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.is_enabled(),
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.is_enabled()),
+            );
         if let Some(sel) = self.selected()
             && let Some(idx) = self.visible_index_of(sel)
             && let Some((TreeRowKey::Node(_), depth)) = self.index.row_at(&self.model, idx)
@@ -5235,26 +5231,15 @@ mod tests {
     }
 
     pub(super) fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
+        crate::synthetic_input::cursor_moved(x, y)
     }
 
     pub(super) fn mouse_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
+        crate::synthetic_input::mouse_press()
     }
 
     pub(super) fn mouse_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
+        crate::synthetic_input::mouse_release()
     }
 
     pub(super) fn key_press(logical_key: Key) -> WindowEvent {
@@ -5443,10 +5428,7 @@ mod tests {
             let node = view.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
             let root_taffy = taffy.parent_node(
                 Style {
-                    size: Size {
-                        width: Dimension::length(200.0),
-                        height: Dimension::length(80.0),
-                    },
+                    size: Size::from_lengths(200.0, 80.0),
                     ..Default::default()
                 },
                 &[node],

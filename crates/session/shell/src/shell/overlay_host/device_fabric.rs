@@ -510,7 +510,7 @@ pub(super) fn speaker_group_summary(
         .members
         .iter()
         .filter(|member| {
-            member.state == crate::shell::speaker_group::SpeakerMemberState::AwaitingConsent
+            member.state == crate::shell::speaker_group::SpeakerMemberStatus::AwaitingConsent
         })
         .count();
     let counts: [(&str, ui::i18n::ArgValue); 3] = [

@@ -168,6 +168,33 @@ room; members refuse its later writes on their own. Room administration
 refuses agent devices. Other users' agents are not admitted, and agents
 never call the host's room actions.
 
+A room the desktop hosts itself applies the same rule through its action
+broker: an agent session takes the role its membership preset grants,
+capped by its person's role (`admit_agent_delegation_at`,
+`crates/collab/tilo-action-broker/src/collab_broker_capnp.rs`), and acts
+with its person's authority bounded by the preset's grants. Every
+revalidation asks again, so removing the person or revoking the agent's
+admission ends an open session at once. The cap, and the answers to the
+questions about agents that are still open (other people's agents, final
+withdrawal, members enforcing app scope), live in one place,
+`tilo_action_policy::roles::agent_policy`.
+
+History names an agent's work as the agent's, on behalf of its person:
+`ui::history_source::AuthorDirectory` resolves an authenticated agent
+invoker, or an agent's own device key, to "Scribe · Agent, for Ada" in the
+agent's colour, and keeps who acted and for whom as data
+(`HistoryAuthor::attribution`) that `history.list` returns. Files names
+file versions the same way from the identity projection, which marks a
+device governance admitted as an agent (after verifying its person's
+delegation) and keeps agent devices out of the devices sharing encrypts to.
+The workspace's Activity and every app's own history name the same agents
+by the same check (`WorkspaceTree::verified_agents`): the compositor reads
+them into Activity, and the broker tells each app's context stream its
+room's verified agents when it subscribes and whenever they change
+(`ChannelContext.historyAgents`). A device whose delegation does not verify
+for exactly that device stays an unknown participant. These lists are
+presentation only; nothing is admitted by them.
+
 ### Load hints beside local records
 
 Loading a large record spends most of its time rebuilding every change to
@@ -372,6 +399,30 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 - **A cross-device action is signed by the device that sends it, not vouched for by the host that routes it.** Device certificates are public, so a workspace host — including a hosted server operated for the user — could otherwise name any member it has seen as the source of an action it invented. The sending device signs the exact action and its issue time; the target broker refuses any effect without that signature, outside a 60-second freshness window, or already admitted, and still checks the certificate against the room's current authority. Payloads are not hidden from the host. See `docs/architecture/collaboration.md`, "Private actions are signed by their source device".
 - iroh's FUSE traffic (`fs`) is QUIC + TLS 1.3.
 - At-rest encryption for cloud-backed `/var/workspace` is a follow-up.
+
+## Private file contents from the session chooser
+
+The launcher-authenticated chooser connection also supports owner-confirmed Open
+selections for apps with no filesystem grants. The OS picker uses its normal
+user scope; a selection does not grant that directory to the application or
+publish the choice into collaborative state. Legacy path-returning requests still
+require existing workspace filesystem grants.
+
+A contents selection opens a regular file read-only beneath the approved picker
+roots using directory descriptors pinned when the request is admitted and the
+existing beneath/no-symlink resolver. Replacing a root while the chooser waits
+cannot substitute another directory. Its opaque capability is
+bound to the asking connection, room, app, request and exact file metadata. The
+host checks current local owner authority and returns sequential chunks of at
+most 8 KiB, with at most 16 files and 64 MiB per selection. Capabilities expire
+in 60 seconds, disappear after EOF/release or disconnect, and refuse changed
+files. Pending choosers cancel on disconnect and have a bounded deadline. The
+application receives bytes and a display name, never a replayable host path.
+
+This additive chooser protocol requires matching Shell and SDK delivery. It
+changes neither Landlock access nor package publisher trust: Store still reviews
+and installs selected archive bytes through its canonical trust and install
+contracts.
 
 ## Security matrix
 

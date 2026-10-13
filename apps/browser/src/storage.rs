@@ -70,11 +70,6 @@ pub fn data_dir() -> Option<PathBuf> {
         .cloned()
         .or_else(|| tilo_paths::data_dir().map(|p| p.join("tilo-browser")))
 }
-pub fn config_dir() -> Option<PathBuf> {
-    ROOT.get()
-        .cloned()
-        .or_else(|| tilo_paths::config_dir().map(|p| p.join("tilo-browser")))
-}
 pub fn cache_dir() -> Option<PathBuf> {
     ROOT.get()
         .map(|p| p.join("cache"))
@@ -92,7 +87,8 @@ pub fn allocate_private_root() -> Result<PathBuf, String> {
             std::env::temp_dir().join(format!("{PRIVATE_ROOT_PREFIX}{}", uuid::Uuid::new_v4()));
         match std::fs::create_dir(&root) {
             Ok(()) => {
-                private_fs::restrict_directory(&root).map_err(|error| error.to_string())?;
+                tilo_files::native::private::restrict_directory(&root)
+                    .map_err(|error| error.to_string())?;
                 let initialized = write_private_root_file(
                     &root.join(PRIVATE_ROOT_MARKER),
                     PRIVATE_ROOT_MARKER_CONTENT.as_bytes(),
@@ -122,7 +118,7 @@ pub fn allocate_private_root() -> Result<PathBuf, String> {
 fn write_private_root_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    private_fs::owner_only(&mut options);
+    tilo_files::native::private::owner_only(&mut options);
     let mut file = options.open(path)?;
     std::io::Write::write_all(&mut file, bytes)
 }

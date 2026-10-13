@@ -1,12 +1,5 @@
 //! Exercise the production HTTP routes and authenticated native presence dispatcher.
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing,
-    reason = "in tests these are assertions"
-)]
-#![allow(
     clippy::too_many_lines,
     reason = "one authenticated cross-carrier scenario"
 )]
@@ -490,6 +483,13 @@ async fn expired_cert_gets_no_live_grant() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
 async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_input() {
     let signer = SigningKey::from_bytes(&[61; 32]);
     let other_root = SigningKey::from_bytes(&[62; 32]);
@@ -573,22 +573,34 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
         live: live.relay.clone(),
         host_info: HostInfo {
             host_cert: host.clone(),
-            webtransport_port: 0,
+            webtransport_port: Some(0),
             certificate_sha256: None,
+            webtransport_origin: None,
         },
         allowed_origins: vec![],
         features: 0,
         rooms: relay.rooms().cloned(),
+        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
+        profiles: envelopes::Envelopes::of(
+            envelopes::Kind::Profile,
+            relay.state_root().join("profiles"),
+        ),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
     let serving = tokio::spawn(plain_accept_loop(listener, web.clone()));
+    let online_sessions = web.sessions.clone();
     drop(web);
     let maintaining = tokio::spawn(maintain_legacy(legacy.clone(), relay.web_context().clone()));
     let token = browser(addr, &owner_key, &owner).await;
     let guest_token = browser(addr, &guest_key, &guest).await;
+    // Each person with an open session counts once.
+    let online = online_sessions.online_users();
+    assert_eq!(online.len(), 2);
+    assert_eq!(online.get(&owner.user_public_key), Some(&1));
+    assert_eq!(online.get(&guest.user_public_key), Some(&1));
     // A member learns the device of the session beside the node, once the
     // relay names one.
     let node = |token| async move {

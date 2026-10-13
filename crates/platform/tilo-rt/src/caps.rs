@@ -1,6 +1,6 @@
 //! What this crate provides on each target, as data an app can query.
 
-pub use tilo_platform_caps::{Availability, availability};
+pub use tilo_platform_caps::{Availability, availability, available};
 /// One capability of this crate, for [`availability`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]

@@ -7,7 +7,7 @@
 
 use crate::widget::ModelPath;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -18,7 +18,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_item,
+    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_item,
 };
 
 #[derive(Clone, Debug)]
@@ -89,11 +89,8 @@ pub struct Heatmap {
     title: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
-    hovered: Option<usize>,
+    inspection: ChartInspection<usize>,
     activated: Option<String>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
 }
 
 impl Heatmap {
@@ -106,27 +103,14 @@ impl Heatmap {
             title: String::new(),
             height: 340.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
+            inspection: ChartInspection::default(),
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: HeatmapStyle) -> Self {
+    pub fn with_style(mut self, style: HeatmapStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: HeatmapStyle) -> Self {
-        self.styled(style)
-    }
-    pub fn style(&self) -> &HeatmapStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut HeatmapStyle {
-        &mut self.style
     }
     #[must_use]
     pub fn titled(mut self, title: impl Into<String>) -> Self {
@@ -142,20 +126,20 @@ impl Heatmap {
         self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.hovered = self.cells.iter().position(|cell| cell.id == id);
-        self.keyboard_inspection = self.hovered.is_some();
+        self.inspection.hovered = self.cells.iter().position(|cell| cell.id == id);
+        self.inspection.keyboard = self.inspection.hovered.is_some();
         if let Some(rect) = self
+            .inspection
             .hovered
             .and_then(|index| self.cells.get(index))
             .and_then(|cell| self.cell_rect(cell))
         {
-            self.pointer = rect.center();
+            self.inspection.pointer = rect.center();
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
 
     fn grid_rect(&self) -> Rect {
@@ -218,24 +202,22 @@ impl Heatmap {
 }
 
 impl InteractiveChart for Heatmap {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = usize;
+    fn inspection(&mut self) -> &mut ChartInspection<usize> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
-        self.hovered = self.cells.iter().position(|cell| {
+        self.inspection.hovered = self.cells.iter().position(|cell| {
             self.cell_rect(cell)
-                .is_some_and(|rect| rect.contains(self.pointer))
+                .is_some_and(|rect| rect.contains(self.inspection.pointer))
         });
     }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
-    }
     fn activate_hovered(&mut self) -> bool {
-        let Some(cell) = self.hovered.and_then(|index| self.cells.get(index)) else {
+        let Some(cell) = self
+            .inspection
+            .hovered
+            .and_then(|index| self.cells.get(index))
+        else {
             return false;
         };
         self.activated = Some(cell.id.clone());
@@ -249,15 +231,16 @@ impl InteractiveChart for Heatmap {
             .filter(|(_, cell)| self.cell_rect(cell).is_some())
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        self.hovered = moved_item(self.hovered, &candidates, action);
+        self.inspection.hovered = moved_item(self.inspection.hovered, &candidates, action);
         if let Some(rect) = self
+            .inspection
             .hovered
             .and_then(|index| self.cells.get(index))
             .and_then(|cell| self.cell_rect(cell))
         {
-            self.pointer = rect.center();
+            self.inspection.pointer = rect.center();
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
@@ -276,13 +259,14 @@ impl Widget for Heatmap {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        if self.keyboard_inspection
+        if self.inspection.keyboard
             && let Some(rect) = self
+                .inspection
                 .hovered
                 .and_then(|index| self.cells.get(index))
                 .and_then(|cell| self.cell_rect(cell))
         {
-            self.pointer = rect.center();
+            self.inspection.pointer = rect.center();
         }
         let low = self
             .style
@@ -359,7 +343,7 @@ impl Widget for Heatmap {
                 None,
                 &RoundedRect::from_rect(rect, self.style.corner_radius),
             );
-            if self.hovered == Some(index) {
+            if self.inspection.hovered == Some(index) {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(2.0),
                     transform,
@@ -389,7 +373,7 @@ impl Widget for Heatmap {
                 );
             }
         }
-        if let Some(index) = self.hovered.filter(|_| self.style.tooltip)
+        if let Some(index) = self.inspection.hovered.filter(|_| self.style.tooltip)
             && let Some(cell) = self.cells.get(index)
         {
             let row = self.rows.get(cell.row).map_or("", String::as_str);
@@ -409,7 +393,7 @@ impl Widget for Heatmap {
                 transform,
                 tr,
                 theme,
-                self.pointer,
+                self.inspection.pointer,
                 self.rect,
                 130.0,
                 (&title, &detail),
@@ -439,10 +423,7 @@ impl Widget for Heatmap {
                     } else {
                         cell.detail.clone()
                     })
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect();
         Some(

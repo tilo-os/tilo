@@ -24,7 +24,7 @@ use std::rc::Rc;
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -969,10 +969,7 @@ impl Widget for AuthenticatorApp {
         self.field_nodes = self.add_panel.host_field_nodes(node_map);
         let node = taffy.parent_node(
             Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 flex_grow: 1.0,
                 ..Default::default()
             },
@@ -1010,8 +1007,7 @@ impl Widget for AuthenticatorApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse = ctx.logical(position);
         }
 
         // The sheet owns all input while it is open.
