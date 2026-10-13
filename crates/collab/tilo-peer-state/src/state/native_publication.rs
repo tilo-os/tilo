@@ -98,23 +98,10 @@ impl NativePublicationCut {
 // The known tuple serializer writes directly into a fixed-size hash state; it
 // neither materializes the wire bytes nor changes the durable queue format.
 fn pending_stamp(pending: &([u8; 32], NeighbourMsg, bool)) -> Result<[u8; 32], AdmissionError> {
-    struct Hash(blake3::Hasher);
-    impl postcard::ser_flavors::Flavor for Hash {
-        type Output = [u8; 32];
-        fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
-            self.0.update(&[byte]);
-            Ok(())
-        }
-        fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-            self.0.update(bytes);
-            Ok(())
-        }
-        fn finalize(self) -> postcard::Result<Self::Output> {
-            Ok(*self.0.finalize().as_bytes())
-        }
-    }
-    postcard::serialize_with_flavor(pending, Hash(blake3::Hasher::new()))
-        .map_err(|_| AdmissionError::from("native cut pending identity could not be encoded"))
+    let mut hasher = blake3::Hasher::new();
+    crate::postcard_sink::hash_into(pending, &mut hasher, usize::MAX)
+        .map_err(|_| AdmissionError::from("native cut pending identity could not be encoded"))?;
+    Ok(*hasher.finalize().as_bytes())
 }
 
 impl StatePeer {
