@@ -173,27 +173,6 @@ impl DeepLink {
             _ => None,
         }
     }
-
-    /// The [`SearchableType`] id this deep link belongs to.
-    pub fn type_id(&self) -> &'static str {
-        match self {
-            DeepLink::Track(_) => SONG_TYPE_ID,
-            DeepLink::Album(_) => ALBUM_TYPE_ID,
-            DeepLink::Artist(_) => ARTIST_TYPE_ID,
-            DeepLink::Playlist(_) => PLAYLIST_TYPE_ID,
-        }
-    }
-
-    /// The row this entity is: what search anchors it at and opening it
-    /// shows or plays ([`crate::actions::anchor_effect`]).
-    pub fn anchor(&self) -> String {
-        match self {
-            DeepLink::Track(id) => crate::actions::track_resource_id(id),
-            DeepLink::Album(id) => crate::actions::album_resource_id(id),
-            DeepLink::Artist(id) => crate::actions::artist_resource_id(id),
-            DeepLink::Playlist(id) => crate::actions::playlist_resource_id(id),
-        }
-    }
 }
 
 /// Turns a query into [`SearchHit`]s by delegating to whichever
