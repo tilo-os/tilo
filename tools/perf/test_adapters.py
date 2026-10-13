@@ -74,12 +74,12 @@ class FsGate(unittest.TestCase):
             name, unit, value = match.groups()
             slos[name] = float(value) * (1000.0 if unit == "secs" else 1.0)
         reports = dict(re.findall(r'report\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*(\w+_SLO),?\s*\)', source))
-        self.assertEqual(len(reports), 12, reports)
-        # Gated against a baseline of the same run: compared night to night,
-        # its ceiling a reported target the gate does not assert.
+        self.assertEqual(len(reports), 13, reports)
+        # The same tail read retains a second, same-run ratio assertion.
         relative = dict(re.findall(
             r'report_relative\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*\([^)]*\),\s*(\w+),?\s*\)', source))
         self.assertEqual(relative, {"document-media-cold-64m-tail-4m-read": "MEDIA_TAIL_READ_SHARE_OF_WHOLE_LOAD"})
+        self.assertIn("document-media-cold-64m-tail-4m-read", reports)
         # The daemon heap KPIs of the footprint test, in MiB.
         footprint = FOOTPRINT.read_text()
         for match in re.finditer(r"const (\w+_HEAP_SLO): usize = (\d+)((?: \* 1024)+);", footprint):
@@ -93,10 +93,6 @@ class FsGate(unittest.TestCase):
         got = {kpi: entry["max"] for kpi, entry in budgets.kpis.items()
                if kpi.startswith("fs.") and entry.get("enforce")}
         self.assertEqual(got, expected)
-        for name, constant in relative.items():
-            entry = budgets.kpis[f"fs.{name}"]
-            self.assertFalse(entry.get("enforce", False), name)
-            self.assertEqual(entry["source"], constant, name)
         for kpi, constant in ((f"fs.{name}", constant) for name, constant in reports.items()):
             self.assertTrue(budgets.kpis[kpi]["enforce"], kpi)
             self.assertEqual(budgets.kpis[kpi]["source"], constant, kpi)
