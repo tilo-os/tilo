@@ -201,6 +201,21 @@ launches the packaged app and should be checked with foreign-frame counters.
 invocation against an isolated compositor. `app-launch-proof.py` selects native
 applications by provider/ID and checks that a new surface actually paints.
 
+### Native mounted host-service regression tests
+
+Use `ui::framework::testing::drive_live_window` to exercise a resource app's
+actual mounted native root without starting its window event loop. With
+`test-support`, attach a socket pair through
+`App::test_floating_service_connection` and
+`FloatingSurfaceServiceClient::from_test_stream`, then send host messages and
+call `App::test_pump_floating_service`. This runs production dispatch and
+response serialization rather than invoking the app's handler directly.
+For device-shell operations, assert the request ID and successful outcome on
+the original connection, repeat on that same connection, and verify that an
+idle pump does not replay the operation. Terminal's
+`native_resource_terminal_inspector_is_acknowledged_through_the_mounted_root`
+test covers forwarding through the mounted component's `AppWidget` capability.
+
 ### Wire protocol (when you can't use the CLI)
 
 The socket accepts newline-delimited JSON. Every command returns one JSON response line.
