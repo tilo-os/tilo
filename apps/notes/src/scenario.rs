@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use ui::headless::{FrameHarness, SemanticExpectation};
 use vello::kurbo::{Point, Rect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton};
 
 use crate::actions::{self, Action};
 use crate::main_panel::MainPanel;
@@ -663,11 +663,7 @@ fn chord(driver: &mut FrameHarness, modifiers: &[&str], key: &str) {
 
 fn pointer(driver: &mut FrameHarness, at: Point, state: ElementState, button: MouseButton) {
     move_pointer(driver, at);
-    driver.send(&WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state,
-        button,
-    });
+    driver.send(&ui::synthetic_input::mouse_input(state, button));
 }
 
 fn press(driver: &mut FrameHarness, at: Point, button: MouseButton) {
@@ -675,10 +671,7 @@ fn press(driver: &mut FrameHarness, at: Point, button: MouseButton) {
 }
 
 fn move_pointer(driver: &mut FrameHarness, at: Point) {
-    driver.send(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-    });
+    driver.send(&ui::synthetic_input::cursor_moved(at.x, at.y));
 }
 
 /// Every accessibility node of the window, depth first.

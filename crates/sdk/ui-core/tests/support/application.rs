@@ -612,24 +612,14 @@ impl Widget for ProbeRoot {
             }
         });
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(80.0),
-                height: taffy::Dimension::length(30.0),
-            },
+            size: taffy::Size::from_lengths(80.0, 30.0),
             ..Default::default()
         };
         let node = tree.new_leaf(style).unwrap();
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(
-        &mut self,
-        tree: &taffy::TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: vello::kurbo::Point,
-    ) {
-        self.rect = tilo_ui::widget::layout_rect(tree, node, origin);
-    }
+    tilo_ui::rect_geometry!();
     fn draw(
         &mut self,
         _: &mut vello::Scene,
@@ -648,9 +638,6 @@ impl Widget for ProbeRoot {
     }
     fn name(&self) -> &'static str {
         "application-probe"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        self.rect
     }
     fn is_focusable(&self) -> bool {
         true
@@ -862,9 +849,6 @@ impl AppWidget for ProbeRoot {
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("P")
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
     }
 }
 

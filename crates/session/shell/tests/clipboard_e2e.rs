@@ -12,12 +12,9 @@
 //! suite passing against a session it never touched.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -3091,10 +3088,6 @@ fn private_x11_activation_facts(compositor: &Compositor) -> Vec<(u32, bool, bool
 /// heavyweight graphical process, but it is a genuine compatibility lane:
 /// private HOME/XDG state, Tilo-created Xauthority, no inherited display or
 /// D-Bus session, and a child process group that is always torn down.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "the timeout is a fixed, short test-fixture deadline"
-)]
 fn private_xwayland_connection(compositor: &Compositor) -> Option<(String, PathBuf)> {
     let bridge = compositor.runtime_dir.join("tilo-session/xwayland");
     let deadline = tilo_test_env::hang_deadline();
@@ -4056,10 +4049,6 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn toolkit_globals_are_advertised_and_privileged_protocols_stay_socket_only() {
     // Phase `compositor_advertises_the_globals_a_toolkit_requires`.
     // A real toolkit must find every global it treats as mandatory — GTK

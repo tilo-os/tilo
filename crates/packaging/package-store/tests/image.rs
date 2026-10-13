@@ -712,7 +712,7 @@ fn system_image_overlay_lowers_are_materialized_locally_with_current_trust_and_i
     );
 }
 
-/// The OS image's sparse system copy of `runtime` (TIL-735): `usr/lib64/libc.so.6`
+/// The OS image's sparse system copy of `runtime`: `usr/lib64/libc.so.6`
 /// left out of the tree, its bytes in a host file the image names instead.
 fn sparse_system_runtime(
     runtime: &Packed,

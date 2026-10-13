@@ -56,7 +56,7 @@ reqwest = { workspace = true, features = ["blocking"] }
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 # Pure Rust: a thin app gets the `zstd` crate from libruntime_dylib.so, which
 # exports Rust symbols only, so zstd's C decoder would not link.
-ruzstd = { version = "0.9", default-features = false, features = ["std"] }
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

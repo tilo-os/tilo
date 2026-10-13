@@ -28,6 +28,7 @@
 //! given its own row in the history surfaces — see [`is_group_marker`].
 
 use crate::time::{Duration, UNIX_EPOCH};
+use tilo_automerge::ReadTyped as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, PatchAction, Prop, ReadDoc, Value};
@@ -35,7 +36,7 @@ use automerge::{AutoCommit, ObjType, PatchAction, Prop, ReadDoc, Value};
 use crate::history_source::authors::AuthorDirectory;
 use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{NamedRange, from_hex16, hex16};
-use tilo_automerge::read::{int_at, str_at};
+use tilo_automerge::read::int_at;
 
 /// Namespaced so it cannot collide with an app's own schema: `qdoc` uses
 /// `content` / `comments` / `props`, and the shell's room document uses
@@ -61,11 +62,11 @@ pub fn read_named_ranges(doc: &AutoCommit, authors: &AuthorDirectory) -> Vec<Nam
         let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, &key) else {
             continue;
         };
-        let Some(label) = str_at(doc, &rec, "label") else {
+        let Some(label) = doc.str_at(&rec, "label") else {
             continue;
         };
-        let end = str_at(doc, &rec, "end").and_then(|s| from_hex16(&s));
-        let by = str_at(doc, &rec, "by");
+        let end = doc.str_at(&rec, "end").and_then(|s| from_hex16(&s));
+        let by = doc.str_at(&rec, "by");
         // `filter` above guarantees `ms > 0` by the time the cast below runs,
         // so the conversion never loses a sign; `checked_add` only guards
         // the (unreachable for an out-of-range timestamp) case of overflowing
@@ -265,7 +266,7 @@ fn named_range_record(
     let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, record_id) else {
         return None;
     };
-    let end = str_at(doc, &rec, "end").and_then(|value| from_hex16(&value));
+    let end = doc.str_at(&rec, "end").and_then(|value| from_hex16(&value));
     Some((start, end))
 }
 
@@ -273,7 +274,7 @@ fn str_at_record(doc: &AutoCommit, record_id: &str, field: &str) -> Option<Strin
     let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, record_id) else {
         return None;
     };
-    str_at(doc, &rec, field)
+    doc.str_at(&rec, field)
 }
 
 /// True when every patch in `patches` lands inside the named-range map — used

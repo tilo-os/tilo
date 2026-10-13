@@ -573,7 +573,8 @@ async fn active_recovery(count: usize) {
         fixture
             .store
             .count_pending(&fixture.recipient.device_public_key)
-            .unwrap(),
+            .unwrap()
+            .saturating_add(u32::try_from(fixture.count_held()).unwrap()),
         u32::try_from(
             case.initial
                 .len()

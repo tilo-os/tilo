@@ -568,10 +568,9 @@ fn activity_refresh_skips_unchanged_frames() {
 }
 
 use std::collections::HashMap as StdHashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::Affine;
-use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
@@ -724,25 +723,16 @@ impl Widget for StubContent {
         node_map: &mut StdHashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn name(&self) -> &'static str {
         "StubContent"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 
@@ -1107,10 +1097,7 @@ fn build_harness_with_host(
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
+                size: Size::from_lengths(1600.0, 900.0),
                 ..Default::default()
             },
             &[child],
@@ -1819,10 +1806,6 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn app_pickers_and_alt_tab_target_the_focused_group_and_strip() {
     fn super_t_opens_a_workspace_scoped_app_picker_in_the_focused_group() {
         use crate::shell::chrome_state::{OpenTarget, SearchScope};
@@ -2006,18 +1989,11 @@ fn key_press(logical_key: Key) -> WindowEvent {
     ev.state = ElementState::Pressed;
     ev.repeat = false;
     ev.text = text;
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ev)
 }
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 use ui::synthetic_input::mouse_press;
@@ -2289,10 +2265,6 @@ fn assert_no_peer_sync_work_from_a_click_in_the_panel(h: &mut Harness) {
 
 #[test]
 #[serial_test::serial(process_env)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
     /// Opening the palette with a stale query must both focus the input
     /// and clear it. Drives the configured Super+Space path through
@@ -3578,11 +3550,7 @@ fn people_viewport_wheel_and_semantic_scroll_share_bounds() {
         .expect("People scroll region");
     let center = h.host.collaborators_overlay.panel_rect().center();
     assert!(pump(&mut h, &cursor_moved_at(center), mods));
-    let wheel = WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
     assert!(pump(&mut h, &wheel, mods));
     let scrolled = h
         .host
@@ -3740,11 +3708,7 @@ fn people_viewport_reopen_scrolls_under_a_stationary_pointer() {
         .host
         .primary_vertical_scroll()
         .expect("People scroll region");
-    let wheel = WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
     assert!(pump(&mut h, &wheel, Modifiers::default()));
     assert_ne!(
         h.host.primary_vertical_scroll(),
@@ -3794,11 +3758,7 @@ fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
     let mods = Modifiers::default();
     let center = h.host.collaborators_overlay.panel_rect().center();
     assert!(pump(&mut h, &cursor_moved_at(center), mods));
-    let wheel = WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
     assert!(pump(&mut h, &wheel, mods));
     let deadline = h
         .host

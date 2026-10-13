@@ -630,11 +630,8 @@ impl PageSidebar {
     /// Escape: cancel a live drag or close the menu. Returns true if either
     /// was in progress.
     pub fn on_escape(&mut self) -> bool {
-        let mut changed = self.drag.cancel();
-        if self.menu.take().is_some() {
-            changed = true;
-        }
-        changed
+        let cancelled = self.drag.cancel();
+        self.menu.take().is_some() || cancelled
     }
 
     fn open_menu(&mut self, index: usize, at: Point) {

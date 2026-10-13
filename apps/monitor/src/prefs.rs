@@ -46,20 +46,6 @@ impl Prefs {
         self.interval_ms = personal.interval_ms;
         self.show_kernel_threads = personal.show_kernel_threads;
     }
-
-    /// Advance to the next refresh cadence (1s → 1.5s → 2s → 3s → 5s → 1s).
-    /// Any off-grid value (a hand-edited setting) snaps back
-    /// to the start of the cycle.
-    pub fn cycle_interval(&mut self) {
-        self.interval_ms = match self.interval_ms {
-            1000 => 1500,
-            1500 => 2000,
-            2000 => 3000,
-            3000 => 5000,
-            // 5000 falls back here too, alongside any off-grid value.
-            _ => 1000,
-        };
-    }
 }
 
 /// The Monitor preferences that follow the person to every device.
@@ -89,15 +75,5 @@ mod tests {
         assert_eq!(prefs.interval_ms, 1500);
         assert!(prefs.auto_refresh);
         assert!(!prefs.show_kernel_threads);
-
-        // The interval cycles 1000 → 1500 → 2000 → 3000 → 5000 → 1000.
-        let mut p = Prefs {
-            interval_ms: 1000,
-            ..Prefs::default()
-        };
-        for want in [1500, 2000, 3000, 5000, 1000] {
-            p.cycle_interval();
-            assert_eq!(p.interval_ms, want, "case cycle to {want}");
-        }
     }
 }

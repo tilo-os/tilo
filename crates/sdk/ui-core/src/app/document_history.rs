@@ -1351,20 +1351,9 @@ mod tests {
     }
     fn native_click_at(app: &mut App, point: vello::kurbo::Point) {
         let events = [
-            winit::event::WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-            },
-            winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            },
-            winit::event::WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-            },
+            crate::synthetic_input::cursor_moved(point.x, point.y),
+            crate::synthetic_input::mouse_press(),
+            crate::synthetic_input::mouse_release(),
         ];
         for event in events {
             let mut handled = false;
@@ -1587,24 +1576,20 @@ mod tests {
             app.state.doc.put(ROOT, "title", "pending typing").unwrap();
             let pending = app.state.doc.pending_ops();
             let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab);
-            let event = winit::event::WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: winit::event::KeyEvent::synthetic(
-                    winit::event::RawKeyEvent {
-                        physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                            winit::keyboard::NativeKeyCode::Unidentified,
-                        ),
-                        state: winit::event::ElementState::Pressed,
-                    },
-                    key.clone(),
-                    None,
-                    winit::keyboard::KeyLocation::Standard,
-                    false,
-                    None,
-                    key,
-                ),
-                is_synthetic: false,
-            };
+            let event = crate::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                        winit::keyboard::NativeKeyCode::Unidentified,
+                    ),
+                    state: winit::event::ElementState::Pressed,
+                },
+                key.clone(),
+                None,
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                None,
+                key,
+            ));
             let mut handled = false;
             let mut focus = None;
             let history_handled =

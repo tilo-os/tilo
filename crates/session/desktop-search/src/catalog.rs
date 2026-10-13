@@ -95,6 +95,12 @@ pub(super) const APPS: &[CatalogApp] = &[
         platforms: &["linux", "macos", "web"],
     },
     CatalogApp {
+        id: "so.tilo.discord",
+        name: "Discord",
+        category: "Network",
+        platforms: &["linux"],
+    },
+    CatalogApp {
         id: "so.tilo.disk-usage",
         name: "Disk Usage Analyzer",
         category: "System",
@@ -141,12 +147,6 @@ pub(super) const APPS: &[CatalogApp] = &[
         name: "Hex Editor",
         category: "Development",
         platforms: &["linux", "macos", "web"],
-    },
-    CatalogApp {
-        id: "so.tilo.hot-reload-demo",
-        name: "Hot reload",
-        category: "Utility",
-        platforms: &["linux", "macos"],
     },
     CatalogApp {
         id: "so.tilo.imager",

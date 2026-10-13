@@ -196,6 +196,14 @@ pub trait Action: std::fmt::Debug {
         crate::ActionKind::Undoable
     }
 
+    /// Whether this value records a message someone received (a chat post,
+    /// a delivered mail). The executor marks its change with
+    /// [`INCOMING_MESSAGE_FACET`](crate::INCOMING_MESSAGE_FACET). Must be a
+    /// pure function of `self`.
+    fn incoming_message(&self) -> bool {
+        false
+    }
+
     /// What this value does and to which item, as history records it: a
     /// field edit with its values before and after, a verb with its plain
     /// arguments, or a group of those. Read from `doc` as it is before the

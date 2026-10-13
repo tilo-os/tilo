@@ -5,7 +5,7 @@
 //! signal, a rebind) and then waits for the session's thread so the old
 //! mount is gone before the process returns to systemd. The supervisor
 //! used to learn of the first by waking every 50 ms to look: 20 wakeups a
-//! second for the life of every mount (TIL-750). Now the session's thread
+//! second for the life of every mount. Now the session's thread
 //! is joined on a watcher thread that reports its end on the same channel
 //! the unmount request comes in on, and the supervisor blocks on that
 //! channel with no timeout.

@@ -387,13 +387,7 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
     assert!((get - x("DELETE", &mut text)).abs() < 0.01);
     assert!(get > column);
 
-    let image = ImageData {
-        data: vello::peniko::Blob::new(std::sync::Arc::new(vec![128_u8; 4 * 4 * 4])),
-        format: vello::peniko::ImageFormat::Rgba8,
-        alpha_type: vello::peniko::ImageAlphaType::Alpha,
-        width: 4,
-        height: 4,
-    };
+    let image = crate::raster::rgba8(vec![128_u8; 4 * 4 * 4], 4, 4);
     let painted = Cell::new(false);
     let painter = |_: &mut PaintCtx<'_>, _: Rect| painted.set(true);
     let kinds = [

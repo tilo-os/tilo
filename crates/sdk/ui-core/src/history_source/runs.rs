@@ -19,6 +19,7 @@
 //! record inside it.
 
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
+use tilo_automerge::ReadTyped as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc, Value};
@@ -26,7 +27,7 @@ use automerge::{AutoCommit, ObjId, ObjType, Patch, PatchAction, Prop, ReadDoc, V
 use crate::history_source::revert::ChangeRun;
 use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{from_hex16, hex16};
-use tilo_automerge::read::{int_at, str_at};
+use tilo_automerge::read::int_at;
 
 /// Prefix of the root keys holding this document's cross-application runs.
 /// Namespaced like [`GROUPS_KEY`](crate::history_source::groups::GROUPS_KEY) so
@@ -197,7 +198,7 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
         let Ok(Some((Value::Object(ObjType::Map), rec))) = doc.get(automerge::ROOT, &key) else {
             continue;
         };
-        let Some(label) = str_at(doc, &rec, "label") else {
+        let Some(label) = doc.str_at(&rec, "label") else {
             continue;
         };
         // `filter` above guarantees `ms > 0` by the time the cast below runs,
@@ -216,16 +217,17 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
                     continue;
                 };
                 let (Some(start), Some(end)) = (
-                    str_at(doc, &m, "start").and_then(|s| from_hex16(&s)),
-                    str_at(doc, &m, "end").and_then(|s| from_hex16(&s)),
+                    doc.str_at(&m, "start").and_then(|s| from_hex16(&s)),
+                    doc.str_at(&m, "end").and_then(|s| from_hex16(&s)),
                 ) else {
                     continue;
                 };
                 steps.push(RunStep {
-                    app: str_at(doc, &m, "app").unwrap_or_default(),
-                    record: str_at(doc, &m, "record").unwrap_or_default(),
+                    app: doc.str_at(&m, "app").unwrap_or_default(),
+                    record: doc.str_at(&m, "record").unwrap_or_default(),
                     run: ChangeRun::new(start, end),
-                    what: str_at(doc, &m, "what")
+                    what: doc
+                        .str_at(&m, "what")
                         .and_then(|what| serde_json::from_str(&what).ok())
                         .unwrap_or_default(),
                 });
@@ -237,10 +239,10 @@ pub fn read_runs(doc: &AutoCommit) -> Vec<AgentRun> {
         out.push(AgentRun {
             id: key.clone(),
             label,
-            by: str_at(doc, &rec, "by"),
-            issued_by: str_at(doc, &rec, "issued_by"),
-            instruction: str_at(doc, &rec, "instruction"),
-            decision: str_at(doc, &rec, "decision"),
+            by: doc.str_at(&rec, "by"),
+            issued_by: doc.str_at(&rec, "issued_by"),
+            instruction: doc.str_at(&rec, "instruction"),
+            decision: doc.str_at(&rec, "decision"),
             at,
             steps,
         });

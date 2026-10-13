@@ -2002,11 +2002,7 @@ mod tests {
 
     fn key(key: Key) -> WindowEvent {
         let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     #[test]

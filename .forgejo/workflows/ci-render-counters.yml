@@ -1,6 +1,6 @@
 name: CI / render counters
 
-# The per-change half of the render benchmarks (TIL-582): the toolkit's 4K
+# The per-change half of the render benchmarks: the toolkit's 4K
 # dashboard harness (`ui-perf dashboard_perf_bench`) checks counters that do
 # not depend on how fast the runner is (allocator calls and bytes per redraw,
 # native pixels rasterised per redraw, allocations per 1,000 events that need

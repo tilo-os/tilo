@@ -3,16 +3,6 @@
 //! 2. loads into a `BlockEditor` as blocks of every kind (paragraph,
 //!    heading, bullet, checklist, code block, divider).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::collections::HashSet;
 
 use notes::markdown::{BlockSpec, parse, serialize};

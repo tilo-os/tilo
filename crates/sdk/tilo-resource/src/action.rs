@@ -126,6 +126,16 @@ impl ActionCx {
             .and_then(|invoker| invoker.on_behalf_of)
     }
 
+    /// The name and avatar a bot showed for this action instead of its own,
+    /// as the envelope pinned it; `None` for anyone else's action.
+    #[must_use]
+    pub fn appearance(&self) -> Option<tilo_actions::Appearance> {
+        tilo_actions::invoking_context()
+            .and_then(|context| context.invoker)
+            .filter(|invoker| invoker.kind == tilo_actions::ActorKind::Bot)
+            .and_then(|invoker| invoker.appearance)
+    }
+
     /// What kind of actor invoked the action (a person, an agent, a
     /// Shortcut), as the envelope pinned it.
     #[must_use]
@@ -401,6 +411,12 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
     /// `#[action(external)]`.
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         tilo_actions::ChangeKind::Content
+    }
+
+    /// Whether the operation records a message someone received.
+    /// `#[resource]` generates it from `#[action(incoming_message)]`.
+    fn incoming_message(&self) -> bool {
+        false
     }
 
     /// Whether this operation declares the verb that undoes it
@@ -1018,10 +1034,6 @@ impl<O: Operation> Performs for O {
 /// back. Either way the action writes exactly the operations a whole read
 /// and write would, so a replica replaying it, warm or cold, makes the
 /// identical change.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one apply: an edit, an item verb or a record verb, each written and checked"
-)]
 fn apply_operation(
     record: &'static RecordOps,
     operation: &dyn Performs,
@@ -1170,6 +1182,10 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
 
     fn action_kind(&self) -> ActionKind {
         self.operation.kind()
+    }
+
+    fn incoming_message(&self) -> bool {
+        self.operation.incoming_message()
     }
 
     /// A verb that declares its undo is undone by applying that verb, and a

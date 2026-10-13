@@ -35,11 +35,17 @@ pub fn public_config(
     certificate: Option<&(std::path::PathBuf, std::path::PathBuf)>,
     domain: &str,
 ) -> Result<Arc<rustls::ServerConfig>> {
-    let (chain, key) = if let Some((chain, key)) = certificate {
-        tilo_moq::tls::load_pem(chain, key)
+    if let Some((chain, key)) = certificate {
+        // Re-read when renewed in place, so the front never needs a restart
+        // for a new certificate.
+        let files = tilo_moq::tls::FileCertificate::load(chain, key)
             .map_err(anyhow::Error::msg)
-            .context("load TILO_ROOMS_TLS_CERT and TILO_ROOMS_TLS_KEY")?
-    } else {
+            .context("load TILO_ROOMS_TLS_CERT and TILO_ROOMS_TLS_KEY")?;
+        return Ok(Arc::new(
+            tilo_moq::tls::https_server_config(Arc::new(files)).map_err(anyhow::Error::msg)?,
+        ));
+    }
+    let (chain, key) = {
         eprintln!(
             "tilo-room-service: no TILO_ROOMS_TLS_CERT; serving a self-signed *.{domain} certificate"
         );
@@ -52,7 +58,10 @@ pub fn public_config(
         )
     };
     Ok(Arc::new(
-        tilo_moq::tls::https_server_config(chain, key).map_err(anyhow::Error::msg)?,
+        tilo_moq::tls::https_server_config(
+            tilo_moq::tls::fixed_certificate(chain, key).map_err(anyhow::Error::msg)?,
+        )
+        .map_err(anyhow::Error::msg)?,
     ))
 }
 

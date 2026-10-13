@@ -237,6 +237,16 @@ fn actors_are_named_with_the_person_they_act_for() {
         }),
         "Morgens · Kurzbefehl, für Quinten"
     );
+    assert_eq!(
+        reader.actor(&Who {
+            actor: "Discord Bridge",
+            kind: ActorKind::Bot,
+            for_person: Some("Ada"),
+            for_reader: false,
+            is_reader: false
+        }),
+        "Discord Bridge · Bot, for Ada"
+    );
 }
 
 #[test]

@@ -36,6 +36,7 @@ use tracing::{error, info};
 
 pub mod allowlist;
 pub mod applications;
+pub mod bot_review;
 pub mod bundle_review;
 pub mod moderation;
 pub mod moderation_api;
@@ -44,6 +45,7 @@ pub mod storage;
 pub mod submission_review;
 
 pub use allowlist::{AllowlistError, PublisherAllowlist, PublisherRow};
+pub use bot_review::{BotReviewError, InspectedProgram};
 pub use bundle_review::{
     BundleReviewError, InspectedVersion, InspectionPolicy, fetch_entry_bytes, fetch_version_bytes,
     inspect_bytes, inspect_entry, inspect_stored_bytes, review_entry_bytes, review_version_bytes,
@@ -57,6 +59,7 @@ pub use storage::{
     ReviewSubject, ServerIdentity, StagedArtifact, StagedPromotion, Storage, StorageError,
     TwinReport,
 };
+pub use submission_review::Inspection;
 
 /// Bind the server to `addr` and run until the listener errors or
 /// the process is killed. Public so integration tests can drive

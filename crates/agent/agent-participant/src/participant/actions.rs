@@ -349,7 +349,7 @@ pub(crate) fn door_outcome(error: &DoorError) -> Outcome {
     }
 }
 
-fn door_status(error: &DoorError) -> ReceiptStatus {
+pub(crate) fn door_status(error: &DoorError) -> ReceiptStatus {
     match door_outcome(error) {
         Outcome::Rejected(error) => ReceiptStatus::Rejected { error },
         Outcome::Failed(error) => ReceiptStatus::Failed { error },

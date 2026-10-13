@@ -584,10 +584,6 @@ fn capture_rescans_resumes_and_marked_paths_find_unjournaled_changes() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
 fn capture_skips_local_only_special_and_staging_files_while_writers_continue() {
     // Phase `local_only_trees_and_special_files_are_never_captured`.
     fn local_only_trees_and_special_files_are_never_captured() {

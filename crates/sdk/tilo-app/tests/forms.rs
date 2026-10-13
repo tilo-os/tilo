@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! A form is a verb's parameters filled in locally: typing into it changes
 //! no document, and submitting it invokes the verb once.
 

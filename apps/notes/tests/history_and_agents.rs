@@ -16,10 +16,6 @@ fn note_titled(app: &TestApp<NotesShell>, title: &str) -> PageId {
         .id
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one agent session, then the history it left"
-)]
 #[test]
 fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
     ui::i18n::I18nManager::init("en-US");

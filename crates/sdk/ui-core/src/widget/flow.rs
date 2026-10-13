@@ -335,15 +335,6 @@ pub(super) use flow_builders;
 /// `build_layout`, `name` and anything else that differs by axis.
 macro_rules! flow_widget_methods {
     () => {
-        fn start_operation(
-            &mut self,
-            op: &$crate::widget::ResourceOperation<'_>,
-            doc: &mut $crate::widget::Edits<'_>,
-            path: &automerge::ObjId,
-        ) -> Result<Option<$crate::widget::ResourceOperationStart>, String> {
-            // This container owns no operation handler: offer each child once.
-            $crate::widget::start_in_children(self, op, doc, path)
-        }
 
         /// Forward the per-frame update pass; every child runs, and a
         /// change in any of them is a change here. Not short-circuited —

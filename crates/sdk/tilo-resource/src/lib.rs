@@ -126,6 +126,7 @@ pub mod replica;
 pub mod resource;
 pub mod schema;
 pub mod shape;
+pub mod share;
 pub mod storage;
 pub mod surface;
 pub mod table;
@@ -153,7 +154,7 @@ pub use model::{
     read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,
 };
 pub use ordered::{Arranged, Ordered};
-pub use path::{Edit, EditOp, Operations, Path, Segment, Settable};
+pub use path::{Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
@@ -252,6 +253,18 @@ pub mod __private {
         T::edit(doc, crate::Slot::Key(obj, key), rest, op, cx).located(key)
     }
 
+    /// What a verb answers its caller.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum VerbAnswer {
+        /// Only the items it created.
+        Created,
+        /// What it made (`#[action(answers)]`, [`crate::Resource::answer`]).
+        Made,
+        /// What the outside work it queued came back with, once a host
+        /// performed it.
+        Queued,
+    }
+
     /// What `#[resource]` declares of one verb, besides how it is built.
     #[derive(Clone, Copy)]
     pub struct VerbDecl {
@@ -261,7 +274,9 @@ pub mod __private {
         pub kind: ActionKind,
         pub field: Option<&'static str>,
         pub destructive: bool,
-        pub answering: bool,
+        pub answer: VerbAnswer,
+        /// It records a message someone received (`#[action(incoming_message)]`).
+        pub incoming_message: bool,
         pub collects: Option<&'static str>,
         /// The parameter the content it collects arrives as.
         pub content: Option<&'static str>,
@@ -397,10 +412,24 @@ pub mod __private {
         }
         decl.field = verb.field;
         decl.destructive = verb.destructive;
-        if verb.answering {
-            decl.result = Some(tilo_actions::ResultSpec::Json {
-                schema: serde_json::json!({"type": "object"}),
-            });
+        if verb.incoming_message {
+            decl.tags
+                .push(tilo_actions::INCOMING_MESSAGE_TAG.to_owned());
+        }
+        match verb.answer {
+            VerbAnswer::Created => {}
+            VerbAnswer::Made => {
+                decl.result = Some(tilo_actions::ResultSpec::Json {
+                    schema: serde_json::json!({"type": "object"}),
+                });
+            }
+            // One result, or a list for several entries; nothing while the
+            // work is still queued.
+            VerbAnswer::Queued => {
+                decl.result = Some(tilo_actions::ResultSpec::Json {
+                    schema: serde_json::json!({"type": ["object", "array", "null"]}),
+                });
+            }
         }
         if let Some(prompt) = verb.collects {
             decl.content = Some(prompt.to_owned());

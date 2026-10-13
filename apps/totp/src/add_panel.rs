@@ -382,10 +382,6 @@ impl Widget for AddForm {
         self.tree.sync(state, path);
     }
 
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.tree.update(state, path)
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -447,7 +443,7 @@ impl Widget for AddForm {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         self.forward(event, ctx);
     }
@@ -1313,10 +1309,8 @@ pub(crate) mod tests {
                 return;
             }
             let at = body.center();
-            app.harness().send(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-            });
+            app.harness()
+                .send(&ui::synthetic_input::cursor_moved(at.x, at.y));
             app.harness()
                 .scroll(0.0, if target.y0 < body.y0 { 3.0 } else { -3.0 });
             settle(app);

@@ -81,10 +81,7 @@ impl PageMenu {
                             AccessNode::new(Role::MenuItem)
                                 .with_name(label.replace('&', ""))
                                 .with_action_target(format!("browser.context:{}:{index}", self.id))
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                         })
                         .collect(),
                 )
