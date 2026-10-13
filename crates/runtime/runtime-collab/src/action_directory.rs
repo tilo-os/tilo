@@ -59,6 +59,27 @@ impl From<&InputSpec> for ExportedInput {
     }
 }
 
+impl From<&ExportedInput> for InputSpec {
+    fn from(input: &ExportedInput) -> Self {
+        match input {
+            ExportedInput::None => Self::None,
+            ExportedInput::Text {
+                prompt,
+                placeholder,
+                wants_content,
+            } => Self::Text {
+                prompt: prompt.clone(),
+                placeholder: placeholder.clone(),
+                collects: if *wants_content {
+                    Collects::Content
+                } else {
+                    Collects::Words
+                },
+            },
+        }
+    }
+}
+
 /// One inert operation an application exports, without execution authority.
 ///
 /// This is the one Rust shape of an exported action: the application builds

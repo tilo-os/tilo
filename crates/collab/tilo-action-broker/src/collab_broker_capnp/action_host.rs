@@ -19,15 +19,14 @@ use tilo_actions::remote::{
     InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus,
     Reservation, application_provider, pending, workspace_provider, workspace_provider_room,
 };
-use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
+use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
     ActionDirectoryRoot, BrokerActor, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES,
-    InvocationInputs, InvocationOwner, LaunchScope, PublishedAction, PublishedInput,
-    PublishedSurface, app_node, confirmation_satisfied, published_directory_action,
-    validate_directory_target_input,
+    InvocationInputs, InvocationOwner, LaunchScope, PublishedAction, PublishedSurface, app_node,
+    confirmation_satisfied, published_directory_action, validate_directory_target_input,
 };
 use crate::automation;
 use crate::collab_broker::CrdtRoute;
@@ -239,22 +238,7 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
         locus: ExecutionLocus::default(),
         kind: action.operation_kind,
         contract: action.contract.clone(),
-        input: match &action.input {
-            PublishedInput::None => InputSpec::None,
-            PublishedInput::Text {
-                prompt,
-                placeholder,
-                wants_content,
-            } => InputSpec::Text {
-                prompt: prompt.clone(),
-                placeholder: placeholder.clone(),
-                collects: if *wants_content {
-                    Collects::Content
-                } else {
-                    Collects::Words
-                },
-            },
-        },
+        input: (&action.input).into(),
         params: action.params.clone(),
         view: action.view.clone(),
     }
