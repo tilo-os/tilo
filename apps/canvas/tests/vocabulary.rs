@@ -1,8 +1,6 @@
 //! The artwork's vocabulary, applied the way the palette, an agent or a
 //! script applies it.
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
     clippy::needless_pass_by_value,
     clippy::too_many_lines,
     clippy::float_cmp,

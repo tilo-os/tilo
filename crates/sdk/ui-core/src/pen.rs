@@ -116,7 +116,7 @@ impl Drop for PenScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::dpi::PhysicalPosition;
+
     use winit::event::DeviceId;
 
     fn sample(pressure: f64, eraser: bool) -> WindowEvent {
@@ -129,10 +129,7 @@ mod tests {
     }
 
     fn moved() -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(4.0, 5.0),
-        }
+        crate::synthetic_input::cursor_moved(4.0, 5.0)
     }
 
     use crate::synthetic_input::mouse_press;

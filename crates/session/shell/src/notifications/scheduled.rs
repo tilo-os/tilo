@@ -502,10 +502,6 @@ pub(super) async fn drive(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "fixture construction and persisted-state round trips must fail the test"
-)]
 mod tests {
     use super::*;
     use chrono::FixedOffset;

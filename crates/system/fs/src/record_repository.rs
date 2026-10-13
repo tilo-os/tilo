@@ -2570,20 +2570,7 @@ mod tests {
         write: bool,
     }
 
-    struct MultiRecordAuthorizer {
-        actor: FileActor,
-        records: BTreeSet<FileRecordId>,
-    }
-
-    impl RecordAuthorizer for MultiRecordAuthorizer {
-        fn actor_is_certified(&self, actor: &FileActor) -> bool {
-            *actor == self.actor
-        }
-
-        fn allows(&self, actor: &FileActor, record: FileRecordId, _action: RecordAction) -> bool {
-            *actor == self.actor && self.records.contains(&record)
-        }
-    }
+    use crate::record_replication::test_authorizers::{AllowActor, AllowActorOn};
 
     impl RecordAuthorizer for TestAuthorizer {
         fn actor_is_certified(&self, actor: &FileActor) -> bool {
@@ -3456,7 +3443,7 @@ mod tests {
                 let (transaction, parent, sibling, current, selected, conflict) =
                     keep_both_transaction(&fixture);
                 let repository = RecordRepository::open(&fixture.root).unwrap();
-                let auth = MultiRecordAuthorizer {
+                let auth = AllowActorOn {
                     actor: fixture.actor,
                     records: [fixture.key.record_id, sibling].into_iter().collect(),
                 };
@@ -3631,7 +3618,7 @@ mod tests {
             let records = [fixture.key.record_id, replaced]
                 .into_iter()
                 .collect::<BTreeSet<_>>();
-            let auth = MultiRecordAuthorizer {
+            let auth = AllowActorOn {
                 actor: fixture.actor,
                 records,
             };
@@ -3849,10 +3836,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn invalid_or_unauthorized_operations_fail_closed_without_publishing() {
         // Phase `read_only_authorizer_cannot_create_durable_state`.
         {
@@ -3974,23 +3957,11 @@ mod tests {
         ]
     }
 
-    struct AnyRecord(FileActor);
-
-    impl RecordAuthorizer for AnyRecord {
-        fn actor_is_certified(&self, actor: &FileActor) -> bool {
-            *actor == self.0
-        }
-
-        fn allows(&self, actor: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
-            *actor == self.0
-        }
-    }
-
     #[test]
     fn an_uncommitted_changeset_is_never_served_and_is_gone_after_a_crash() {
         let fixture = Fixture::new();
         let batches = two_record_batches(&fixture);
-        let auth = AnyRecord(fixture.actor);
+        let auth = AllowActor(fixture.actor);
         let repo = RecordRepository::open(&fixture.root).unwrap();
         repo.begin_changeset(fixture.key.workspace_id, fixture.actor)
             .unwrap();
@@ -4028,7 +3999,7 @@ mod tests {
     fn a_committed_changeset_is_durable_whole_and_served_as_one_unit() {
         let fixture = Fixture::new();
         let batches = two_record_batches(&fixture);
-        let auth = AnyRecord(fixture.actor);
+        let auth = AllowActor(fixture.actor);
         let repo = RecordRepository::open(&fixture.root).unwrap();
         repo.begin_changeset(fixture.key.workspace_id, fixture.actor)
             .unwrap();
@@ -4086,7 +4057,7 @@ mod tests {
     fn a_received_changeset_applies_whole_or_not_at_all() {
         let author = Fixture::new();
         let batches = two_record_batches(&author);
-        let auth = AnyRecord(author.actor);
+        let auth = AllowActor(author.actor);
         let repo = RecordRepository::open(&author.root).unwrap();
         repo.begin_changeset(author.key.workspace_id, author.actor)
             .unwrap();
@@ -4161,7 +4132,7 @@ mod tests {
     fn a_validly_signed_changeset_of_another_workspace_is_refused() {
         let author = Fixture::new();
         let batches = two_record_batches(&author);
-        let auth = AnyRecord(author.actor);
+        let auth = AllowActor(author.actor);
         let repo = RecordRepository::open(&author.root).unwrap();
         repo.begin_changeset(author.key.workspace_id, author.actor)
             .unwrap();

@@ -292,11 +292,9 @@ fn render_list(out: &mut String, items: &[BlockView], opts: &HtmlOptions, depth:
     // `level` comes from the document; clamp to a nesting depth no real
     // list reaches, so a corrupt/hostile attribute can't turn the
     // indent-string repeats below into an unbounded allocation.
-    let item_level = |b: &BlockView| b.int_attr("level").map_or(0, |n| n.clamp(0, 64));
-
     for item in items {
-        let level = item_level(item);
-        let ordered = item.flag("ordered");
+        let level = ExportBlock::new(item).list_level().min(64);
+        let ordered = ExportBlock::new(item).ordered();
 
         // Close lists deeper than this item, and close (then re-open) a list
         // at the same depth whose ordered-ness flipped.
@@ -352,15 +350,13 @@ fn open_list(
     )]
     let pad = indent_for(opts, depth.saturating_add(level as usize));
     if ordered {
-        let fmt = item.str_attr("num_format").unwrap_or("decimal");
-        let lst = list_style_type(fmt);
+        let item = ExportBlock::new(item);
+        let lst = list_style_type(item.num_format());
         let mut attrs = format!(" style=\"list-style-type: {lst}\"");
-        // Respect an explicit start index on the first item, if any.
-        match item.attrs.get("start").or_else(|| item.attrs.get("index")) {
-            Some(AttrVal::Int(n)) if *n != 1 => {
-                let _ = write!(attrs, " start=\"{n}\"");
-            }
-            _ => {}
+        // The first item carries where the list's numbering starts.
+        let start = item.num_start();
+        if start != 1 {
+            let _ = write!(attrs, " start=\"{start}\"");
         }
         let _ = writeln!(out, "{pad}<ol{attrs}>");
     } else {
@@ -458,10 +454,11 @@ fn render_image(
 /// Compose the attribute string for a block element: the resolved style
 /// class plus a best-effort `text-align` from an `align` attr.
 fn block_attrs(block: &BlockView) -> String {
-    let mut class = None;
-    if let Some(AttrVal::Str(sid)) = block.attrs.get("style") {
-        class = Some(style_class(sid));
-    }
+    let class = if let Some(AttrVal::Str(sid)) = block.attrs.get("style") {
+        Some(style_class(sid))
+    } else {
+        None
+    };
     let mut style = String::new();
     if let Some(AttrVal::Str(a)) = block.attrs.get("align") {
         let _ = write!(style, "text-align: {};", css_value(a));

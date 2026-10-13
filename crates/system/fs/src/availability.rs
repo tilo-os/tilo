@@ -367,7 +367,7 @@ pub struct AvailabilityRegistry {
     /// see [`Self::hydration_generation`].
     hydration_generation: u64,
     /// Announces each bump of `hydration_generation`, so the pinned
-    /// hydration worker waits for one instead of polling (TIL-750).
+    /// hydration worker waits for one instead of polling.
     hydration_watch: tokio::sync::watch::Sender<u64>,
     #[cfg(test)]
     persists: std::sync::atomic::AtomicU64,
@@ -983,10 +983,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn availability_registry_persists_by_stable_record_id_and_rejects_tampering() {
         // Phase `registry_survives_restart_and_is_keyed_by_stable_record_id`.
         {

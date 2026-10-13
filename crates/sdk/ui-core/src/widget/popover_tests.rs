@@ -24,10 +24,7 @@ fn opened() -> Popover {
 }
 
 fn cursor_at(pt: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(pt.x, pt.y),
-    }
+    crate::synthetic_input::cursor_moved(pt.x, pt.y)
 }
 
 use crate::synthetic_input::mouse_press;
@@ -71,10 +68,7 @@ impl Widget for Fixed {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::length(self.w),
-                height: Dimension::length(self.h),
-            },
+            size: Size::from_lengths(self.w, self.h),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

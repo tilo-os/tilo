@@ -726,8 +726,7 @@ impl SlidesApp {
             });
             tx += w + m.s1;
         }
-        let mut overflow = Vec::new();
-        if shown < tools.len() {
+        let overflow = if shown < tools.len() {
             let more = self.chip(toolbar, tx.min(right - m.target).max(x));
             buttons.push(UiButton {
                 rect: more,
@@ -738,7 +737,7 @@ impl SlidesApp {
                 },
                 hit: Hit::ToggleToolbarMenu,
             });
-            overflow = tools
+            tools
                 .iter()
                 .skip(shown)
                 .map(|(label, icon, hit)| UiButton {
@@ -749,8 +748,10 @@ impl SlidesApp {
                     },
                     hit: hit.clone(),
                 })
-                .collect();
-        }
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         let title_top = toolbar.y0 + (toolbar.height() - m.lh_heading) / 2.0;
         let title_pos = Point::new(x, title_top);

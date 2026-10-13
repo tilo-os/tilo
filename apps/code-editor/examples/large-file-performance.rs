@@ -154,13 +154,10 @@ fn scroll(app: &mut App) -> Result<(), Box<dyn Error>> {
             .and_then(serde_json::Value::as_f64)
             .ok_or("editor bound missing")
     };
-    app.harness().send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(
-            number(0)?.midpoint(number(2)?),
-            number(1)?.midpoint(number(3)?),
-        ),
-    });
+    app.harness().send(&ui::synthetic_input::cursor_moved(
+        number(0)?.midpoint(number(2)?),
+        number(1)?.midpoint(number(3)?),
+    ));
     let started = Instant::now();
     for _ in 0..8 {
         app.harness().scroll(0.0, -100.0);

@@ -5,15 +5,15 @@
 //! launches share the prefix; initialization and upgrades require no live
 //! leases. No host path or DLL name is supplied by the Windows application.
 
-use std::ffi::{CString, OsStr};
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use advisory_lock::{FileLock, LockMode, TryLockError};
+use rustix::fs::{AtFlags, Mode, OFlags};
 use sha2::{Digest, Sha256};
 
 const PREFIX: &str = "/run/tilo/capsule/prefix";
@@ -272,7 +272,7 @@ impl Payload {
             };
             // O_PATH|O_NOFOLLOW lets fstat inspect the directory entry itself,
             // including symlinks, without opening a target or blocking on a FIFO.
-            let entry = match open_at(&directory, dll.name, libc::O_PATH) {
+            let entry = match open_at(&directory, dll.name, OFlags::PATH) {
                 Ok(entry) => entry,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
@@ -285,12 +285,9 @@ impl Payload {
                 ));
             }
             if !kind.is_file() || metadata.nlink() != 1 {
-                let name = component(dll.name)?;
-                // SAFETY: only this retained directory's single leaf entry is
-                // removed. Wineboot must never see an old redirected DLL target.
-                if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } != 0 {
-                    return Err(io::Error::last_os_error());
-                }
+                // Only this retained directory's single leaf entry is removed.
+                // Wineboot must never see an old redirected DLL target.
+                rustix::fs::unlinkat(&directory, component(dll.name)?, AtFlags::empty())?;
             }
         }
         Ok(())
@@ -377,18 +374,16 @@ fn hash_file(file: &mut File, limit: Option<u64>) -> io::Result<[u8; 32]> {
 }
 
 fn open_directory(path: &Path) -> io::Result<File> {
-    let name = CString::new(path.as_os_str().as_encoded_bytes()).map_err(io::Error::other)?;
-    // SAFETY: name is a live NUL-terminated path; successful open creates an owned fd.
-    file_from_fd(unsafe {
-        libc::open(
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    })
+    Ok(rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?
+    .into())
 }
 
 fn open_directory_at(parent: &File, name: &str) -> io::Result<File> {
-    open_at(parent, name, libc::O_RDONLY | libc::O_DIRECTORY)
+    open_at(parent, name, OFlags::RDONLY | OFlags::DIRECTORY)
 }
 
 fn optional_directory(parent: &File, name: &str) -> io::Result<Option<File>> {
@@ -401,39 +396,28 @@ fn optional_directory(parent: &File, name: &str) -> io::Result<Option<File>> {
 
 fn open_regular_at(parent: &File, name: &str) -> io::Result<File> {
     // O_NONBLOCK prevents a hostile FIFO from blocking before fstat rejects it.
-    let file = open_at(parent, name, libc::O_RDONLY | libc::O_NONBLOCK)?;
+    let file = open_at(parent, name, OFlags::RDONLY | OFlags::NONBLOCK)?;
     if !file.metadata()?.is_file() {
         return Err(invalid("expected a regular runtime file"));
     }
     Ok(file)
 }
 
-fn open_at(parent: &File, name: &str, flags: i32) -> io::Result<File> {
-    let name = component(name)?;
-    // SAFETY: parent is a retained directory, name one validated component.
-    file_from_fd(unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    })
+fn open_at(parent: &File, name: &str, flags: OFlags) -> io::Result<File> {
+    Ok(rustix::fs::openat(
+        parent,
+        component(name)?,
+        flags | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )?
+    .into())
 }
 
-fn component(name: &str) -> io::Result<CString> {
-    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+fn component(name: &str) -> io::Result<&str> {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
         return Err(invalid("invalid private path component"));
     }
-    CString::new(name).map_err(io::Error::other)
-}
-
-fn file_from_fd(fd: i32) -> io::Result<File> {
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: caller supplies a newly opened, exclusively owned descriptor.
-    Ok(unsafe { File::from_raw_fd(fd) })
+    Ok(name)
 }
 
 fn busy(error: TryLockError) -> io::Error {
@@ -453,31 +437,17 @@ fn replace_from(parent: &File, name: &str, source: &mut impl Read) -> io::Result
         io::copy(source, &mut file)?;
         file.flush()?;
         file.sync_all()?;
-        // SAFETY: both names are validated components under the same retained
-        // directory. Rename replaces a link itself, never writes its target.
-        if unsafe {
-            libc::renameat(
-                parent.as_raw_fd(),
-                temporary_name.as_ptr(),
-                parent.as_raw_fd(),
-                destination.as_ptr(),
-            )
-        } != 0
-        {
-            return Err(io::Error::last_os_error());
-        }
+        // Rename replaces a link itself, never writes its target.
+        rustix::fs::renameat(parent, &temporary_name, parent, destination)?;
         parent.sync_all()
     })();
     if result.is_err() {
-        // SAFETY: unlinkat removes only this directory entry, never a target.
-        unsafe {
-            libc::unlinkat(parent.as_raw_fd(), temporary_name.as_ptr(), 0);
-        }
+        let _ = rustix::fs::unlinkat(parent, &temporary_name, AtFlags::empty());
     }
     result
 }
 
-fn create_temporary(parent: &File, counter: &AtomicU64) -> io::Result<(File, CString)> {
+fn create_temporary(parent: &File, counter: &AtomicU64) -> io::Result<(File, String)> {
     for _ in 0..128 {
         let temporary = format!(
             ".tilo-dxvk-{}-{}",
@@ -487,9 +457,9 @@ fn create_temporary(parent: &File, counter: &AtomicU64) -> io::Result<(File, CSt
         match open_at(
             parent,
             &temporary,
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL,
         ) {
-            Ok(file) => return Ok((file, component(&temporary)?)),
+            Ok(file) => return Ok((file, temporary)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
@@ -715,10 +685,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn dll_repairs_never_follow_links_or_redirected_directories() {
         // Phase `changed_dll_is_repaired_even_with_valid_generation_hint`.
         {
@@ -880,9 +846,14 @@ mod tests {
             );
             let target = fixture.installed("system32", "dxgi.dll");
             fs::remove_file(&target).unwrap();
-            let name = CString::new(target.as_os_str().as_encoded_bytes()).unwrap();
-            // SAFETY: name is a live NUL-terminated temporary fixture path.
-            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            rustix::fs::mknodat(
+                rustix::fs::CWD,
+                &target,
+                rustix::fs::FileType::Fifo,
+                Mode::from_raw_mode(0o600),
+                0,
+            )
+            .unwrap();
             let _lease = fixture.prepare(WineMode::Win32, || Ok(())).unwrap();
             assert!(fs::metadata(target).unwrap().is_file());
         }
@@ -896,16 +867,13 @@ mod tests {
             let directory = open_directory(&fixture.prefix).unwrap();
             let (mut file, name) = create_temporary(&directory, &AtomicU64::new(0)).unwrap();
             file.write_all(b"new private data").unwrap();
-            assert_eq!(
-                name.to_str().unwrap(),
-                format!(".tilo-dxvk-{}-1", std::process::id())
-            );
+            assert_eq!(name, format!(".tilo-dxvk-{}-1", std::process::id()));
             assert_eq!(
                 fs::read(&stale).unwrap(),
                 b"left by an interrupted prior invocation"
             );
             assert_eq!(
-                fs::read(fixture.prefix.join(name.to_str().unwrap())).unwrap(),
+                fs::read(fixture.prefix.join(&name)).unwrap(),
                 b"new private data"
             );
         }

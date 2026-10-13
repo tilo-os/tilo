@@ -201,10 +201,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn html_content_policy_blocks_scripts_and_remote_until_opt_in() {
         // Phase `scripts_are_always_blocked`.
         {
@@ -276,10 +272,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn html_body_encodes_as_a_base64_data_url() {
         // Phase `data_url_is_a_base64_html_document`.
         {

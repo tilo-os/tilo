@@ -12,6 +12,23 @@ SPEC.loader.exec_module(timing)
 
 
 class TimingTests(unittest.TestCase):
+    def test_per_command_cache_deltas_are_numeric_only_and_unknown_stays_unknown(self):
+        log = "\n".join([
+            "2026-09-20T04:00:20Z ==> test shard core measurements",
+            "2026-09-20T04:00:20Z     wall_seconds=8.25",
+            '2026-09-20T04:00:20Z     compiler_cache={"observed":true,"cache_hits":17,"cache_misses":4,"endpoint":"secret"}',
+        ])
+        measurement = timing.extract_job_metrics(log)["measurements"][0]
+        self.assertEqual(measurement["compiler_cache"],
+                         {"observed": True, "cache_hits": 17, "cache_misses": 4})
+        self.assertNotIn("secret", str(measurement))
+        self.assertEqual(timing.resource_metric('compiler_cache={"observed":false,"reason":"counter_reset"}'),
+                         ("compiler_cache", {"observed": False, "reason": "counter_reset"}))
+        for payload in ['{"observed":true,"cache_hits":"secret","cache_misses":4}',
+                        '{"observed":true,"cache_hits":true,"cache_misses":4}',
+                        '{"observed":false,"reason":"private-endpoint"}']:
+            self.assertIsNone(timing.resource_metric("compiler_cache=" + payload))
+
     def test_explicit_run_is_resolved_and_verified_before_fetching(self):
         with self.subTest(phase='explicit run resolves ui number before fetching jobs'):
             args = SimpleNamespace(repo="tilo/tilo", run=[11408])

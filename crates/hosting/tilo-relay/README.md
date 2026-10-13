@@ -81,7 +81,7 @@ endpoint id and local addresses on the current network. Set
    author) ALPN. Every protocol
    gets its presence coalesced and paced per connection
    (`src/presence_mailbox.rs`), and presence that may go early rides in the
-   same write as a delta (TIL-776).
+   same write as a delta.
 3. Three-message auth handshake — mutual proof-of-possession of certified
    device signing keys. Home hosts require the same user root; provider hosts
    authenticate their pinned host identity and authorize tenant devices with

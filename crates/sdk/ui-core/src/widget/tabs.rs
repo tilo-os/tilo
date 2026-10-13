@@ -2940,9 +2940,6 @@ impl Widget for TabBar {
     fn wants_pointer_capture(&self) -> bool {
         self.press_origin.is_some() || self.pending_drag.is_some()
     }
-    fn accepts_drop(&self, payload: &DragPayload) -> bool {
-        matches!(payload, DragPayload::Tab { .. })
-    }
     fn set_motion_reduced(&mut self, reduced: bool) {
         // The busy mark stands still and a drag lifts at once.
         self.host_reduced_motion = reduced;

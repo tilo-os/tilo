@@ -789,14 +789,8 @@ impl Widget for Actions {
                 justify_content: Some(taffy::JustifyContent::End),
                 align_items: Some(taffy::AlignItems::End),
                 align_content: Some(taffy::AlignContent::Start),
-                size: Size {
-                    width: auto(),
-                    height: auto(),
-                },
-                min_size: Size {
-                    width: length(0.0_f32),
-                    height: length(0.0_f32),
-                },
+                size: Size::auto(),
+                min_size: Size::from_lengths(0.0_f32, 0.0_f32),
                 flex_shrink: 0.0,
                 gap: Size {
                     width: length(gap),

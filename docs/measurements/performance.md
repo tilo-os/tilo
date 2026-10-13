@@ -1,7 +1,7 @@
 # Performance results
 
-Performance KPIs (the Linear document "Performance and cost KPIs — what we
-market and how we measure it") are measured by **Perf / scheduled**
+Performance KPIs (what Tilo markets, and how each is measured; their targets are
+the `source` lines of `tools/perf/kpi-budgets.toml`) are measured by **Perf / scheduled**
 (`.forgejo/workflows/perf-scheduled.yml`), nightly at 01:15 UTC and by manual
 dispatch. It is not a required check and never runs per push. Every result is
 one JSON record (`tools/perf/record.py`): KPI id, unit, n, nearest-rank

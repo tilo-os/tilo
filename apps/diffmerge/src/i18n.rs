@@ -6,32 +6,11 @@
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
-/// Diff & Merge's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-static CATALOG: EmbeddedCatalog = catalog();
-
-const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
-    // Unit tests assert the source copy on any developer or CI machine.
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
+ui::embedded_catalog!(pub fn, ["en-US"]);
 
 /// The app's catalogs, for the framework's history sentences.
 pub fn catalogs() -> &'static EmbeddedCatalog {
     &CATALOG
-}
-
-/// The message `key` in the active locale.
-pub fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-/// The message `key` with its named variables.
-pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
 }
 
 /// A count as a message argument.

@@ -3,11 +3,7 @@
 //! (`wp_cursor_shape_v1`) and handing over its own cursor surface. The
 //! result is read from the frame builder, which is where captures and the
 //! control socket's state dump read it.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test harness failures are assertions"
-)]
+#![allow(clippy::expect_used, reason = "test harness failures are assertions")]
 
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 

@@ -44,7 +44,7 @@ impl SelectedRead {
     }
     pub(crate) fn step(&mut self) -> Result<Step<()>, StoreError> {
         if let Some(gc) = &mut self.gc {
-            if let Step::Done(()) = gc.step()? {
+            if gc.step()? == Step::Done(()) {
                 self.gc = None;
                 return Ok(Step::Done(()));
             }

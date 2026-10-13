@@ -633,10 +633,7 @@ impl Widget for KeyboardMap {
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
+            self.pointer = Some(ctx.logical(position));
         }
         if matches!(
             event,
@@ -652,9 +649,6 @@ impl Widget for KeyboardMap {
             *ctx.handled = true;
         }
         self.observe_window_event(event);
-    }
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
     }
     fn is_focused(&self) -> bool {
         self.focused
@@ -716,9 +710,7 @@ impl Widget for KeyboardMap {
     fn is_layout_dirty(&self) -> bool {
         false
     }
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
+    crate::redraw_flag!();
     fn name(&self) -> &'static str {
         "KeyboardMap"
     }
@@ -731,11 +723,7 @@ impl Widget for KeyboardMap {
     fn accessibility(&self) -> Option<AccessNode> {
         Some(
             AccessNode::new(Role::Group)
-                .with_state(AccessState {
-                    focused: self.focused,
-                    read_only: true,
-                    ..Default::default()
-                })
+                .with_state(AccessState::new().focused(self.focused).read_only(true))
                 .with_name(self.label.clone())
                 .with_value(
                     self.keys
@@ -847,11 +835,11 @@ impl crate::widget::Decorator for KeyboardMapSelection {
                     ))
                     .with_action_target(Self::key_target(&key.name))
                     .with_bounds(self.inspection_rect(key))
-                    .with_state(AccessState {
-                        selected: self.map.inspected_key.as_ref() == Some(&key.name),
-                        disabled: !self.inspection_enabled(),
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .selected(self.map.inspected_key.as_ref() == Some(&key.name))
+                            .disabled(!self.inspection_enabled()),
+                    )
             })
             .collect();
         Some(root)
@@ -904,10 +892,7 @@ impl crate::widget::Decorator for KeyboardMapSelection {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Some(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                self.pointer = Some(ctx.logical(position));
             }
             WindowEvent::MouseInput {
                 state,
@@ -923,10 +908,7 @@ impl crate::widget::Decorator for KeyboardMapSelection {
                 }
             }
             WindowEvent::Touch(touch) => {
-                let point = Point::new(
-                    touch.location.x / ctx.scale_factor,
-                    touch.location.y / ctx.scale_factor,
-                );
+                let point = ctx.logical(touch.location);
                 match touch.phase {
                     winit::event::TouchPhase::Started => self.press(point),
                     winit::event::TouchPhase::Ended => {
@@ -1025,20 +1007,10 @@ mod selection_tests {
             touch.is_some(),
             "the actual shared touch handler must emit inspection"
         );
-        map.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(15.0, 15.0),
-            },
-            &mut ctx,
-        );
+        map.handle_event(&crate::synthetic_input::cursor_moved(15.0, 15.0), &mut ctx);
         for state in [ElementState::Pressed, ElementState::Released] {
             map.handle_event(
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state,
-                    button: winit::event::MouseButton::Left,
-                },
+                &crate::synthetic_input::mouse_input(state, winit::event::MouseButton::Left),
                 &mut ctx,
             );
         }

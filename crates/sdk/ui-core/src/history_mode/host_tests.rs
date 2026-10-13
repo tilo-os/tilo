@@ -1165,10 +1165,7 @@ fn the_history_timeline_explains_scopes_and_announces_live_updates() {
             "toolbar wheel is not canvas navigation"
         );
         let canvas = driver.targets()["history-preview"].center();
-        driver.send(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(canvas.x, canvas.y),
-        });
+        driver.send(&crate::synthetic_input::cursor_moved(canvas.x, canvas.y));
         driver.scroll(0.0, 1.0);
         assert!(
             driver

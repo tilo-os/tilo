@@ -7,12 +7,7 @@
 //!     cargo bench -p app-host --bench install_timing
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "the benchmark fixture fails closed and does not process user input"
 )]
 

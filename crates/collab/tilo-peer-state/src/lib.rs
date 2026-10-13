@@ -22,11 +22,11 @@ mod verified_certificate;
 pub use state::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
     GovernedAgent, GovernedMember, LocalRecoveryReservation, MemberAuthority, NativePublicationCut,
-    PeerDeliveryPolicy, PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError,
-    PeerLimits, PeerMediaCall, PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations,
-    PeerRoomAccess, PlaintextChanges, ReceiveOutcome, Reseal, SealCheckpoint, SeedDocument,
-    SeedState, StatePeer, TransportOrigin, VerifiedSecurityMetadataOnly, decide_with_surfaces,
-    default_surfaces, peer_handle, seed_room,
+    PeerDeliveryPolicy, PeerDeliveryPolicyError, PeerDocumentCapture, PeerDocumentRead,
+    PeerDocumentReadError, PeerLimits, PeerMediaCall, PeerMember, PeerPolicyBasis, PeerRead,
+    PeerRevocations, PeerRoomAccess, PlaintextChanges, ReceiveOutcome, Reseal, SealCheckpoint,
+    SeedDocument, SeedState, StatePeer, TransportOrigin, VerifiedSecurityMetadataOnly,
+    committed_document_revision, decide_with_surfaces, default_surfaces, peer_handle, seed_room,
 };
 pub mod coverage;
 mod governed_routes;
@@ -47,6 +47,7 @@ pub mod topology;
 pub mod desktop_command;
 pub mod document_import;
 pub mod owner_commit;
+pub mod workspace_checkpoint;
 pub mod workspace_membership;
 pub mod workspace_task;
 

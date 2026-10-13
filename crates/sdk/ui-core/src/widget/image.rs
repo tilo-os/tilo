@@ -19,9 +19,7 @@ use crate::widget::TaffyTreeExt;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
-use vello::peniko::{
-    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format,
-};
+use vello::peniko::{Blob, Color, Fill, ImageBrush, ImageData as PenikoImage};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -248,13 +246,7 @@ impl Image {
                     return;
                 }
                 let blob = Blob::new(Arc::new(rgba.to_vec()));
-                let img = PenikoImage {
-                    data: blob,
-                    format: Format::Rgba8,
-                    alpha_type: ImageAlphaType::Alpha,
-                    width: *width,
-                    height: *height,
-                };
+                let img = crate::raster::rgba8(blob, *width, *height);
                 self.intrinsic_size = (*width, *height);
                 self.cached = Some(img);
             }
@@ -268,13 +260,7 @@ impl Image {
                     return;
                 };
                 let blob = Blob::new(Arc::new(rgba));
-                let img = PenikoImage {
-                    data: blob,
-                    format: Format::Rgba8,
-                    alpha_type: ImageAlphaType::Alpha,
-                    width,
-                    height,
-                };
+                let img = crate::raster::rgba8(blob, width, height);
                 self.intrinsic_size = (width, height);
                 self.cached = Some(img);
             }
@@ -442,9 +428,7 @@ impl Widget for Image {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -459,10 +443,6 @@ impl Widget for Image {
 
     fn name(&self) -> &'static str {
         "Image"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

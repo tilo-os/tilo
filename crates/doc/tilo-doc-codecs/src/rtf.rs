@@ -112,8 +112,8 @@ fn tokenize(src: &str) -> Vec<Token> {
                         word.push(at(&chars, i));
                         i = i.saturating_add(1);
                     }
-                    let mut param: Option<i32> = None;
-                    if i < n && (at(&chars, i) == '-' || at(&chars, i).is_ascii_digit()) {
+                    let param = if i < n && (at(&chars, i) == '-' || at(&chars, i).is_ascii_digit())
+                    {
                         let mut num = String::new();
                         if at(&chars, i) == '-' {
                             num.push('-');
@@ -123,8 +123,10 @@ fn tokenize(src: &str) -> Vec<Token> {
                             num.push(at(&chars, i));
                             i = i.saturating_add(1);
                         }
-                        param = num.parse::<i32>().ok();
-                    }
+                        num.parse::<i32>().ok()
+                    } else {
+                        None
+                    };
                     // A single trailing space is the control-word delimiter and is consumed.
                     if i < n && at(&chars, i) == ' ' {
                         i = i.saturating_add(1);

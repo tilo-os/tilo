@@ -267,7 +267,7 @@ fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayWireProtocol {
     /// [`Self::TiloV2Presence`] whose live deltas arrive coded against the
-    /// session's previous delta from the same author (TIL-755).
+    /// session's previous delta from the same author.
     TiloV2CodedDelta,
     /// [`Self::TiloV2Compact`] whose presence arrives batched and
     /// slot-coded.

@@ -969,7 +969,6 @@ fn check_contracts(resource: &tilo_actions::Resource) {
     resource.children.iter().for_each(check_contracts);
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn the_library_publishes_its_places_and_items_and_enumerating_writes_nothing() {
     let mut item = portable_photo("/photos/harbour.png", 800, 400);
