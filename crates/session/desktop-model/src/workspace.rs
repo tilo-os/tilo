@@ -852,26 +852,6 @@ impl Workspace {
         self.policy.app_authors(app, &context_at(now))
     }
 
-    /// The named task's grant answer. Unrelated tasks of an agent do not
-    /// influence this call; native runs also enforce their frozen ceiling.
-    #[must_use]
-    pub fn task_bound_at(
-        &self,
-        agent: Option<&str>,
-        named: Option<&str>,
-        node: &TreePath,
-        kind: ActionKind,
-        now: u64,
-    ) -> Option<Answer> {
-        task_bound(
-            &self.policy,
-            &self.tasks,
-            (agent, named),
-            (node, kind),
-            &context_at(now),
-        )
-    }
-
     /// The role a person with `agent`'s reach in the room would hold: what
     /// its grants let it change — the room, only its comments, or nothing.
     /// `None` when no live grant admits it.
