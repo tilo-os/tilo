@@ -194,24 +194,6 @@ impl ComposerSource {
         self.private
             .with(|drafts| drafts.get(key).map(Draft::plain_text))
     }
-
-    fn clear_private(&mut self) -> bool {
-        let Some(key) = self.private_key.as_ref() else {
-            return false;
-        };
-        let mut cleared = false;
-        self.private.update(|drafts| {
-            if let Some(draft) = drafts.get_mut(key) {
-                draft.clear();
-                cleared = true;
-            }
-        });
-        if cleared {
-            self.observed = self.inner_revision();
-            self.revision = self.revision.wrapping_add(1);
-        }
-        cleared
-    }
 }
 
 impl RichTextSource for ComposerSource {
@@ -358,15 +340,6 @@ impl DraftComposer {
         }
     }
 
-    /// The draft this composer edits.
-    pub fn key(&self) -> String {
-        let source = self.host.widget().source();
-        source
-            .private_key
-            .clone()
-            .unwrap_or_else(|| source.shared.key.clone())
-    }
-
     /// Whether the participant may only view.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.host.widget_mut().source_mut().read_only = read_only;
@@ -403,14 +376,6 @@ impl DraftComposer {
                 .get(&key)
                 .and_then(tilo_rich_text::RichTextSource::revision)
         })
-    }
-
-    pub fn clear_private(&mut self) -> bool {
-        let cleared = self.host.widget_mut().source_mut().clear_private();
-        if cleared {
-            self.host.widget_mut().present_now();
-        }
-        cleared
     }
 
     pub(crate) fn clear_private_for_revision(

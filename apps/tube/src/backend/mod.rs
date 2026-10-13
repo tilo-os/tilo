@@ -24,10 +24,9 @@
 //! | live impl (gated)  | `live::RustyPipeBackend` (`live`)   |
 //! | request/result DTO | [`Query`], [`BackendResult`]        |
 //!
-//! Recommendations model (Home): the trait exposes the three no-auth signals
-//! `NewPipe` / Piped use — [`YtBackend::subscription_feed`] (fan-out of latest
-//! uploads across subscribed channels), [`YtBackend::trending`], and
-//! [`YtBackend::related`] (per-video "up next"). See [`crate::recommend`].
+//! Recommendations model (Home): the trait exposes the no-auth signals
+//! `NewPipe` / Piped use — [`YtBackend::trending`] and [`YtBackend::related`]
+//! (per-video "up next"). See [`crate::recommend`].
 
 pub mod offline;
 /// Fully-rangeable stream resolution through public Invidious `local=true`
@@ -70,8 +69,6 @@ pub enum Query {
     Related(String),
     /// Region trending feed.
     Trending,
-    /// Fan-out of the latest uploads across the given subscribed channels.
-    SubscriptionFeed(Vec<String>),
 }
 
 /// The result of a [`Query`]. Backends map their native types onto Tube's
@@ -111,15 +108,9 @@ pub struct PlaybackSource {
     /// Directly-playable media URL (progressive muxed when available, else the
     /// best video-only stream). Signature/nsig already applied by the extractor.
     pub url: String,
-    /// Full format description, e.g. `video/mp4; codecs="avc1.42001E"` or the
-    /// yt-dlp format note — informational, for the status log.
-    pub format: String,
     /// True when the chosen URL carries audio as well as video (a progressive
     /// muxed format), so the caller knows sound will play.
     pub has_audio: bool,
-    pub width: u32,
-    pub height: u32,
-    pub fps: u8,
     /// `YouTube` quality label, e.g. "360p".
     pub quality: String,
 }
@@ -223,18 +214,6 @@ pub trait YtBackend: Send + Sync {
         ))
     }
 
-    /// Fan-out the latest uploads across `channel_ids` (the subscriptions
-    /// feed). The default implementation pulls each channel's uploads via
-    /// [`YtBackend::channel`] and interleaves them newest-first; a backend
-    /// with a cheaper bulk endpoint may override.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if any fanned-out [`YtBackend::channel`] call fails.
-    fn subscription_feed(&self, channel_ids: &[String]) -> BackendOutcome {
-        crate::recommend::fan_out_subscription_feed(self, channel_ids)
-    }
-
     /// Dispatch a [`Query`] to the right method. Lets the worker stay generic.
     ///
     /// # Errors
@@ -247,7 +226,6 @@ pub trait YtBackend: Send + Sync {
             Query::Channel(id) => self.channel(&id),
             Query::Related(id) => self.related(&id),
             Query::Trending => self.trending(),
-            Query::SubscriptionFeed(ids) => self.subscription_feed(&ids),
         }
     }
 }
