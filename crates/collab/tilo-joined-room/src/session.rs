@@ -5,13 +5,9 @@
 mod cursor;
 
 use crate::{NativeWorkspaceOwner, RoomId};
-use automerge::transaction::Transactable;
 use ed25519_dalek::SigningKey;
 use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
@@ -88,12 +84,6 @@ pub struct Scope {
     live: Mutex<bool>,
     cursor: Mutex<cursor::Cursor>,
     refresh_sent: Mutex<Option<std::time::Instant>>,
-    recovery: Mutex<GovernanceRecovery>,
-}
-#[derive(Default)]
-struct GovernanceRecovery {
-    needed: bool,
-    sent_frontier: Option<Vec<automerge::ChangeHash>>,
 }
 impl Scope {
     #[must_use]
@@ -106,7 +96,6 @@ impl Scope {
             live: Mutex::new(true),
             cursor: Mutex::new(cursor::Cursor::default()),
             refresh_sent: Mutex::new(None),
-            recovery: Mutex::new(GovernanceRecovery::default()),
         }
     }
     #[must_use]
@@ -188,82 +177,6 @@ impl Scope {
             Ok(())
         })
     }
-    /// Replay retained governance on this same authenticated session after a
-    /// causal admission gap. `missing` marks a gap; Ready passes false to drain
-    /// a request held during replay. One request is allowed per admitted room
-    /// frontier, so an incomplete replay cannot create a retry loop.
-    /// This schedules transport only, never admission or a media grant.
-    ///
-    /// # Errors
-    /// The session is closed, current custody changed, or sending failed.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the live guard must cover fresh custody checks and the nonblocking replay send"
-    )]
-    pub fn recover_governance(
-        &self,
-        session: &RelayCoeditSession,
-        identity: &HostIdentity,
-        replaying: &AtomicBool,
-        missing: bool,
-    ) -> Result<bool, String> {
-        let live = self
-            .live
-            .lock()
-            .map_err(|_| "native replay session poisoned")?;
-        if !*live {
-            return Err("native replay session closed".into());
-        }
-        let (hint, device, _, continuity) = self.connect.material(identity)?;
-        if !self.pinned_to(&hint, &device, continuity) {
-            return Err("native replay scope changed".into());
-        }
-        self.connect.owner.with_current(self.connect.room, |view| {
-            if view.device() != &self.device
-                || view.transport_hint() != &self.hint
-                || view.continuity() != self.continuity
-            {
-                return Err("native replay current owner changed".into());
-            }
-            let (bound, _) =
-                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint())
-                    .map_err(|error| error.to_string())?;
-            if bound.workspace_id != session.workspace_id()
-                || bound.room != self.connect.room.to_string()
-            {
-                return Err("native replay session workspace changed".into());
-            }
-            view.peer()
-                .permissions(self.device.device_public_key, std::time::SystemTime::now())?;
-            let mut recovery = self
-                .recovery
-                .lock()
-                .map_err(|_| "native replay recovery poisoned")?;
-            recovery.needed |= missing;
-            if !recovery.needed || replaying.load(Ordering::Acquire) {
-                return Ok(false);
-            }
-            let mut frontier = view
-                .peer()
-                .admitted_room()
-                .ok_or("native replay room unavailable")?
-                .base_heads();
-            frontier.sort_unstable();
-            recovery.needed = false;
-            if recovery.sent_frontier.as_ref() == Some(&frontier) {
-                return Ok(false);
-            }
-            replaying.store(true, Ordering::Release);
-            if let Err(error) = session.resubscribe() {
-                replaying.store(false, Ordering::Release);
-                recovery.needed = true;
-                return Err(error.to_string());
-            }
-            recovery.sent_frontier = Some(frontier);
-            Ok(true)
-        })
-    }
-
     /// Reconcile the owner's outgoing custody and send, once per session,
     /// every entry it may send now. Sealed writes that expired in custody
     /// are not renewed: see [`Self::publish_renewing`].

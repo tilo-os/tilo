@@ -656,12 +656,6 @@ pub trait Backend {
         false
     }
 
-    /// Maximum retained workspace width for this presenter's layer consumer.
-    /// The frame builder scopes unbaking to the individual produced frame.
-    fn retained_layer_width(&self) -> Option<u32> {
-        None
-    }
-
     /// The presenter composites strip pans from retained layers
     /// (`FramePaint::cache`) instead of rasterising every pixel of the strip.
     fn composites_strip_layers(&self) -> bool {

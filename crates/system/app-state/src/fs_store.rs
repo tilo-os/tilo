@@ -966,15 +966,7 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
                 sync_ancestors(shared, &owner.directory)?;
                 owner.check()
             }
-            WriteOp::Append(bytes) => {
-                // A shared cache's first complete snapshot is appended, even
-                // when another view races creation. Never truncate that view.
-                append_synced(shared, &document, bytes, !owner.exclusive)?;
-                if !owner.exclusive {
-                    sync_ancestors(shared, &owner.directory)?;
-                }
-                owner.check()
-            }
+            WriteOp::Append(bytes) => append_synced(shared, &document, bytes, false),
         };
     };
     match &batch.op {

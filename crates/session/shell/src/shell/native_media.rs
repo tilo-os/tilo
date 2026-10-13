@@ -438,20 +438,6 @@ impl NativeMediaService {
         {
             return Ok(self.0.snapshot(entry));
         }
-        // Device discovery can complete after a muted call joins. Resolve an
-        // unselected default from current inventory before asking for consent;
-        // never replace an explicit choice that disappeared.
-        let inputs = self.0.inputs();
-        if entry.snapshot.input_id.is_none() {
-            entry.snapshot.input_id = inputs.first().map(|input| input.id.clone());
-        }
-        if !inputs
-            .iter()
-            .any(|input| Some(&input.id) == entry.snapshot.input_id.as_ref())
-        {
-            entry.snapshot.issue = Some(Issue::SourceLost);
-            return Ok(self.0.snapshot(entry));
-        }
         self.0.stop_capture(entry);
         let tree = consent.grants.tree_handle();
         let workspace = tree
