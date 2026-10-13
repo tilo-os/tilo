@@ -159,7 +159,7 @@ pub(in crate::setup) fn enroll_files_read(
             Err(error) => return Err(error),
         };
         let reply = EnrollmentReply::Delegated {
-            delegation: pending.delegation(&request)?,
+            delegation: Box::new(pending.delegation(&request)?),
         };
         framing
             .write(stream, &reply.encode(&request)?)

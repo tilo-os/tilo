@@ -1,5 +1,8 @@
 //! Explicit child descriptor access through an actual parent grant.
-use super::*;
+use super::{
+    Arc, DirectoryGrant, EntryName, File, FileGrant, FsError, FsRight, FsSession, NativeIdentity,
+    NativeObject, OFlags, Table, io_error,
+};
 
 /// Existing-file descriptor access. These modes never create or truncate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,6 +86,8 @@ impl FsSession {
                 identity,
             },
         )?;
-        Ok(FileGrant { lease })
+        let grant = FileGrant { lease };
+        drop(table);
+        Ok(grant)
     }
 }

@@ -95,8 +95,9 @@ impl Reply {
             && (self.targets.is_empty() || self.source_operation.is_some())
             && self.targets.iter().all(Target::valid)
             && !self.targets.iter().enumerate().any(|(index, target)| {
-                self.targets[..index]
+                self.targets
                     .iter()
+                    .take(index)
                     .any(|other| other.app_id == target.app_id)
             })
     }
@@ -181,9 +182,13 @@ pub fn is_envelope(bytes: &[u8]) -> bool {
             value.get("protocol").and_then(serde_json::Value::as_str) == Some(PROTOCOL)
         })
 }
+/// # Errors
+/// Refuses empty, oversized, malformed or invalid discovery requests.
 pub fn decode_request(bytes: &[u8]) -> io::Result<Request> {
     decode(bytes, Request::valid)
 }
+/// # Errors
+/// Refuses empty, oversized, malformed or invalid discovery replies.
 pub fn decode_reply(bytes: &[u8]) -> io::Result<Reply> {
     decode(bytes, Reply::valid)
 }

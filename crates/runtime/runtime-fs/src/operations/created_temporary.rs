@@ -1,6 +1,11 @@
 //! Custody of an entry genuinely created by one completed native job. Cleanup
 //! removes its namespace binding into protected recovery; it never purges bytes.
-use super::*;
+use super::{
+    Arc, Context, DirectoryGrant, EntryName, FsError, FsJob, FsRight, FsSession, GrantedEntry,
+    ItemOutcome, ItemState, MetadataExt, Mutex, NativeIdentity, OperationId, OperationOwner,
+    OsStrExt, OsString, PreparedNativeReplacement, RecoveryKind, Request, Work, admit, check_named,
+    ensure_recovery, io_error, lock, no_replace, sync_dir,
+};
 
 pub struct NativeCreatedTemporary {
     session: FsSession,
@@ -64,7 +69,10 @@ impl NativeCreatedTemporary {
         let report = self.owner.report(&self.creation)?;
         if report.state != crate::recovery::OperationState::Finished
             || report.items.len() != 1
-            || report.items[0].state != ItemState::Completed
+            || report
+                .items
+                .first()
+                .is_none_or(|item| item.state != ItemState::Completed)
         {
             return Err(FsError::Denied);
         }
@@ -97,12 +105,15 @@ impl NativeCreatedTemporary {
             return Err(FsError::Denied);
         }
         self.check()?;
-        self.session
-            .set_created_temporary_permissions(&self.parent, &self.entry, mode)
+        let result =
+            self.session
+                .set_created_temporary_permissions(&self.parent, &self.entry, mode);
+        drop(submitted);
+        result
     }
     /// A creator capability alone does not admit generic replacement. The
-    /// selected sealed scope is specifically AtomicSave; trusted general
-    /// replacement remains the separate FsSession::prepare_replace operation.
+    /// selected sealed scope is specifically `AtomicSave`; trusted general
+    /// replacement remains the separate `FsSession::prepare_replace` operation.
     /// # Errors
     /// Refuses generic replacement without widening the selected Save permit.
     pub fn prepare_replacement(&self) -> Result<PreparedNativeReplacement, FsError> {
@@ -136,6 +147,7 @@ impl NativeCreatedTemporary {
             1,
         )?;
         *submitted = true;
+        drop(submitted);
         Ok(job)
     }
 }

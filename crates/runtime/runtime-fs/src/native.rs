@@ -715,7 +715,7 @@ impl FsSession {
         Ok(crate::directory_backend::DirectoryStat {
             metadata,
             identity: [raw.dev(), raw.ino()],
-            file_type: raw.mode() & u32::from(libc::S_IFMT),
+            file_type: raw.mode() & libc::S_IFMT,
             execute_bits: (raw.mode() & 0o111) as u16,
         })
     }
@@ -739,7 +739,7 @@ impl FsSession {
         Ok(crate::directory_backend::DirectoryStat {
             metadata: describe(&metadata),
             identity: [metadata.dev(), metadata.ino()],
-            file_type: metadata.mode() & u32::from(libc::S_IFMT),
+            file_type: metadata.mode() & libc::S_IFMT,
             execute_bits: (metadata.mode() & 0o111) as u16,
         })
     }
@@ -795,7 +795,10 @@ impl FsSession {
         if length == 0 || length > 4096 {
             return Err(FsError::LimitExceeded);
         }
-        Ok(bytes[..length].to_vec())
+        bytes
+            .get(..length)
+            .map(<[u8]>::to_vec)
+            .ok_or(FsError::LimitExceeded)
     }
 
     /// # Errors
@@ -1110,7 +1113,9 @@ impl FsSession {
         // retire the grant between the final live check and this exact effect.
         let written = rustix::io::pwrite(&*descriptor, bytes, offset)
             .map_err(|error| io_error(error.into()))?;
-        u32::try_from(written).map_err(|_| FsError::LimitExceeded)
+        let result = u32::try_from(written).map_err(|_| FsError::LimitExceeded);
+        drop(table);
+        result
     }
 
     /// Change the length of exactly the held regular-file inode.
@@ -1126,7 +1131,9 @@ impl FsSession {
         }
         let descriptor = self.writable_file(&table, file)?;
         self.validate(&table, &file.lease, Some(FsRight::Write))?;
-        descriptor.set_len(len).map_err(io_error)
+        let result = descriptor.set_len(len).map_err(io_error);
+        drop(table);
+        result
     }
 
     /// Sync bytes and metadata of exactly the writable held regular file.
@@ -1138,7 +1145,9 @@ impl FsSession {
         let table = self.call()?;
         let descriptor = self.writable_file(&table, file)?;
         self.validate(&table, &file.lease, Some(FsRight::Write))?;
-        descriptor.sync_all().map_err(io_error)
+        let result = descriptor.sync_all().map_err(io_error);
+        drop(table);
+        result
     }
 
     fn writable_file(&self, table: &Table, file: &FileGrant) -> Result<Arc<File>, FsError> {

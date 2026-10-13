@@ -1,6 +1,6 @@
 //! Closed History results on the existing independently enrolled Read lane.
 //! Routing identifiers and result bytes never grant source or record access.
-use super::*;
+use super::{Deserialize, Serialize, id, io, refused};
 pub const HISTORY_PROJECTION_QUERY: &str = "user.tilo.history";
 pub const RECORD_ID_QUERY: &str = "user.tilo.record-id";
 pub fn valid_query(query: &str) -> bool {

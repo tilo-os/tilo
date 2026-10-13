@@ -93,11 +93,14 @@ pub mod wire {
     pub struct PresentationHandshake {
         #[serde(flatten)]
         pub handshake: Handshake,
-        #[serde(default, skip_serializing_if = "is_zero")]
+        #[serde(default, skip_serializing_if = "presentation_version_is_zero")]
         pub presentation_version: u16,
     }
-    fn is_zero(version: &u16) -> bool {
-        *version == 0
+    fn presentation_version_is_zero(version: impl std::borrow::Borrow<u16>) -> bool {
+        is_zero(*version.borrow())
+    }
+    fn is_zero(version: u16) -> bool {
+        version == 0
     }
     pub const PRESENTATION_VERSION: u16 = 1;
     /// The signed manifest identity service version that understands presentation.

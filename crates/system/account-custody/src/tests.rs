@@ -694,11 +694,11 @@ fn imported_cloud_clients_remain_per_grant_and_detach_never_revokes_source_sessi
             let form: std::collections::BTreeMap<_, _> =
                 url::form_urlencoded::parse(body.as_bytes()).collect();
             assert_eq!(
-                form.get("client_id").map(|value| value.as_ref()),
+                form.get("client_id").map(AsRef::as_ref),
                 Some("original-public-client-id")
             );
             assert_eq!(
-                form.get("client_secret").map(|value| value.as_ref()),
+                form.get("client_secret").map(AsRef::as_ref),
                 Some("original-public-client-secret")
             );
         }

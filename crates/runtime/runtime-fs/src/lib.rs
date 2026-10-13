@@ -41,6 +41,7 @@ use runtime_portal::NotAvailable;
     clippy::all,
     clippy::elidable_lifetime_names,
     clippy::expl_impl_clone_on_copy,
+    clippy::match_same_arms,
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
     clippy::semicolon_if_nothing_returned,

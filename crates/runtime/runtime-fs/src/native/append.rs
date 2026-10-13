@@ -1,5 +1,7 @@
 //! Exact-inode append custody. Never changes the selected descriptor's flags.
-use super::*;
+use super::{
+    FileGrant, FsError, FsRight, FsSession, MAX_WRITE_CHUNK, NativeIdentity, OFlags, io_error,
+};
 #[cfg(target_os = "linux")]
 use std::os::{fd::AsRawFd, unix::fs::MetadataExt as StdMetadataExt};
 
@@ -28,7 +30,9 @@ impl FsSession {
                 "append descriptor cannot write at an offset",
             ));
         }
-        self.validate(&table, &file.lease, Some(FsRight::Write))
+        let result = self.validate(&table, &file.lease, Some(FsRight::Write));
+        drop(table);
+        result
     }
 
     /// Validate Read+Write rights and an existing positioned read/write descriptor.
@@ -49,10 +53,11 @@ impl FsSession {
                 "append descriptor cannot write at an offset",
             ));
         }
+        drop(table);
         Ok(())
     }
 
-    /// Open an independent O_APPEND description of exactly the held inode.
+    /// Open an independent `O_APPEND` description of exactly the held inode.
     /// # Errors
     /// Refuses absent Write rights, read-only/special descriptors, stale scope,
     /// identity changes, and platforms without exact descriptor reopening.
@@ -77,12 +82,14 @@ impl FsSession {
                 return Err(FsError::Denied);
             }
             self.validate(&table, &file.lease, Some(FsRight::Write))?;
-            Ok(FsAppendHandle {
+            let handle = FsAppendHandle {
                 session: self.clone(),
                 file: file.clone(),
                 descriptor,
                 identity,
-            })
+            };
+            drop(table);
+            Ok(handle)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -118,6 +125,8 @@ impl FsAppendHandle {
         // Authority remains locked until this single O_APPEND syscall returns.
         let written =
             rustix::io::write(&self.descriptor, bytes).map_err(|error| io_error(error.into()))?;
-        u32::try_from(written).map_err(|_| FsError::LimitExceeded)
+        let result = u32::try_from(written).map_err(|_| FsError::LimitExceeded);
+        drop(table);
+        result
     }
 }

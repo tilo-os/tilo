@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub struct DirectoryStat {
     pub metadata: Metadata,
     pub identity: [u64; 2],
-    /// Observed native S_IFMT bits; never permissions or authority.
+    /// Observed native `S_IFMT` bits; never permissions or authority.
     pub file_type: u32,
     /// Original observed execute mode bits only (0111), never Execute authority.
     pub execute_bits: u16,
@@ -63,7 +63,7 @@ pub struct JobPoll {
 /// The authenticating host owns backend provenance and the live consumption
 /// lease. A root relay must wrap its authenticated source connection and recheck
 /// its private authority before each method; wire labels do not construct it.
-/// Held source filesystem metadata. Counts use fragment_size units; no rights.
+/// Held source filesystem metadata. Counts use `fragment_size` units; no rights.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectoryFilesystemStats {
     pub blocks: u64,
@@ -147,19 +147,31 @@ impl HistoryReadObservation {
 pub trait WorkspaceHistoryReadSubjectBackend: Send + Sync + 'static {
     /// Release only this private controller cache alias after its admitted owner
     /// observed retirement. No File/OFD or creator aliases are bulk-deleted.
+    /// # Errors
+    /// Refuses unsupported cache retirement or missing admitted ownership.
     fn retire_controller_cache(&self) -> Result<(), String> {
         Err("Owned controller cache retirement unavailable".into())
     }
 
+    /// # Errors
+    /// Refuses unsupported retirement, an invalid ticket or missing handoff ownership.
     fn retire_daemon_handoff(&self, _ticket: [u8; 16]) -> Result<(), String> {
         Err("History Read handoff retirement unavailable".into())
     }
+    /// # Errors
+    /// Refuses unsupported handoff, failed authentication or revoked Read custody.
     fn arm_daemon_handoff(&self, _challenge: [u8; 32]) -> Result<[u8; 16], String> {
         Err("History Read handoff unavailable".into())
     }
 
+    /// # Errors
+    /// Refuses revoked or unavailable original-source Read scope.
     fn check_scope(&self) -> Result<(), String>;
+    /// # Errors
+    /// Refuses stale inode custody or revoked original-source Read authority.
     fn check(&self) -> Result<(), String>;
+    /// # Errors
+    /// Refuses invalid original-source observations, revoked scope or native IO.
     fn observe(&self) -> Result<HistoryReadObservation, String>;
 }
 /// Existing bounded history xattr vocabulary. Query names/cursors grant no
@@ -211,6 +223,8 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
         Err("Original-source history Read custody unavailable".into())
     }
 
+    /// # Errors
+    /// Refuses unsupported creator authority, changed inode identity or native IO.
     fn set_created_permissions(
         &self,
         _name: &EntryName,
@@ -222,6 +236,8 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
 
     /// Only a filtered own-created scope implements this. Ordinary Home cannot
     /// derive deletion/capture authority from caller names or inode labels.
+    /// # Errors
+    /// Refuses absent own-created custody, changed inode identity or revoked scope.
     fn retire_created(
         &self,
         _name: &EntryName,
@@ -299,9 +315,6 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
     /// Returns actual native/relay rights, type, admission, revocation or IO failures.
     fn create_directory(&self, name: EntryName) -> Result<Arc<dyn WorkspaceJobBackend>, String>;
     /// # Errors
-    /// Returns actual native/relay rights, type, admission, revocation or IO failures.
-
-    /// # Errors
     /// Refuses missing private owner, foreign cursor or revoked parent scope.
     fn recoveries(&self, after: &[u8]) -> Result<RecoveryPage, String> {
         let _ = after;
@@ -329,6 +342,8 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
     ) -> Result<(), String> {
         Err("Explicit AtomicSave coordinator unavailable".into())
     }
+    /// # Errors
+    /// Refuses unavailable certified replacing authority, revoked scope or native IO.
     fn rename_replace(
         &self,
         _name: &EntryName,
@@ -336,6 +351,8 @@ pub trait WorkspaceDirectoryBackend: Send + Sync + 'static {
     ) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
         Err("Certified replacing-save coordinator unavailable".into())
     }
+    /// # Errors
+    /// Refuses missing rename authority, destination collisions or native IO.
     fn rename_no_replace(
         &self,
         name: &EntryName,
@@ -368,10 +385,14 @@ pub struct ReplacementObservation {
 pub trait WorkspaceReplacementPinBackend: Send + Sync + 'static {
     /// Release only this private controller cache alias after its admitted owner
     /// observed retirement. No File/OFD or creator aliases are bulk-deleted.
+    /// # Errors
+    /// Refuses unsupported cache retirement or missing admitted ownership.
     fn retire_controller_cache(&self) -> Result<(), String> {
         Err("Owned controller cache retirement unavailable".into())
     }
 
+    /// # Errors
+    /// Refuses unsupported commits, invalid history receipts or revoked pin custody.
     fn commit_with_history(&self, _receipt: &[u8]) -> Result<(), String> {
         Err("Certified durable history commit unavailable".into())
     }
@@ -386,6 +407,8 @@ pub trait WorkspaceReplacementPinBackend: Send + Sync + 'static {
 pub trait WorkspaceJobBackend: Send + Sync + 'static {
     /// Release only this private controller cache alias after its admitted owner
     /// observed retirement. No File/OFD or creator aliases are bulk-deleted.
+    /// # Errors
+    /// Refuses unsupported cache retirement or missing admitted ownership.
     fn retire_controller_cache(&self) -> Result<(), String> {
         Err("Owned controller cache retirement unavailable".into())
     }
@@ -512,26 +535,36 @@ impl PendingReplacementObservation {
 pub trait WorkspacePendingReplacementBackend: Send + Sync + 'static {
     /// Release only this private controller cache alias after its admitted owner
     /// observed retirement. No File/OFD or creator aliases are bulk-deleted.
+    /// # Errors
+    /// Refuses unsupported cache retirement or missing admitted ownership.
     fn retire_controller_cache(&self) -> Result<(), String> {
         Err("Owned controller cache retirement unavailable".into())
     }
 
     /// SAME submitted native job, replaying its actually observed terminal report
     /// once for a newly admitted root client after signed ownership verification.
+    /// # Errors
+    /// Refuses unavailable terminal receipts or failed signed ownership verification.
     fn acknowledged_committed_job(&self) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
         Err("Acknowledged source native terminal receipt unavailable".into())
     }
     /// Returns the actual submitted job's pin only after private signed history
     /// ownership verification. Descriptive receipts cannot construct this cap.
+    /// # Errors
+    /// Refuses unavailable submitted-job pins or failed signed ownership verification.
     fn acknowledged_committed_pin(
         &self,
     ) -> Result<Arc<dyn WorkspaceReplacementPinBackend>, String> {
         Err("Acknowledged source history ownership unavailable".into())
     }
     /// Retire only the separately owned daemon RPC transport, never the source namespace.
+    /// # Errors
+    /// Refuses unsupported retirement, an invalid ticket or missing handoff ownership.
     fn retire_daemon_handoff(&self, _ticket: [u8; 16]) -> Result<(), String> {
         Err("source handoff retirement unavailable".into())
     }
+    /// # Errors
+    /// Refuses unavailable authenticated routes or revoked pending custody.
     fn arm_daemon_handoff(&self, _challenge: [u8; 32]) -> Result<[u8; 16], String> {
         Err("Authenticated source pending route unavailable".into())
     }
@@ -553,7 +586,7 @@ pub trait WorkspacePendingReplacementBackend: Send + Sync + 'static {
 mod atomic_save_reservation;
 pub use atomic_save_reservation::AtomicSaveReservation;
 
-/// Closed result of a zero-effect AtomicSave reservation request.
+/// Closed result of a zero-effect `AtomicSave` reservation request.
 /// Refused means an acknowledged no-reservation result; transport loss is Unknown.
 pub enum AtomicSavePreparation<T> {
     Prepared(T),
@@ -563,6 +596,8 @@ pub enum AtomicSavePreparation<T> {
 
 /// Actual source-held completed creation custody, not receipt observations.
 pub trait WorkspaceCreatedTemporaryBackend: Send + Sync + 'static {
+    /// # Errors
+    /// Refuses absent creator permissions authority, revoked custody or native IO.
     fn set_permissions(&self, _mode: u32) -> Result<(), String> {
         Err("Actual creator permissions authority unavailable".into())
     }
@@ -574,6 +609,8 @@ pub trait WorkspaceCreatedTemporaryBackend: Send + Sync + 'static {
     ) -> AtomicSavePreparation<Arc<dyn WorkspacePendingReplacementBackend>> {
         AtomicSavePreparation::Refused("Explicit AtomicSave authority unavailable".into())
     }
+    /// # Errors
+    /// Refuses absent selected replacement custody, revoked scope or native preparation failure.
     fn prepare_replace(&self) -> Result<Arc<dyn WorkspacePendingReplacementBackend>, String> {
         Err("Actual selected replacement custody unavailable".into())
     }

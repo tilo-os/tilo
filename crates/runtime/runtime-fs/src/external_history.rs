@@ -150,7 +150,7 @@ pub struct EnrollmentContext {
     pub schema: u32,
     pub nonce: [u8; 32],
     pub verifier: VerifierClaims,
-    /// Canonical RetainedLaunchBinding JSON, independently decoded/compared by
+    /// Canonical `RetainedLaunchBinding` JSON, independently decoded/compared by
     /// the daemon. Keeping the lower codec declarative avoids a dependency cycle.
     pub person_binding: Vec<u8>,
 }
@@ -243,10 +243,9 @@ impl EnrollmentCommand {
         | Self::StartReplacement { request_id }
         | Self::PollReplacement { request_id }
         | Self::CancelReplacement { request_id } = &value
+            && !id(request_id)
         {
-            if !id(request_id) {
-                return Err(refused());
-            }
+            return Err(refused());
         }
         if let Self::RetireReplacement {
             request_id,
@@ -254,20 +253,18 @@ impl EnrollmentCommand {
             operation_id,
             transaction_digest,
         } = &value
-        {
-            if !id(request_id)
+            && (!id(request_id)
                 || !id(successor_request_id)
                 || !id(operation_id)
                 || request_id == successor_request_id
-                || *transaction_digest == [0; 32]
-            {
-                return Err(refused());
-            }
+                || *transaction_digest == [0; 32])
+        {
+            return Err(refused());
         }
-        if let Self::QueryHistory { query, .. } = &value {
-            if !read_control::valid_query(query) {
-                return Err(refused());
-            }
+        if let Self::QueryHistory { query, .. } = &value
+            && !read_control::valid_query(query)
+        {
+            return Err(refused());
         }
         Ok(value)
     }

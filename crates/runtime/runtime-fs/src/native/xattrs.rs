@@ -1,6 +1,9 @@
 //! Bounded original-user metadata access. No file-content methods or descriptors
 //! leave this module. Refusal is safer than replacing with weaker permissions.
-use super::*;
+use super::{
+    EntryName, FsError, FsRight, FsSession, GrantedEntry, NativeIdentity, NativeObject, OFlags,
+    io_error,
+};
 use std::{collections::BTreeMap, os::fd::AsRawFd};
 #[cfg(target_os = "linux")]
 use std::{ffi::CString, os::fd::OwnedFd};
@@ -22,7 +25,7 @@ fn result(value: libc::ssize_t) -> Result<usize, FsError> {
     }
 }
 #[cfg(target_os = "linux")]
-fn observe(fd: impl AsRawFd) -> Result<NativeAttributes, FsError> {
+fn observe(fd: &impl AsRawFd) -> Result<NativeAttributes, FsError> {
     let mut list = vec![0_u8; VALUE_LIMIT];
     // SAFETY: held original-user descriptor, live bounded writable buffer.
     let size =
@@ -123,14 +126,14 @@ impl FsSession {
         };
         let fd = opened
             .as_ref()
-            .map_or(descriptor.as_raw_fd(), AsRawFd::as_raw_fd);
+            .map_or_else(|| descriptor.as_raw_fd(), AsRawFd::as_raw_fd);
         // SAFETY: fd remains owned by opened or the actual retained descriptor.
         let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         let stat = rustix::fs::fstat(borrowed).map_err(|e| io_error(e.into()))?;
         if [stat.st_dev, stat.st_ino] != [identity.device, identity.inode] {
             return Err(FsError::StaleEntry);
         }
-        let attributes = observe(borrowed)?;
+        let attributes = observe(&borrowed)?;
         self.validate(&table, victim.lease(), Some(FsRight::Replace))?;
         custody.check()?;
         let metadata = custody
@@ -179,14 +182,14 @@ impl FsSession {
         };
         let fd = opened
             .as_ref()
-            .map_or(descriptor.as_raw_fd(), AsRawFd::as_raw_fd);
+            .map_or_else(|| descriptor.as_raw_fd(), AsRawFd::as_raw_fd);
         // SAFETY: fd remains owned by opened or the actual retained descriptor.
         let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         let before = rustix::fs::fstat(borrowed).map_err(|e| io_error(e.into()))?;
         if [before.st_dev, before.st_ino] != [identity.device, identity.inode] {
             return Err(FsError::StaleEntry);
         }
-        let attributes = observe(borrowed)?;
+        let attributes = observe(&borrowed)?;
         self.validate(&table, victim.lease(), Some(FsRight::Replace))?;
         let after = source
             .parent
@@ -223,8 +226,7 @@ impl FsSession {
 impl NativeAttributes {
     #[cfg(target_os = "linux")]
     pub(crate) fn apply(&self, fd: impl AsRawFd) -> Result<(), FsError> {
-        // SAFETY: caller retains this real descriptor throughout metadata IO.
-        let current = observe(unsafe { std::os::fd::BorrowedFd::borrow_raw(fd.as_raw_fd()) })?;
+        let current = observe(&fd)?;
         for name in current.0.keys().filter(|n| !self.0.contains_key(*n)) {
             let name = CString::new(name.clone()).map_err(|_| FsError::StoreUnavailable)?;
             // SAFETY: actual held protected temporary and owned xattr name.
@@ -252,9 +254,10 @@ impl NativeAttributes {
                 return Err(io_error(std::io::Error::last_os_error()));
             }
         }
-        if observe(fd)? != *self {
+        if observe(&fd)? != *self {
             return Err(FsError::StaleEntry);
         }
+        drop(fd);
         Ok(())
     }
     #[cfg(not(target_os = "linux"))]

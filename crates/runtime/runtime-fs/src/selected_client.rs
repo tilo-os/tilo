@@ -1,5 +1,5 @@
 //! Bounded bridge to the existing filesystem capability on a connected fd.
-//! The Cap'n Proto client stays on its LocalSet; FUSE never receives source fds.
+//! The Cap'n Proto client stays on its `LocalSet`; FUSE never receives source fds.
 
 use crate::{Metadata, OpenMode};
 use std::{
@@ -85,6 +85,8 @@ fn join_worker(thread: JoinHandle<io::Result<()>>) -> io::Result<()> {
 impl SelectedFileConnection {
     /// Close the queue and observe the exact RPC worker and transport outcome.
     /// Requires sole custody after all FUSE callbacks and handles have retired.
+    /// # Errors
+    /// Fails if owners remain, the worker lock is poisoned, or worker retirement fails.
     pub fn retire(self) -> io::Result<()> {
         let mut inner = Arc::try_unwrap(self.0)
             .map_err(|_| io::Error::other("retained source still has active owners"))?;
@@ -104,9 +106,11 @@ impl SelectedFileConnection {
         self.0.live.store(false, Ordering::Release);
         let _ = self.0.transport.shutdown(std::net::Shutdown::Both);
     }
+    /// # Errors
+    /// Fails on socket or worker startup errors, invalid source capability, or startup timeout.
     pub fn connected(stream: UnixStream) -> io::Result<Self> {
         let transport = stream.try_clone()?;
-        let (calls, mut receive) = tokio::sync::mpsc::channel::<Call>(LIMIT);
+        let (calls, receive) = tokio::sync::mpsc::channel::<Call>(LIMIT);
         let live = Arc::new(AtomicBool::new(true));
         let worker_live = Arc::clone(&live);
         let fault = Arc::new(AtomicBool::new(false));
@@ -114,183 +118,7 @@ impl SelectedFileConnection {
         let (started, ready) = mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("retained-source-fs".into())
-            .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        let _ = started.send(Err(error));
-                        return Err(refused());
-                    }
-                };
-                tokio::task::LocalSet::new().block_on(&runtime, async move {
-                    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-                    stream.set_nonblocking(true)?;
-                    let stream = tokio::net::UnixStream::from_std(stream)?;
-                    let (read, write) = stream.into_split();
-                    let network = capnp_rpc::twoparty::VatNetwork::new(
-                        read.compat(),
-                        write.compat_write(),
-                        capnp_rpc::rpc_twoparty_capnp::Side::Client,
-                        capnp::message::ReaderOptions::default(),
-                    );
-                    let mut rpc = capnp_rpc::RpcSystem::new(Box::new(network), None);
-                    let raw: crate::WorkspaceFsClient =
-                        rpc.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Server);
-                    let disconnect = rpc.get_disconnector();
-                    let mut driver = tokio::task::spawn_local(rpc);
-                    let client = crate::FsClient::from_raw(raw);
-                    let outcome: io::Result<()> = async {
-                        let initial = tokio::time::timeout(DEADLINE, client.stat(FILE)).await;
-                        match initial {
-                            Ok(Ok(metadata)) if metadata.kind == crate::EntryKind::File => {
-                                let _ = started.send(Ok(()));
-                            }
-                            _ => {
-                                worker_live.store(false, Ordering::Release);
-                                let _ = started.send(Err(refused()));
-                                return Err(refused());
-                            }
-                        }
-                        let mut handles: HashMap<u64, crate::FileHandle> = HashMap::new();
-                        let mut next = 0_u64;
-                        let mut terminal = None;
-                        while let Some(call) = receive.recv().await {
-                            if !worker_live.load(Ordering::Acquire) {
-                                let _ = call.answer.send(Err(refused()));
-                                continue;
-                            }
-                            let work = async {
-                                match call.request {
-                                    Request::Check(id) => {
-                                        handles
-                                            .get(&id)
-                                            .ok_or_else(refused)?
-                                            .check_scope()
-                                            .await
-                                            .map_err(crate::native_reply::client_error)?;
-                                        Ok(Response::Empty)
-                                    }
-                                    Request::HandleStat(id) => handles
-                                        .get(&id)
-                                        .ok_or_else(refused)?
-                                        .metadata()
-                                        .await
-                                        .map(Response::Metadata)
-                                        .map_err(crate::native_reply::client_error),
-                                    Request::Stat => client
-                                        .stat(FILE)
-                                        .await
-                                        .map(Response::Metadata)
-                                        .map_err(crate::native_reply::client_error),
-                                    Request::Open(mode) => {
-                                        if handles.len() >= LIMIT || next == u64::MAX {
-                                            return Err(io::Error::other("retained handle limit"));
-                                        }
-                                        let handle = client
-                                            .open(FILE, mode)
-                                            .await
-                                            .map_err(crate::native_reply::client_error)?;
-                                        next += 1;
-                                        handles.insert(next, handle);
-                                        Ok(Response::Handle(next))
-                                    }
-                                    Request::Read(id, offset, len) => handles
-                                        .get(&id)
-                                        .ok_or_else(|| refused())?
-                                        .read_at(offset, len)
-                                        .await
-                                        .map(Response::Bytes)
-                                        .map_err(crate::native_reply::client_error),
-                                    Request::Write(id, offset, bytes) => handles
-                                        .get(&id)
-                                        .ok_or_else(|| refused())?
-                                        .write_at(offset, &bytes)
-                                        .await
-                                        .map(Response::Written)
-                                        .map_err(crate::native_reply::client_error),
-                                    Request::Append(id, bytes) => handles
-                                        .get(&id)
-                                        .ok_or_else(refused)?
-                                        .append(&bytes)
-                                        .await
-                                        .map(Response::Written)
-                                        .map_err(crate::native_reply::client_error),
-                                    Request::Flush(id) => {
-                                        handles
-                                            .get(&id)
-                                            .ok_or_else(|| refused())?
-                                            .flush()
-                                            .await
-                                            .map_err(crate::native_reply::client_error)?;
-                                        Ok(Response::Empty)
-                                    }
-                                    Request::Release(id) => {
-                                        if handles.remove(&id).is_none() {
-                                            return Err(refused());
-                                        }
-                                        Ok(Response::Empty)
-                                    }
-                                }
-                            };
-                            let answer = match tokio::time::timeout(DEADLINE, work).await {
-                                Ok(Ok(response)) => Ok(response),
-                                Ok(Err(error))
-                                    if crate::native_reply::is_operation_refusal(&error) =>
-                                {
-                                    Err(error)
-                                }
-                                Ok(Err(error)) => {
-                                    worker_live.store(false, Ordering::Release);
-                                    terminal =
-                                        Some(io::Error::new(error.kind(), error.to_string()));
-                                    Err(error)
-                                }
-                                // A timed-out write has an unknown outcome. Never replay it.
-                                Err(_) => {
-                                    worker_live.store(false, Ordering::Release);
-                                    terminal = Some(io::Error::new(
-                                        io::ErrorKind::TimedOut,
-                                        "retained source request timed out; outcome unknown",
-                                    ));
-                                    Err(refused())
-                                }
-                            };
-                            let _ = call.answer.send(answer);
-                        }
-                        match terminal {
-                            Some(error) => Err(error),
-                            None if worker_fault.load(Ordering::Acquire) => Err(io::Error::new(
-                                io::ErrorKind::TimedOut,
-                                "retained caller lost request outcome",
-                            )),
-                            None => Ok(()),
-                        }
-                    }
-                    .await;
-                    worker_live.store(false, Ordering::Release);
-                    // The driver is owned here, never detached by bootstrap().
-                    // Graceful disconnect drains transport; cancellation is observed.
-                    let disconnect_result = tokio::time::timeout(DEADLINE, disconnect).await;
-                    let transport = match tokio::time::timeout(DEADLINE, &mut driver).await {
-                        Ok(result) => result.map_err(io::Error::other)?.map_err(io::Error::other),
-                        Err(_) => {
-                            driver.abort();
-                            let cancelled = driver.await;
-                            Err(io::Error::other(format!(
-                                "retained RPC driver did not stop: {cancelled:?}"
-                            )))
-                        }
-                    };
-                    outcome?;
-                    disconnect_result
-                        .map_err(|_| io::Error::other("retained RPC disconnect timed out"))?
-                        .map_err(io::Error::other)?;
-                    transport
-                })
-            })?;
+            .spawn(move || run_worker(stream, receive, worker_live, worker_fault, started))?;
         let inner = Arc::new(Inner {
             calls: Some(calls),
             transport,
@@ -299,7 +127,7 @@ impl SelectedFileConnection {
             thread: Mutex::new(Some(thread)),
         });
         ready
-            .recv_timeout(DEADLINE + Duration::from_secs(1))
+            .recv_timeout(DEADLINE.saturating_add(Duration::from_secs(1)))
             .map_err(|_| refused())??;
         Ok(Self(inner))
     }
@@ -324,7 +152,7 @@ impl SelectedFileConnection {
             answer,
         });
         receive
-            .recv_timeout(DEADLINE + Duration::from_secs(1))
+            .recv_timeout(DEADLINE.saturating_add(Duration::from_secs(1)))
             .map_err(|_| {
                 self.0.live.store(false, Ordering::Release);
                 self.0.fault.store(true, Ordering::Release);
@@ -339,24 +167,32 @@ impl SelectedFileConnection {
             _ => Err(refused()),
         }
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn metadata(&self) -> io::Result<Metadata> {
         match self.call(Request::Stat)? {
             Response::Metadata(value) => Ok(value),
             _ => Err(refused()),
         }
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn metadata_handle(&self, id: u64) -> io::Result<Metadata> {
         match self.call(Request::HandleStat(id))? {
             Response::Metadata(value) => Ok(value),
             _ => Err(refused()),
         }
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn open(&self, mode: OpenMode) -> io::Result<u64> {
         match self.call(Request::Open(mode))? {
             Response::Handle(value) => Ok(value),
             _ => Err(refused()),
         }
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn read(&self, id: u64, offset: u64, len: u32) -> io::Result<Vec<u8>> {
         if len > crate::MAX_READ_CHUNK {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -366,6 +202,8 @@ impl SelectedFileConnection {
             _ => Err(refused()),
         }
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn write(&self, id: u64, offset: u64, bytes: &[u8]) -> io::Result<u32> {
         if bytes.len() > crate::MAX_WRITE_CHUNK as usize {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -376,6 +214,8 @@ impl SelectedFileConnection {
         }
     }
     /// One non-idempotent append; a failed transport may have an unknown effect.
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn append(&self, id: u64, bytes: &[u8]) -> io::Result<u32> {
         if bytes.len() > crate::MAX_WRITE_CHUNK as usize {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -385,16 +225,276 @@ impl SelectedFileConnection {
             _ => Err(refused()),
         }
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn flush(&self, id: u64) -> io::Result<()> {
         match self.call(Request::Flush(id))? {
             Response::Empty => Ok(()),
             _ => Err(refused()),
         }
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub fn release(&self, id: u64) -> io::Result<()> {
         match self.call(Request::Release(id))? {
             Response::Empty => Ok(()),
             _ => Err(refused()),
         }
     }
+}
+
+// Boxed futures deliberately omit Send: capability clients stay on the local worker task.
+type LocalFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
+
+// Capability clients remain confined to the worker's local task throughout each request.
+struct WorkerState {
+    handles: HashMap<u64, crate::FileHandle>,
+    next: u64,
+    client: crate::FsClient,
+}
+impl WorkerState {
+    fn check(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
+        Box::pin(async move {
+            self.handles
+                .get(&id)
+                .ok_or_else(refused)?
+                .check_scope()
+                .await
+                .map_err(crate::native_reply::client_error)?;
+            Ok(Response::Empty)
+        })
+    }
+    fn handle_stat(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
+        Box::pin(async move {
+            self.handles
+                .get(&id)
+                .ok_or_else(refused)?
+                .metadata()
+                .await
+                .map(Response::Metadata)
+                .map_err(crate::native_reply::client_error)
+        })
+    }
+    fn stat(&self) -> LocalFuture<'_, io::Result<Response>> {
+        Box::pin(async move {
+            self.client
+                .stat(FILE)
+                .await
+                .map(Response::Metadata)
+                .map_err(crate::native_reply::client_error)
+        })
+    }
+    fn open(&mut self, mode: OpenMode) -> LocalFuture<'_, io::Result<Response>> {
+        Box::pin(async move {
+            if self.handles.len() >= LIMIT || self.next == u64::MAX {
+                return Err(io::Error::other("retained handle limit"));
+            }
+            let handle = self
+                .client
+                .open(FILE, mode)
+                .await
+                .map_err(crate::native_reply::client_error)?;
+            self.next = self.next.checked_add(1).ok_or_else(refused)?;
+            self.handles.insert(self.next, handle);
+            Ok(Response::Handle(self.next))
+        })
+    }
+    fn read(&mut self, id: u64, offset: u64, len: u32) -> LocalFuture<'_, io::Result<Response>> {
+        Box::pin(async move {
+            self.handles
+                .get(&id)
+                .ok_or_else(refused)?
+                .read_at(offset, len)
+                .await
+                .map(Response::Bytes)
+                .map_err(crate::native_reply::client_error)
+        })
+    }
+    fn write(&self, id: u64, offset: u64, bytes: Vec<u8>) -> LocalFuture<'_, io::Result<Response>> {
+        Box::pin(async move {
+            self.handles
+                .get(&id)
+                .ok_or_else(refused)?
+                .write_at(offset, &bytes)
+                .await
+                .map(Response::Written)
+                .map_err(crate::native_reply::client_error)
+        })
+    }
+    fn append(&self, id: u64, bytes: Vec<u8>) -> LocalFuture<'_, io::Result<Response>> {
+        Box::pin(async move {
+            self.handles
+                .get(&id)
+                .ok_or_else(refused)?
+                .append(&bytes)
+                .await
+                .map(Response::Written)
+                .map_err(crate::native_reply::client_error)
+        })
+    }
+    fn flush(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
+        Box::pin(async move {
+            self.handles
+                .get(&id)
+                .ok_or_else(refused)?
+                .flush()
+                .await
+                .map_err(crate::native_reply::client_error)?;
+            Ok(Response::Empty)
+        })
+    }
+    fn release(&mut self, id: u64) -> LocalFuture<'_, io::Result<Response>> {
+        Box::pin(async move {
+            if self.handles.remove(&id).is_none() {
+                return Err(refused());
+            }
+            Ok(Response::Empty)
+        })
+    }
+    fn dispatch(&mut self, request: Request) -> LocalFuture<'_, io::Result<Response>> {
+        Box::pin(async move {
+            match request {
+                Request::Check(id) => self.check(id).await,
+                Request::HandleStat(id) => self.handle_stat(id).await,
+                Request::Stat => self.stat().await,
+                Request::Open(mode) => self.open(mode).await,
+                Request::Read(id, offset, len) => self.read(id, offset, len).await,
+                Request::Write(id, offset, bytes) => self.write(id, offset, bytes).await,
+                Request::Append(id, bytes) => self.append(id, bytes).await,
+                Request::Flush(id) => self.flush(id).await,
+                Request::Release(id) => self.release(id).await,
+            }
+        })
+    }
+}
+
+fn run_worker(
+    stream: UnixStream,
+    receive: tokio::sync::mpsc::Receiver<Call>,
+    worker_live: Arc<AtomicBool>,
+    worker_fault: Arc<AtomicBool>,
+    started: mpsc::SyncSender<io::Result<()>>,
+) -> io::Result<()> {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = started.send(Err(error));
+            return Err(refused());
+        }
+    };
+    tokio::task::LocalSet::new().block_on(
+        &runtime,
+        run_rpc(stream, receive, worker_live, worker_fault, started),
+    )
+}
+
+fn run_rpc(
+    stream: UnixStream,
+    receive: tokio::sync::mpsc::Receiver<Call>,
+    worker_live: Arc<AtomicBool>,
+    worker_fault: Arc<AtomicBool>,
+    started: mpsc::SyncSender<io::Result<()>>,
+) -> LocalFuture<'static, io::Result<()>> {
+    Box::pin(async move {
+        use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+        stream.set_nonblocking(true)?;
+        let stream = tokio::net::UnixStream::from_std(stream)?;
+        let (read, write) = stream.into_split();
+        let network = capnp_rpc::twoparty::VatNetwork::new(
+            read.compat(),
+            write.compat_write(),
+            capnp_rpc::rpc_twoparty_capnp::Side::Client,
+            capnp::message::ReaderOptions::default(),
+        );
+        let mut rpc = capnp_rpc::RpcSystem::new(Box::new(network), None);
+        let raw: crate::WorkspaceFsClient =
+            rpc.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Server);
+        let disconnect = rpc.get_disconnector();
+        let mut driver = tokio::task::spawn_local(rpc);
+        let client = crate::FsClient::from_raw(raw);
+        let outcome = serve(client, receive, &worker_live, &worker_fault, started).await;
+        worker_live.store(false, Ordering::Release);
+        // The driver is owned here, never detached by bootstrap().
+        // Graceful disconnect drains transport; cancellation is observed.
+        let disconnect_result = tokio::time::timeout(DEADLINE, disconnect).await;
+        let transport = if let Ok(result) = tokio::time::timeout(DEADLINE, &mut driver).await {
+            result.map_err(io::Error::other)?.map_err(io::Error::other)
+        } else {
+            driver.abort();
+            let cancelled = driver.await;
+            Err(io::Error::other(format!(
+                "retained RPC driver did not stop: {cancelled:?}"
+            )))
+        };
+        outcome?;
+        disconnect_result
+            .map_err(|_| io::Error::other("retained RPC disconnect timed out"))?
+            .map_err(io::Error::other)?;
+        transport
+    })
+}
+
+fn serve<'a>(
+    client: crate::FsClient,
+    mut receive: tokio::sync::mpsc::Receiver<Call>,
+    worker_live: &'a AtomicBool,
+    worker_fault: &'a AtomicBool,
+    started: mpsc::SyncSender<io::Result<()>>,
+) -> LocalFuture<'a, io::Result<()>> {
+    Box::pin(async move {
+        let initial = tokio::time::timeout(DEADLINE, client.stat(FILE)).await;
+        match initial {
+            Ok(Ok(metadata)) if metadata.kind == crate::EntryKind::File => {
+                let _ = started.send(Ok(()));
+            }
+            _ => {
+                worker_live.store(false, Ordering::Release);
+                let _ = started.send(Err(refused()));
+                return Err(refused());
+            }
+        }
+        let mut state = WorkerState {
+            handles: HashMap::new(),
+            next: 0,
+            client,
+        };
+        let mut terminal = None;
+        while let Some(call) = receive.recv().await {
+            if !worker_live.load(Ordering::Acquire) {
+                let _ = call.answer.send(Err(refused()));
+                continue;
+            }
+            let work = state.dispatch(call.request);
+            let answer = match tokio::time::timeout(DEADLINE, work).await {
+                Ok(Ok(response)) => Ok(response),
+                Ok(Err(error)) if crate::native_reply::is_operation_refusal(&error) => Err(error),
+                Ok(Err(error)) => {
+                    worker_live.store(false, Ordering::Release);
+                    terminal = Some(io::Error::new(error.kind(), error.to_string()));
+                    Err(error)
+                }
+                // A timed-out write has an unknown outcome. Never replay it.
+                Err(_) => {
+                    worker_live.store(false, Ordering::Release);
+                    terminal = Some(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "retained source request timed out; outcome unknown",
+                    ));
+                    Err(refused())
+                }
+            };
+            let _ = call.answer.send(answer);
+        }
+        match terminal {
+            Some(error) => Err(error),
+            None if worker_fault.load(Ordering::Acquire) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "retained caller lost request outcome",
+            )),
+            None => Ok(()),
+        }
+    })
 }

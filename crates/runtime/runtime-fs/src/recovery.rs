@@ -332,10 +332,12 @@ impl OperationOwner {
         if !state.capture_claims.insert(recovery.0) {
             return Err(FsError::Busy);
         }
-        Ok(Arc::new(CaptureClaim {
+        let claim = Arc::new(CaptureClaim {
             owner: Arc::clone(self),
             recovery: recovery.0,
-        }))
+        });
+        drop(state);
+        Ok(claim)
     }
     /// Obtain a success observation only from the genuine completed native job,
     /// independently root-sealed source owner and held current parent/capture.
@@ -356,7 +358,10 @@ impl OperationOwner {
             let receipt = state.receipts.get(&operation.0).ok_or(FsError::NotFound)?;
             if receipt.item_count != 1
                 || receipt.items.len() != 1
-                || receipt.items[0].state != ItemState::Completed
+                || receipt
+                    .items
+                    .first()
+                    .is_none_or(|item| item.state != ItemState::Completed)
             {
                 return Err(FsError::Conflict);
             }
@@ -372,7 +377,9 @@ impl OperationOwner {
                 .as_ref()
                 .filter(|record| !record.acknowledged)
                 .ok_or(FsError::Conflict)?;
-            (step.clone(), RecoveryId(recovery.id))
+            let captured = (step.clone(), RecoveryId(recovery.id));
+            drop(state);
+            captured
         };
         let claim = self.claim_capture(&recovery)?;
         // Recheck durable state after claiming so a concurrent restore cannot
@@ -952,6 +959,7 @@ impl OperationOwner {
                 next.extend_from_slice(&key.1.to_be_bytes());
             }
         }
+        drop(store);
         Ok(crate::directory_backend::RecoveryPage {
             entries,
             next: Vec::new(),

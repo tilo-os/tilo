@@ -901,8 +901,8 @@ impl OwnedReplacement {
         if let Some(done) = &self.acknowledged {
             return super::replacement_control::ReplacementReply::Committed {
                 request_id: self.request_id.clone(),
-                prepared: self.prepared.clone(),
-                receipt: done.receipt.clone(),
+                prepared: Box::new(self.prepared.clone()),
+                receipt: Box::new(done.receipt.clone()),
             };
         }
         if self.refused {

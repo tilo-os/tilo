@@ -355,7 +355,7 @@ impl SignedRetainedPersonProof {
     ) -> io::Result<Vec<tilo_user_identity::RevocationEntry>> {
         use ed25519_dalek::{Signature, Verifier, VerifyingKey};
         expected.validate()?;
-        if unsafe { libc::geteuid() } != 0
+        if effective_uid() != 0
             || expected.root_pid != recipient_pid
             || !shell.current()
             || shell.uid() != expected.target_uid
@@ -409,6 +409,13 @@ impl SignedRetainedPersonProof {
         tilo_user_identity::verify_device_cert_at(&cert, now_ns).map_err(io::Error::other)?;
         Ok(self.claims.revocations.clone())
     }
+}
+
+// Kernel identity is observed independently of deserialized proof claims.
+#[cfg(all(target_os = "linux", feature = "client"))]
+fn effective_uid() -> libc::uid_t {
+    // SAFETY: geteuid takes no pointers and has no caller preconditions.
+    unsafe { libc::geteuid() }
 }
 
 #[cfg(all(test, target_os = "linux", feature = "native-retained-qualification"))]

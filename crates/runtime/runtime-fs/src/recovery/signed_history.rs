@@ -2,7 +2,10 @@
 //! single-writer journal. The legacy receipt encoding stays unchanged. Only
 //! an actual operation already admitted by this owner can acquire these two
 //! bounded sidecars; neither file reconstructs native or person authority.
-use super::*;
+use super::{
+    FsError, FsSession, NativeReplacementPin, OperationId, OperationOwner, OperationState, Read,
+    io_error, lock,
+};
 use crate::external_history::{CommittedReceipt, LIMIT, PreparedReceipt};
 use std::ffi::OsStr;
 use tilo_files::native::atomic::{Privacy, PublishMode};
@@ -41,7 +44,7 @@ impl OperationOwner {
         if receipt.item_count != 1 || receipt.steps.len() != 1 {
             return Err(FsError::Denied);
         }
-        let phase = receipt.steps[0].phase.as_str();
+        let phase = receipt.steps.first().ok_or(FsError::Denied)?.phase.as_str();
         match kind {
             "prepare" if receipt.state == OperationState::Running && phase == "Admitted" => {}
             "commit" if matches!(phase, "ReplaceVictimCaptured" | "ReplaceHistoryOwned") => {}
@@ -70,8 +73,10 @@ impl OperationOwner {
             // An ambiguous durable write must not admit more work or permit
             // a reconstructed retry to treat the first attempt as absent.
             store.poisoned = true;
+            drop(store);
             return Err(FsError::Publication(error));
         }
+        drop(store);
         Ok(())
     }
     pub(crate) fn bind_history_prepare(
@@ -96,6 +101,7 @@ impl OperationOwner {
         if receipt.operation_id != id.native().to_string() {
             return Err(FsError::StoreUnavailable);
         }
+        drop(store);
         Ok(receipt)
     }
     pub(super) fn bind_history_commit(

@@ -75,6 +75,11 @@ impl CurrentDeviceDeclaration {
     pub fn record_name(&self) -> &str {
         &self.record_name
     }
+    /// Resolve the current owner only if it matches these comparison facts.
+    ///
+    /// # Errors
+    /// Returns an error if current-owner review or revalidation fails, the
+    /// declaration cannot be encoded, or any comparison fact differs.
     pub fn resolve_current(
         &self,
         system: &Path,
@@ -117,6 +122,12 @@ pub struct CurrentDeviceReference {
 impl CurrentDeviceReference {
     /// Review the active identity only when it is the canonical current owner.
     /// This reads existing custody; it never creates a key, cert or selector.
+    ///
+    /// # Errors
+    /// Returns an error for inaccessible or insecure namespaces/files, an invalid
+    /// selector or record, or an identity that does not own the host. Also refuses
+    /// invalid, expired or revoked certification, inconsistent fleet/key custody,
+    /// changes during review, and an unavailable clock.
     pub fn review(system_root: &Path, identity_directory: &Path) -> io::Result<Self> {
         let system = fs::Directory::open_public_root(system_root)?;
         let identity = fs::Directory::open(identity_directory)?;
@@ -173,6 +184,11 @@ impl CurrentDeviceReference {
         source.validate()?;
         Ok(source)
     }
+    /// Return comparison facts for the revalidated current-owner epoch.
+    ///
+    /// # Errors
+    /// Returns an error if [`Self::validate`] fails or certificate/fleet encoding
+    /// fails while computing the declaration hashes.
     pub fn declaration(&self) -> io::Result<CurrentDeviceDeclaration> {
         self.validate()?;
         self.reference.declaration()
@@ -192,6 +208,11 @@ impl CurrentDeviceReference {
     pub fn identity_record_name(&self) -> &str {
         &self.reference.record_name
     }
+    /// Read metadata from the exact reviewed identity record.
+    ///
+    /// # Errors
+    /// Returns an error if revalidation fails before or after reading, the private
+    /// record cannot be read, its hash changed, or its metadata is malformed.
     pub fn metadata(&self) -> io::Result<runtime_identity::IdentityMetadata> {
         self.validate()?;
         let bytes = self
@@ -204,6 +225,13 @@ impl CurrentDeviceReference {
         self.validate()?;
         Ok(metadata)
     }
+    /// Reattest the held namespaces and exact current-owner custody.
+    ///
+    /// # Errors
+    /// Returns an error for inaccessible, insecure or changed namespaces/files,
+    /// an unavailable clock, invalid or expired certification, invalid/revoked
+    /// fleet membership, or changes to the owner, device key, active selector,
+    /// record, certificate or fleet since review. Decode/encode failures also fail.
     pub fn validate(&self) -> io::Result<()> {
         self.system.validate()?;
         self.identity.validate()?;
@@ -265,6 +293,10 @@ impl CurrentDeviceReference {
     }
     /// Public material from this exact held current-owner epoch. No seeds or
     /// identity shares are returned, and changes invalidate the observation.
+    ///
+    /// # Errors
+    /// Returns an error if [`Self::validate`] fails before or after collecting
+    /// the certificate and revocations.
     pub fn public_native_material(
         &self,
     ) -> io::Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>)> {
@@ -277,6 +309,13 @@ impl CurrentDeviceReference {
         Ok(result)
     }
     /// Seal only the current-device reference, preserving the source exactly.
+    ///
+    /// # Errors
+    /// Returns an error for invalid passwords/bindings, failed source revalidation,
+    /// encoding/sealing failures or oversized plaintext. Refuses an invalid or
+    /// insecure destination, overlap with either source root, existing output,
+    /// publication/readback failures, mismatched ciphertext or failed authenticated
+    /// readback (including expired certification or an unavailable clock).
     pub fn export_password_sealed(
         &self,
         destination: &Path,
@@ -333,6 +372,13 @@ pub struct AuthenticatedCurrentDeviceReference {
     reference: Reference,
 }
 impl AuthenticatedCurrentDeviceReference {
+    /// Authenticate a bounded reference for the expected owner and device.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid artifact path, inaccessible or insecure
+    /// ciphertext, invalid passwords/bindings, failed authentication, oversized
+    /// ciphertext/plaintext or malformed references. Refuses mismatched owner/device,
+    /// invalid or expired certification at `now`, and invalid/revoked fleet membership.
     pub fn open(
         artifact: &Path,
         password: &[u8],
@@ -386,6 +432,10 @@ impl AuthenticatedCurrentDeviceReference {
     }
     /// Resolve the same real current-owner record. No import, repair, remint,
     /// selector update, system-key write or certificate replacement occurs.
+    ///
+    /// # Errors
+    /// Returns an error if current-owner review or revalidation fails, reference
+    /// encoding fails, or the current reference differs from the authenticated one.
     pub fn resolve_current(
         &self,
         system_root: &Path,
@@ -408,15 +458,36 @@ pub struct ResolvedCurrentIdentity {
     current: CurrentDeviceReference,
 }
 impl ResolvedCurrentIdentity {
+    /// Return comparison facts for the retained current owner.
+    ///
+    /// # Errors
+    /// Returns an error if current-owner revalidation or certificate/fleet encoding
+    /// fails; see [`CurrentDeviceReference::declaration`].
     pub fn declaration(&self) -> io::Result<CurrentDeviceDeclaration> {
         self.current.declaration()
     }
+    /// Reattest the retained current-owner epoch.
+    ///
+    /// # Errors
+    /// Returns an error for unavailable, insecure, changed or invalid current-owner
+    /// custody, or an unavailable clock; see [`CurrentDeviceReference::validate`].
     pub fn validate(&self) -> io::Result<()> {
         self.current.validate()
     }
+    /// Read metadata from the retained exact identity record.
+    ///
+    /// # Errors
+    /// Returns an error for failed revalidation, an unreadable or changed record,
+    /// or malformed metadata; see [`CurrentDeviceReference::metadata`].
     pub fn metadata(&self) -> io::Result<runtime_identity::IdentityMetadata> {
         self.current.metadata()
     }
+    /// Load signing identity from the retained record through its secret provider.
+    ///
+    /// # Errors
+    /// Returns an error if revalidation fails before or after loading, the record
+    /// cannot be read or its hash changed, or the canonical loader refuses malformed
+    /// records, unavailable/mismatched secret providers or secret/public inconsistencies.
     pub fn load(&self) -> io::Result<runtime_identity::SigningIdentity> {
         self.current.validate()?;
         let bytes =
@@ -444,6 +515,13 @@ pub struct RootObservedCurrentDevice {
 }
 #[cfg(target_os = "linux")]
 impl RootObservedCurrentDevice {
+    /// Review current-owner custody through a supplied owner directory descriptor.
+    ///
+    /// # Errors
+    /// Returns an error unless both real and effective UID are root, or if the
+    /// descriptor is not a readable, private directory owned by `expected_owner`.
+    /// Descriptor setup failures and current-owner review/revalidation failures
+    /// also fail; see [`CurrentDeviceReference::review`].
     pub fn review(identity: std::fs::File, expected_owner: u32) -> io::Result<Self> {
         if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
@@ -472,12 +550,22 @@ impl RootObservedCurrentDevice {
     pub fn identity_record_name(&self) -> &str {
         self.current.identity_record_name()
     }
+    /// Reattest root authority and the observed current-owner epoch.
+    ///
+    /// # Errors
+    /// Returns an error unless both real and effective UID remain root, or if
+    /// [`CurrentDeviceReference::validate`] fails for the held owner custody.
     pub fn validate(&self) -> io::Result<()> {
         if unsafe { libc::getuid() } != 0 || unsafe { libc::geteuid() } != 0 {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         self.current.validate()
     }
+    /// Return public certification and revocations from the observed owner epoch.
+    ///
+    /// # Errors
+    /// Returns an error if root authority or held current-owner custody cannot be
+    /// revalidated before, during or after collecting the public material.
     pub fn public_native_material(
         &self,
     ) -> io::Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>)> {

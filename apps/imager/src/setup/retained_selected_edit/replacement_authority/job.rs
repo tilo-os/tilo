@@ -167,7 +167,7 @@ impl OwnedReplacementJob {
             } => {
                 let proof = Arc::new(
                     pending
-                        .acknowledged(prepared, receipt)
+                        .acknowledged(*prepared, *receipt)
                         .map_err(|e| e.to_string())?,
                 );
                 // SAME source submitted job, whose terminal updates were actually

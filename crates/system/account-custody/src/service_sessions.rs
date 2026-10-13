@@ -83,6 +83,46 @@ struct ForgottenSelection {
     setup_binding: String,
 }
 
+/// A fresh selection that passed secret, account and store-snapshot checks.
+/// Retry receipts never enter this credential-replacement stage.
+struct AuthenticatedForget {
+    selection: ForgottenSelection,
+}
+
+impl AuthenticatedForget {
+    fn seal_receipt(self, root: &std::path::Path, id: &AccountId) -> Result<(), CustodyError> {
+        let mut vault = SecretVault::open_in(root);
+        if vault.recovery_error().is_some() {
+            return Err(CustodyError::NeedsAuthentication);
+        }
+        let mut current = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
+        let checked = service_session_from_secret(
+            &current,
+            id,
+            self.selection.identity_public_key,
+            &self.selection.setup_binding,
+        );
+        current.password.zeroize();
+        if let Some(token) = current.token.as_mut() {
+            token.zeroize();
+        }
+        checked?;
+        let encoded = Zeroizing::new(
+            serde_json::to_string(&self.selection)
+                .map_err(|_| CustodyError::NeedsAuthentication)?,
+        );
+        let mut receipt = Secret {
+            password: String::new(),
+            token: Some(encoded.to_string()),
+        };
+        vault.put(id, &receipt);
+        if let Some(token) = receipt.token.as_mut() {
+            token.zeroize();
+        }
+        vault.try_save().map_err(CustodyError::Storage)
+    }
+}
+
 impl Custodian {
     /// Durably forget precisely one authenticated selection, never another account.
     /// The vault replaces credentials with a bound receipt before metadata removal;
@@ -172,19 +212,8 @@ impl Custodian {
             return Err(CustodyError::NeedsAuthentication);
         }
         if !retry {
-            let mut vault = SecretVault::open_in(&root);
-            if vault.recovery_error().is_some() {
-                return Err(CustodyError::NeedsAuthentication);
-            }
-            let mut current = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
-            let checked = service_session_from_secret(&current, id, identity, binding);
-            current.password.zeroize();
-            if let Some(token) = current.token.as_mut() {
-                token.zeroize();
-            }
-            checked?;
-            let encoded = Zeroizing::new(
-                serde_json::to_string(&ForgottenSelection {
+            AuthenticatedForget {
+                selection: ForgottenSelection {
                     kind: "forgotten_service_session".into(),
                     account: store
                         .get(id)
@@ -193,18 +222,9 @@ impl Custodian {
                     id: id.as_str().into(),
                     identity_public_key: identity,
                     setup_binding: binding.into(),
-                })
-                .map_err(|_| CustodyError::NeedsAuthentication)?,
-            );
-            let mut receipt = Secret {
-                password: String::new(),
-                token: Some(encoded.to_string()),
-            };
-            vault.put(id, &receipt);
-            if let Some(token) = receipt.token.as_mut() {
-                token.zeroize();
+                },
             }
-            vault.try_save().map_err(CustodyError::Storage)?;
+            .seal_receipt(&root, id)?;
         }
         if load()? != store {
             return Err(CustodyError::NeedsAuthentication);

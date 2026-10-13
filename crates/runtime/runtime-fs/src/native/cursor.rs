@@ -1,5 +1,8 @@
 //! Independent live directory enumeration; no total-row snapshots or child grants.
-use super::*;
+use super::{
+    DirectoryGrant, EntryName, FsError, FsRight, FsSession, MetadataExt, Mutex, describe, io_error,
+    lock,
+};
 use crate::directory_backend::{DirectoryStreamPage, DirectoryStreamRow};
 const PAGE_ROWS: usize = 128;
 struct State {
@@ -96,7 +99,7 @@ impl FsDirectoryCursor {
                 Ok(metadata) => Some(crate::directory_backend::DirectoryStat {
                     metadata: describe(&metadata),
                     identity: [metadata.dev(), metadata.ino()],
-                    file_type: metadata.mode() & u32::from(libc::S_IFMT),
+                    file_type: metadata.mode() & libc::S_IFMT,
                     execute_bits: (metadata.mode() & 0o111) as u16,
                 }),
                 // This live enumeration promises no snapshot. A name removed

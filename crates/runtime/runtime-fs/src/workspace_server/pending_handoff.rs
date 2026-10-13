@@ -1,5 +1,8 @@
 //! Single-use routes to actual source-resident prepared Work. Tickets are not grants.
-use super::*;
+use super::{
+    Arc, ConnectedWorkspaceServer, DirEntry, Duration, MAX_BACKEND_CALLS, Metadata, Rc, Server,
+    WorkspaceBackend, directory, io, oneshot,
+};
 use crate::directory_backend::WorkspacePendingReplacementBackend;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use std::collections::HashMap;
@@ -21,6 +24,7 @@ impl CallDrain {
     pub(super) fn enter(self: &Arc<Self>) -> Result<CallGuard, String> {
         let mut count = self.count.lock().map_err(|_| "handoff drain poisoned")?;
         *count = count.checked_add(1).ok_or("handoff callback overflow")?;
+        drop(count);
         Ok(CallGuard(self.clone()))
     }
     fn wait(&self) -> io::Result<()> {
@@ -34,6 +38,7 @@ impl CallDrain {
                 .wait(count)
                 .map_err(|_| io::Error::other("handoff drain poisoned"))?;
         }
+        drop(count);
         Ok(())
     }
 }
@@ -41,7 +46,8 @@ impl Drop for CallGuard {
     fn drop(&mut self) {
         // Poison is terminal: never manufacture an observed drain.
         if let Ok(mut count) = self.0.count.lock() {
-            *count -= 1;
+            assert!(*count > 0, "held callback guard is counted");
+            *count = count.saturating_sub(1);
             self.0.changed.notify_all();
         }
     }
@@ -103,7 +109,7 @@ impl PendingHandoffRegistry {
         state.entries.retain(|_, entry| entry.expires > now);
         state.reads.retain(|_, entry| entry.expires > now);
         if state.closed
-            || state.entries.len() + state.reads.len() + state.active.len() >= LIMIT
+            || state.entries.len().saturating_add(state.reads.len()).saturating_add(state.active.len()) >= LIMIT
             || state
                 .entries
                 .values()
@@ -140,6 +146,7 @@ impl PendingHandoffRegistry {
                 .remove(&ticket);
             return Err(error);
         }
+        drop(pending);
         Ok(ticket)
     }
     pub(super) fn arm_read(
@@ -156,7 +163,7 @@ impl PendingHandoffRegistry {
         state.entries.retain(|_, entry| entry.expires > now);
         state.reads.retain(|_, entry| entry.expires > now);
         if state.closed
-            || state.entries.len() + state.reads.len() + state.active.len() >= LIMIT
+            || state.entries.len().saturating_add(state.reads.len()).saturating_add(state.active.len()) >= LIMIT
             || state
                 .reads
                 .values()
@@ -189,6 +196,7 @@ impl PendingHandoffRegistry {
                 .remove(&ticket);
             return Err(error);
         }
+        drop(subject);
         Ok(ticket)
     }
     /// Register the exact accepted pending transport before its QPE/RPC work.
@@ -201,11 +209,13 @@ impl PendingHandoffRegistry {
         pending: Arc<dyn WorkspacePendingReplacementBackend>,
         socket: UnixStream,
     ) -> io::Result<()> {
-        self.begin(
+        let result = self.begin(
             ticket,
             socket,
             |cap| matches!(cap, ActiveCapability::Pending(held) if Arc::ptr_eq(held, &pending)),
-        )
+        );
+        drop(pending);
+        result
     }
     /// Register only the SAME actual consumed Read subject's accepted socket.
     /// # Errors
@@ -216,11 +226,13 @@ impl PendingHandoffRegistry {
         subject: Arc<dyn crate::directory_backend::WorkspaceHistoryReadSubjectBackend>,
         socket: UnixStream,
     ) -> io::Result<()> {
-        self.begin(
+        let result = self.begin(
             ticket,
             socket,
             |cap| matches!(cap, ActiveCapability::Read(held) if Arc::ptr_eq(held, &subject)),
-        )
+        );
+        drop(subject);
+        result
     }
     fn begin(
         &self,
@@ -243,6 +255,7 @@ impl PendingHandoffRegistry {
             return Err(io::Error::other("handoff lifecycle mismatch"));
         }
         active.socket = Some(socket);
+        drop(state);
         Ok(())
     }
     /// Called only AFTER the owned supervisor has joined the exact child.
@@ -263,6 +276,7 @@ impl PendingHandoffRegistry {
         }
         active.joined = Some(result);
         self.changed.notify_all();
+        drop(state);
         Ok(())
     }
     pub(super) fn retire(
@@ -334,7 +348,7 @@ impl PendingHandoffRegistry {
                 .0;
         }
     }
-    /// Consume an actual Read capability once; it cannot select Pending or WorkspaceFs.
+    /// Consume an actual Read capability once; it cannot select Pending or `WorkspaceFs`.
     /// # Errors
     /// Refuses closed/replayed/expired tickets or current original Read loss.
     pub fn take_read(
@@ -362,6 +376,7 @@ impl PendingHandoffRegistry {
                 joined: None,
             },
         );
+        drop(state);
         Ok(entry.subject)
     }
     /// Consume once only after authenticating the owned source connection.
@@ -393,6 +408,7 @@ impl PendingHandoffRegistry {
                 joined: None,
             },
         );
+        drop(state);
         Ok(entry.pending)
     }
     /// Close routing before joining every owned handoff and native callback.
@@ -407,6 +423,7 @@ impl PendingHandoffRegistry {
         self.changed.notify_all();
         state.entries.clear();
         state.reads.clear();
+        drop(state);
         Ok(())
     }
 }
@@ -424,7 +441,7 @@ impl WorkspaceBackend for ClosedBackend {
 }
 /// Serve ONLY this actual held pending capability on an independently kernel
 /// authenticated connection. Opens no path, selects no arbitrary object, and
-/// supplies no WorkspaceFs bootstrap or native authority constructor.
+/// supplies no `WorkspaceFs` bootstrap or native authority constructor.
 /// # Errors
 /// Refuses revoked native Work or failure to own the exact RPC server.
 pub fn serve_pending_connected(
@@ -485,7 +502,7 @@ pub fn serve_pending_connected(
 }
 
 /// Serve ONLY a genuine original Read subject after independent source QPE.
-/// No record mapping, byte grant, Pending or WorkspaceFs fallback.
+/// No record mapping, byte grant, Pending or `WorkspaceFs` fallback.
 /// # Errors
 /// Refuses source retirement or inability to own the exact connected server.
 pub fn serve_history_read_connected(
@@ -549,6 +566,7 @@ pub fn serve_history_read_connected(
 #[cfg(test)]
 mod retirement_tests {
     use super::*;
+    use crate::fs_capnp;
     use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -585,7 +603,7 @@ mod retirement_tests {
             observer
                 .observed_join(
                     ticket,
-                    result.as_ref().map(|()| ()).map_err(ToString::to_string),
+                    result.as_ref().copied().map_err(ToString::to_string),
                 )
                 .unwrap();
             result
@@ -636,7 +654,7 @@ mod retirement_tests {
             blocked.recv().unwrap();
         });
         observed.recv_timeout(Duration::from_secs(2)).unwrap();
-        let waiting = drain.clone();
+        let waiting = drain;
         let (done, stopped) = std::sync::mpsc::channel();
         let waiter = std::thread::spawn(move || {
             waiting.wait().unwrap();
@@ -656,6 +674,8 @@ mod retirement_tests {
 #[cfg(test)]
 mod read_release_tests {
     use super::*;
+    use crate::workspace_server::serve_workspace_connected;
+    use crate::{OpenMode, fs_capnp};
     use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
     /// Actual kernel peer refusal is not a reason to strand an independently
@@ -705,13 +725,12 @@ mod read_release_tests {
             .unwrap();
         controller.write_all(&challenge).unwrap();
         let actual_uid = unsafe { libc::getuid() };
-        let error = match runtime_portal::process_binding::receive(
+        let Err(error) = runtime_portal::process_binding::receive(
             &controller,
             &challenge,
             actual_uid.checked_add(1).unwrap(),
-        ) {
-            Ok(_) => panic!("a wrong actual peer UID must not authenticate"),
-            Err(error) => error,
+        ) else {
+            panic!("a wrong actual peer UID must not authenticate");
         };
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         drop(controller);
@@ -848,7 +867,7 @@ mod read_release_tests {
             observer
                 .observed_join(
                     ticket,
-                    result.as_ref().map(|()| ()).map_err(ToString::to_string),
+                    result.as_ref().copied().map_err(ToString::to_string),
                 )
                 .unwrap();
             result

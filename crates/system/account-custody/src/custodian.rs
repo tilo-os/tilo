@@ -739,7 +739,7 @@ impl Custodian {
             .or_else(|| self.endpoints.get(&oauth_use.issuer).cloned())
             .unwrap_or_else(|| oauth_use.issuer.endpoints());
         let mut client = Registration::public(imported.client_id.clone());
-        client.client_secret = imported.client_secret.clone();
+        client.client_secret.clone_from(&imported.client_secret);
         Ok((provider, client))
     }
 
@@ -772,17 +772,30 @@ impl Custodian {
                             .unwrap_or_default()
                     }
                 });
-        if let Some(root) = root {
-            config["root"] = match cloud {
-                OAuthCloud::OneDrive => serde_json::json!({"Item":root}),
-                OAuthCloud::GoogleDrive | OAuthCloud::Dropbox => serde_json::json!(root),
-            };
-        }
-        if let Some(drive) = drive {
-            match cloud {
-                OAuthCloud::GoogleDrive => config["shared_drive"] = serde_json::json!(drive),
-                OAuthCloud::OneDrive => config["drive"] = serde_json::json!({"Id":drive}),
-                OAuthCloud::Dropbox => return Err(CustodyError::NeedsAuthentication),
+        if root.is_some() || drive.is_some() {
+            // A null configuration accepts selected fields just like an empty object.
+            if config.is_null() {
+                config = serde_json::json!({});
+            }
+            let fields = config
+                .as_object_mut()
+                .ok_or(CustodyError::NeedsAuthentication)?;
+            if let Some(root) = root {
+                fields.insert(
+                    "root".into(),
+                    match cloud {
+                        OAuthCloud::OneDrive => serde_json::json!({"Item":root}),
+                        OAuthCloud::GoogleDrive | OAuthCloud::Dropbox => serde_json::json!(root),
+                    },
+                );
+            }
+            if let Some(drive) = drive {
+                let (key, value) = match cloud {
+                    OAuthCloud::GoogleDrive => ("shared_drive", serde_json::json!(drive)),
+                    OAuthCloud::OneDrive => ("drive", serde_json::json!({"Id":drive})),
+                    OAuthCloud::Dropbox => return Err(CustodyError::NeedsAuthentication),
+                };
+                fields.insert(key.into(), value);
             }
         }
         crate::storage::resolve(cloud, Some(&config), &tokens.access_token)
@@ -993,9 +1006,9 @@ impl Custodian {
                             id,
                             &registered_secret(
                                 &TokenSet::default(),
-                                registration.clone(),
+                                registration,
                                 copied,
-                                copy_origin.clone(),
+                                copy_origin,
                             ),
                         );
                         vault.try_save().map_err(CustodyError::Storage)?;
@@ -1010,7 +1023,7 @@ impl Custodian {
             tokens = renewed;
             vault.put(
                 id,
-                &registered_secret(&tokens, registration.clone(), copied, copy_origin.clone()),
+                &registered_secret(&tokens, registration, copied, copy_origin),
             );
             vault.try_save().map_err(CustodyError::Storage)?;
         }
