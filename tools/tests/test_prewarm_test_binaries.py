@@ -162,7 +162,10 @@ class PrewarmTests(unittest.TestCase):
         self.assertIn("--no-run --message-format=json-render-diagnostics", source)
         self.assertIn("if ! python3 tools/ci/prewarm_test_binaries.py", source)
         self.assertIn("Prewarm unavailable; the complete Cargo test run remains required.", source)
-        self.assertIn("run: cargo test --locked --no-fail-fast $(python3 tools/ci/macos_apps.py)", source)
+        self.assertIn(
+            "run: cargo nextest run --locked --profile ci --no-fail-fast $(python3 tools/ci/macos_apps.py)", source
+        )
+        self.assertIn("run: cargo test --locked --no-fail-fast --doc $(python3 tools/ci/macos_apps.py)", source)
         self.assertLess(source.index("Compile and prewarm test entry"), source.index("Test every macOS app"))
 
 
