@@ -180,16 +180,20 @@ fn semantic_read_uses_borrowed_owner_heads_without_cloning_legacy_isolation() {
     let heads = doc.base_heads();
     doc.isolate_at(&vec![heads[0]; 20_000]);
     let (basis, largest) = allocation::largest(|| {
-        tilo_doc::semantic_read::begin(&doc, &heads, limits(1), 64).map(|(basis, _)| basis)
+        tilo_doc::semantic_read::source::Source::new(&doc, &heads)
+            .begin(limits(1), 64)
+            .map(|(basis, _)| basis)
     });
     assert_eq!(basis.unwrap().heads, [heads[0].to_string()]);
     assert!(largest < 4096, "legacy head vector cloned: {largest}");
     assert!(matches!(
-        tilo_doc::semantic_read::begin(&doc, &vec![heads[0]; 65], limits(1), 64),
+        tilo_doc::semantic_read::source::Source::new(&doc, &vec![heads[0]; 65])
+            .begin(limits(1), 64),
         Err(ReadError::Limit)
     ));
     assert!(matches!(
-        tilo_doc::semantic_read::begin(&doc, &[heads[0], heads[0]], limits(1), 64),
+        tilo_doc::semantic_read::source::Source::new(&doc, &[heads[0], heads[0]])
+            .begin(limits(1), 64),
         Err(ReadError::Malformed)
     ));
 }
