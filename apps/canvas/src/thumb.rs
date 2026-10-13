@@ -10,7 +10,7 @@ use std::rc::Rc;
 use ui::framework::ResourceSurface;
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use ui::vello::kurbo::{Affine, Rect, RoundedRect};
 use ui::vello::peniko::Fill;
 use ui::widget::{AppModel, ModelPath, Widget};
 use ui::{LocalState, PresenceCtx, TextRenderer, Theme};
@@ -88,9 +88,7 @@ impl Widget for Thumb {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     #[allow(
         clippy::arithmetic_side_effects,
@@ -175,10 +173,6 @@ impl Widget for Thumb {
 
     fn name(&self) -> &'static str {
         "Thumb"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

@@ -4,29 +4,3 @@
 
 ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
-/// One constant per message of locales/en-US.ftl, for labels and placeholders.
-pub mod keys {
-    use ui::i18n::LabelKey;
-    pub const FIREWALL_DELETE_RULE: LabelKey = LabelKey::new("firewall-delete-rule");
-    pub const FIREWALL_ENTER_PANIC_MODE: LabelKey = LabelKey::new("firewall-enter-panic-mode");
-    pub const FIREWALL_EXIT_PANIC_MODE: LabelKey = LabelKey::new("firewall-exit-panic-mode");
-    pub const FIREWALL_FIREWALL_DEFAULT_ZONE: LabelKey =
-        LabelKey::new("firewall-firewall-default-zone");
-    pub const FIREWALL_IMPORT: LabelKey = LabelKey::new("firewall-import");
-    pub const FIREWALL_START: LabelKey = LabelKey::new("firewall-start");
-    pub const FIREWALL_STOP: LabelKey = LabelKey::new("firewall-stop");
-    pub const FIREWALL_STORED_RULE_ACTION: LabelKey = LabelKey::new("firewall-stored-rule-action");
-    pub const FIREWALL_STORED_RULE_ENABLED: LabelKey =
-        LabelKey::new("firewall-stored-rule-enabled");
-    pub const FIREWALL_STORED_RULE_MATCHER: LabelKey =
-        LabelKey::new("firewall-stored-rule-matcher");
-    pub const FIREWALL_STORED_RULE_SOURCE: LabelKey = LabelKey::new("firewall-stored-rule-source");
-    pub const FIREWALL_STORED_ZONE_INTERFACES: LabelKey =
-        LabelKey::new("firewall-stored-zone-interfaces");
-    pub const FIREWALL_STORED_ZONE_MASQUERADE: LabelKey =
-        LabelKey::new("firewall-stored-zone-masquerade");
-    pub const FIREWALL_STORED_ZONE_RULES: LabelKey = LabelKey::new("firewall-stored-zone-rules");
-    pub const FIREWALL_STORED_ZONE_SERVICES: LabelKey =
-        LabelKey::new("firewall-stored-zone-services");
-    pub const FIREWALL_STORED_ZONE_TARGET: LabelKey = LabelKey::new("firewall-stored-zone-target");
-}

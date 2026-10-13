@@ -2871,13 +2871,7 @@ impl Widget for EditorView {
         self.is_focused
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    ui::redraw_flag!();
 }
 
 impl EditorView {

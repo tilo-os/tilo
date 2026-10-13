@@ -1029,13 +1029,7 @@ impl Widget for PropertyList {
         Some((rect, label))
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 
     /// Laid out again when a list sharing its label column widened it.
     fn is_layout_dirty(&self) -> bool {

@@ -276,7 +276,7 @@ impl VisitMut for Visitor<'_> {
                     level: Level::Error,
                     rule: "label-key",
                     message: format!(
-                        "`{method}` names the message {key:?}, which locales/en-US.ftl does not have; add it there or use the generated `locales::keys` constant"
+                        "`{method}` names the message {key:?}, which locales/en-US.ftl does not have; add it there"
                     ),
                 });
             }
