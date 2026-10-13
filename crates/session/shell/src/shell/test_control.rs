@@ -60,6 +60,11 @@ pub enum Command {
     ProcessMemory,
     /// Inject a key press + release. `key` is a winit-style name or a single character; unknown names return `parse_error`.
     Key { key: String },
+    /// Inject a key press + release the way a keyboard attached to the machine delivers it: the
+    /// compositor loop takes it from its input funnel with the backend's own events, so routing,
+    /// shortcuts and whether it asks for a frame are decided exactly as for a physical key.
+    /// `key` is named as for [`Command::Key`]. Test-only.
+    SeatKey { key: String },
     /// Press `key` and hold it (pairs with [`Command::KeyUp`]). Also accepts the bare modifiers `"Shift"`, `"Control"`, `"Alt"`, `"Super"` — holding a real modifier keycode across another keystroke is the only way to drive xkb modifier state like hardware does.
     KeyDown { key: String },
     /// Release a key held by [`Command::KeyDown`].
@@ -850,6 +855,9 @@ pub enum PlannedAction {
     },
     /// Inject a keyboard press or release for `key`. The transport maps `KeyTag` to `winit::keyboard::Key` and synthesises a `WindowEvent::KeyboardInput`.
     KeyboardKey { key: KeyTag, pressed: bool },
+    /// Queue a keyboard press or release for the compositor loop's input funnel, where a
+    /// physical keyboard's events arrive ([`Command::SeatKey`]).
+    SeatKey { key: KeyTag, pressed: bool },
     /// Inject a discrete wheel scroll of `(dx, dy)` notches at the cursor. The transport synthesises a `WindowEvent::MouseWheel` carrying a `LineDelta`.
     MouseWheel { dx: f32, dy: f32 },
     /// Update the modifier mask carried by the executor. Modifiers are state, not events — mutated on `TestControlCtx::modifiers` directly rather than via `WindowEvent::ModifiersChanged`, since chord handlers read the snapshot inline.
@@ -1005,6 +1013,7 @@ pub fn dispatch_command<S: ControlState>(
             pressure: Some(pressure),
         } => pen_drag((*x_from, *y_from), (*x_to, *y_to), *steps, pressure),
         Command::Key { key } => key_press_release(key),
+        Command::SeatKey { key } => seat_key_press_release(key),
         Command::Scroll { dx, dy } => (
             Response::Ok { frame: 0 },
             vec![PlannedAction::MouseWheel { dx: *dx, dy: *dy }],
@@ -1450,6 +1459,19 @@ fn key_press_release(key: &str) -> (Response, Vec<PlannedAction>) {
             Vec::new(),
         ),
     }
+}
+
+/// [`Command::SeatKey`]: a press+release pair for the compositor's input funnel.
+fn seat_key_press_release(key: &str) -> (Response, Vec<PlannedAction>) {
+    let (response, actions) = key_press_release(key);
+    let actions = actions
+        .into_iter()
+        .map(|action| match action {
+            PlannedAction::KeyboardKey { key, pressed } => PlannedAction::SeatKey { key, pressed },
+            other => other,
+        })
+        .collect();
+    (response, actions)
 }
 
 /// [`Command::KeyDown`]/[`Command::KeyUp`]: hold or release one key.
