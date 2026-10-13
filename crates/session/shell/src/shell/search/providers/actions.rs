@@ -5156,10 +5156,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn shell_action_matching_ranks_prefix_substring_subtitle_and_fuzzy() {
         // Phase `prefix_beats_substring_beats_subtitle`.
         {

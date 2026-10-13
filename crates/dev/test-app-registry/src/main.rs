@@ -363,7 +363,6 @@ fn serve(mut stream: TcpStream, routes: &HashMap<String, Vec<u8>>) {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 
     use super::*;
 

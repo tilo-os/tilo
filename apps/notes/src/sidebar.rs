@@ -765,7 +765,6 @@ mod tests {
         assert_eq!(name, catalog);
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn sidebar_rows_track_pages_and_scale_at_high_text_on_every_preset() {
         eprintln!("phase sync_from_workspace_flattens_to_visible_rows");

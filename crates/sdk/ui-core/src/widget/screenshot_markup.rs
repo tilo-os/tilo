@@ -20,7 +20,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::time::{Duration, Instant};
 
-use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
+use taffy::{NodeId, Position, Size, Style, TaffyTree};
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke, Vec2},
@@ -631,10 +631,7 @@ impl Widget for ScreenshotMarkup {
     ) -> NodeId {
         let style = Style {
             position: Position::Absolute,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

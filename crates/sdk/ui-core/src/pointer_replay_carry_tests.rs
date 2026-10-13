@@ -485,10 +485,7 @@ impl Widget for Keypad {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(120.0),
-                height: taffy::Dimension::length(80.0),
-            },
+            size: taffy::Size::from_lengths(120.0, 80.0),
             ..taffy::Style::default()
         };
         taffy.widget_node(style, &[], node_map, self)

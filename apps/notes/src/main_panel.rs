@@ -123,10 +123,7 @@ fn pin_under_gutter(taffy: &mut TaffyTree<()>, node: NodeId, metrics: &Metrics, 
         node,
         Style {
             position: taffy::Position::Absolute,
-            size: Size {
-                width: Dimension::auto(),
-                height: Dimension::auto(),
-            },
+            size: Size::auto(),
             inset: taffy::Rect {
                 left: length(num::f32_of_f64(metrics.text_edge)),
                 right: length(num::f32_of_f64(metrics.gutter)),
@@ -1449,10 +1446,7 @@ impl Widget for MainPanel {
         // through the whole toolkit for a branch that can't be taken (see
         // `ui::widget::TaffyTreeExt`).
         let style = Style {
-            size: Size {
-                width: Dimension::auto(),
-                height: Dimension::auto(),
-            },
+            size: Size::auto(),
             overflow: taffy::Point {
                 x: taffy::Overflow::Hidden,
                 y: taffy::Overflow::Hidden,
@@ -2530,7 +2524,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn metadata_bands_tags_and_backlinks_clear_the_editor_and_keep_identity() {
         use ui::headless::Framed;

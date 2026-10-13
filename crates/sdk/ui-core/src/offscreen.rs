@@ -1242,10 +1242,6 @@ impl OffscreenRenderer {
     /// an environment failure this headless test/screenshot harness has no
     /// meaningful fallback for — it fails loudly rather than handing back a
     /// silently-empty buffer a comparison could misread as a real frame.
-    #[allow(
-        clippy::expect_used,
-        reason = "render() is the harness's core primitive, called only from tests/shots; every expect() here guards an environment failure (poisoned lock, missing device, GPU/readback error) with no recoverable fallback — matching render_png's existing panic-on-failure contract below"
-    )]
     fn render_with_overflow(&mut self, scene: &Scene, bg: Color) -> (Vec<u8>, bool) {
         // The lock only guards host-side DeviceHandle bookkeeping, not
         // rendering — vello's kernels run GPU-side. Clone the cheap,
@@ -1297,10 +1293,6 @@ impl OffscreenRenderer {
     /// # Panics
     ///
     /// Panics if the shared GPU context or target readback fails.
-    #[allow(
-        clippy::expect_used,
-        reason = "pixel-test readback cannot recover from unavailable shared GPU state"
-    )]
     pub fn readback_current(&mut self) -> Vec<u8> {
         let (device, queue) = self.device_queue();
         self.read_target(&device, &queue)
@@ -1315,10 +1307,6 @@ impl OffscreenRenderer {
     ///
     /// # Panics
     /// If shared GPU state is poisoned/missing or Vello rejects the render.
-    #[allow(
-        clippy::expect_used,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_gpu_wait(&mut self, scene: &Scene, bg: Color) {
         let mut timing = None;
         let _ = self.render_gpu_wait_count(scene, bg, &mut timing);
@@ -1373,10 +1361,6 @@ impl OffscreenRenderer {
 
     /// The same completed full render as [`Self::render_gpu_wait`], returning
     /// every full-target pass issued while Vello grows a bump allocation.
-    #[allow(
-        clippy::expect_used,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     fn render_gpu_wait_count(
         &mut self,
         scene: &Scene,
@@ -1460,10 +1444,6 @@ impl OffscreenRenderer {
     /// Panics if the shared GPU context is unavailable or Vello rejects the
     /// render. This is a benchmark/test primitive and cannot produce a valid
     /// timing sample after either failure.
-    #[allow(
-        clippy::expect_used,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_damage_gpu_wait(&mut self, scene: &Scene, bg: Color, damage: Rect) -> u64 {
         self.render_damage_regions_gpu_wait(scene, bg, std::slice::from_ref(&damage))
     }
@@ -1504,10 +1484,6 @@ impl OffscreenRenderer {
     /// # Panics
     ///
     /// Panics under the same conditions as [`Self::render_damage_gpu_wait`].
-    #[allow(
-        clippy::expect_used,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_copies_and_damage_gpu_wait(
         &mut self,
         scene: &Scene,

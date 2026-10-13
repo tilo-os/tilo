@@ -1,12 +1,6 @@
 //! Mouse side buttons navigate any view that owns history, through the same
 //! `on_nav_gesture` door as touchpad swipes and edge pulls.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_ui::State;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;

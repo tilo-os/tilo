@@ -306,10 +306,6 @@ pub fn is_valid_theme_name(name: &str) -> bool {
 }
 
 /// What is holding interruptions back right now.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent quiet reasons, each set by a different owner"
-)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QuietState {
     pub do_not_disturb: bool,

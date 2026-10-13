@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use zeroize::Zeroizing;
 
 use qrcode::{EcLevel, QrCode};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -174,10 +174,7 @@ impl Widget for QrWidget {
         // Default 240x240 box; callers can wrap us in a sized container.
         // The module side recomputes in draw from the resolved rect.
         let style = Style {
-            size: Size {
-                width: Dimension::length(240.0),
-                height: Dimension::length(240.0),
-            },
+            size: Size::from_lengths(240.0, 240.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

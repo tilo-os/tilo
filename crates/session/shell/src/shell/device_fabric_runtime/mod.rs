@@ -10669,10 +10669,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn gamepad_forwarding_requires_one_local_focused_decision_and_tears_down_cleanly() {
         fn gamepad_request_requires_one_local_decision_and_rejects_duplicate_id() {
             let mut state = GamepadAuthorizationState::default();

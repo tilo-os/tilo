@@ -7,7 +7,7 @@
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
 use crate::widget::{AppModel, ModelPath};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -1126,10 +1126,7 @@ impl Widget for ContextMenu {
             reason = "bounded logical-pixel menu dimensions; f32 precision is sufficient"
         )]
         let style = Style {
-            size: Size {
-                width: Dimension::length(self.legacy_width() as f32),
-                height: Dimension::length(height as f32),
-            },
+            size: Size::from_lengths(self.legacy_width() as f32, height as f32),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

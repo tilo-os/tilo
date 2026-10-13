@@ -553,12 +553,7 @@ impl LeaseKeeper {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::indexing_slicing,
-        clippy::arithmetic_side_effects,
-        reason = "test fixtures"
-    )]
+    #![allow(clippy::arithmetic_side_effects, reason = "test fixtures")]
 
     use std::io::Write as _;
 

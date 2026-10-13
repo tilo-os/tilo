@@ -187,10 +187,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn traffic_levels_start_empty_and_sample_overlay_is_realistic() {
         // Phase `speed_ratio_buckets_into_levels`.
         {

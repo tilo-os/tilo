@@ -38,10 +38,6 @@ fn append_arc(path: &mut BezPath, center: Point, radius: f64, start: f64, sweep:
         .to_cubic_beziers(0.1, |a, b, c| path.curve_to(a, b, c));
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent chord presentation switches are composable"
-)]
 #[derive(Clone, Debug)]
 pub struct ChordStyle {
     pub start_angle: f64,

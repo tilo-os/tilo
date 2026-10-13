@@ -3,14 +3,6 @@
 //! captured from `collab-types` before these types moved to `fs-protocol`;
 //! the move must not change a single byte of any of them.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use collab_types::canonical::from_canonical_bytes;
 use collab_types::{Ed25519PublicKey, canonical_bytes};
 use ed25519_dalek::SigningKey;

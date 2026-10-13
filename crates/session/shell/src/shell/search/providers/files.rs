@@ -2346,10 +2346,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn the_walk_skips_bloat_and_indexes_every_tree_before_ranking() {
         // Phase `skip_dirs_hits_common_bloat`.
         {

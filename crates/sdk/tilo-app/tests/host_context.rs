@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, reason = "test assertions")]
-
 //! What the host gives a window: which device it runs on (views, surfaces
 //! and a new record's seed read it, an action that records it carries it),
 //! and file areas that stay in a test or capture profile.
