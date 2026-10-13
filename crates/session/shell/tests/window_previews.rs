@@ -106,11 +106,7 @@ fn open_overview(fb: &mut FrameBuilder, open: bool) {
 
 fn key_event(key: Key, state: ElementState) -> WindowEvent {
     let event = ui::synthetic_input::key_event(key, None, state);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }
 
 /// Press Tab with Alt held, and keep Alt down: the switcher opens.

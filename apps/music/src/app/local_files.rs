@@ -261,7 +261,6 @@ impl MusicApp {
         Some(crate::actions::CatalogTrackResource {
             id: file.track.id.clone(),
             label: file.track.title.clone(),
-            artist: String::new(),
             album_id: String::new(),
             artist_id: String::new(),
             offline: false,
@@ -963,7 +962,7 @@ mod tests {
             assert!(
                 app.restore_continuation_metadata(
                     &ui::collaboration::ContinuationMetadata {
-                        schema_version: 1,
+                        schema_version: ui::collaboration::semantic_schema::MEDIA_POSITION_V1,
                         bytes: serde_json::to_vec(&serde_json::json!({
                             "track_id": next_id, "position_ms": 500, "paused": true,
                         }))

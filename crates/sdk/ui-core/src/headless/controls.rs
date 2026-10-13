@@ -10,7 +10,7 @@
 //! actions ([`FrameHarness::invoke_action`]) resolve here too, so an agent
 //! driving a headless mount reaches everything a person in a window can.
 
-use super::{FrameHarness, Rect, WindowEvent};
+use super::{FrameHarness, Rect};
 use crate::a11y::Action;
 use crate::a11y_tree::{
     SEMANTIC_OPERATION_TYPE, SemanticActionKind, SemanticId, SemanticNode, SemanticTree,
@@ -455,13 +455,10 @@ impl FrameHarness {
             }
             ControlInput::Scroll { dx, dy } => {
                 let centre = pointer?;
-                self.send(&WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(
-                        centre.x * self.input_scale,
-                        centre.y * self.input_scale,
-                    ),
-                });
+                self.send(&crate::synthetic_input::cursor_moved(
+                    centre.x * self.input_scale,
+                    centre.y * self.input_scale,
+                ));
                 self.scroll(*dx, *dy);
                 self.relayout();
                 Ok(())

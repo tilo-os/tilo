@@ -2155,9 +2155,6 @@ mod tests {
         fn app_icon(&self) -> ui::widget::IconDescriptor {
             ui::widget::IconDescriptor::Glyph("L")
         }
-        fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-            None
-        }
     }
 
     fn two_source_cards() -> Scene {

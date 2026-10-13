@@ -1403,7 +1403,7 @@ impl Widget for CalculatorApp {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.mouse = p;
                 let hover_changed = self.track_pointer(p);
                 if self.field_dragging {
@@ -1842,10 +1842,6 @@ impl ui::widget::AppWidget for CalculatorApp {
     fn app_icon(&self) -> ui::widget::IconDescriptor {
         ui::widget::IconDescriptor::Named("calculator".into())
     }
-
-    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-        None
-    }
 }
 
 impl CalculatorApp {
@@ -2009,24 +2005,20 @@ mod tests {
         } else {
             None
         };
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: winit::event::KeyEvent::synthetic(
-                winit::event::RawKeyEvent {
-                    physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                        winit::keyboard::NativeKeyCode::Unidentified,
-                    ),
-                    state: ElementState::Pressed,
-                },
-                key.clone(),
-                text.clone(),
-                winit::keyboard::KeyLocation::Standard,
-                false,
-                text,
-                key,
-            ),
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                ),
+                state: ElementState::Pressed,
+            },
+            key.clone(),
+            text.clone(),
+            winit::keyboard::KeyLocation::Standard,
+            false,
+            text,
+            key,
+        ))
     }
 
     /// A hosted calculator: the framework's live app with its resource.

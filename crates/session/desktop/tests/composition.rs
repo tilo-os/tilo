@@ -223,9 +223,6 @@ impl ui::widget::AppWidget for OverlayApp {
     fn app_icon(&self) -> ui::widget::IconDescriptor {
         ui::widget::IconDescriptor::Named("overlay".into())
     }
-    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-        None
-    }
 }
 struct Overlays(std::collections::HashMap<u64, std::rc::Rc<std::cell::Cell<usize>>>);
 impl TileResolver for Overlays {

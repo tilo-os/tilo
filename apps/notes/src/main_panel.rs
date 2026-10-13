@@ -1876,8 +1876,7 @@ impl Widget for MainPanel {
         // Track the pointer so a press (which carries no position) can be
         // classified as landing in the title band.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_pointer = ctx.logical(position);
         }
         if self.page_id.is_none() {
             let pressed = matches!(

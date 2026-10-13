@@ -267,8 +267,7 @@ pub(crate) fn handle_chart_event(
     }
     match event {
         WindowEvent::CursorMoved { position, .. } => {
-            chart.inspection().pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            chart.inspection().pointer = ctx.logical(position);
             chart.update_hover();
             chart.inspection().keyboard = false;
         }

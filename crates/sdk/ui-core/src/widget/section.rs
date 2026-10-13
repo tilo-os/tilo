@@ -713,8 +713,7 @@ impl Widget for HeaderRow {
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                disclosure.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                disclosure.cursor = ctx.logical(position);
                 disclosure.interaction.hovered = rect.contains(disclosure.cursor)
                     && !action.is_some_and(|r| r.contains(disclosure.cursor));
             }

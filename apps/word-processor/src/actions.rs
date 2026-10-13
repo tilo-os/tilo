@@ -27,8 +27,6 @@ use ui::tilo_resource::Effect as _;
 
 use crate::effects::WordProcessorEffect;
 
-/// Registry `type_id` for every word-processor action.
-pub use tilo_document::RICH_TEXT_ACTION_TYPE as WORD_PROCESSOR_ACTION_TYPE;
 pub use tilo_document::action::*;
 pub use tilo_document::block_edit::Placement;
 /// Register the word processor's action decoder for palette execution + remote
@@ -84,9 +82,6 @@ pub struct SearchTarget {
 /// never allocates one resource object per occurrence forever.
 pub const MAX_RESOURCE_SEARCH_HITS: usize = 64;
 pub const MAX_RESOURCE_REVISIONS: usize = 64;
-/// Sections and images listed around the caret (and sixteen times as many
-/// table cells, so the nearest tables are whole).
-pub const MAX_RESOURCE_OBJECTS: usize = 64;
 
 /// A short label for a structural block in the palette.
 fn short(text: &str, fallback: &str) -> String {

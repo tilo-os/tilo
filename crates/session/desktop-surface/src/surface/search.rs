@@ -346,7 +346,7 @@ impl DesktopSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::winit::event::{DeviceId, KeyEvent, Modifiers, RawKeyEvent};
+    use ui::winit::event::{KeyEvent, Modifiers, RawKeyEvent};
     use ui::winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
 
     fn press(key: Key) -> WindowEvent {
@@ -362,11 +362,7 @@ mod tests {
             None,
             key,
         );
-        WindowEvent::KeyboardInput {
-            device_id: DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     fn mods(state: ModifiersState) -> Modifiers {

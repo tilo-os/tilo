@@ -152,6 +152,59 @@ fn desktop_document_round_trips_the_desktop_and_governance() {
 }
 
 #[test]
+fn newly_appended_room_rebuilds_owner_and_revokes_default_grant() {
+    let id = WorkspaceId(37);
+    let room = RoomId::parse("00000000-0000-4000-8000-000000000037").unwrap();
+    let mut doc = AutoCommit::new();
+    assert!(desktop_doc::append_workspace(
+        &mut doc, id, "Research", room
+    ));
+    assert!(desktop_doc::set_owner(&mut doc, id, "ada"));
+
+    let rebuilt = read_back(&doc);
+    let actual = rebuilt.workspaces.iter().find(|ws| ws.id == id).unwrap();
+    let mut expected = Workspace::new(id, "Research");
+    expected.set_room(room);
+    expected.set_owner("ada");
+    assert_eq!(actual.room, room);
+    assert_eq!(actual.policy, expected.policy);
+
+    let revoked = expected.policy.grants[0].id.clone();
+    assert!(desktop_doc::revoke_grant(&mut doc, id, &revoked));
+    assert!(expected.revoke_grant(&revoked));
+    let rebuilt = read_back(&doc);
+    let actual = rebuilt.workspaces.iter().find(|ws| ws.id == id).unwrap();
+    assert_eq!(actual.policy, expected.policy);
+
+    for grant in expected.policy.grants.clone() {
+        assert!(desktop_doc::revoke_grant(&mut doc, id, &grant.id));
+        assert!(expected.revoke_grant(&grant.id));
+    }
+    let rebuilt = read_back(&doc);
+    let actual = rebuilt.workspaces.iter().find(|ws| ws.id == id).unwrap();
+    assert!(actual.policy.grants.is_empty());
+    assert_eq!(actual.policy, expected.policy);
+}
+
+#[test]
+fn legacy_room_without_grants_map_keeps_its_owner_and_defaults() {
+    let (tree, mut doc) = seeded();
+    let list = doc.get(&ROOT, "workspaces").unwrap().unwrap().1;
+    let entry = doc.get(&list, 0).unwrap().unwrap().1;
+    doc.delete(&entry, "grants").unwrap();
+
+    let rebuilt = read_back(&doc);
+    let actual = &rebuilt.workspaces[0];
+    assert_eq!(actual.owner().map(String::as_str), Some("ada"));
+    assert_eq!(actual.policy, tree.workspaces[0].policy);
+
+    let mut reused = tree.clone();
+    reused.workspaces[0].policy.grants.clear();
+    desktop_doc::rebuild(&doc, &mut reused);
+    assert_eq!(reused.workspaces[0].policy, tree.workspaces[0].policy);
+}
+
+#[test]
 fn topology_edits_are_mirrored_into_the_document() {
     // Phase `a_cross_strip_move_is_mirrored_exactly`.
     {

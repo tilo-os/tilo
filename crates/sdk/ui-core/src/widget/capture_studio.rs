@@ -5321,8 +5321,7 @@ impl Widget for CaptureStudio {
         if self.replay_active {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.cursor = ctx.logical(position);
                     *ctx.handled = self.replay_indicator_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
@@ -5384,8 +5383,7 @@ impl Widget for CaptureStudio {
         if self.recording_finished_at.is_some() {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.cursor = ctx.logical(position);
                     *ctx.handled = self.recording_receipt_rect().contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
@@ -5416,8 +5414,7 @@ impl Widget for CaptureStudio {
         if self.take.active {
             match e {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.cursor =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.cursor = ctx.logical(position);
                     *ctx.handled = self.recording_indicator_rects().0.contains(self.cursor);
                 }
                 WindowEvent::MouseInput {
@@ -5437,8 +5434,7 @@ impl Widget for CaptureStudio {
         *ctx.handled = true;
         match e {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if let Some(d) = self.drag.as_mut() {
                     d.set_current(self.cursor)
                 }

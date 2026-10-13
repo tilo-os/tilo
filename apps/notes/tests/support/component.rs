@@ -569,19 +569,12 @@ pub fn invoke_confirmed(
 }
 
 pub fn move_pointer(driver: &mut ui::headless::FrameHarness, point: vello::kurbo::Point) {
-    driver.send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-    });
+    driver.send(&ui::synthetic_input::cursor_moved(point.x, point.y));
 }
 pub fn mouse(
     driver: &mut ui::headless::FrameHarness,
     button: winit::event::MouseButton,
     state: winit::event::ElementState,
 ) {
-    driver.send(&winit::event::WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        button,
-        state,
-    });
+    driver.send(&ui::synthetic_input::mouse_input(state, button));
 }

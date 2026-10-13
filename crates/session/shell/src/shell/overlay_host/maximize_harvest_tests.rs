@@ -71,8 +71,7 @@ fn maximize_and_resize_harvests_flush_layout_changes_to_disk() {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use vello::kurbo::Point;
-        use winit::dpi::PhysicalPosition;
-        use winit::event::WindowEvent;
+
         let (tree, strip_id, group_id) = one_group_tree(false);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
@@ -123,10 +122,7 @@ fn maximize_and_resize_harvests_flush_layout_changes_to_disk() {
             },
         );
         g.apply_layout(&taffy, group_node, Point::ZERO);
-        let moved = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(9000.0, 9000.0),
-        };
+        let moved = ui::synthetic_input::cursor_moved(9000.0, 9000.0);
         ui::testing::Dispatch::new()
             .layout(&taffy, group_node)
             .send(g, &moved);

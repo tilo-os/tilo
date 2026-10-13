@@ -1130,6 +1130,20 @@ impl EventCtx<'_> {
     pub fn pen(&self) -> Option<PenSample> {
         crate::pen::current()
     }
+
+    /// `position`, a pointer position in physical pixels, in this event's
+    /// logical coordinates.
+    #[must_use]
+    pub fn logical(
+        &self,
+        position: impl std::borrow::Borrow<winit::dpi::PhysicalPosition<f64>>,
+    ) -> vello::kurbo::Point {
+        let position = position.borrow();
+        vello::kurbo::Point::new(
+            position.x / self.scale_factor,
+            position.y / self.scale_factor,
+        )
+    }
 }
 
 /// One remote participant's live presence (caret/selection), published by a
@@ -1373,8 +1387,18 @@ pub trait Widget {
         }
     }
 
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        false
+    /// Notice, between frames, state that lives outside the document (a
+    /// chrome revision, a momentum scroll still ticking) and report whether
+    /// anything changed. The default updates every child
+    /// [`Widget::children_mut`] returns, without short-circuiting, so a
+    /// container never freezes its descendants at build-time state; a widget
+    /// overrides it to check state of its own and then forward.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
     }
 
     /// Apply, after the sync pass, what the widget took up there and must
@@ -3037,8 +3061,6 @@ pub mod slash_menu;
 pub use slash_menu::SlashMenu;
 pub mod link_popover;
 pub use link_popover::{LinkPopover, PageEntry};
-pub mod page_palette;
-pub use page_palette::PageJumpPalette;
 pub mod page_sidebar;
 pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
@@ -3089,8 +3111,6 @@ pub mod table {
     pub use super::block_editor_table::*;
 }
 pub use table::Table;
-pub mod icon_grid;
-pub use icon_grid::{IconGrid, IconGridItem};
 mod window_group;
 pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
@@ -3294,9 +3314,8 @@ pub mod chip;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
 pub mod card;
 mod tone;
-pub use tone::Tone;
-pub mod collaboration_overview;
 pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};
+pub use tone::Tone;
 mod section;
 pub use section::{ObjectHeader, Section, SectionHeader, SectionHeaderFace, StatusLine};
 pub mod capture_studio;
@@ -3315,7 +3334,6 @@ pub use selection_handles::{Handle as SelectionHandle, SelectionHandles};
 pub mod activity_timeline;
 pub mod history;
 pub mod history_group;
-pub mod history_scrubber;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
 pub use history::{
@@ -3323,26 +3341,12 @@ pub use history::{
     HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
     hue_to_rgb,
 };
-pub use history_scrubber::HistoryScrubber;
 // The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
 // caller can build one without naming the collab-types crate directly.
 pub use collab_types::ArtifactKind;
 
-// Wheel-disc spoke overflow integration lives in `shell`.
-pub mod channel_browser;
-pub use channel_browser::{ChannelBrowser, ChannelEntry};
-
-pub mod conflict_banner;
-pub mod conflict_picker;
-pub mod merge_strategy;
-
 pub mod qr;
 pub mod resource_actions;
-pub use conflict_banner::ConflictBanner;
-pub use conflict_picker::{ConflictPicker, PickerOutcome};
-pub use merge_strategy::{
-    Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy, surface_banner,
-};
 pub use qr::QrWidget;
 
 #[cfg(test)]
@@ -3833,9 +3837,6 @@ pub(crate) mod control_result_probe {
         }
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Glyph("P")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 }

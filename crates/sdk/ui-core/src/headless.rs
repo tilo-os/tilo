@@ -7339,20 +7339,12 @@ impl FrameHarness {
     /// three events a click produces, in order.
     pub fn click_at(&mut self, x: f64, y: f64) {
         self.pump_component_wakes();
-        self.send(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x * self.input_scale, y * self.input_scale),
-        });
-        self.send(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        self.send(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.send(&crate::synthetic_input::cursor_moved(
+            x * self.input_scale,
+            y * self.input_scale,
+        ));
+        self.send(&crate::synthetic_input::mouse_press());
+        self.send(&crate::synthetic_input::mouse_release());
     }
 
     /// Two left clicks at `(x, y)` that count as one double-click however
@@ -7375,20 +7367,13 @@ impl FrameHarness {
     pub fn drag_at(&mut self, from: (f64, f64), to: (f64, f64)) {
         self.pump_component_wakes();
         let moved = |this: &mut Self, (x, y): (f64, f64)| {
-            this.send(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(
-                    x * this.input_scale,
-                    y * this.input_scale,
-                ),
-            });
+            this.send(&crate::synthetic_input::cursor_moved(
+                x * this.input_scale,
+                y * this.input_scale,
+            ));
         };
         moved(self, from);
-        self.send(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        self.send(&crate::synthetic_input::mouse_press());
         for fraction in [0.25, 0.5, 0.75, 1.0] {
             moved(
                 self,
@@ -7398,11 +7383,7 @@ impl FrameHarness {
                 ),
             );
         }
-        self.send(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.send(&crate::synthetic_input::mouse_release());
     }
 
     /// Direct-touch activation at logical coordinates.
@@ -7607,11 +7588,7 @@ impl FrameHarness {
             reason = "line-delta counts are small integers; winit's `LineDelta` is f32 and there is no fallible f64->f32 conversion"
         )]
         let (dx, dy) = (dx as f32, dy as f32);
-        self.send(&WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        self.send(&crate::synthetic_input::mouse_wheel(dx, dy));
     }
 
     // -- Perf harness plumbing (see [`crate::profiling`]) ------------------
@@ -10428,8 +10405,7 @@ mod tests {
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    self.pointer =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                    self.pointer = ctx.logical(position);
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
@@ -12958,10 +12934,7 @@ mod dispatched_action_driver_tests {
             d.type_text("a");
 
             // A pointer move: reaches the tree, dispatches no action.
-            d.send(&WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
-            });
+            d.send(&crate::synthetic_input::cursor_moved(5.0, 5.0));
 
             assert!(
                 d.perform_undo(),
@@ -13120,9 +13093,6 @@ mod prepared_driver_tests {
         }
         fn app_icon(&self) -> crate::widget::IconDescriptor {
             crate::widget::IconDescriptor::Glyph("O")
-        }
-        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-            None
         }
     }
     fn factory(
