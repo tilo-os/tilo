@@ -1,5 +1,6 @@
 //! What a maps window answers and shows beside the shared map: its effects,
-//! with their availability now, and the live rows it publishes.
+//! with their availability now, the live rows it publishes, and what it
+//! adds to the platform search.
 
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 
@@ -86,6 +87,24 @@ impl MapsApp {
         statuses
     }
 
+    /// Take in the platform search's latest query: one that means a place
+    /// is looked up with the geocoder in the background.
+    pub(crate) fn queue_place_search(&mut self, query: &ui::search::SearchQuery) {
+        self.place_search.ask(query, self.online);
+    }
+
+    /// What the window shows that the platform search finds, beside the
+    /// shared map's own: see [`crate::place_search`].
+    pub(crate) fn place_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        crate::place_search::entries(&crate::place_search::Shown {
+            places: &self.model.places,
+            pois: &self.pois,
+            recents: &self.model.recents,
+            found: self.place_search.found(),
+            anchor: self.search_anchor(),
+        })
+    }
+
     /// The rows the window publishes now, a bounded page of each kind.
     pub(crate) fn published_rows(&self) -> Vec<LiveRow> {
         let mut rows = Vec::new();
@@ -108,7 +127,7 @@ impl MapsApp {
                 .iter()
                 .filter(|place| place.saved)
                 .take(ROWS_PER_KIND)
-                .map(|place| saved_place_row(&place.id, &place.name)),
+                .map(|place| place_row(&place.id, &place.name)),
         );
         rows.extend(
             self.model
@@ -143,13 +162,14 @@ impl MapsApp {
                 .find(|poi| poi.id == poi_id)
                 .map(|poi| poi_row(&poi.id, &poi.name));
         }
+        // Any place the map knows, or the geocoder found for the platform
+        // search, opens by its row; the page lists the saved ones.
         if let Some(place_id) = id.strip_prefix("maps.place:") {
             return self
                 .model
-                .places
-                .iter()
-                .find(|place| place.saved && place.id == place_id)
-                .map(|place| saved_place_row(&place.id, &place.name));
+                .place(place_id)
+                .or_else(|| self.place_search.geocoded(place_id))
+                .map(|place| place_row(&place.id, &place.name));
         }
         if let Some(query) = id.strip_prefix("maps.search-history:") {
             return self
@@ -192,9 +212,8 @@ fn poi_row(id: &str, name: &str) -> LiveRow {
         .effect(&MapsEffect::PoiDirections { poi: id.into() })
 }
 
-/// Opening a saved place joins the document's row of the same id, which
-/// carries removing it from the saved places.
-fn saved_place_row(id: &str, name: &str) -> LiveRow {
+/// A place the map knows or the geocoder found: open it, or get directions.
+fn place_row(id: &str, name: &str) -> LiveRow {
     LiveRow::new(format!("maps.place:{id}"), "maps.place", name)
         .effect(&MapsEffect::OpenPlace { place: id.into() })
         .effect(&MapsEffect::Directions { place: id.into() })
