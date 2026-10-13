@@ -42,22 +42,9 @@ impl Builder {
         self.bytes(&value.payload);
     }
     fn evidence(&mut self, value: Option<&ContinuationEvidence>) {
-        struct Sink<'a>(&'a mut blake3::Hasher);
-        impl std::io::Write for Sink<'_> {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.update(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
         match value {
             Some(value) => {
-                if value
-                    .write_canonical_identity(&mut Sink(&mut self.digest))
-                    .is_err()
-                {
+                if value.write_canonical_identity(&mut self.digest).is_err() {
                     self.supported = false;
                 }
             }
