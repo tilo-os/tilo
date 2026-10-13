@@ -46,13 +46,11 @@ pub struct ResourceViewLocator {
     pub host_device: String,
     /// Exact existing record provider checked by the host.
     pub provider: String,
-    /// Operator-configured browser entry. Absent until a compatible bundle is hosted.
-    #[serde(
-        default,
-        rename = "browserPage",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub browser_page: Option<String>,
+    /// The web entry base (`https://tilo.so/`, ending in `/`) the operator serves
+    /// the browser bundle under; links to this host's resources are minted
+    /// under it. Absent until a compatible bundle is hosted.
+    #[serde(default, rename = "webEntry", skip_serializing_if = "Option::is_none")]
+    pub web_entry: Option<String>,
 }
 
 /// Exact document route whose broker-owned live publisher is requested.

@@ -1,257 +1,226 @@
-//! Native resource navigation uses the existing certified catalogue bridge.
-//! The message retains only provenance; the host supplies current view metadata.
-use tilo_actions::remote::{CataloguePage, CatalogueQuery, RemoteActionMessage, ViewResourceQuery};
-use ui::framework::{EffectReply, Effected};
+//! The controls under a message that shares a resource. "Copy link" and
+//! "Open" ask the resource's own app for its `share-link` through the action
+//! door: the app that publishes the resource knows its views and asks its
+//! room's host where it is served, so Chat never builds a link itself and a
+//! person, an automation and an agent all get the same URL.
+//!
+//! "Open" opens that link in the browser. Chat has no way to show another
+//! app's view in place, so the link is the one path that works for every
+//! resource a message can carry.
+use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::InvokeArgument;
+use ui::{InvocationCall, LocalState, RemoteActions, RemoteCall};
 
-use crate::{app::ChatApp, effects::ChatEffect};
+use crate::app::ChatApp;
 
-#[derive(Default)]
+/// How long a link request may run before the control gives up on it.
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub(crate) struct Navigation {
+    remote: RemoteActions,
     pending: Option<Pending>,
-    requests: Vec<ui::collaboration::CollabRequest>,
+    /// What the last request came to, shown on the control that asked.
+    status: Option<Status>,
+}
+
+struct Status {
+    message: String,
+    open: bool,
+    /// The reason when it failed.
+    outcome: Result<(), String>,
+}
+
+impl Default for Navigation {
+    fn default() -> Self {
+        Self {
+            remote: RemoteActions::current(),
+            pending: None,
+            status: None,
+        }
+    }
 }
 
 struct Pending {
-    correlation: u64,
     message: String,
     reference: tilo_reference::ResourceRef,
     provider: String,
     open: bool,
     started: ui::time::Instant,
-    reply: EffectReply,
+    call: LocalState<InvocationCall>,
 }
 
 impl Navigation {
     pub(crate) fn pending(&self) -> bool {
         self.pending.is_some()
     }
+
+    pub(crate) fn remote_mut(&mut self) -> &mut RemoteActions {
+        &mut self.remote
+    }
+
+    /// What the last link request on `message` came to.
+    #[cfg(test)]
+    pub(crate) fn status(&self, message: &str) -> Option<&Result<(), String>> {
+        self.status
+            .as_ref()
+            .filter(|status| status.message == message)
+            .map(|status| &status.outcome)
+    }
+
+    /// The caption of `message`'s copy control or, with `open`, its open
+    /// control: what it does, or what it last came to. `reason` adds why a
+    /// request failed, for assistive technology.
+    pub(crate) fn label(&self, message: &str, open: bool, reason: bool) -> String {
+        let status = self
+            .status
+            .as_ref()
+            .filter(|status| status.message == message && status.open == open);
+        match status.map(|status| &status.outcome) {
+            Some(Ok(())) if !open => crate::i18n::t("chat-resource-link-copied"),
+            Some(Err(why)) if reason => format!(
+                "{}: {why}",
+                crate::i18n::t("chat-resource-link-unavailable")
+            ),
+            Some(Err(_)) => crate::i18n::t("chat-resource-link-unavailable"),
+            Some(Ok(())) | None if open => crate::i18n::t("chat-resource-open-link"),
+            Some(Ok(())) | None => crate::i18n::t("chat-resource-copy-link"),
+        }
+    }
+}
+
+/// The `share-link` arguments that point at `reference`: its range, when it
+/// names one, and a link that opens the resource on its own.
+fn link_arguments(reference: &tilo_reference::ResourceRef) -> InvokeArgument {
+    let mut args = serde_json::Map::from_iter([("mode".to_owned(), serde_json::json!("app"))]);
+    if let Some(span) = reference.span {
+        let unit = match span.unit {
+            tilo_reference::SpanUnit::Chars => "chars",
+            tilo_reference::SpanUnit::Bytes => "bytes",
+        };
+        args.insert("start".into(), serde_json::json!(span.start));
+        args.insert("end".into(), serde_json::json!(span.end));
+        args.insert("unit".into(), serde_json::json!(unit));
+    }
+    InvokeArgument::Json(args)
 }
 
 impl ChatApp {
-    pub(crate) fn begin_resource_navigation(
-        &mut self,
-        effect: &ChatEffect,
-        reply: EffectReply,
-    ) -> Result<Effected, String> {
-        let (message, open) = match effect {
-            ChatEffect::CopyResourceLink { message } => (message, false),
-            ChatEffect::OpenResourceLink { message } => (message, true),
-            _ => return Err("Not a resource navigation effect".into()),
-        };
+    /// Ask the app behind `message`'s resource for its link, to copy it or,
+    /// with `open`, to open it.
+    pub(crate) fn begin_resource_navigation(&mut self, message: &str, open: bool) {
+        let started = self.request_resource_link(message, open);
+        if let Err(reason) = started {
+            self.resource_navigation.status = Some(Status {
+                message: message.to_owned(),
+                open,
+                outcome: Err(reason),
+            });
+        }
+        self.settle_resource_navigation();
+        self.request_relayout();
+    }
+
+    fn request_resource_link(&mut self, message: &str, open: bool) -> Result<(), String> {
         if self.resource_navigation.pending.is_some() {
-            return Err("A resource lookup is already running".into());
+            return Err("A link is already being fetched".into());
         }
         let row = self.message(message).ok_or("Message no longer exists")?;
         let reference = row.reference.clone().ok_or("Message has no resource")?;
         let provider = row
             .source_provider
             .clone()
-            .ok_or("This older reference has no source record provider")?;
-        // Browser peers carry this through JSON numbers; keep it exactly representable.
-        let correlation = uuid::Uuid::new_v4().as_u64_pair().0 & ((1_u64 << 53) - 1);
-        self.resource_navigation
-            .requests
-            .push(ui::collaboration::CollabRequest::RemoteAction {
-                message: RemoteActionMessage::CatalogueRequest {
-                    correlation,
-                    query: CatalogueQuery {
-                        provider: Some(provider.clone()),
-                        view_resource: Some(ViewResourceQuery {
-                            id: reference.id.clone(),
-                            kind: reference.kind.clone(),
-                        }),
-                        ..CatalogueQuery::default()
-                    },
-                },
-            });
+            .ok_or("This message does not say which record its resource is in")?;
+        let call = self.resource_navigation.remote.invoke(
+            ui::tilo_resource::share::share_link_target(provider.clone(), reference.id.clone()),
+            link_arguments(&reference),
+            None,
+        );
+        self.resource_navigation.status = None;
         self.resource_navigation.pending = Some(Pending {
-            correlation,
-            message: message.clone(),
+            message: message.to_owned(),
             reference,
             provider,
             open,
             started: ui::time::now(),
-            reply,
+            call,
         });
-        Ok(Effected::Pending)
+        Ok(())
     }
 
-    pub(crate) fn resource_navigation_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
-        if self
-            .resource_navigation
-            .pending
-            .as_ref()
-            .is_some_and(|pending| {
-                pending.reply.is_cancelled()
-                    || ui::time::now().saturating_duration_since(pending.started)
-                        >= std::time::Duration::from_secs(30)
-            })
-            && let Some(pending) = self.resource_navigation.pending.take()
-        {
-            pending
-                .reply
-                .finish(Err("Resource lookup cancelled or timed out".into()));
-            self.resource_navigation.requests.clear();
-        }
-        std::mem::take(&mut self.resource_navigation.requests)
-    }
-
-    pub(crate) fn complete_resource_navigation(&mut self, message: &RemoteActionMessage) {
-        let RemoteActionMessage::CatalogueResponse {
-            correlation,
-            result,
-        } = message
-        else {
+    /// Finish the running link request once its answer has arrived: copy or
+    /// open the link, or show why there is none.
+    pub(crate) fn settle_resource_navigation(&mut self) {
+        let Some(pending) = &self.resource_navigation.pending else {
             return;
         };
-        if self
-            .resource_navigation
-            .pending
-            .as_ref()
-            .is_none_or(|pending| pending.correlation != *correlation)
-        {
-            return;
-        }
+        let answer = pending.call.with(|call| match call {
+            RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => Some(
+                output
+                    .value
+                    .as_ref()
+                    .and_then(|value| value.get("url"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| "The resource's app answered without a link".to_owned()),
+            ),
+            RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => {
+                Some(Err(error.message.clone()))
+            }
+            RemoteCall::Done(InvocationUpdate::Cancelled { .. }) => {
+                Some(Err("The link request was cancelled".into()))
+            }
+            RemoteCall::Refused(error) => Some(Err(error.to_string())),
+            RemoteCall::Done(_) | RemoteCall::Pending => None,
+        });
+        let answer = match answer {
+            Some(answer) => answer,
+            None if ui::time::now().saturating_duration_since(pending.started) >= TIMEOUT => {
+                Err("The resource's app did not answer".into())
+            }
+            None => return,
+        };
         let Some(pending) = self.resource_navigation.pending.take() else {
             return;
         };
+        // The message may have changed while its link was fetched; a link
+        // to what it no longer shows is not what the person asked for.
         let current = self.message(&pending.message).is_some_and(|row| {
             row.reference.as_ref() == Some(&pending.reference)
                 && row.source_provider.as_deref() == Some(pending.provider.as_str())
         });
-        let link = if !current
-            || pending.reply.is_cancelled()
-            || ui::time::now().saturating_duration_since(pending.started)
-                >= std::time::Duration::from_secs(30)
-        {
-            Err("Resource reference changed or lookup cancelled".into())
-        } else {
-            result
-                .as_ref()
-                .map_err(|_| "Resource view unavailable".to_owned())
-                .and_then(|page| navigation_link(page, &pending.reference, &pending.provider))
-        };
-        let output = link.and_then(|link| {
-            if pending.open {
-                ui::widget::try_open_external_url(&link).map_err(|error| error.to_string())?;
-            } else if !ui::try_clipboard_copy(&link) {
-                return Err("The system clipboard did not accept the resource link".into());
+        let outcome = answer.and_then(|url| {
+            if !current {
+                Err("The message no longer shares this resource".to_owned())
+            } else if pending.open {
+                ui::widget::try_open_external_url(&url).map_err(|error| error.to_string())
+            } else if ui::try_clipboard_copy(&url) {
+                Ok(())
+            } else {
+                Err("The system clipboard did not accept the link".to_owned())
             }
-            Ok(tilo_actions::ActionOutput {
-                value: Some(serde_json::json!({"url": link})),
-                resources: Vec::new(),
-            })
         });
-        pending.reply.finish(output);
-    }
-}
-
-/// Encode the browser's version-one fragment from freshly host-issued metadata.
-/// No label, payload, credentials or admission material is embedded.
-fn navigation_link(
-    page: &CataloguePage,
-    reference: &tilo_reference::ResourceRef,
-    provider: &str,
-) -> Result<String, String> {
-    let locator = page
-        .locator
-        .as_ref()
-        .ok_or("Resource host supplied no locator")?;
-    if locator.provider != provider
-        || !crate::record::valid_source_provider(provider)
-        || locator.host_device.len() != 64
-        || !locator
-            .host_device
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
-        || locator.room.is_empty()
-        || locator.room.len() > 128
-        || locator.room.chars().any(char::is_control)
-    {
-        return Err("Resource host locator does not match".into());
-    }
-    let origin = url::Url::parse(&locator.origin).map_err(|_| "Invalid resource host origin")?;
-    if origin.scheme() != "https" || origin.origin().ascii_serialization() != locator.origin {
-        return Err("Resource host requires a canonical HTTPS origin".into());
-    }
-    let mut destination = url::Url::parse(
-        locator
-            .browser_page
-            .as_deref()
-            .ok_or("Resource browser entry is not configured on this host")?,
-    )
-    .map_err(|_| "Invalid resource browser entry")?;
-    if destination.scheme() != "https"
-        || !destination.username().is_empty()
-        || destination.password().is_some()
-        || destination.query().is_some()
-        || destination.fragment().is_some()
-    {
-        return Err("Resource browser entry requires an HTTPS page without credentials".into());
-    }
-    let action = page
-        .rows
-        .iter()
-        .filter(|row| {
-            row.provider == provider
-                && row.resource.id == reference.id
-                && row.resource.kind == reference.kind
-        })
-        .filter_map(|row| row.action.as_ref())
-        .filter(|action| {
-            action.kind == tilo_actions::OperationKind::View
-                && action.address.resource == reference.id
-                && action.resource_kind == reference.kind
-        })
-        .filter(|action| {
-            action.view.as_ref().is_some_and(|view| {
-                view.open_action == action.address.action
-                    && (reference.span.is_none() || view.range.is_some())
-            })
-        })
-        .max_by_key(|action| action.view.as_ref().is_some_and(|view| view.primary))
-        .ok_or("No permitted declared resource view")?;
-    let mut resource = serde_json::Map::from_iter([
-        ("kind".into(), serde_json::json!(reference.kind)),
-        ("id".into(), serde_json::json!(reference.id)),
-    ]);
-    if let Some(span) = reference.span {
-        if span.start > span.end
-            || u64::try_from(span.end).unwrap_or(u64::MAX) > 9_007_199_254_740_991
-        {
-            return Err("Invalid resource range".into());
-        }
-        resource.insert(
-            "span".into(),
-            serde_json::to_value(span).map_err(|error| error.to_string())?,
-        );
-    }
-    let address = serde_json::json!({"version": 1, "origin": locator.origin,
-        "room": locator.room, "hostDevice": locator.host_device.to_ascii_lowercase(),
-        "provider": provider, "action": action.address.action, "reference": resource});
-    // Percent-encode UTF-8 bytes, matching decodeURIComponent in resource-link.mjs.
-    let encoded = serde_json::to_string(&address)
-        .map_err(|error| error.to_string())?
-        .bytes()
-        .fold(String::new(), |mut result, byte| {
-            use std::fmt::Write as _;
-            let _ = write!(result, "%{byte:02X}");
-            result
+        self.resource_navigation.status = Some(Status {
+            message: pending.message,
+            open: pending.open,
+            outcome,
         });
-    if encoded.len() > 23_990 {
-        return Err("Resource address is too large".into());
+        self.request_relayout();
     }
-    destination.set_fragment(Some(&format!("resource={encoded}")));
-    Ok(destination.into())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use tilo_actions::remote::{
+        ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+        InvocationState, InvokeRequest, Pending as HostPending, ReceiptStatus,
+    };
+
     use super::*;
-    use tilo_actions::remote::{CatalogueResource, CatalogueRow, ResourceViewLocator};
 
     #[derive(Default)]
-    struct Clipboard(std::sync::Mutex<Option<String>>);
+    struct Clipboard(Mutex<Option<String>>);
 
     impl ui::clipboard::ClipboardBackend for Clipboard {
         fn set_text(&self, _: ui::clipboard::ClipboardTarget, text: &str) -> bool {
@@ -268,77 +237,76 @@ mod tests {
         }
     }
 
-    fn assert_copy_refused(
-        app: &mut ui::framework::testing::TestApp<crate::resource::ChatShell>,
-        target: &str,
-        effect: &ChatEffect,
-    ) {
-        let services = ui::host::HostServices::null();
-        let _scope = ui::host::enter(&services);
-        app.start_effect_on(target, effect).unwrap();
-        let surface = app.surface_mut::<ChatApp>();
-        let correlation = surface
-            .resource_navigation
-            .pending
-            .as_ref()
-            .unwrap()
-            .correlation;
-        surface.complete_resource_navigation(&RemoteActionMessage::CatalogueResponse {
-            correlation,
-            result: Ok(page()),
-        });
-        app.settle();
-        assert!(
-            app.effect_progress()
-                .iter()
-                .any(|update| matches!(update, tilo_actions::InvocationUpdate::Failed { .. }))
-        );
-        assert!(ui::clipboard_paste().is_none());
+    const URL: &str = "https://tilo.so/app/#/host.example/room/so.tilo.notes/r/page:1";
+
+    /// The resource's app behind the door: answers `share-link` with `URL`,
+    /// or refuses with `refusal`.
+    #[derive(Default)]
+    struct Door {
+        refusal: Option<String>,
+        asked: Mutex<Vec<InvokeRequest>>,
     }
 
-    fn page() -> CataloguePage {
-        use tilo_actions::{Resource, ResourceViewRangeSpec, ResourceViewSpec};
-        use ui::tilo_resource::Effect as _;
-        let resource = Resource::new("chat.message:message", "chat.message", "Fixture")
-            .with_action(
-                ChatEffect::RevealMessage {
-                    message: "message".into(),
-                }
-                .bound(),
-            )
-            .with_view(
-                ResourceViewSpec::new("message", "Message", "reveal-message")
-                    .with_primary(true)
-                    .with_range(ResourceViewRangeSpec::new("reveal-message-range")),
-            );
-        let descriptor = tilo_actions::door::survey(&[resource])
-            .into_iter()
-            .next()
-            .unwrap();
-        CataloguePage {
-            locator: Some(ResourceViewLocator {
-                origin: "https://host.example".into(),
-                room: "fixture-room".into(),
-                host_device: "ab".repeat(32),
-                provider: "record:so.tilo.chat:discussion".into(),
-                browser_page: Some("https://cloud.example/qos-runtime/resource.html".into()),
-            }),
-            rows: vec![CatalogueRow {
-                provider: "record:so.tilo.chat:discussion".into(),
-                app_id: "so.tilo.chat".into(),
-                parent_resource: String::new(),
-                resource: CatalogueResource {
-                    id: "chat.message:message".into(),
-                    kind: "chat.message".into(),
-                    label: "Fixture".into(),
-                    presentation: None,
-                },
-                action: Some(descriptor),
-                has_children: false,
-                visibility: None,
-            }],
-            ..CataloguePage::default()
+    impl ActionHost for Door {
+        fn query(
+            &self,
+            _: &Caller,
+            _: CatalogueQuery,
+        ) -> HostPending<Result<CataloguePage, ActionHostError>> {
+            HostPending::ready(Err(ActionHostError::NotPermitted))
         }
+
+        fn invoke(
+            &self,
+            _: &Caller,
+            request: InvokeRequest,
+        ) -> HostPending<Result<InvocationReceipt, ActionHostError>> {
+            let invocation = request.invocation;
+            self.asked.lock().unwrap().push(request);
+            let status = match &self.refusal {
+                Some(message) => ReceiptStatus::Failed {
+                    error: tilo_actions::ActionFailure {
+                        code: "refused".into(),
+                        message: message.clone(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+                None => ReceiptStatus::Completed {
+                    output: tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({"url": URL})),
+                        resources: Vec::new(),
+                    },
+                },
+            };
+            HostPending::ready(Ok(InvocationReceipt { invocation, status }))
+        }
+
+        fn observe(&self, _: &Caller, _: &tilo_actions::InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _: &Caller,
+            _: &tilo_actions::InvocationId,
+        ) -> Result<(), ActionHostError> {
+            Ok(())
+        }
+    }
+
+    fn shared(app: &mut ui::framework::testing::TestApp<crate::resource::ChatShell>) -> String {
+        let reference = serde_json::json!({"kind":"notes.page", "id":"notes.page:1", "label":"Plan", "span":{"start":6,"end":9,"unit":"Chars"}});
+        app.call_on(&crate::testing::item("channels", "c_general"), "share-resource", serde_json::json!({
+            "reference":reference, "source_provider":"record:so.tilo.notes:plan", "text":"Discuss resource"
+        })).unwrap();
+        app.settle();
+        app.state()
+            .message_rows("c_general")
+            .into_iter()
+            .find(|row| row.text == "Discuss resource")
+            .unwrap()
+            .id
     }
 
     fn assert_native_resource_controls(
@@ -383,156 +351,75 @@ mod tests {
     }
 
     #[test]
-    fn native_copy_uses_the_public_effect_and_fences_changed_messages_and_cancellation() {
+    fn copy_link_asks_the_resources_app_for_share_link_and_copies_its_url() {
         use crate::resource::ChatShell;
         use ui::framework::testing::TestApp;
+        let door = Arc::new(Door::default());
+        let _served = RemoteActions::enter(door.clone(), Caller::local_person("owner"));
         let mut app = TestApp::<ChatShell>::new().unwrap();
-        let services = ui::host::HostServices::null()
-            .with_clipboard(std::sync::Arc::new(Clipboard::default()));
+        let services =
+            ui::host::HostServices::null().with_clipboard(Arc::new(Clipboard::default()));
         let _scope = ui::host::enter(&services);
-        let reference = serde_json::json!({"kind":"chat.message", "id":"chat.message:message", "label":"Fixture", "span":{"start":6,"end":7,"unit":"Chars"}});
-        app.call_on(&crate::testing::item("channels", "c_general"), "share-resource", serde_json::json!({
-            "reference":reference, "source_provider":"record:so.tilo.chat:discussion", "text":"Discuss resource"
-        })).unwrap();
-        app.settle();
-        let id = app
-            .state()
-            .message_rows("c_general")
-            .into_iter()
-            .find(|row| row.text == "Discuss resource")
-            .unwrap()
-            .id;
+        let id = shared(&mut app);
         assert_native_resource_controls(&mut app);
-        let effect = ChatEffect::CopyResourceLink {
-            message: id.clone(),
-        };
-        let target = crate::testing::item("messages", &id);
-        app.start_effect_on(&target, &effect).unwrap();
+
+        app.surface_mut::<ChatApp>()
+            .begin_resource_navigation(&id, false);
+        assert_eq!(ui::clipboard_paste().as_deref(), Some(URL));
         let surface = app.surface_mut::<ChatApp>();
-        let correlation = surface
-            .resource_navigation
-            .pending
-            .as_ref()
-            .unwrap()
-            .correlation;
-        assert!(correlation < (1_u64 << 53));
-        let browser_number = serde_json::from_str::<f64>(&correlation.to_string()).unwrap();
-        assert_eq!(browser_number as u64, correlation);
-        surface.complete_resource_navigation(&RemoteActionMessage::CatalogueResponse {
-            correlation,
-            result: Ok(page()),
-        });
-        app.settle();
-        assert!(
-            ui::clipboard_paste()
-                .unwrap()
-                .starts_with("https://cloud.example/qos-runtime/resource.html#resource=")
+        assert_eq!(surface.resource_navigation.status(&id), Some(&Ok(())));
+        assert_eq!(
+            surface.resource_navigation.label(&id, false, false),
+            "Link copied"
         );
-        println!("NATIVE_RESOURCE_LINK={}", ui::clipboard_paste().unwrap());
-        assert_copy_refused(&mut app, &target, &effect);
-        ui::clipboard_copy("sentinel");
-        let invocation = app.start_effect_on(&target, &effect).unwrap();
-        let correlation = app
-            .surface_mut::<ChatApp>()
-            .resource_navigation
-            .pending
-            .as_ref()
-            .unwrap()
-            .correlation;
-        app.cancel_effect(invocation);
-        app.surface_mut::<ChatApp>().complete_resource_navigation(
-            &RemoteActionMessage::CatalogueResponse {
-                correlation,
-                result: Ok(page()),
-            },
+        assert!(!surface.resource_navigation.pending());
+        let asked = door.asked.lock().unwrap().clone();
+        let request = asked.last().unwrap();
+        assert_eq!(request.target.provider, "record:so.tilo.notes:plan");
+        assert_eq!(request.target.address.resource, "notes.page:1");
+        assert_eq!(request.target.address.action, "share-link");
+        assert_eq!(
+            request.argument,
+            InvokeArgument::Json(
+                serde_json::json!({"mode": "app", "start": 6, "end": 9, "unit": "chars"})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            )
         );
-        app.settle();
-        assert_eq!(ui::clipboard_paste().as_deref(), Some("sentinel"));
-        app.start_effect_on(&target, &effect).unwrap();
-        let surface = app.surface_mut::<ChatApp>();
-        let correlation = surface
-            .resource_navigation
-            .pending
-            .as_ref()
-            .unwrap()
-            .correlation;
-        // Remove the source through the real message action while its lookup waits.
-        app.call_confirmed_on(&target, "delete-message", serde_json::json!({}))
-            .unwrap();
-        app.settle();
-        app.surface_mut::<ChatApp>().complete_resource_navigation(
-            &RemoteActionMessage::CatalogueResponse {
-                correlation,
-                result: Ok(page()),
-            },
-        );
-        app.settle();
-        assert_eq!(ui::clipboard_paste().as_deref(), Some("sentinel"));
-        assert!(!app.surface_mut::<ChatApp>().resource_navigation.pending());
     }
 
     #[test]
-    fn native_link_carries_only_the_current_host_locator_and_exact_declared_view() {
-        let reference = tilo_reference::ResourceRef::ranged(
-            "chat.message",
-            "chat.message:message",
-            "Never export this label",
-            tilo_reference::Span::chars(6, 7),
-        );
-        let page = page();
-        let link = navigation_link(&page, &reference, "record:so.tilo.chat:discussion").unwrap();
-        let url = url::Url::parse(&link).unwrap();
-        assert_eq!(url.origin().ascii_serialization(), "https://cloud.example");
-        assert!(url.query().is_none());
-        let raw = url.fragment().unwrap().strip_prefix("resource=").unwrap();
-        let decoded = url::form_urlencoded::parse(format!("value={raw}").as_bytes())
-            .next()
-            .unwrap()
-            .1
-            .into_owned();
-        let address: serde_json::Value = serde_json::from_str(&decoded).unwrap();
-        assert_eq!(address["origin"], "https://host.example");
-        assert_eq!(address["provider"], "record:so.tilo.chat:discussion");
-        assert_eq!(address["action"], "reveal-message");
+    fn a_refused_link_is_shown_on_its_message_and_copies_nothing() {
+        use crate::resource::ChatShell;
+        use ui::framework::testing::TestApp;
+        let door = Arc::new(Door {
+            refusal: Some("This workspace's host serves no web page".into()),
+            ..Door::default()
+        });
+        let _served = RemoteActions::enter(door, Caller::local_person("owner"));
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        let services =
+            ui::host::HostServices::null().with_clipboard(Arc::new(Clipboard::default()));
+        let _scope = ui::host::enter(&services);
+        let id = shared(&mut app);
+        ui::clipboard_copy("sentinel");
+
+        let surface = app.surface_mut::<ChatApp>();
+        surface.begin_resource_navigation(&id, false);
         assert_eq!(
-            address["reference"]["span"],
-            serde_json::json!({"start":6,"end":7,"unit":"Chars"})
+            surface.resource_navigation.status(&id),
+            Some(&Err("This workspace's host serves no web page".into()))
         );
-        assert!(!decoded.contains("Never export this label"));
-        // The paired browser fixture parses this actual native-generated link.
-        println!("NATIVE_RESOURCE_LINK={link}");
-        let mut denied = page.clone();
-        denied.locator.as_mut().unwrap().browser_page = None;
-        assert!(navigation_link(&denied, &reference, "record:so.tilo.chat:discussion").is_err());
-        denied = page.clone();
-        denied.rows.clear();
-        assert!(navigation_link(&denied, &reference, "record:so.tilo.chat:discussion").is_err());
-        denied = page.clone();
-        denied.rows[0].resource.kind = "other.kind".into();
-        assert!(navigation_link(&denied, &reference, "record:so.tilo.chat:discussion").is_err());
-        denied = page.clone();
-        denied.rows[0].action.as_mut().unwrap().kind = tilo_actions::OperationKind::Document;
-        assert!(navigation_link(&denied, &reference, "record:so.tilo.chat:discussion").is_err());
-        denied = page.clone();
-        denied.rows[0]
-            .action
-            .as_mut()
-            .unwrap()
-            .view
-            .as_mut()
-            .unwrap()
-            .range = None;
-        assert!(navigation_link(&denied, &reference, "record:so.tilo.chat:discussion").is_err());
-        for unsafe_page in [
-            "http://cloud.example/resource.html",
-            "https://name:secret@cloud.example/resource.html",
-            "https://cloud.example/resource.html?token=secret",
-        ] {
-            denied = page.clone();
-            denied.locator.as_mut().unwrap().browser_page = Some(unsafe_page.into());
-            assert!(
-                navigation_link(&denied, &reference, "record:so.tilo.chat:discussion").is_err()
-            );
-        }
+        assert_eq!(surface.resource_navigation.status("another message"), None);
+        assert_eq!(
+            surface.resource_navigation.label(&id, false, true),
+            "Link unavailable: This workspace's host serves no web page"
+        );
+        assert_eq!(
+            surface.resource_navigation.label(&id, true, true),
+            "Open resource in browser"
+        );
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("sentinel"));
     }
 }

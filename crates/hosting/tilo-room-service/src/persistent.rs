@@ -252,6 +252,9 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
                 .saturating_add(crate::config::LOCAL_PLAIN_OFFSET)
         ));
     }
+    if let Some(entry) = &persistent.web_entry {
+        command.arg("--web-entry").arg(entry);
+    }
     command
         .arg("--persistent")
         .arg(&persistent.name)
