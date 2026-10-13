@@ -273,6 +273,9 @@ enum Command {
     /// registry, collect printed entries into an `entries` file and serve
     /// the directory over HTTP.
     Entry(EntryArgs),
+    /// Print a signed registry entry for a bot program (the Shortcut's
+    /// canonical JSON); with `--action`, wrapped as a request for POST /entries.
+    BotEntry(BotEntryArgs),
     /// Print the registry entry this publisher has waiting for review for a
     /// package id, as `--previous-entry` accepts it; prints nothing when none
     /// is waiting. A newer request replaces the waiting one and must keep its
@@ -329,6 +332,39 @@ struct SealImageArgs {
     /// Write the thin form (metadata only).
     #[arg(long)]
     thin: bool,
+}
+
+#[derive(clap::Args)]
+struct BotEntryArgs {
+    /// Publisher identity JSON that signs this entry.
+    #[arg(long)]
+    identity: PathBuf,
+    /// Reverse-DNS id of the bot, such as `so.tilo.bots.discord-bridge`.
+    #[arg(long)]
+    package_id: String,
+    /// Version of this release.
+    #[arg(long)]
+    version: String,
+    /// Registry that serves the program and receives `--upload`.
+    #[arg(long, default_value = "https://apps.tilo.so")]
+    registry: String,
+    /// A connector the program's triggers use, as `<package id>@<min version>`.
+    #[arg(long = "connector")]
+    connectors: Vec<String>,
+    /// JSON presentation metadata, as for `entry`.
+    #[arg(long)]
+    metadata: Option<PathBuf>,
+    /// Wrap the entry in the signed mutation shape accepted by POST /entries.
+    #[arg(long)]
+    action: Option<RegistryAction>,
+    /// Current signed registry entry JSON; required for updates.
+    #[arg(long, requires = "action")]
+    previous_entry: Option<PathBuf>,
+    /// Upload the program to `--registry` before printing.
+    #[arg(long)]
+    upload: bool,
+    /// The program file: a Shortcut as JSON, in any formatting.
+    file: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -465,6 +501,7 @@ fn main() -> Result<()> {
         ),
         Command::Keygen { out } => cmd_keygen(&out),
         Command::Entry(args) => cmd_entry(&args),
+        Command::BotEntry(args) => cmd_bot_entry(&args),
         Command::Pending(args) => cmd_pending(&args),
     }
 }
@@ -1162,11 +1199,126 @@ fn reconcile_entry_history(
                 "reconciled unpublished {}@{} ({}) after four newer offered releases; exact runtime {} is no longer offered",
                 entry.package_id,
                 version.version,
-                version.target.architecture,
-                version.target.runtime.as_deref().unwrap_or_default()
+                version
+                    .target()
+                    .map_or("", |target| target.architecture.as_str()),
+                version
+                    .target()
+                    .and_then(|target| target.runtime.as_deref())
+                    .unwrap_or_default()
             );
         }
     }
+    Ok(())
+}
+
+fn load_previous_entry(path: &Path) -> Result<registry_types::RegistryEntry> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read previous entry {}", path.display()))?;
+    let entry: registry_types::RegistryEntry =
+        serde_json::from_slice(&bytes).context("decode previous registry entry")?;
+    if !registry_types::verify_entry_signature(&entry) {
+        bail!("previous registry entry has an invalid publisher signature");
+    }
+    Ok(entry)
+}
+
+fn load_entry_metadata(path: &Path) -> Result<registry_client::EntryMetadata> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read entry metadata {}", path.display()))?;
+    serde_json::from_slice(&bytes).context("decode entry metadata JSON")
+}
+
+fn print_entry(
+    entry: &registry_types::RegistryEntry,
+    action: Option<RegistryAction>,
+    signer: &SigningKey,
+) -> Result<()> {
+    let output = action.map_or_else(
+        || serde_json::to_value(entry),
+        |action| {
+            serde_json::to_value(registry_types::sign_change_request(
+                action.into(),
+                entry.clone(),
+                signer,
+            ))
+        },
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).context("encode entry")?
+    );
+    Ok(())
+}
+
+fn release_time() -> u64 {
+    std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_else(tilo_clock::unix_now)
+}
+
+/// Hand-written program files are accepted in any formatting; what gets
+/// hashed, uploaded and bound is always the canonical encoding.
+fn cmd_bot_entry(args: &BotEntryArgs) -> Result<()> {
+    let file = &args.file;
+    let raw = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
+    let shortcut: tilo_automation::Shortcut =
+        serde_json::from_slice(&raw).with_context(|| format!("decode {}", file.display()))?;
+    let canonical = tilo_automation::program::canonical_bytes(&shortcut)?;
+    let connectors = args
+        .connectors
+        .iter()
+        .map(|raw| {
+            let (package_id, min_version) = raw.split_once('@').ok_or_else(|| {
+                anyhow::anyhow!("--connector takes <package id>@<min version>, got {raw}")
+            })?;
+            Ok(registry_types::PackageRequirement {
+                package_id: package_id.to_owned(),
+                min_version: min_version.to_owned(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let signer = load_signing_key(&args.identity)?;
+    if matches!(args.action, Some(RegistryAction::Update)) && args.previous_entry.is_none() {
+        bail!("--previous-entry is required with --action update");
+    }
+    let previous = args
+        .previous_entry
+        .as_deref()
+        .map(load_previous_entry)
+        .transpose()?;
+    let metadata = args
+        .metadata
+        .as_deref()
+        .map(load_entry_metadata)
+        .transpose()?;
+    let release = registry_client::BotRelease {
+        program: &canonical,
+        package_id: &args.package_id,
+        version: &args.version,
+        registry_origin: &args.registry,
+        connectors: &connectors,
+    };
+    let entry = registry_client::build_bot_entry(
+        &release,
+        &signer,
+        previous.as_ref(),
+        metadata.as_ref(),
+        release_time(),
+    )?;
+    if args.upload {
+        registry_client::RegistryClient::new(&args.registry)?
+            .upload_program(&signer, &canonical)?;
+    }
+    print_entry(&entry, args.action, &signer)?;
+    let url = entry
+        .versions
+        .iter()
+        .find(|v| v.version == args.version)
+        .and_then(registry_types::RegistryVersion::bot)
+        .map_or("?", |bot| bot.program_url.as_str());
+    eprintln!("entry: {}@{} -> {url}", entry.package_id, args.version);
     Ok(())
 }
 
@@ -1188,26 +1340,8 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
     if matches!(action, Some(RegistryAction::Update)) && previous_entry.is_none() {
         bail!("--previous-entry is required with --action update");
     }
-    let previous = previous_entry
-        .map(|path| {
-            let bytes = std::fs::read(path)
-                .with_context(|| format!("read previous entry {}", path.display()))?;
-            let entry: registry_types::RegistryEntry =
-                serde_json::from_slice(&bytes).context("decode previous registry entry")?;
-            if !registry_types::verify_entry_signature(&entry) {
-                bail!("previous registry entry has an invalid publisher signature");
-            }
-            anyhow::Ok(entry)
-        })
-        .transpose()?;
-    let metadata = metadata
-        .map(|path| {
-            let bytes = std::fs::read(path)
-                .with_context(|| format!("read entry metadata {}", path.display()))?;
-            serde_json::from_slice::<registry_client::EntryMetadata>(&bytes)
-                .context("decode entry metadata JSON")
-        })
-        .transpose()?;
+    let previous = previous_entry.map(load_previous_entry).transpose()?;
+    let metadata = metadata.map(load_entry_metadata).transpose()?;
     let mut entry = if let Some(objects) = &args.objects {
         registry_client::build_entry_with_objects(
             registry_client::ThinPackage {
@@ -1235,20 +1369,7 @@ fn cmd_entry(args: &EntryArgs) -> Result<()> {
         )?
     };
     reconcile_entry_history(args, &mut entry, &signer)?;
-    let output = action.map_or_else(
-        || serde_json::to_value(&entry),
-        |action| {
-            serde_json::to_value(registry_types::sign_change_request(
-                action.into(),
-                entry.clone(),
-                &signer,
-            ))
-        },
-    )?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&output).context("encode entry")?
-    );
+    print_entry(&entry, action, &signer)?;
     // `build_entry` always builds exactly one version; `.first()`
     // avoids indexing so a future refactor there can't turn this into a panic.
     let version = entry.versions.first().map_or("?", |v| v.version.as_str());
