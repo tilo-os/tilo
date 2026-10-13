@@ -25,9 +25,6 @@ pub const JOIN_PROOF_DOMAIN: &[u8] = b"tilo/workspace-join-proof/v1\0";
 /// Pending join requests a room keeps at once.
 pub const MAX_JOIN_REQUESTS: usize = 64;
 
-/// Longest name a person gives when asking to join.
-pub const MAX_JOIN_NAME_CHARS: usize = 64;
-
 /// What the device signs to answer the join challenge whose canonical
 /// encoding the host sent as [`JoinReply::Challenge`]:
 /// `blake3(JOIN_PROOF_DOMAIN ‖ challenge)`.
@@ -428,8 +425,8 @@ pub enum JoinStep {
         /// Ed25519 signature by the joining device.
         #[serde(with = "serde_bytes")]
         signature: [u8; 64],
-        /// How the person names themself to the owner, at most
-        /// [`MAX_JOIN_NAME_CHARS`].
+        /// How the person names themself to the owner: a display name
+        /// ([`tilo_user_identity::display_name`]).
         name: String,
     },
     /// Where the request stands.
@@ -447,7 +444,8 @@ pub enum JoinStep {
         /// Ed25519 signature by the joining device.
         #[serde(with = "serde_bytes")]
         signature: [u8; 64],
-        /// How the person names themself, at most [`MAX_JOIN_NAME_CHARS`].
+        /// How the person names themself: a display name
+        /// ([`tilo_user_identity::display_name`]).
         name: String,
         /// The token.
         token: Vec<u8>,

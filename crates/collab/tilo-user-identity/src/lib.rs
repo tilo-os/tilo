@@ -149,12 +149,12 @@ pub use persist::{
     joined_device_is_ready, load_or_create_device_key, provision_joined_device,
 };
 pub use projection::{
-    GovernedAgentIdentityV2, GovernedDeviceIdentityV2, GovernedHumanIdentityV1,
+    DisplayNameError, GovernedAgentIdentityV2, GovernedDeviceIdentityV2, GovernedHumanIdentityV1,
     GovernedHumanIdentityV2, MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES,
     MAX_TRUSTED_IDENTITY_PROJECTION_BYTES, MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES,
     MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS, TRUSTED_IDENTITY_PROJECTION_V1_VERSION,
     TRUSTED_IDENTITY_PROJECTION_VERSION, TrustedIdentityProjectionError,
-    TrustedIdentityProjectionV1, TrustedIdentityProjectionV2,
+    TrustedIdentityProjectionV1, TrustedIdentityProjectionV2, display_name,
 };
 pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
