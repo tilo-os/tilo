@@ -195,6 +195,8 @@ pub(crate) mod test_doc {
         library
             .write_fields(doc, &ROOT)
             .expect("the library writes");
+        ui::tilo_resource::evolution::write_version(doc, PhotoLibrary::VERSION)
+            .expect("the library writes its storage version");
     }
 
     /// Add the photograph `image` to `doc`'s library; its id.

@@ -1220,3 +1220,30 @@ fn history_entries_render_as_the_apps_sentences() {
         "the entry names the agent and the person it acted for"
     );
 }
+
+#[test]
+fn upgrading_drops_origin_paths_and_photos_kept_only_by_path() {
+    use automerge::transaction::Transactable as _;
+    use automerge::{ObjType, ROOT, ReadDoc as _};
+    let mut doc = automerge::AutoCommit::new();
+    let photos = doc.put_object(ROOT, "photos", ObjType::Map).unwrap();
+    for (id, content) in [("kept", Some("a".repeat(64))), ("path-only", None)] {
+        let photo = doc.put_object(&photos, id, ObjType::Map).unwrap();
+        let image = doc.put_object(&photo, "image", ObjType::Map).unwrap();
+        doc.put(&image, "path", format!("/home/someone/{id}.jpg"))
+            .unwrap();
+        if let Some(content) = content {
+            doc.put(&image, "content", content).unwrap();
+        }
+    }
+
+    upgrade_library(&mut doc, 1).unwrap();
+
+    let ids: Vec<String> = doc.keys(&photos).collect();
+    assert_eq!(ids, ["kept"]);
+    let (_, photo) = doc.get(&photos, "kept").unwrap().unwrap();
+    let (_, image) = doc.get(&photo, "image").unwrap().unwrap();
+    assert!(doc.get(&image, "path").unwrap().is_none());
+    assert!(doc.get(&image, "content").unwrap().is_some());
+    assert!(upgrade_library(&mut doc, 2).is_err());
+}
