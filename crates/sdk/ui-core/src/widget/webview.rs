@@ -1649,7 +1649,7 @@ mod tests {
             ..KeyModifiers::default()
         });
         let (mut page, tree, node) = laid_out(engine.clone());
-        let device = unsafe { std::mem::zeroed() };
+        let device = winit::event::DeviceId::dummy();
         dispatch(
             &mut page,
             &tree,

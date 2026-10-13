@@ -15,6 +15,10 @@ pub struct Trace {
 }
 
 impl Trace {
+    pub(crate) fn when_enabled(value: Option<&str>) -> Option<Self> {
+        (value == Some("1")).then(Self::default)
+    }
+
     pub(crate) fn observes(event: &WindowEvent) -> bool {
         matches!(event,
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
@@ -37,6 +41,23 @@ impl Trace {
             WindowEvent::Ime(Ime::Commit(_)) => "ime_commit",
             _ => return None,
         };
+        let (key_category, text) = match event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                let category = match &event.logical_key {
+                    winit::keyboard::Key::Character(value)
+                        if value.chars().next().is_some_and(|c| !c.is_control()) =>
+                    {
+                        "printable"
+                    }
+                    winit::keyboard::Key::Named(_) => "named",
+                    _ => "other",
+                };
+                (category, event.text.as_deref())
+            }
+            WindowEvent::Ime(Ime::Commit(text)) => ("other", Some(text.as_str())),
+            _ => return None,
+        };
+        let scalar_count = text.map(|text| text.chars().take(4097).count());
         let stamp = tilo_presentation::key_stamp(event);
         self.next_id = self.next_id.checked_add(1)?;
         let id = self.next_id;
@@ -54,6 +75,10 @@ impl Trace {
             "clock": crate::native_scenario::host_clock::CLOCK_NAME,
             "dispatch_lo_s": time.map(|time| time.lo_s),
             "dispatch_hi_s": time.map(|time| time.hi_s),
+            "key_category": key_category,
+            "text_present": text.is_some(),
+            "text_scalar_count": scalar_count.map(|count| count.min(4096)),
+            "text_count_truncated": scalar_count.is_some_and(|count| count > 4096),
             "before": safe_snapshot(snapshot),
         }))
     }
@@ -113,6 +138,21 @@ fn safe_snapshot(snapshot: Option<Value>) -> Value {
             safe.insert(key.into(), value.clone());
         }
     }
+    for key in [
+        "active_line_present",
+        "active_line_focused",
+        "active_line_disabled",
+        "editor_read_only",
+        "editor_composing",
+        "editor_route_available",
+        "sidebar_renaming",
+        "sidebar_menu_open",
+        "editor_menu_open",
+    ] {
+        if let Some(value) = snapshot.get(key).and_then(Value::as_bool) {
+            safe.insert(key.into(), Value::Bool(value));
+        }
+    }
     if let Some(caret) = snapshot.get("caret") {
         let mut safe_caret = serde_json::Map::new();
         for key in ["block_id", "block_index", "byte_offset"] {
@@ -128,6 +168,58 @@ fn safe_snapshot(snapshot: Option<Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_observer_requires_the_explicit_opt_in() {
+        for value in [None, Some(""), Some("0"), Some("true"), Some("2")] {
+            assert!(Trace::when_enabled(value).is_none());
+        }
+        assert!(Trace::when_enabled(Some("1")).is_some());
+    }
+
+    #[test]
+    fn key_metadata_is_content_free_and_text_count_has_a_strict_bound() {
+        let key = winit::keyboard::Key::Character("private key text".into());
+        let mut event = crate::synthetic_input::char_key("private key text");
+        let mut trace = Trace::default();
+        let row = trace.begin(&event, None).unwrap();
+        assert_eq!(row["key_category"], "printable");
+        assert_eq!(row["text_present"], true);
+        assert_eq!(row["text_scalar_count"], 16);
+        assert!(!row.to_string().contains("private key text"));
+        let named = crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter);
+        assert_eq!(trace.begin(&named, None).unwrap()["key_category"], "named");
+        if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+            event.text = None;
+        }
+        let row = trace.begin(&event, None).unwrap();
+        assert_eq!(row["text_present"], false);
+        assert!(row["text_scalar_count"].is_null());
+        let row = trace
+            .begin(&WindowEvent::Ime(Ime::Commit("é".repeat(5000))), None)
+            .unwrap();
+        assert_eq!(row["text_scalar_count"], 4096);
+        assert_eq!(row["text_count_truncated"], true);
+        assert!(!row.to_string().contains('é'));
+        let released = crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            key,
+            None,
+            ElementState::Released,
+        ));
+        assert!(trace.begin(&released, None).is_none());
+    }
+
+    #[test]
+    fn route_snapshot_flags_are_boolean_only_and_cannot_export_private_values() {
+        let safe = safe_snapshot(Some(serde_json::json!({
+            "app":"so.tilo.notes", "active_line_focused":true,
+            "sidebar_renaming":"private rename value", "editor_composing":false,
+        })));
+        assert_eq!(safe["active_line_focused"], true);
+        assert_eq!(safe["editor_composing"], false);
+        assert!(safe.get("sidebar_renaming").is_none());
+        assert!(!safe.to_string().contains("private rename value"));
+    }
 
     #[test]
     fn redraw_witness_is_bounded_and_a_new_input_replaces_it() {

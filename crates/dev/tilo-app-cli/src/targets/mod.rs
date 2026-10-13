@@ -73,7 +73,7 @@ pub struct BuildOutcome {
     /// The binary, the `.app`, or the web bundle directory.
     pub artifact: PathBuf,
     /// What to open: the binary (also inside a `.app`) or the page path
-    /// (`index.html?app=…`) relative to the bundle.
+    /// (`app/#/me/<id>`) relative to the bundle.
     pub entry: String,
 }
 

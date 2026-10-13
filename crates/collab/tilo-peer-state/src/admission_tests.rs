@@ -375,6 +375,77 @@ pub(crate) fn seeded_editor() -> (StatePeer, SigningKey, SigningKey, DeviceCert,
     (native, a, b, bc, now)
 }
 
+/// Invite a second person into `peer` as an Editor with one device, as the
+/// governor `authority`: their device certificate and root.
+pub(crate) fn add_editor(
+    peer: &mut StatePeer,
+    authority: &SigningKey,
+    now: SystemTime,
+) -> (DeviceCert, [u8; 32]) {
+    use crate::join::{InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof};
+    let root = SigningKey::from_bytes(&[5; 32]);
+    let device = SigningKey::from_bytes(&[6; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "Editor".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    let now_ns = u64::try_from(
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap();
+    let owner = peer.authority().clone();
+    let signed = issue_invitation(
+        InviteGrant {
+            workspace_id: 7,
+            room: peer.room().into(),
+            authority: owner.clone(),
+            issuer: owner,
+            delegation: None,
+            role: MemberRole::Editor,
+            nonce: [53; 16],
+            recipient_user_public_key: Some(cert.user_public_key),
+            invitee_name: Some("Editor".into()),
+            expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
+            transport: vec![],
+        },
+        authority,
+    )
+    .unwrap();
+    let join = crate::join::decode_and_verify_invitation(
+        &signed,
+        Some(cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let challenge = JoinChallenge::new(
+        &join,
+        &cert,
+        [54; 32],
+        [55; 32],
+        now_ns.checked_add(1_000_000_000).unwrap(),
+        now_ns,
+    )
+    .unwrap();
+    let proof = sign_join_proof(challenge.clone(), &device).unwrap();
+    let redemption =
+        crate::join::verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns)
+            .unwrap();
+    assert!(
+        peer.admit_invited_member(&redemption, authority, now)
+            .unwrap()
+    );
+    (cert, root.verifying_key().to_bytes())
+}
+
 pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

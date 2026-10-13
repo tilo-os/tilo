@@ -1,8 +1,6 @@
 # Application performance coverage
 
-The [app suite inventory](../scripts/perf/app-suite.json) records 47 GUI applications with native Rust entrypoints under `apps/`, plus the excluded headless `tilo-agent` CLI. Every GUI app is **unqualified**. This is a source inventory, not evidence that every app builds or runs on macOS. Package and binary names come from each Cargo manifest, including `windows-app` / `windows` and the implicit `tilo-scratchpad` binary.
-
-Implementation follows the [application performance plan](superpowers/plans/2026-09-16-app-performance.md). Improve measured shared-framework bottlenecks first; move to app-specific optimization when controlled measurements show the remaining dominant work is app-specific or shared experiments no longer yield repeatable gains.
+Improve measured shared-framework bottlenecks first; move to app-specific optimization when controlled measurements show the remaining dominant work is app-specific or shared experiments no longer yield repeatable gains.
 
 ## Qualification contract
 
@@ -17,7 +15,7 @@ Implementation follows the [application performance plan](superpowers/plans/2026
 
 | Existing facility | Reuse and limitation |
 | --- | --- |
-| [`ui::launch`](../ui/src/launch.rs) | Common app lifecycle and `--headless-drive`. The inventory marks enabled paths unverified. `osk` and `scratchpad` explicitly disable generic headless driving. |
+| [`ui::launch`](../ui/src/launch.rs) | Common app lifecycle and `--headless-drive`. `osk` and `scratchpad` explicitly disable generic headless driving. |
 | [`ui::headless`](../ui/src/headless.rs) | Real widget event dispatch, named targets, bounded waits, semantic assertions, and component hosts. It does not establish native presentation cadence. |
 | [`ui::profiling`](../ui/src/profiling.rs) | `PerfScenario`, scroll/type/key/click/frame steps, warmup exclusion, and CPU frame capture. Reuse this instead of duplicating app benchmark loops. |
 | [`ui::ux_bench`](../ui/src/ux_bench.rs) | Structured input, wheel phases, checkpoints, and semantic/visual checks. Existing [`scripts/ux-bench`](../scripts/ux-bench) scenarios cover desktop journeys, not all app workloads. |
@@ -27,7 +25,7 @@ Implementation follows the [application performance plan](superpowers/plans/2026
 | [`frame-loop-bench.py`](../scripts/perf/frame-loop-bench.py) | Compositor frame-loop instrumentation; Linux compositor backends do not establish macOS app presentation. |
 | [`benchmark-host.py`](../scripts/browser/benchmark-host.py) | Browser-specific host measurements; preserve engine coverage separately from native widget chrome. |
 
-Calculator, Monitor, Music, and Tube already have app-specific benchmark flags, recorded verbatim in the inventory. Many apps register named screenshot scenarios. Those are starting points for fixture construction, not performance passes; the inventory deliberately does not invent scenario IDs or assume screenshot roots match live roots.
+Calculator, Monitor, Music, and Tube already have app-specific benchmark flags. Many apps register named screenshot scenarios. Those are starting points for fixture construction, not performance passes.
 
 ## Remaining coverage work
 
@@ -36,8 +34,6 @@ Calculator, Monitor, Music, and Tube already have app-specific benchmark flags, 
 3. Require observable input effects. `PerfStep::ClickNamed` now fails on a missing or empty target instead of discarding that failure; a regression test also verifies delivery to a real control. Per-app state/pixel assertions remain necessary. Headless `Frames(n)` runs without a real-time schedule, so it cannot stand in for timed animation.
 4. Correlate active inputs, frame identities, worker outcomes, and presentation evidence. Preserve skipped/acquire-failed frames and distinguish occlusion/background behavior from foreground qualification.
 5. Add explicit OSK and Scratchpad adapters. OSK requires an input-method client; generic simulated typing is not equivalent to that integration. Browser, media, camera, and terminal fixtures likewise need their actual engines/providers where applicable.
-
-The inventory's `existing_hooks` are source-backed facilities. `proposed_workloads` are work still to implement and validate, not executable fixture identifiers. Empty `qualification_evidence` arrays are intentional until the full contract has supporting run artifacts.
 
 ## Initial optimized diagnosis
 
@@ -627,12 +623,6 @@ all three verified-scroll example tests passed. Independent correlation review
 found no blocker; invalid CPU IDs and unmatched-worker checks were added after
 its parser-hardening suggestions.
 
-## Coverage validator
-
-Run `python3 scripts/perf/check-app-coverage.py` from the repository. This checks exact entrypoint coverage, duplicate/stale records, Cargo package and binary identifiers, exclusion reasons, qualification status, and evidence file references. It exits nonzero while any GUI app is unqualified or lacks evidence. The initial expected result is **47 unqualified apps**, not a passing gate.
-
-`qualification_evidence` entries are paths to existing files, relative to the repository root or absolute. The checker validates their existence only. It does not validate their contents, review exclusion decisions, or certify 60 fps; the actual performance gate remains pending. Focused CLI tests run with `python3 scripts/perf/check_app_coverage_test.py`.
-
 ### Shared render admission (2026-09-16)
 
 Primary frame construction now defers before consuming state when the fixed
@@ -643,8 +633,7 @@ Native scrolling input-dispatch p99 improved from 9.000/10.649 ms to
 4.165/4.168 ms over repeated 1200-input samples with verified movement and
 matching worker outcomes. CPU samples now exclude deferred GPU backpressure;
 these samples cannot establish displayed 60 fps. Worker completion-gap p99
-varied from 8.980 to 16.494 ms, and its repeat maximum was 20.601 ms. All 47 apps
-remain unqualified. See `docs/native-input-workloads.md` for hashes, failed
+varied from 8.980 to 16.494 ms, and its repeat maximum was 20.601 ms. See `docs/native-input-workloads.md` for hashes, failed
 experiments, idle validation, and inconclusive occlusion checks.
 
 ### Actual Metal presentation evidence

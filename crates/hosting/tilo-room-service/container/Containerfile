@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1.7
+# Assembled from the CI builder's outputs (context: bin/, assets/), so the
+# image build compiles nothing: the builder already has the Rust, wasm and
+# Node toolchains and the shared caches.
+# The CI builder is Fedora 44: the binaries need its glibc, and the relay's
+# app catalogue links GStreamer and GLib.
+# Pinned on registry.fedoraproject.org, which keeps superseded digests;
+# quay.io prunes them, so a digest pinned there stops resolving.
+FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d37e4ca8d5f0ee0dd36ace04294f23b72bf9bd3475 AS runtime
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.title="Tilo room service" \
+      org.opencontainers.image.description="Shared Tilo rooms and persistent public Tilo workspaces" \
+      org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}"
+RUN microdnf install -y --setopt=install_weak_deps=0 gstreamer1 gstreamer1-plugins-base glib2 \
+  && microdnf clean all
+# Every binary the builder produced: tilo-relay, tilo-room-service and, once
+# the Discord connector ships one, its outside worker. Beside them is the
+# product font catalog (bin/fonts): app workers lay out text and a container
+# has no system fonts.
+COPY bin/ /usr/local/bin/
+COPY assets/ /srv/tilo-room-assets/
+# Bot programs a room installs by path (TILO_ROOMS_BOTS).
+COPY bots/ /usr/local/share/tilo/bots/
+USER 10001
+ENV TILO_ROOMS_ASSETS=/srv/tilo-room-assets \
+    TILO_ROOMS_RELAY_BIN=/usr/local/bin/tilo-relay \
+    TILO_ROOMS_STATE=/run/tilo-rooms \
+    TILO_SECRETS_DIR=/run/tilo-rooms/secrets
+# A container has no Secret Service: the persistent room's roots and the
+# address hash key are sealed files on the state volume instead.
+# 8790: room API and pages (plain HTTP, behind the ingress).
+# 9780: the persistent room relay's plain HTTP listener, behind its own
+#       ingress host (the live plane uses the HTTPS stream fallback there).
+# 9443: TLS front of short-lived rooms, reached by SNI passthrough.
+EXPOSE 8790 9780 9443
+ENTRYPOINT ["/usr/local/bin/tilo-room-service"]

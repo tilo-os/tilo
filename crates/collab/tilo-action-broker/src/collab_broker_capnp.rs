@@ -4958,38 +4958,7 @@ impl CapnpBrokerState {
             .into_iter()
             .filter_map(|surface| {
                 let provider = (!surface.live).then(|| launchable::launchable_provider(&surface));
-                let actions = surface
-                    .actions
-                    .into_iter()
-                    .map(|action| {
-                        let input = match action.input {
-                            PublishedInput::None => serde_json::json!({"kind": "none"}),
-                            PublishedInput::Text {
-                                prompt,
-                                placeholder,
-                                wants_content,
-                            } => serde_json::json!({
-                                "kind": "text",
-                                "prompt": prompt,
-                                "placeholder": placeholder,
-                                "wants_content": wants_content,
-                            }),
-                        };
-                        serde_json::json!({
-                            "resource": action.resource,
-                            "action": action.action,
-                            "resource_kind": action.resource_kind,
-                            "resource_label": action.resource_label,
-                            "action_label": action.action_label,
-                            "description": action.description,
-                            "operation_kind": action.operation_kind,
-                            "params": action.params,
-                            "contract": action.contract,
-                            "input": input,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                (!actions.is_empty()).then(|| {
+                (!surface.actions.is_empty()).then(|| {
                     serde_json::json!({
                         "peer_id": surface.peer_id,
                         "provider": provider,
@@ -4997,7 +4966,7 @@ impl CapnpBrokerState {
                         "cluster_id": surface.route.cluster_id,
                         "record_id": surface.route.record_id,
                         "live": surface.live,
-                        "actions": actions,
+                        "actions": surface.actions,
                     })
                 })
             })
@@ -5012,17 +4981,21 @@ impl CapnpBrokerState {
                 "cluster_id": cluster_id,
                 "record_id": "",
                 "live": true,
-                "actions": [{
-                    "resource": format!("app.{package_id}"),
-                    "action": "open",
-                    "resource_kind": "applications.app",
-                    "resource_label": display_name,
-                    "action_label": format!("Open {display_name}"),
-                    "description": "Launch this application into the current workspace",
-                    "operation_kind": tilo_actions::OperationKind::Effect,
-                    "params": [],
-                    "contract": tilo_actions::ActionContract::default(),
-                    "input": {"kind": "none"},
+                "actions": [PublishedAction {
+                    resource: format!("app.{package_id}"),
+                    semantic_identity: None,
+                    action: "open".into(),
+                    resource_kind: "applications.app".into(),
+                    action_label: format!("Open {display_name}"),
+                    resource_label: display_name,
+                    description: Some(
+                        "Launch this application into the current workspace".into(),
+                    ),
+                    operation_kind: tilo_actions::OperationKind::Effect,
+                    params: Vec::new(),
+                    contract: tilo_actions::ActionContract::default(),
+                    view: None,
+                    input: PublishedInput::None,
                 }],
             }));
         }
@@ -8440,6 +8413,27 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
+    fn approved_check_reported_progress(
+        self: Rc<Self>,
+        params: channel_handle::ApprovedCheckReportedProgressParams,
+        mut results: channel_handle::ApprovedCheckReportedProgressResults,
+    ) -> Promise<(), capnp::Error> {
+        let request = params
+            .get()
+            .and_then(channel_handle::approved_check_reported_progress_params::Reader::get_request)
+            .map_err(|error| error.to_string())
+            .and_then(runtime_collab::approved_checks::Request::decode);
+        let stream = request
+            .and_then(|request| approved_checks::context(&self, request))
+            .and_then(approved_checks::reported_progress);
+        match stream {
+            Ok(stream) => {
+                results.get().set_stream(stream);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
     fn approved_check(
         self: Rc<Self>,
         params: channel_handle::ApprovedCheckParams,
@@ -14658,6 +14652,10 @@ pub mod tests {
     include!("resolved_invocation_tests.rs");
     #[cfg(test)]
     include!("approved_check_rpc_tests.rs");
+    #[cfg(test)]
+    include!("approved_check_progress_fixture.rs");
+    #[cfg(test)]
+    include!("approved_check_progress_rpc_tests.rs");
     #[cfg(test)]
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]

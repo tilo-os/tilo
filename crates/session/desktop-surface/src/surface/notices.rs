@@ -703,7 +703,10 @@ impl Widget for NotificationLayer {
         }
         let mut node = self.stack.accessibility(host)?;
         if let (Some(center), Some(layout)) = (self.center.as_ref(), self.layout()) {
-            node = node.with_children(vec![center.accessibility(host, &layout, ui::time::now())]);
+            // The dialog stays the first child: its synthetic rects are
+            // looked up by that path.
+            node.children
+                .insert(0, center.accessibility(host, &layout, ui::time::now()));
         }
         Some(node)
     }

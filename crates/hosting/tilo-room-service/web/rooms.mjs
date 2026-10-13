@@ -25,20 +25,16 @@ export async function createRoom(api, {signal} = {}) {
   return response.json();
 }
 
-/** A one-use guest link for `room`; with `record`, it opens that record full screen. */
+/** A one-use guest link for `room`, in the web link grammar
+ * (docs/architecture/web-routing.md): the Writer full tab, on `record` when
+ * given, with the guest ticket as the fragment's secret. */
 export async function createInvitation(room, {record, signal} = {}) {
-  const response = await fetch(room.invitations, {method: 'POST', signal});
+  const response = await fetch(room.invitations, {
+    method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify(record ? {record} : {}), signal,
+  });
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? `invitations: HTTP ${response.status}`);
-  const {joinUrl} = await response.json();
-  return record ? `${joinUrl}&record=${encodeURIComponent(record)}` : joinUrl;
-}
-
-/** What a join link names: `{origin, userPublicKey, room, ticket, admit, record}`. */
-export function parseJoinLink(hash = location.hash) {
-  const params = new URLSearchParams(hash.replace(/^#/, ''));
-  const value = name => params.get(name) ?? undefined;
-  return {origin: value('origin'), userPublicKey: value('user'), room: value('room'),
-    ticket: value('ticket'), admit: value('admit'), record: value('record')};
+  return (await response.json()).joinUrl;
 }
 
 /**

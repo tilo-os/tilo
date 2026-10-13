@@ -70,11 +70,19 @@ export async function mountChat(tab) {
       try { const page = await catalogue(query); catalogueDiagnostic.replies++; catalogueDiagnostic.rows=page.rows.length; catalogueDiagnostic.locator=Boolean(page.locator); return page; }
       catch (error) { catalogueDiagnostic.error = String(error?.message ?? error); throw error; }
     };
-    window.link = await peer.resourceLink(location.origin + '/resource.html', fixture.reference,
-      fixture.provider, 'reveal-message');
-    const {openResourceOperation} = await import('/resource-session.mjs');
-    window.operation = {controller:new AbortController()};
-    window.mount = await openResourceOperation({operation, link, target:document.querySelector('#surface'), connect:async()=>peer});
+    // What a followed link does on the full-tab entry page: mount the app on
+    // the shared record, then show the resource through its declared view.
+    // The link's record segment is the publishing record (the provider is
+    // record:<app>:<record>, empty for the package's primary record).
+    const {kind, id, span} = fixture.reference;
+    const prefix = 'record:so.tilo.chat:';
+    if (!fixture.provider.startsWith(prefix)) throw Error('fixture provider is not a Chat record');
+    const record = fixture.provider.slice(prefix.length);
+    const target = {app:'so.tilo.chat', record, resource:{kind, id, ...(span ? {span} : {})}};
+    await peer.whenRecord(target.app, record);
+    window.mount = await peer.mountDesktop(document.querySelector('#surface'), {app:target.app, record:record || '@tilo:package-primary'});
+    const {openTarget} = await import('/open-target.mjs');
+    await openTarget({mount, target, mode:'app'});
     await currentBrowserAccount(selected, readAccounts);
     mount.requestSemantics();
     return {actions:mount.actions(fixture.reference.id)};

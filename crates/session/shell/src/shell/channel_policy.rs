@@ -361,7 +361,7 @@ mod tests {
             GovernedPeerIdentity {
                 device_cert: cert,
                 revocations,
-                agent: None,
+                delegate: None,
             },
         );
     }

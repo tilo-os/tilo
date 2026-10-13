@@ -8,9 +8,12 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 mod execution;
+mod reports;
 pub use execution::{
-    CgroupObservation, CheckOutcome, CheckReceipt, developer_probe, run_guest, run_init,
+    CgroupObservation, CheckOutcome, CheckReceipt, developer_probe, developer_probe_with_reports,
+    run_guest, run_init,
 };
+pub use reports::{CheckReport, CheckReportRefusal, ReportedCheckEvent, ReportedCheckPhase};
 
 /// Full project-host identity supplied by the admitted resource host.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -76,6 +79,9 @@ pub struct ApprovedCheck {
     /// Fixed host-reviewed environment overlays. No target-directory override.
     pub environment: Vec<(String, String)>,
     pub limits: CheckLimits,
+    /// Optional host-reviewed phase vocabulary; empty disables stderr reports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reported_phases: Vec<ReportedCheckPhase>,
 }
 
 fn identifier(value: &str) -> bool {
@@ -111,6 +117,7 @@ fn owned_private_directory(path: &Path) -> Result<(), String> {
 impl ApprovedCheck {
     fn validate(&self) -> Result<(), String> {
         self.limits.validate()?;
+        reports::validate_phases(&self.reported_phases)?;
         if !identifier(&self.id)
             || self.binding.workspace.is_nil()
             || self.binding.host == [0; 32]
@@ -268,6 +275,22 @@ impl ApprovedChecks {
         id: &str,
         authority: impl Fn() -> Result<(), String>,
     ) -> Result<CheckReceipt, String> {
+        self.run_with_reports(binding, id, authority, |_| {})
+    }
+
+    /// Run the same owned check with bounded informational command reports.
+    /// Reports cannot determine execution success, cleanup or evidence validity.
+    /// The callback runs on the existing host worker after a fresh custody check.
+    ///
+    /// # Errors
+    /// Returns the same binding, authority and supervision failures as [`Self::run`].
+    pub fn run_with_reports(
+        &self,
+        binding: &ProjectBinding,
+        id: &str,
+        authority: impl Fn() -> Result<(), String>,
+        report: impl Fn(ReportedCheckEvent),
+    ) -> Result<CheckReceipt, String> {
         if binding != &self.binding {
             return Err("approved check project host changed".into());
         }
@@ -278,7 +301,7 @@ impl ApprovedChecks {
         authority()?;
         check.validate()?;
         authority()?;
-        execution::run(check, authority)
+        execution::run(check, authority, report)
     }
 }
 
@@ -310,6 +333,7 @@ mod tests {
             }],
             command: vec!["/usr/bin/true".into()],
             environment: vec![],
+            reported_phases: vec![],
             limits: CheckLimits {
                 cpu_percent: 100,
                 memory_bytes: 64 * 1024 * 1024,

@@ -23,6 +23,9 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import line_number  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 WRAPPER_CRATE = Path("crates/doc/tilo-automerge")
@@ -89,10 +92,6 @@ def audit_clippy_configs(root: Path, configs: list[Path]) -> list[Violation]:
                 Violation(str(relative), 0, f"disallowed-methods does not ban {path}")
             )
     return violations
-
-
-def line_number(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1
 
 
 def audit_sources(root: Path, sources: list[Path]) -> list[Violation]:

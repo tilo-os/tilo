@@ -11,8 +11,8 @@ use iroh_base::EndpointAddr;
 use tilo_relay_protocol::auth::{self, Hello, HelloAck};
 use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, CERTIFY_ALPN, CertifyOpen, CertifyReply,
-    ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, PendingAgent, PendingCertification,
-    PendingConfirmation,
+    ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, PendingCertification, PendingConfirmation,
+    PendingDelegate,
 };
 use tilo_user_identity::{
     CertificationPolicy, CertificationRequest, DeviceCert, RevocationList, verify_device_cert_at,
@@ -220,20 +220,20 @@ impl Approver {
             ApproverReply::Pending(pending) => Ok(pending),
             ApproverReply::Refused { reason } => Err(codec(&reason)),
             ApproverReply::Decided
-            | ApproverReply::AgentProposals(_)
+            | ApproverReply::DelegateProposals(_)
             | ApproverReply::Confirmations(_) => Err(codec(&"unexpected approver reply")),
         }
     }
 
     /// What every pending agent request proposes: shown beside the request
-    /// and approved with [`ApproverDecision::IssueAgent`].
+    /// and approved with [`ApproverDecision::IssueDelegate`].
     ///
     /// # Errors
     ///
     /// Returns [`CertifyError`] when the session fails.
-    pub async fn list_agent_proposals(&mut self) -> Result<Vec<PendingAgent>, CertifyError> {
-        match self.call(&ApproverRequest::AgentProposals).await? {
-            ApproverReply::AgentProposals(pending) => Ok(pending),
+    pub async fn list_agent_proposals(&mut self) -> Result<Vec<PendingDelegate>, CertifyError> {
+        match self.call(&ApproverRequest::DelegateProposals).await? {
+            ApproverReply::DelegateProposals(pending) => Ok(pending),
             ApproverReply::Refused { reason } => Err(codec(&reason)),
             ApproverReply::Decided
             | ApproverReply::Pending(_)
@@ -253,7 +253,7 @@ impl Approver {
             ApproverReply::Refused { reason } => Err(codec(&reason)),
             ApproverReply::Decided
             | ApproverReply::Pending(_)
-            | ApproverReply::AgentProposals(_) => Err(codec(&"unexpected approver reply")),
+            | ApproverReply::DelegateProposals(_) => Err(codec(&"unexpected approver reply")),
         }
     }
 

@@ -26,12 +26,15 @@ use tilo_actions::{
     OperationKind,
 };
 use tilo_relay_protocol::agents::{
-    AGENT_KIND, AgentDelegation, AgentGrant, AgentInfo, AgentMessage, AgentProposal, AgentScope,
-    AgentStatus, AgentStep, AgentTask, AgentsStatus, CANCEL_TASK_ACTION, GrantRequest, GrantState,
-    MAX_AGENT_TEXT_BYTES, MAX_DELEGATED_APPS, MAX_DELEGATED_ROOMS, MESSAGE_ACTION, MessageRole,
+    AGENT_KIND, AgentGrant, AgentInfo, AgentMessage, AgentStatus, AgentStep, AgentTask,
+    AgentsStatus, CANCEL_TASK_ACTION, GrantRequest, GrantState, MESSAGE_ACTION, MessageRole,
     PAUSE_ACTION, REQUEST_GRANT_ACTION, RESUME_ACTION, REVOKE_ACTION, SPAWN_ACTION, STATUS_ACTION,
     STOP_ACTION, SUPERVISOR_KIND, SUPERVISOR_RESOURCE, TaskState, agent_resource, color_hex,
     parse_color_hex,
+};
+use tilo_relay_protocol::delegation::{
+    Delegate, DelegateProposal, DelegateScope, Delegation, MAX_DELEGATE_TEXT_BYTES,
+    MAX_DELEGATED_APPS, MAX_DELEGATED_ROOMS,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -62,7 +65,15 @@ pub struct AgentIdentity {
     /// Its root-signed certificate.
     pub cert: DeviceCert,
     /// Its root-signed delegation.
-    pub delegation: AgentDelegation,
+    pub delegation: Delegation,
+}
+
+/// The agent id `delegation` names. The supervisor only ever holds agent
+/// delegations: a grant's proposal names an agent, the approver's answer is
+/// held to the proposal, and restoring refuses any other kind.
+#[must_use]
+pub fn agent_id(delegation: &Delegation) -> &str {
+    delegation.delegate.agent_id().unwrap_or_default()
 }
 
 /// Why a control request was refused.
@@ -163,7 +174,7 @@ impl SnapshotChanges {
 /// One agent's steering state, shared by its participant and the
 /// supervisor.
 pub struct AgentControl {
-    delegation: AgentDelegation,
+    delegation: Delegation,
     state: Mutex<ControlState>,
     changed: Changed,
     /// Who confirms an action the agent's grants leave to the person: the
@@ -184,7 +195,7 @@ pub type Witness = Arc<dyn tilo_actions::remote::ActionHost + Send + Sync>;
 impl AgentControl {
     /// A starting agent under `delegation`.
     #[must_use]
-    pub fn new(delegation: AgentDelegation) -> Arc<Self> {
+    pub fn new(delegation: Delegation) -> Arc<Self> {
         Arc::new(Self {
             delegation,
             state: Mutex::new(ControlState {
@@ -206,7 +217,7 @@ impl AgentControl {
     /// host went down failed, a paused agent stays paused, and a stopped or
     /// failed one stays so. Anything else starts again.
     #[must_use]
-    pub fn restore(delegation: AgentDelegation, info: &AgentInfo) -> Arc<Self> {
+    pub fn restore(delegation: Delegation, info: &AgentInfo) -> Arc<Self> {
         let mut tasks = info.tasks.clone();
         for task in &mut tasks {
             if task.state == TaskState::Running {
@@ -350,7 +361,7 @@ impl AgentControl {
 
     /// The agent's delegation.
     #[must_use]
-    pub const fn delegation(&self) -> &AgentDelegation {
+    pub const fn delegation(&self) -> &Delegation {
         &self.delegation
     }
 
@@ -619,10 +630,10 @@ impl AgentControl {
     pub fn info(&self) -> AgentInfo {
         let state = self.state();
         AgentInfo {
-            id: self.delegation.agent_id.clone(),
+            id: agent_id(&self.delegation).to_owned(),
             label: self.delegation.label.clone(),
             color: color_hex(self.delegation.color),
-            device: hex::encode(self.delegation.agent_device_public_key),
+            device: hex::encode(self.delegation.device_public_key),
             status: state.status,
             activity: state.activity.clone(),
             room: state.room.clone(),
@@ -674,16 +685,17 @@ fn restore_identity(
     delegation: Option<String>,
 ) -> Option<AgentIdentity> {
     let seed = <[u8; 32]>::try_from(hex::decode(key?).ok()?).ok()?;
-    let delegation = AgentDelegation::decode(&hex::decode(delegation?).ok()?).ok()?;
+    let delegation = Delegation::decode(&hex::decode(delegation?).ok()?).ok()?;
     let key = SigningKey::from_bytes(&seed);
     let cert = cert?;
     (cert.device_public_key == key.verifying_key().to_bytes()
-        && delegation.agent_device_public_key == cert.device_public_key)
-        .then_some(AgentIdentity {
-            key,
-            cert,
-            delegation,
-        })
+        && delegation.device_public_key == cert.device_public_key
+        && delegation.delegate.agent_id().is_some())
+    .then_some(AgentIdentity {
+        key,
+        cert,
+        delegation,
+    })
 }
 
 fn push_bounded<T>(list: &mut Vec<T>, item: T, max: usize) {
@@ -712,7 +724,7 @@ pub trait AgentHostLink: Send + Sync {
     fn request_approval(
         &self,
         key: &SigningKey,
-        proposal: &AgentProposal,
+        proposal: &DelegateProposal,
         done: ApprovalDone,
     ) -> Result<String, String>;
 
@@ -721,28 +733,28 @@ pub trait AgentHostLink: Send + Sync {
     /// # Errors
     ///
     /// Returns why the host refused the delegation.
-    fn register(&self, cert: &DeviceCert, delegation: &AgentDelegation) -> Result<(), String>;
+    fn register(&self, cert: &DeviceCert, delegation: &Delegation) -> Result<(), String>;
 
     /// Refuse the agent device from now on.
-    fn withdraw(&self, agent_device_public_key: [u8; 32]);
+    fn withdraw(&self, device_public_key: [u8; 32]);
 
     /// The host of the person `delegation` names, which puts an action the
     /// agent's grants leave to them to them on their own device. `None`: no
     /// such host here, and the agent's actions that ask first are refused.
-    fn witness(&self, delegation: &AgentDelegation) -> Option<Witness> {
+    fn witness(&self, delegation: &Delegation) -> Option<Witness> {
         let _ = delegation;
         None
     }
 }
 
 /// Receives the outcome of [`AgentHostLink::request_approval`].
-pub type ApprovalDone = Box<dyn FnOnce(Result<(DeviceCert, AgentDelegation), String>) + Send>;
+pub type ApprovalDone = Box<dyn FnOnce(Result<(DeviceCert, Delegation), String>) + Send>;
 
 /// One grant: what was asked, where it stands, and once approved the
 /// agent identity it runs under.
 #[derive(Clone)]
 struct Grant {
-    proposal: AgentProposal,
+    proposal: DelegateProposal,
     state: GrantState,
     /// The agent's key while the approver has not answered.
     key: Option<SigningKey>,
@@ -755,8 +767,8 @@ impl Grant {
     fn approved(identity: AgentIdentity) -> Self {
         let delegation = &identity.delegation;
         Self {
-            proposal: AgentProposal {
-                agent_id: delegation.agent_id.clone(),
+            proposal: DelegateProposal {
+                delegate: delegation.delegate.clone(),
                 label: delegation.label.clone(),
                 color: delegation.color,
                 scope: delegation.scope.clone(),
@@ -771,7 +783,7 @@ impl Grant {
     }
 
     fn id(&self) -> &str {
-        &self.proposal.agent_id
+        self.proposal.delegate.agent_id().unwrap_or_default()
     }
 
     /// Settle the grant: drop its key material and say why.
@@ -790,7 +802,7 @@ impl Grant {
 #[serde(rename_all = "camelCase")]
 pub struct GrantRecord {
     /// What was asked.
-    pub proposal: AgentProposal,
+    pub proposal: DelegateProposal,
     /// Where it stands.
     pub state: GrantState,
     /// The agent device's key seed (hex), while approved.
@@ -799,7 +811,7 @@ pub struct GrantRecord {
     /// Its certificate, while approved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cert: Option<DeviceCert>,
-    /// Its delegation ([`AgentDelegation::encode`], hex), while approved.
+    /// Its delegation ([`Delegation::encode`], hex), while approved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation: Option<String>,
     /// Why it was settled.
@@ -898,7 +910,7 @@ impl AgentSupervisor {
         let mut state = self.state();
         state
             .grants
-            .retain(|grant| grant.id() != identity.delegation.agent_id);
+            .retain(|grant| grant.id() != agent_id(&identity.delegation));
         state.grants.push(Grant::approved(identity));
         drop(state);
         self.changes.raise();
@@ -917,9 +929,9 @@ impl AgentSupervisor {
     ) -> Result<(String, String), String> {
         let link = self.link().ok_or("this host cannot ask for agent grants")?;
         let label = request.label.trim();
-        if label.is_empty() || label.len() > MAX_AGENT_TEXT_BYTES {
+        if label.is_empty() || label.len() > MAX_DELEGATE_TEXT_BYTES {
             return Err(format!(
-                "a grant's label is 1 to {MAX_AGENT_TEXT_BYTES} bytes"
+                "a grant's label is 1 to {MAX_DELEGATE_TEXT_BYTES} bytes"
             ));
         }
         if request.rooms.is_empty() || request.rooms.len() > MAX_DELEGATED_ROOMS {
@@ -944,18 +956,20 @@ impl AgentSupervisor {
                 .copied()
                 .unwrap_or([0x7c, 0x3a, 0xed]),
         };
-        let proposal = AgentProposal {
-            agent_id: grant_id(label, &seed),
+        let proposal = DelegateProposal {
+            delegate: Delegate::Agent {
+                agent_id: grant_id(label, &seed),
+            },
             label: label.to_owned(),
             color,
-            scope: AgentScope {
+            scope: DelegateScope {
                 rooms: request.rooms.clone(),
                 apps: request.apps.clone(),
             },
             expires_at_ns: now_ns
                 .saturating_add(request.expires_in_secs.saturating_mul(1_000_000_000)),
         };
-        let id = proposal.agent_id.clone();
+        let id = proposal.delegate.agent_id().unwrap_or_default().to_owned();
         let me = self.me.clone();
         let answered = id.clone();
         let pairing_code = link.request_approval(
@@ -982,7 +996,7 @@ impl AgentSupervisor {
         Ok((id, pairing_code))
     }
 
-    fn approval_answered(&self, id: &str, outcome: Result<(DeviceCert, AgentDelegation), String>) {
+    fn approval_answered(&self, id: &str, outcome: Result<(DeviceCert, Delegation), String>) {
         let link = self.link();
         let mut state = self.state();
         Self::answer_grant(&mut state, link.as_deref(), id, outcome);
@@ -994,7 +1008,7 @@ impl AgentSupervisor {
         state: &mut SupervisorState,
         link: Option<&dyn AgentHostLink>,
         id: &str,
-        outcome: Result<(DeviceCert, AgentDelegation), String>,
+        outcome: Result<(DeviceCert, Delegation), String>,
     ) {
         let Some(grant) = state
             .grants
@@ -1048,7 +1062,7 @@ impl AgentSupervisor {
         let device = grant
             .identity
             .as_ref()
-            .map(|identity| identity.delegation.agent_device_public_key);
+            .map(|identity| identity.delegation.device_public_key);
         grant.settle(to, reason);
         let agent = state.agents.get(id).cloned();
         drop(state);
@@ -1239,7 +1253,7 @@ impl AgentSupervisor {
                     match restore_identity(record.key, record.cert, record.delegation) {
                         Some(identity) if identity.delegation.expires_at_ns <= now_ns => {
                             if let Some(link) = &link {
-                                link.withdraw(identity.delegation.agent_device_public_key);
+                                link.withdraw(identity.delegation.device_public_key);
                             }
                             grant.settle(GrantState::Expired, "the grant expired");
                         }
@@ -1269,7 +1283,7 @@ impl AgentSupervisor {
                 .and_then(|grant| grant.identity.clone());
             let delegation = match (&identity, hex::decode(&info.delegation)) {
                 (Some(identity), _) => identity.delegation.clone(),
-                (None, Ok(bytes)) => match AgentDelegation::decode(&bytes) {
+                (None, Ok(bytes)) => match Delegation::decode(&bytes) {
                     Ok(delegation) => delegation,
                     Err(_) => continue,
                 },
@@ -1454,7 +1468,7 @@ impl AgentSupervisor {
             ));
         }
         for agent in self.state().agents.values() {
-            let resource = agent_resource(&agent.delegation.agent_id);
+            let resource = agent_resource(agent_id(&agent.delegation));
             let label = agent.delegation.label.clone();
             let effect = |action: &str, action_label: &str, input: InputSpec| {
                 row(
@@ -1618,13 +1632,15 @@ pub(crate) mod tests {
     pub(crate) fn identity_until(root: &SigningKey, expires_at_ns: u64) -> AgentIdentity {
         let key = SigningKey::from_bytes(&[9; 32]);
         let device = key.verifying_key().to_bytes();
-        let delegation = AgentDelegation::sign(
+        let delegation = Delegation::sign(
             root,
             device,
-            "writer",
+            tilo_relay_protocol::delegation::Delegate::Agent {
+                agent_id: "writer".into(),
+            },
             "Writer helper",
             [0x7c, 0x3a, 0xed],
-            AgentScope {
+            DelegateScope {
                 rooms: vec![ROOM.into()],
                 apps: Vec::new(),
             },
