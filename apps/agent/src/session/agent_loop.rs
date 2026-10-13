@@ -2895,12 +2895,8 @@ mod tests {
                 cluster: Uuid::from_u128(1),
                 record: None,
                 name: "agent-1".into(),
-                pace: Duration::ZERO,
-                once: false,
                 model: true,
                 model_timeout: Duration::from_secs(5),
-                await_document: Duration::ZERO,
-                settle: Duration::ZERO,
                 permissions: ui::permissions::PermissionContext::agent_granted_at(
                     "agent-1",
                     &[],
@@ -3537,12 +3533,15 @@ mod tests {
                 ],
                 24,
             )],
-            Some(Duration::from_secs(1)),
+            // The provider's first event comes long after Stop is seen at the
+            // third cancellation poll (about 600 ms), so a loaded machine's
+            // slower polls still finish well before it.
+            Some(Duration::from_secs(4)),
         );
         let started = ui::time::now();
         f.session.run_task(&f.run).unwrap();
         assert!(
-            started.elapsed() < Duration::from_millis(700),
+            started.elapsed() < Duration::from_secs(2),
             "Stop must not wait for the provider's first event"
         );
         assert_eq!(f.script.bodies.lock().unwrap().len(), 1);

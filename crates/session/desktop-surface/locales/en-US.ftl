@@ -899,11 +899,6 @@ launchpad-activity-detail = See what changed and why
 launchpad-keyboard-hint = Arrow keys move  ·  Enter opens  ·  Super+N shows every app
 
 # Peers arriving in and leaving a workspace, batched into one toast
-peer-toast-joined-one = { $name } joined
-peer-toast-left-one = { $name } left
-peer-toast-joined-many = { $count } peers joined
-peer-toast-left-many = { $count } peers left
-peer-toast-overflow = { $first }, { $second }, { $third }, +{ $rest } more
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-here-now = { $count } here now

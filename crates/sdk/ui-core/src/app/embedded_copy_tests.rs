@@ -228,10 +228,7 @@ fn scroll(theme: &Theme, host: Host, scale: f64, runs: &[(f64, usize)]) -> Vec<R
         scene.append(section, Some(to_device));
         scene
     };
-    let pointer = WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(300.0, 200.0),
-    };
+    let pointer = crate::synthetic_input::cursor_moved(300.0, 200.0);
     tile.app.surface_input(&tile.region, pointer, false);
     let mut shown = section(&mut tile, theme, host, &mut text);
     for _ in 0..6 {
@@ -398,10 +395,7 @@ fn a_host_that_does_not_accept_copies_gets_damage_only() {
         )),
         phase: winit::event::TouchPhase::Moved,
     };
-    let pointer = WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(300.0, 200.0),
-    };
+    let pointer = crate::synthetic_input::cursor_moved(300.0, 200.0);
     tile.app.surface_input(&tile.region, pointer, false);
     tile.app.surface_input(&tile.region, wheel, false);
     tile.wants_frame.set(true);

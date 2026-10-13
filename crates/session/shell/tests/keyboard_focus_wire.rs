@@ -52,11 +52,7 @@ fn captured_key_event(logical: Key, pressed: bool) -> WindowEvent {
             ElementState::Released
         },
     );
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {

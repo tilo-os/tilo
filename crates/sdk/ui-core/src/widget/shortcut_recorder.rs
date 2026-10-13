@@ -328,10 +328,7 @@ impl Widget for ShortcutRecorder {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.pointer = Some(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                self.pointer = Some(ctx.logical(position));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,

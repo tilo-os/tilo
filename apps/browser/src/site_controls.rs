@@ -692,20 +692,9 @@ mod tests {
             let mut doc = automerge::AutoCommit::new();
             let mut focus = None;
             for event in [
-                winit::event::WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(done.center().x, done.center().y),
-                },
-                winit::event::WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: winit::event::ElementState::Pressed,
-                    button: winit::event::MouseButton::Left,
-                },
-                winit::event::WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: winit::event::ElementState::Released,
-                    button: winit::event::MouseButton::Left,
-                },
+                ui::synthetic_input::cursor_moved(done.center().x, done.center().y),
+                ui::synthetic_input::mouse_press(),
+                ui::synthetic_input::mouse_release(),
             ] {
                 focus = ui::testing::Dispatch::new()
                     .doc(&mut doc)

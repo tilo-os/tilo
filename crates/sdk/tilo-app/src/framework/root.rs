@@ -2220,10 +2220,6 @@ impl RootApp for ResourceRoot {
         self.icon.clone()
     }
 
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
-
     fn device_shell_operation(
         &mut self,
         operation: &ui_core::floating_surface::DeviceShellOperation,
@@ -2628,10 +2624,6 @@ impl AppWidget for Unopened {
 
     fn app_icon(&self) -> IconDescriptor {
         self.icon.clone()
-    }
-
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
     }
 }
 

@@ -274,8 +274,10 @@ pub trait AppWidget: Widget {
     fn app_kind(&self) -> AppKind;
     fn app_title(&self) -> &str;
     fn app_icon(&self) -> IconDescriptor;
-    /// Which role permission governs this app. `None` means "ungated".
-    fn permission_hint(&self) -> Option<AppKind>;
+    /// Which role permission governs this app. Default `None`: ungated.
+    fn permission_hint(&self) -> Option<AppKind> {
+        None
+    }
     /// Command-palette contributions. Default is none.
     fn commands(&self) -> Vec<AppCommand> {
         vec![]

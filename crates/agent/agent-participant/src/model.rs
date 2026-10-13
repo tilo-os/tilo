@@ -70,7 +70,7 @@ impl PlanModel for GatewayModel {
         most_steps: usize,
     ) -> Result<Answer, String> {
         self.0
-            .choose_actions(task, &[], catalogue, most_steps)
+            .choose_actions(task, catalogue, most_steps)
             .map_err(|route| format!("no model plan: {}", route.detail()))
     }
 }
@@ -733,7 +733,7 @@ impl PlanModel for OpenAiModel {
         // a task they answer is planned on the first turn. One string: an
         // OpenAI-compatible provider caches the repeated operations prefix
         // by itself.
-        let task = tilo_agent::model::action_user_turn(task, &[], catalogue, &mut revealed).text();
+        let task = tilo_agent::model::action_user_turn(task, catalogue, &mut revealed).text();
         let mut messages = vec![
             serde_json::json!({
                 "role": "system",

@@ -51,8 +51,6 @@ use crate::map_info_sheet::{MapInfo, MapInfoSheet};
 use crate::model::{LatLon, MapModel, Panel, Place, TransitMode, TransitTimeMode, TravelMode};
 use crate::net::{self, NetMsg};
 use crate::offline_panel::{OFFLINE_AREAS_REFUSED, OfflineAction, OfflineFrame, OfflinePanel};
-#[cfg(test)]
-use crate::place_search::LocalPlaces;
 use crate::place_search::PlaceSearch;
 use crate::sample::{self, Basemap};
 use crate::tiles::{GeoBounds, TileFault, TileId, TileLayer, TileStyle};
@@ -201,8 +199,8 @@ pub struct MapsApp {
     /// Floating zoom/location/traffic stack. Owns geometry, drawing,
     /// hit-testing, traffic UI state, and shared tooltip timing.
     map_controls: MapControls,
-    /// The platform search's view of the map: the provider it asks, and the
-    /// geocoder queries it is waiting on.
+    /// The geocoder lookups behind the platform search: the query to send,
+    /// the ones on their way, and the places that came back.
     place_search: PlaceSearch,
     /// Opens the platform search from the painted search buttons.
     search_opener: ui::search::SearchOpener,
@@ -529,8 +527,6 @@ impl MapsApp {
         };
         let cache_bytes = tiles.cache_bytes();
         let nav_card_size = navigation_card_size(&Theme::dark());
-        let place_search = PlaceSearch::default();
-        place_search.set_reachable(online);
         Self {
             model,
             basemap,
@@ -541,7 +537,7 @@ impl MapsApp {
             last_mouse: Point::ZERO,
             segmented_touch: SegmentedTouch::default(),
             map_controls: MapControls::default(),
-            place_search,
+            place_search: PlaceSearch::default(),
             search_opener: ui::search::SearchOpener::new(),
             history: ui::widget::HistoryOpener::new(),
             results_anchor: None,
@@ -1196,22 +1192,8 @@ impl MapsApp {
         matches!(self.model.panel, Panel::Directions) && self.endpoints.overlay_active()
     }
 
-    /// Send the newest query the platform search is waiting on to the
-    /// geocoder, once. The reply answers the palette's pending page.
-    #[cfg(test)]
-    fn local_places(&self) -> LocalPlaces {
-        LocalPlaces {
-            places: self.model.places.clone(),
-            pois: self
-                .pois
-                .iter()
-                .map(|poi| Place::new(&poi.id, &poi.name, poi.category, &poi.address, poi.pos))
-                .collect(),
-            recents: self.model.recents.clone(),
-            anchor: self.search_anchor(),
-        }
-    }
-
+    /// Send the query the platform search is waiting on to the geocoder,
+    /// once. The reply lists its places among the window's search entries.
     fn pump_place_search(&mut self) {
         let Some(query) = self.place_search.take_query() else {
             return;
@@ -1236,6 +1218,7 @@ impl MapsApp {
             let place = self
                 .place_search
                 .geocoded(id)
+                .cloned()
                 .ok_or("Map place is no longer available")?;
             let query = place.name.clone();
             self.accept_places(vec![place]);
@@ -4781,7 +4764,7 @@ impl Widget for MapsApp {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_mouse = p;
                 if self.navigation_placement.is_dragging() {
                     let source_region = self.navigation_rect().inflate(8.0, 8.0);

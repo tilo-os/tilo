@@ -1120,8 +1120,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 if self.options.is_some() {
                     let count = self.options.as_ref().map_or(0, |o| o.items.len());
                     let hit = (0..count).find(|&i| {
