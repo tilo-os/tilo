@@ -146,8 +146,21 @@ impl RegistryClient {
     ///
     /// When the registry refuses the upload.
     pub fn upload(&self, key: &SigningKey, tapp_bytes: &[u8]) -> Result<String> {
-        let digest = blake3::hash(tapp_bytes).to_hex().to_string();
-        let url = format!("{}/uploads/{digest}.tapp", self.base);
+        self.put_upload(key, tapp_bytes, "tapp")
+    }
+
+    /// Upload a bot program for review. Answers the URL it will be served at.
+    ///
+    /// # Errors
+    ///
+    /// When the registry refuses the upload, such as for a non-canonical program.
+    pub fn upload_program(&self, key: &SigningKey, program: &[u8]) -> Result<String> {
+        self.put_upload(key, program, "program")
+    }
+
+    fn put_upload(&self, key: &SigningKey, bytes: &[u8], extension: &str) -> Result<String> {
+        let digest = blake3::hash(bytes).to_hex().to_string();
+        let url = format!("{}/uploads/{digest}.{extension}", self.base);
         let response = self
             .http
             .put(&url)
@@ -159,7 +172,7 @@ impl RegistryClient {
                 registry_types::upload::UPLOAD_SIGNATURE_HEADER,
                 registry_types::upload::sign_upload(key, &digest),
             )
-            .body(tapp_bytes.to_vec())
+            .body(bytes.to_vec())
             .send()
             .with_context(|| url.clone())?;
         if !response.status().is_success() {
@@ -170,7 +183,7 @@ impl RegistryClient {
             .get("url")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
-            .ok_or_else(|| anyhow!("{url} answered without the package URL"))
+            .ok_or_else(|| anyhow!("{url} answered without the upload's URL"))
     }
 
     /// Ask the registry to add, update or delete `entry`.
