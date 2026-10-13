@@ -304,13 +304,14 @@ mod tests {
             .build()
             .unwrap();
         let worker_runtime = runtime.handle().clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancelled = stop.clone();
+        let registered = registry.clone();
+        let ticket = Arc::new(Mutex::new(None));
+        let active_ticket = ticket.clone();
+        let socket = source.try_clone().unwrap();
         let worker = thread::spawn(move || {
-            serve(
-                source,
-                registry,
-                worker_runtime,
-                Arc::new(AtomicBool::new(false)),
-            )
+            serve(source, registered, worker_runtime, cancelled, active_ticket)
         });
         let mut prelude = [0; 52];
         prelude[..4].copy_from_slice(b"RPH1");
@@ -325,6 +326,18 @@ mod tests {
             0,
             "no QPE or capability for nonexistent reservation"
         );
-        assert!(worker.join().unwrap().is_err());
+        assert!(
+            join(
+                Child {
+                    socket,
+                    thread: worker,
+                    ticket: ticket.clone(),
+                },
+                &registry,
+            )
+            .is_err()
+        );
+        assert!(ticket.lock().unwrap().is_none());
+        stop.store(true, Ordering::Release);
     }
 }

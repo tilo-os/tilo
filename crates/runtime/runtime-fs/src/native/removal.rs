@@ -1,8 +1,13 @@
 //! Host-bound private same-mount removal custody. No pathname constructs it.
-use super::*;
+use super::{
+    Arc, Dir, DirectoryGrant, EntryName, FsError, FsRight, FsSession, GrantLease, GrantedEntry,
+    MetadataExt, NativeIdentity, NativeLocator, OFlags, io_error, lock,
+};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt as StdMetadataExt;
+
+type ReplacementIdentities = ([u64; 2], [u64; 2], [u64; 2]);
 
 pub(crate) struct RemovalCustody {
     pub directory: Arc<Dir>,
@@ -111,6 +116,8 @@ impl FsSession {
             return Err(FsError::Busy);
         }
         *slot = Some(custody);
+        drop(slot);
+        drop(table);
         Ok(())
     }
     /// Bind only the immutable root-created derivative of the independently
@@ -155,6 +162,8 @@ impl FsSession {
             return Err(FsError::Busy);
         }
         *slot = Some(key);
+        drop(slot);
+        drop(table);
         Ok(())
     }
     #[cfg(not(target_os = "linux"))]
@@ -233,6 +242,8 @@ impl FsSession {
             return Err(FsError::Busy);
         }
         *slot = Some(verifier);
+        drop(slot);
+        drop(table);
         Ok(())
     }
     #[cfg(not(target_os = "linux"))]
@@ -307,7 +318,7 @@ impl FsSession {
         &self,
         parent: &DirectoryGrant,
         step: &crate::recovery::Step,
-    ) -> Result<([u64; 2], [u64; 2], [u64; 2]), FsError> {
+    ) -> Result<ReplacementIdentities, FsError> {
         self.with_replacement_observation(parent, step, None, Ok)
     }
     pub(crate) fn with_replacement_observation<T>(
@@ -315,7 +326,7 @@ impl FsSession {
         parent: &DirectoryGrant,
         step: &crate::recovery::Step,
         owner_key: Option<[u8; 32]>,
-        effect: impl FnOnce(([u64; 2], [u64; 2], [u64; 2])) -> Result<T, FsError>,
+        effect: impl FnOnce(ReplacementIdentities) -> Result<T, FsError>,
     ) -> Result<T, FsError> {
         let source = step
             .source
@@ -332,10 +343,10 @@ impl FsSession {
             return Err(FsError::Denied);
         }
         self.captured_restore_effect(&custody, parent, || {
-            if let Some(expected) = owner_key {
-                if *lock(&custody.owner_key)? != Some(expected) {
-                    return Err(FsError::Denied);
-                }
+            if let Some(expected) = owner_key
+                && *lock(&custody.owner_key)? != Some(expected)
+            {
+                return Err(FsError::Denied);
             }
             let victim = NativeIdentity::of(
                 &custody

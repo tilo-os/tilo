@@ -22,10 +22,10 @@ fn client(stream: UnixStream) -> runtime_fs::FsClient {
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn selected_file_private_wire_revokes_existing_handle_and_has_no_sibling_access() {
-    let owned = tempfile::tempdir().unwrap();
-    let selected = owned.path().join("chosen.txt");
+    let disk = tempfile::tempdir().unwrap();
+    let selected = disk.path().join("chosen.txt");
     std::fs::write(&selected, b"held selected bytes").unwrap();
-    std::fs::write(owned.path().join("sibling.txt"), b"private sibling").unwrap();
+    std::fs::write(disk.path().join("sibling.txt"), b"private sibling").unwrap();
     let authority = NativeGrantAuthority::new();
     let owner = FsOwner {
         workspace: "owned-room".into(),
@@ -76,7 +76,7 @@ async fn selected_file_private_wire_revokes_existing_handle_and_has_no_sibling_a
             assert!(fs.open("file", OpenMode::Read).await.is_err());
             assert_eq!(std::fs::read(&selected).unwrap(), b"held selected bytes");
             assert_eq!(
-                std::fs::read(owned.path().join("sibling.txt")).unwrap(),
+                std::fs::read(disk.path().join("sibling.txt")).unwrap(),
                 b"private sibling"
             );
             drop(server);
@@ -93,8 +93,8 @@ async fn selected_file_private_wire_revokes_existing_handle_and_has_no_sibling_a
 #[tokio::test(flavor = "multi_thread")]
 async fn selected_file_real_native_write_is_bounded_and_revocation_is_terminal() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    let owned = tempfile::tempdir().unwrap();
-    let selected = owned.path().join("chosen.txt");
+    let disk = tempfile::tempdir().unwrap();
+    let selected = disk.path().join("chosen.txt");
     std::fs::write(&selected, b"existing source bytes").unwrap();
     let authority = NativeGrantAuthority::new();
     let owner = FsOwner {
@@ -282,8 +282,8 @@ impl Drop for ReleaseOnDrop {
 #[tokio::test(flavor = "multi_thread")]
 async fn blocked_native_pipeline_refuses_excess_write_before_copy_or_invocation() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let owned = tempfile::tempdir().unwrap();
-    let selected = owned.path().join("chosen.txt");
+    let disk = tempfile::tempdir().unwrap();
+    let selected = disk.path().join("chosen.txt");
     std::fs::write(&selected, b"before").unwrap();
     let authority = NativeGrantAuthority::new();
     let owner = FsOwner {
@@ -383,8 +383,8 @@ async fn blocked_native_pipeline_refuses_excess_write_before_copy_or_invocation(
 async fn actual_selected_private_connection_retire_and_malformed_disconnect_report_outcomes() {
     use std::{io::Write, net::Shutdown};
     for termination in ["retire", "eof", "malformed"] {
-        let owned = tempfile::tempdir().unwrap();
-        let selected = owned.path().join("chosen.txt");
+        let disk = tempfile::tempdir().unwrap();
+        let selected = disk.path().join("chosen.txt");
         std::fs::write(&selected, b"actual selected native bytes").unwrap();
         let authority = NativeGrantAuthority::new();
         let owner = FsOwner {
@@ -423,7 +423,9 @@ async fn actual_selected_private_connection_retire_and_malformed_disconnect_repo
                     handle.read_all().await.unwrap(),
                     b"actual selected native bytes"
                 );
-                if termination != "retire" {
+                if termination == "retire" {
+                    server.retire().unwrap();
+                } else {
                     // A partial Capnp header + EOF is an actual wire failure, not
                     // an injected worker result or a backend method refusal.
                     if termination == "malformed" {
@@ -442,8 +444,6 @@ async fn actual_selected_private_connection_retire_and_malformed_disconnect_repo
                     } else {
                         outcome.unwrap(); // canonical RpcSystem treats ordinary peer EOF as clean.
                     }
-                } else {
-                    server.retire().unwrap();
                 }
                 assert!(handle.metadata().await.is_err());
             })
@@ -452,12 +452,45 @@ async fn actual_selected_private_connection_retire_and_malformed_disconnect_repo
 }
 
 #[cfg(target_os = "linux")]
+fn assert_concurrent_appends(
+    append_a: &runtime_fs::FsAppendHandle,
+    append_b: &runtime_fs::FsAppendHandle,
+    moved: &std::path::Path,
+) -> Vec<u8> {
+    std::thread::scope(|scope| {
+        let a = scope.spawn(|| {
+            for _ in 0..64 {
+                assert_eq!(append_a.append(b"AAAA").unwrap(), 4);
+            }
+        });
+        let b = scope.spawn(|| {
+            for _ in 0..64 {
+                assert_eq!(append_b.append(b"BBBB").unwrap(), 4);
+            }
+        });
+        a.join().unwrap();
+        b.join().unwrap();
+    });
+    let bytes = std::fs::read(moved).unwrap();
+    assert_eq!(bytes.len(), 8 + 128 * 4);
+    let chunks: Vec<_> = bytes.get(8..).unwrap().chunks_exact(4).collect();
+    assert_eq!(chunks.iter().filter(|chunk| **chunk == b"AAAA").count(), 64);
+    assert_eq!(chunks.iter().filter(|chunk| **chunk == b"BBBB").count(), 64);
+    assert!(
+        chunks
+            .iter()
+            .all(|chunk| *chunk == b"AAAA" || *chunk == b"BBBB")
+    );
+    bytes
+}
+
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn existing_read_write_and_atomic_append_use_live_exact_inode_custody() {
     use std::os::unix::fs::MetadataExt;
-    let owned = tempfile::tempdir().unwrap();
-    let chosen = owned.path().join("chosen");
-    let moved = owned.path().join("moved");
+    let disk = tempfile::tempdir().unwrap();
+    let chosen = disk.path().join("chosen");
+    let moved = disk.path().join("moved");
     std::fs::write(&chosen, b"original").unwrap();
     let original = std::fs::metadata(&chosen).unwrap().ino();
     let authority = NativeGrantAuthority::new();
@@ -492,30 +525,7 @@ async fn existing_read_write_and_atomic_append_use_live_exact_inode_custody() {
     assert_eq!(std::fs::read(&chosen).unwrap(), b"Original");
     std::fs::rename(&chosen, &moved).unwrap();
     std::fs::write(&chosen, b"unrelated replacement").unwrap();
-    std::thread::scope(|scope| {
-        let a = scope.spawn(|| {
-            for _ in 0..64 {
-                assert_eq!(append_a.append(b"AAAA").unwrap(), 4);
-            }
-        });
-        let b = scope.spawn(|| {
-            for _ in 0..64 {
-                assert_eq!(append_b.append(b"BBBB").unwrap(), 4);
-            }
-        });
-        a.join().unwrap();
-        b.join().unwrap();
-    });
-    let bytes = std::fs::read(&moved).unwrap();
-    assert_eq!(bytes.len(), 8 + 128 * 4);
-    let chunks: Vec<_> = bytes[8..].chunks_exact(4).collect();
-    assert_eq!(chunks.iter().filter(|chunk| **chunk == b"AAAA").count(), 64);
-    assert_eq!(chunks.iter().filter(|chunk| **chunk == b"BBBB").count(), 64);
-    assert!(
-        chunks
-            .iter()
-            .all(|chunk| *chunk == b"AAAA" || *chunk == b"BBBB")
-    );
+    let bytes = assert_concurrent_appends(&append_a, &append_b, &moved);
     let backend = SelectedFileBackend::new(session.clone(), file.clone()).unwrap();
     let (server_stream, client_stream) = UnixStream::pair().unwrap();
     let server = serve_workspace_connected(

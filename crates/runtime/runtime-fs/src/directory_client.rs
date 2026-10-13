@@ -390,6 +390,8 @@ impl DirectoryClient {
             true,
         )
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn retire_created(
         &self,
         name: &EntryName,
@@ -411,6 +413,8 @@ impl DirectoryClient {
         )?;
         Ok(NativeJobClient::from_raw(out.get_job()?))
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn create_file(&self, name: &EntryName) -> Result<NativeJobClient, NotAvailable> {
         let mut req = self.inner.create_file_request();
         req.get().set_name(component(name)?);
@@ -572,6 +576,8 @@ impl DirectoryClient {
         )?;
         Ok(())
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn rename_replace(
         &self,
         name: &EntryName,
@@ -590,6 +596,8 @@ impl DirectoryClient {
         )?;
         Ok(NativeJobClient::from_raw(reply.get()?.get_job()?))
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn rename_no_replace(
         &self,
         name: &EntryName,
@@ -610,7 +618,7 @@ impl DirectoryClient {
     }
 }
 /// Single custody of draining native job updates. IDs identify actual receipts;
-/// fetching a report still requires the actual scoped OperationOwner.
+/// fetching a report still requires the actual scoped `OperationOwner`.
 pub struct NativeJobClient {
     inner: fs_capnp::native_job::Client,
 }
@@ -690,23 +698,7 @@ impl NativeJobClient {
                 .which()
                 .map_err(|_| invalid("unknown native job update"))?
             {
-                fs_capnp::native_job_update::Progress(progress) => {
-                    let p = progress?;
-                    let phase = p
-                        .get_phase()?
-                        .to_str()
-                        .map_err(|_| invalid("invalid phase"))?;
-                    if phase.len() > 4096 {
-                        return Err(invalid("phase exceeds bound").into());
-                    }
-                    JobUpdate::Progress {
-                        sequence: p.get_sequence(),
-                        item: usize::try_from(p.get_item())
-                            .map_err(|_| invalid("item overflow"))?,
-                        phase: phase.into(),
-                        bytes: p.get_bytes(),
-                    }
-                }
+                fs_capnp::native_job_update::Progress(progress) => decode_job_progress(progress?)?,
                 fs_capnp::native_job_update::Item(item) => {
                     let i = item?;
                     let state = match i.get_state().map_err(|_| invalid("unknown item state"))? {
@@ -837,13 +829,13 @@ impl MetadataPinClient {
     }
 }
 fn native_type(raw: u32, kind: crate::EntryKind) -> Result<u32, capnp::Error> {
-    const REG: u32 = libc::S_IFREG as u32;
-    const DIR: u32 = libc::S_IFDIR as u32;
-    const LINK: u32 = libc::S_IFLNK as u32;
-    const FIFO: u32 = libc::S_IFIFO as u32;
-    const SOCKET: u32 = libc::S_IFSOCK as u32;
-    const BLOCK: u32 = libc::S_IFBLK as u32;
-    const CHAR: u32 = libc::S_IFCHR as u32;
+    const REG: u32 = libc::S_IFREG;
+    const DIR: u32 = libc::S_IFDIR;
+    const LINK: u32 = libc::S_IFLNK;
+    const FIFO: u32 = libc::S_IFIFO;
+    const SOCKET: u32 = libc::S_IFSOCK;
+    const BLOCK: u32 = libc::S_IFBLK;
+    const CHAR: u32 = libc::S_IFCHR;
     let expected = match raw {
         REG => crate::EntryKind::File,
         DIR => crate::EntryKind::Directory,
@@ -963,7 +955,7 @@ fn decode_filesystem_stats(
 
 #[cfg(test)]
 mod filesystem_stats_tests {
-    use super::*;
+    use super::{decode_filesystem_stats, fs_capnp};
     #[test]
     fn actual_wire_decode_refuses_invalid_capacity_and_width_overflow() {
         for invalid_case in 0..8 {
@@ -1003,7 +995,7 @@ fn execute_bits(raw: u16) -> Result<u16, capnp::Error> {
 }
 #[cfg(test)]
 mod execute_mode_codec_tests {
-    use super::*;
+    use super::{execute_bits, fs_capnp};
     #[test]
     fn actual_wire_execute_bits_reject_read_write_and_special_modes() {
         for value in [0, 1, 0o10, 0o100, 0o111] {
@@ -1026,7 +1018,7 @@ mod execute_mode_codec_tests {
 
 #[cfg(test)]
 mod absent_stat_rpc_tests {
-    use super::*;
+    use super::{DirectoryClient, EntryName, Rc, fs_capnp};
     use capnp_rpc::{RpcSystem, rpc_twoparty_capnp::Side, twoparty::VatNetwork};
     use std::os::unix::net::UnixStream;
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -1047,7 +1039,7 @@ mod absent_stat_rpc_tests {
                 1 => out.set_execute_bits(0o111),
                 2 => out.set_device(3),
                 3 => out.set_inode(4),
-                4 => out.set_file_type(libc::S_IFREG as u32),
+                4 => out.set_file_type(libc::S_IFREG),
                 5 => {
                     out.init_metadata();
                 }
@@ -1123,6 +1115,8 @@ pub struct ReplacementPinClient {
     inner: fs_capnp::replacement_pin::Client,
 }
 impl ReplacementPinClient {
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn commit_with_history(&self, receipt: &[u8]) -> Result<(), NotAvailable> {
         if receipt.is_empty() || receipt.len() > crate::external_history::LIMIT {
             return Err(invalid("Invalid certified commit receipt length").into());
@@ -1189,7 +1183,7 @@ fn decode_replacement_observation(
 
 #[cfg(test)]
 mod replacement_observation_tests {
-    use super::*;
+    use super::{decode_replacement_observation, fs_capnp};
     #[test]
     fn actual_wire_observation_rejects_malformed_ids_and_inode_bindings() {
         // Codec observations alone grant no rights; native positive authority is
@@ -1227,6 +1221,8 @@ pub struct PendingReplacementClient {
     inner: fs_capnp::pending_replacement::Client,
 }
 impl PendingReplacementClient {
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn acknowledged_committed_pin(&self) -> Result<ReplacementPinClient, NotAvailable> {
         let reply = self
             .inner
@@ -1250,6 +1246,8 @@ impl PendingReplacementClient {
         pin.observe().await?;
         Ok(pin)
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn acknowledged_committed_job(&self) -> Result<NativeJobClient, NotAvailable> {
         let reply = self
             .inner
@@ -1275,6 +1273,8 @@ impl PendingReplacementClient {
         job.check_scope().await?;
         Ok(job)
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn arm_daemon_handoff(&self, challenge: &[u8; 32]) -> Result<[u8; 16], NotAvailable> {
         if *challenge == [0; 32] {
             return Err(invalid("empty handoff challenge").into());
@@ -1317,6 +1317,8 @@ impl PendingReplacementClient {
         request.send().promise.await?;
         Ok(())
     }
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn check_scope(&self) -> Result<(), NotAvailable> {
         self.inner.check_scope_request().send().promise.await?;
         Ok(())
@@ -1401,7 +1403,7 @@ fn decode_pending_replacement(
 
 #[cfg(test)]
 mod pending_replacement_codec_tests {
-    use super::*;
+    use super::{decode_pending_replacement, fs_capnp};
     #[test]
     fn actual_wire_pending_observation_rejects_malformed_intent_and_archive_plan() {
         for case in 0..13 {
@@ -1451,6 +1453,8 @@ impl CreatedTemporaryClient {
         Self { inner }
     }
 
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn set_permissions(&self, mode: u32) -> Result<(), NotAvailable> {
         if mode & !0o7777 != 0 {
             return Err(invalid("invalid own-created mode").into());
@@ -1496,6 +1500,8 @@ impl CreatedTemporaryClient {
         }
     }
 
+    /// # Errors
+    /// Returns an error if scope is revoked, the operation is refused, or transport fails.
     pub async fn prepare_replace(&self) -> Result<PendingReplacementClient, NotAvailable> {
         let response = self.inner.prepare_replace_request().send().promise.await?;
         let value = response.get()?;
@@ -1612,7 +1618,7 @@ impl HistoryReadSubjectClient {
         }
         let mut parents = Vec::with_capacity(rows.len() as usize);
         let mut total = 0usize;
-        for part in rows.iter() {
+        for part in rows {
             let part = part?;
             if part.len() > 255 {
                 return Err(invalid("history Read component exceeds bound").into());
@@ -1644,7 +1650,7 @@ impl HistoryReadSubjectClient {
 
 #[cfg(test)]
 mod history_read_codec_tests {
-    use super::*;
+    use super::{HistoryReadSubjectClient, Rc, fs_capnp};
     use capnp::capability::Promise;
     use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -1731,4 +1737,22 @@ mod history_read_codec_tests {
             .expect("malformed connected reply must fail within bound");
         });
     }
+}
+
+fn decode_job_progress(
+    p: fs_capnp::native_job_progress::Reader<'_>,
+) -> Result<JobUpdate, NotAvailable> {
+    let phase = p
+        .get_phase()?
+        .to_str()
+        .map_err(|_| invalid("invalid phase"))?;
+    if phase.len() > 4096 {
+        return Err(invalid("phase exceeds bound").into());
+    }
+    Ok(JobUpdate::Progress {
+        sequence: p.get_sequence(),
+        item: usize::try_from(p.get_item()).map_err(|_| invalid("item overflow"))?,
+        phase: phase.into(),
+        bytes: p.get_bytes(),
+    })
 }

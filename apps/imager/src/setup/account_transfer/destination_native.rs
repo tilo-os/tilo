@@ -222,7 +222,7 @@ fn migrated_dav_grant_default_helper_promotes_system_custody_and_mounts_real_fil
     assert_eq!(service.0.mounted(), vec![(id.to_string(), mount.clone())]);
     assert!(service.0.wait_for_health(
         id.as_str(),
-        fs::cloud::volume::Health::Healthy,
+        runtime_fs::cloud::MountHealth::Healthy,
         Duration::from_secs(30)
     ));
     assert!(mounted(&mount));

@@ -346,6 +346,12 @@ impl EnrolledDevice {
     }
     /// Public native authority from this already password-authenticated transport.
     /// This does not expose device seeds or permit caller-authored fleet claims.
+    ///
+    /// # Errors
+    /// Returns an error if the clock is unavailable or payload validation fails:
+    /// malformed schema/seed, mismatched device key, disallowed capabilities,
+    /// invalid or expired certification, an invalid public member record,
+    /// invalid/revoked fleet membership, or invalid home-peer registrations.
     pub fn public_native_material(
         &self,
     ) -> io::Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>)> {
@@ -490,6 +496,12 @@ pub struct AuthenticatedEnrolledDevice {
 impl AuthenticatedEnrolledDevice {
     /// Public native authority from this already password-authenticated transport.
     /// This does not expose device seeds or permit caller-authored fleet claims.
+    ///
+    /// # Errors
+    /// Returns an error if the clock is unavailable or payload validation fails:
+    /// malformed schema/seed, mismatched device key, disallowed capabilities,
+    /// invalid or expired certification, an invalid public member record,
+    /// invalid/revoked fleet membership, or invalid home-peer registrations.
     pub fn public_native_material(
         &self,
     ) -> io::Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>)> {

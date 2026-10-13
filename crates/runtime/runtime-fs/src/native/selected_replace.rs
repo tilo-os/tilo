@@ -1,6 +1,9 @@
 //! Root-sealed selected edit derivative. Parsed observations alone never admit
 //! Replace, and ordinary Home rights are never widened.
-use super::*;
+use super::{
+    Arc, DirectoryGrant, EntryName, FsError, FsRight, FsSession, GrantLease, GrantedEntry,
+    MetadataExt, Mutex, NativeFileAccess, NativeObject, OsString, Weak, io_error, lock,
+};
 use runtime_portal::retained_replacement::{MAX_PERMIT_BYTES, SelectedReplacementPermitRecord};
 use std::io::{Read, Seek};
 use std::os::fd::AsRawFd;
@@ -77,9 +80,13 @@ impl FsSession {
             return Err(FsError::Denied);
         }
         sealed.rewind().map_err(io_error)?;
-        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        let capacity = usize::try_from(metadata.len()).map_err(|_| FsError::LimitExceeded)?;
+        let read_limit = (MAX_PERMIT_BYTES as u64)
+            .checked_add(1)
+            .ok_or(FsError::LimitExceeded)?;
+        let mut bytes = Vec::with_capacity(capacity);
         sealed
-            .take(MAX_PERMIT_BYTES as u64 + 1)
+            .take(read_limit)
             .read_to_end(&mut bytes)
             .map_err(io_error)?;
         let record = SelectedReplacementPermitRecord::decode(&bytes).map_err(io_error)?;
@@ -146,10 +153,13 @@ impl FsSession {
             return Err(FsError::Busy);
         }
         *slot = Some(permit.clone());
-        Ok(SelectedReplacementAuthority {
+        let authority = SelectedReplacementAuthority {
             session: self.clone(),
             permit,
-        })
+        };
+        drop(slot);
+        drop(table);
+        Ok(authority)
     }
     #[cfg(not(target_os = "linux"))]
     pub fn bind_selected_replace_authority(
@@ -271,6 +281,8 @@ impl FsSession {
             return Err(FsError::StaleEntry);
         }
         *selected = new;
+        drop(selected);
+        drop(table);
         Ok(())
     }
     pub(crate) fn same_session(&self, other: &Self) -> bool {
@@ -330,6 +342,7 @@ impl FsSession {
         if entries.len() >= 256 {
             return Err(FsError::LimitExceeded);
         }
+        drop(entries);
         Ok(())
     }
     pub(crate) fn register_created_temporary(
@@ -343,6 +356,7 @@ impl FsSession {
             return Err(FsError::LimitExceeded);
         }
         entries.push(Arc::downgrade(created));
+        drop(entries);
         Ok(())
     }
     pub(crate) fn validate_selected_victim(&self, victim: &GrantedEntry) -> Result<(), FsError> {
@@ -391,6 +405,7 @@ impl FsSession {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use crate::{FsOwner, NativeGrantAuthority};
     #[test]
     fn named_file_cannot_admit_selected_replace_or_widen_original_home_grant() {
         let directory = tempfile::tempdir().unwrap();

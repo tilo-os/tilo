@@ -11,6 +11,8 @@ pub struct Subject {
     pub root_pid: u32,
 }
 impl Subject {
+    /// # Errors
+    /// Refuses invalid operation/digest labels or a zero root PID.
     pub fn validate(&self) -> io::Result<()> {
         validate_labels(&self.source_operation, &self.context_sha256)?;
         if self.root_pid == 0 {
@@ -25,6 +27,8 @@ struct Receipt {
     schema: u32,
     subject: Subject,
 }
+/// # Errors
+/// Refuses invalid subjects, oversized receipts, serialization or writer failures.
 pub fn write(writer: &mut impl Write, subject: &Subject) -> io::Result<()> {
     subject.validate()?;
     let bytes = serde_json::to_vec(&Receipt {
@@ -35,10 +39,13 @@ pub fn write(writer: &mut impl Write, subject: &Subject) -> io::Result<()> {
     if bytes.len() > BOUND {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    writer.write_all(&(bytes.len() as u32).to_le_bytes())?;
+    let length = u32::try_from(bytes.len()).map_err(io::Error::other)?;
+    writer.write_all(&length.to_le_bytes())?;
     writer.write_all(&bytes)?;
     writer.flush()
 }
+/// # Errors
+/// Refuses invalid, unbounded, mismatched or trailing receipt data and reader failures.
 pub fn read(reader: &mut impl Read, expected: &Subject) -> io::Result<()> {
     expected.validate()?;
     let mut length = [0; 4];
@@ -61,6 +68,8 @@ pub fn read(reader: &mut impl Read, expected: &Subject) -> io::Result<()> {
     Ok(())
 }
 
+/// # Errors
+/// Refuses noncanonical or nil operation UUIDs and noncanonical SHA-256 digests.
 pub fn validate_labels(operation: &str, digest: &str) -> io::Result<()> {
     let id = uuid::Uuid::parse_str(operation).map_err(io::Error::other)?;
     if id.is_nil()
@@ -123,7 +132,7 @@ mod tests {
         ] {
             let (mut reader, mut writer) = UnixStream::pair().unwrap();
             writer
-                .write_all(&(bytes.len() as u32).to_le_bytes())
+                .write_all(&u32::try_from(bytes.len()).unwrap().to_le_bytes())
                 .unwrap();
             writer.write_all(&bytes).unwrap();
             writer.shutdown(std::net::Shutdown::Write).unwrap();

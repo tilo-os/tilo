@@ -1,6 +1,6 @@
 //! Closed status on the existing enrolled native-history lane. Pending is
 //! custody only; signed wire data never substitutes for actual source pin ACK.
-use super::*;
+use super::{CommittedReceipt, Deserialize, PreparedReceipt, Serialize, id, io, refused};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ReplacementReply {
@@ -20,8 +20,8 @@ pub enum ReplacementReply {
     },
     Committed {
         request_id: String,
-        prepared: PreparedReceipt,
-        receipt: CommittedReceipt,
+        prepared: Box<PreparedReceipt>,
+        receipt: Box<CommittedReceipt>,
     },
 }
 impl ReplacementReply {
@@ -62,6 +62,8 @@ impl ReplacementReply {
             }
         }
     }
+    /// # Errors
+    /// Refuses invalid receipts, serialization errors, and oversized replies.
     pub fn encode(&self) -> io::Result<Vec<u8>> {
         if !self.valid() {
             return Err(refused());
@@ -74,6 +76,8 @@ impl ReplacementReply {
     }
     /// Decode a cleanup ACK bound to the actual previously committed operation.
     /// Its wire contents never constitute Save or Read authority.
+    /// # Errors
+    /// Refuses malformed replies or cleanup acknowledgments for another operation.
     pub fn decode_retired(
         bytes: &[u8],
         expected_request: &str,
@@ -89,6 +93,8 @@ impl ReplacementReply {
             Err(refused())
         }
     }
+    /// # Errors
+    /// Refuses malformed, oversized, invalid, or mismatched replies.
     pub fn decode(bytes: &[u8], expected_request: &str) -> io::Result<Self> {
         if bytes.is_empty() || bytes.len() > Self::LIMIT || !id(expected_request) {
             return Err(refused());
@@ -110,6 +116,7 @@ impl ReplacementReply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::external_history::EnrollmentCommand;
     #[test]
     fn retired_decoder_is_exact_cleanup_and_never_a_save_reply() {
         let request = "11111111-1111-4111-8111-111111111111";

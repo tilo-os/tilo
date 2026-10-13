@@ -32,6 +32,8 @@ pub trait WorkspaceFileBackend: Send + Sync + 'static {
         None
     }
     /// Actual held native identity for directory opens; legacy backends expose none.
+    /// # Errors
+    /// Refuses unavailable authority or failed descriptor identity lookup.
     fn native_identity(&self) -> Result<Option<[u64; 2]>, String> {
         Ok(None)
     }
@@ -43,6 +45,8 @@ pub trait WorkspaceFileBackend: Send + Sync + 'static {
     fn write(&self, offset: u64, bytes: &[u8]) -> Result<u32, String>;
 
     /// One non-idempotent atomic append. Unsupported by default.
+    /// # Errors
+    /// Refuses unsupported append, unavailable authority or a failed write.
     fn append(&self, _bytes: &[u8]) -> Result<u32, String> {
         Err("atomic append unsupported".into())
     }
@@ -58,6 +62,8 @@ pub trait WorkspaceFileBackend: Send + Sync + 'static {
 /// separators; the root is `""`.
 pub trait WorkspaceBackend: Send + Sync + 'static {
     /// Independently admitted native directory custody. Selected files return None.
+    /// # Errors
+    /// Refuses unavailable authority or failed directory admission.
     fn directory(
         &self,
     ) -> Result<Option<Arc<dyn crate::directory_backend::WorkspaceDirectoryBackend>>, String> {
@@ -211,7 +217,7 @@ impl Drop for ConnectedWorkspaceServer {
         }
     }
 }
-/// Serve an attested, owned stream through the existing WorkspaceFs protocol.
+/// Serve an attested, owned stream through the existing `WorkspaceFs` protocol.
 /// Transport authentication and source authority remain the caller's boundary;
 /// this function opens no socket path and accepts no credential claims.
 /// # Errors
@@ -428,7 +434,7 @@ impl workspace_fs::Server for Server {
                 .await?;
             let source = if let Some(file) = opened {
                 let metadata = self
-                    .call_file(Arc::clone(&file), |file| file.metadata())
+                    .call_file(Arc::clone(&file), WorkspaceFileBackend::metadata)
                     .await?;
                 let metadata = metadata
                     .ok_or_else(|| capnp::Error::failed("native open metadata refused".into()))?;
@@ -541,18 +547,21 @@ struct File {
 }
 
 impl File {
-    async fn refuse_operation(&self) -> Result<(), capnp::Error> {
-        let FileSource::Capability(file) = &self.source else {
-            return Err(read_only());
-        };
-        // Only actual native providers with successful before/after scope checks
-        // can distinguish an unsupported per-file operation from authority loss.
-        self.server
-            .call_file(Arc::clone(file), |_| {
-                Err::<(), _>("unsupported file operation".into())
-            })
-            .await?;
-        Ok(())
+    fn refuse_operation(self: &Rc<Self>) -> Promise<(), capnp::Error> {
+        let this = Rc::clone(self);
+        Promise::from_future(async move {
+            let FileSource::Capability(file) = &this.source else {
+                return Err(read_only());
+            };
+            // Only actual native providers with successful before/after scope checks
+            // can distinguish an unsupported per-file operation from authority loss.
+            this.server
+                .call_file(Arc::clone(file), |_| {
+                    Err::<(), _>("unsupported file operation".into())
+                })
+                .await?;
+            Ok(())
+        })
     }
 }
 
@@ -656,15 +665,16 @@ impl file_handle::Server for File {
             }
             // Finite admission precedes allocation: full pipelines receive Busy
             // immediately rather than retaining another copied payload buffer.
-            let permit = self.server.admit_call()?;
-            let bytes = data.to_vec();
-            let offset = request.get_offset();
-            let written = self
-                .server
-                .call_file_admitted(Arc::clone(file), permit, move |file| {
-                    file.write(offset, &bytes)
-                })
-                .await?;
+            let written = {
+                let permit = self.server.admit_call()?;
+                let bytes = data.to_vec();
+                let offset = request.get_offset();
+                self.server
+                    .call_file_admitted(Arc::clone(file), permit, move |file| {
+                        file.write(offset, &bytes)
+                    })
+                    .await?
+            };
             let Some(written) = written else {
                 results
                     .get()
@@ -702,12 +712,13 @@ impl file_handle::Server for File {
             if length > crate::MAX_WRITE_CHUNK {
                 return Err(capnp::Error::failed("append exceeds byte bound".into()));
             }
-            let permit = self.server.admit_call()?;
-            let bytes = data.to_vec();
-            let written = self
-                .server
-                .call_file_admitted(Arc::clone(file), permit, move |file| file.append(&bytes))
-                .await?;
+            let written = {
+                let permit = self.server.admit_call()?;
+                let bytes = data.to_vec();
+                self.server
+                    .call_file_admitted(Arc::clone(file), permit, move |file| file.append(&bytes))
+                    .await?
+            };
             let Some(written) = written else {
                 results
                     .get()
@@ -733,7 +744,7 @@ impl file_handle::Server for File {
                 FileSource::Capability(file) => {
                     if self
                         .server
-                        .call_file(Arc::clone(file), |file| file.flush())
+                        .call_file(Arc::clone(file), WorkspaceFileBackend::flush)
                         .await?
                         .is_none()
                     {
@@ -763,7 +774,7 @@ impl file_handle::Server for File {
                 }
                 FileSource::Capability(file) => {
                     self.server
-                        .call_file(Arc::clone(file), |file| file.metadata())
+                        .call_file(Arc::clone(file), WorkspaceFileBackend::metadata)
                         .await?
                 }
             };

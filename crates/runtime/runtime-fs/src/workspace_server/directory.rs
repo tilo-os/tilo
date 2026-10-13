@@ -1,5 +1,5 @@
 //! Raw-name directory capabilities on the existing connected service.
-use super::*;
+use super::{Arc, File, FileSource, OpenMode, Promise, Rc, Server, fs_capnp, write_metadata};
 use crate::EntryName;
 use crate::directory_backend::{
     JobUpdate, WorkspaceDirectoryBackend, WorkspaceJobBackend, WorkspaceMetadataBackend,
@@ -13,6 +13,10 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 struct Directory {
     server: Rc<Server>,
     backend: Arc<dyn WorkspaceDirectoryBackend>,
+}
+fn wire_u32(value: usize) -> capnp::Result<u32> {
+    u32::try_from(value)
+        .map_err(|_| capnp::Error::failed("native response exceeds list bound".into()))
 }
 fn name(raw: capnp::Result<&[u8]>) -> Result<EntryName, capnp::Error> {
     let raw = raw?;
@@ -36,7 +40,7 @@ async fn run<T: Send + 'static>(
     let drain = server
         .drain
         .as_ref()
-        .map(|drain| drain.enter())
+        .map(super::pending_handoff::CallDrain::enter)
         .transpose()
         .map_err(capnp::Error::failed)?;
     server
@@ -91,26 +95,28 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::HistoryQueryResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let request = params.get()?;
-            let selected = name(request.get_name())?;
-            let expected = [request.get_expected_device(), request.get_expected_inode()];
-            let query = request.get_query()?;
-            crate::directory_backend::validate_history_query(query)
-                .map_err(capnp::Error::failed)?;
-            if expected[1] == 0 {
-                return Err(capnp::Error::failed(
-                    "missing history subject identity".into(),
-                ));
-            }
-            let query = query.to_vec();
-            let backend = self.backend.clone();
-            let response = run_directory(&self.server, permit, backend.clone(), move || {
-                let response = backend.history_query(&selected, expected, &query)?;
-                crate::directory_backend::validate_history_response(&query, &response)?;
-                Ok(response)
-            })
-            .await?;
+            let response = {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let selected = name(request.get_name())?;
+                let expected = [request.get_expected_device(), request.get_expected_inode()];
+                let query = request.get_query()?;
+                crate::directory_backend::validate_history_query(query)
+                    .map_err(capnp::Error::failed)?;
+                if expected[1] == 0 {
+                    return Err(capnp::Error::failed(
+                        "missing history subject identity".into(),
+                    ));
+                }
+                let query = query.to_vec();
+                let backend = self.backend.clone();
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    let response = backend.history_query(&selected, expected, &query)?;
+                    crate::directory_backend::validate_history_response(&query, &response)?;
+                    Ok(response)
+                })
+                .await?
+            };
             if let Some(response) = response {
                 results.get().set_response(&response);
             } else {
@@ -128,19 +134,21 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::HistoryReadSubjectResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let selected = name(params.get()?.get_name())?;
-            let backend = self.backend.clone();
-            let subject = run_directory(&self.server, permit, backend.clone(), move || {
-                // Busy is a per-operation refusal only after fresh provider
-                // scope brackets, rather than poisoning the entire Home.
-                let slot = HistoryReadSlot::acquire().map_err(|error| error.to_string())?;
-                let subject = backend.history_read_subject(&selected)?;
-                subject.check()?;
-                subject.observe()?.validate()?;
-                Ok((subject, slot))
-            })
-            .await?;
+            let subject = {
+                let permit = self.server.admit_call()?;
+                let selected = name(params.get()?.get_name())?;
+                let backend = self.backend.clone();
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    // Busy is a per-operation refusal only after fresh provider
+                    // scope brackets, rather than poisoning the entire Home.
+                    let slot = HistoryReadSlot::acquire().map_err(|error| error.to_string())?;
+                    let subject = backend.history_read_subject(&selected)?;
+                    subject.check()?;
+                    subject.observe()?.validate()?;
+                    Ok((subject, slot))
+                })
+                .await?
+            };
             let Some((subject, slot)) = subject else {
                 results
                     .get()
@@ -164,12 +172,14 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::SyncDirectoryResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let backend = self.backend.clone();
-            let synced = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.sync_directory()
-            })
-            .await?;
+            let synced = {
+                let permit = self.server.admit_call()?;
+                let backend = self.backend.clone();
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.sync_directory()
+                })
+                .await?
+            };
             results.get().set_status(if synced.is_some() {
                 fs_capnp::NativeEntryStatus::Ok
             } else {
@@ -185,25 +195,27 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::PrepareReplaceResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let request = params.get()?;
-            let temporary = name(request.get_temporary())?;
-            let victim = name(request.get_victim())?;
-            let expected = [
-                request.get_temporary_device(),
-                request.get_temporary_inode(),
-            ];
-            let old = [request.get_victim_device(), request.get_victim_inode()];
-            if expected[1] == 0 || old[1] == 0 || expected == old || expected[0] != old[0] {
-                return Err(capnp::Error::failed(
-                    "Invalid replacing inode observations".into(),
-                ));
-            }
-            let backend = self.backend.clone();
-            let pending = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.prepare_replace(&temporary, expected, &victim, old)
-            })
-            .await?;
+            let pending = {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let temporary = name(request.get_temporary())?;
+                let victim = name(request.get_victim())?;
+                let expected = [
+                    request.get_temporary_device(),
+                    request.get_temporary_inode(),
+                ];
+                let old = [request.get_victim_device(), request.get_victim_inode()];
+                if expected[1] == 0 || old[1] == 0 || expected == old || expected[0] != old[0] {
+                    return Err(capnp::Error::failed(
+                        "Invalid replacing inode observations".into(),
+                    ));
+                }
+                let backend = self.backend.clone();
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.prepare_replace(&temporary, expected, &victim, old)
+                })
+                .await?
+            };
             let Some(pending) = pending else {
                 results
                     .get()
@@ -225,20 +237,22 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::ReadlinkResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let input = params.get()?;
-            let name = name(input.get_name())?;
-            let expected = [input.get_expected_device(), input.get_expected_inode()];
-            if expected[1] == 0 {
-                return Err(capnp::Error::failed(
-                    "native expected identity missing".into(),
-                ));
-            }
-            let backend = self.backend.clone();
-            let target = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.readlink(&name, expected)
-            })
-            .await?;
+            let target = {
+                let permit = self.server.admit_call()?;
+                let input = params.get()?;
+                let name = name(input.get_name())?;
+                let expected = [input.get_expected_device(), input.get_expected_inode()];
+                if expected[1] == 0 {
+                    return Err(capnp::Error::failed(
+                        "native expected identity missing".into(),
+                    ));
+                }
+                let backend = self.backend.clone();
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.readlink(&name, expected)
+                })
+                .await?
+            };
             let Some(target) = target else {
                 results
                     .get()
@@ -258,12 +272,14 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::StatfsResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let backend = self.backend.clone();
-            let stats = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.statfs()
-            })
-            .await?;
+            let stats = {
+                let permit = self.server.admit_call()?;
+                let backend = self.backend.clone();
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.statfs()
+                })
+                .await?
+            };
             let Some(stats) = stats else {
                 results
                     .get()
@@ -291,15 +307,17 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::OpenCursorResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let backend = self.backend.clone();
-            let cursor = run(&self.server, permit, move || {
-                backend.check()?;
-                let opened = backend.open_cursor();
-                backend.check()?;
-                Ok(opened)
-            })
-            .await?;
+            let cursor = {
+                let permit = self.server.admit_call()?;
+                let backend = self.backend.clone();
+                run(&self.server, permit, move || {
+                    backend.check()?;
+                    let opened = backend.open_cursor();
+                    backend.check()?;
+                    Ok(opened)
+                })
+                .await?
+            };
             match cursor {
                 Ok(backend) => results.get().set_handle(capnp_rpc::new_client(Cursor {
                     server: self.server.clone(),
@@ -318,12 +336,14 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::MetadataResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let backend = Arc::clone(&self.backend);
-            let metadata = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.metadata()
-            })
-            .await?;
+            let metadata = {
+                let permit = self.server.admit_call()?;
+                let backend = Arc::clone(&self.backend);
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.metadata()
+                })
+                .await?
+            };
             let Some(metadata) = metadata else {
                 results
                     .get()
@@ -345,13 +365,15 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::StatResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let name = name(params.get()?.get_name())?;
-            let backend = Arc::clone(&self.backend);
-            let metadata = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.stat(&name)
-            })
-            .await?;
+            let metadata = {
+                let permit = self.server.admit_call()?;
+                let name = name(params.get()?.get_name())?;
+                let backend = Arc::clone(&self.backend);
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.stat(&name)
+                })
+                .await?
+            };
             let Some(metadata) = metadata else {
                 results
                     .get()
@@ -376,25 +398,27 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::PinMetadataResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let request = params.get()?;
-            let name = name(request.get_name())?;
-            let expected = [request.get_expected_device(), request.get_expected_inode()];
-            if expected[1] == 0 {
-                return Err(capnp::Error::failed(
-                    "native expected identity missing".into(),
-                ));
-            }
-            let backend = self.backend.clone();
-            let pin = run_directory(&self.server, permit, backend.clone(), move || {
-                let pin = backend.pin_metadata(&name, expected)?;
-                let stat = pin.metadata()?;
-                if stat.identity != expected || stat.metadata.kind != crate::EntryKind::File {
-                    return Err("metadata pin identity/type differs".into());
+            let pin = {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let name = name(request.get_name())?;
+                let expected = [request.get_expected_device(), request.get_expected_inode()];
+                if expected[1] == 0 {
+                    return Err(capnp::Error::failed(
+                        "native expected identity missing".into(),
+                    ));
                 }
-                Ok(pin)
-            })
-            .await?;
+                let backend = self.backend.clone();
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    let pin = backend.pin_metadata(&name, expected)?;
+                    let stat = pin.metadata()?;
+                    if stat.identity != expected || stat.metadata.kind != crate::EntryKind::File {
+                        return Err("metadata pin identity/type differs".into());
+                    }
+                    Ok(pin)
+                })
+                .await?
+            };
             let Some(pin) = pin else {
                 results
                     .get()
@@ -414,19 +438,19 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::ListResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let token = params.get()?.get_cursor();
-            let backend = Arc::clone(&self.backend);
-            let page = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.list(token)
-            })
-            .await?;
-            let Some(page) = page else {
-                results
-                    .get()
-                    .set_status(fs_capnp::NativeEntryStatus::Refused);
-                return Ok(());
+            let page = {
+                let permit = self.server.admit_call()?;
+                let token = params.get()?.get_cursor();
+                let backend = Arc::clone(&self.backend);
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.list(token)
+                })
+                .await?
             };
+            // Invalid or replayed continuations must not look like successful
+            // empty pages. Scope checks still bracket the backend operation.
+            let page =
+                page.ok_or_else(|| capnp::Error::failed("directory enumeration refused".into()))?;
             if page.entries.len() > 256
                 || page
                     .entries
@@ -444,7 +468,7 @@ impl directory_handle::Server for Directory {
                     .map_err(|_| capnp::Error::failed("directory page exceeds bound".into()))?,
             );
             for (index, entry) in page.entries.iter().enumerate() {
-                let mut row = entries.reborrow().get(index as u32);
+                let mut row = entries.reborrow().get(wire_u32(index)?);
                 row.set_name(entry.name.as_os_str().as_bytes());
                 write_metadata(row.init_metadata(), &entry.metadata);
             }
@@ -457,13 +481,15 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::OpenDirectoryResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let name = name(params.get()?.get_name())?;
-            let backend = Arc::clone(&self.backend);
-            let child = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.directory(&name)
-            })
-            .await?;
+            let child = {
+                let permit = self.server.admit_call()?;
+                let name = name(params.get()?.get_name())?;
+                let backend = Arc::clone(&self.backend);
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.directory(&name)
+                })
+                .await?
+            };
             let Some(child) = child else {
                 results
                     .get()
@@ -482,34 +508,37 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::OpenFileResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let request = params.get()?;
-            let name = name(request.get_name())?;
-            let expected = [request.get_expected_device(), request.get_expected_inode()];
-            if expected[1] == 0 {
-                return Err(capnp::Error::failed(
-                    "native expected identity missing".into(),
-                ));
-            }
-            let mode = match request.get_mode()? {
-                fs_capnp::OpenMode::Read => OpenMode::Read,
-                fs_capnp::OpenMode::Write => OpenMode::Write,
-                fs_capnp::OpenMode::Append => OpenMode::Append,
-                fs_capnp::OpenMode::ReadWriteExisting => OpenMode::ReadWriteExisting,
-                fs_capnp::OpenMode::WriteExisting => OpenMode::WriteExisting,
-            };
-            let backend = Arc::clone(&self.backend);
-            let opened = run_directory(&self.server, permit, backend.clone(), move || {
-                let handle = backend.open_file(&name, mode, expected)?;
-                let identity = handle
-                    .native_identity()?
-                    .ok_or("native held identity unavailable")?;
-                if identity != expected {
-                    return Err("opened native identity differs".into());
+            let (opened, mode) = {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let name = name(request.get_name())?;
+                let expected = [request.get_expected_device(), request.get_expected_inode()];
+                if expected[1] == 0 {
+                    return Err(capnp::Error::failed(
+                        "native expected identity missing".into(),
+                    ));
                 }
-                Ok((handle, identity))
-            })
-            .await?;
+                let mode = match request.get_mode()? {
+                    fs_capnp::OpenMode::Read => OpenMode::Read,
+                    fs_capnp::OpenMode::Write => OpenMode::Write,
+                    fs_capnp::OpenMode::Append => OpenMode::Append,
+                    fs_capnp::OpenMode::ReadWriteExisting => OpenMode::ReadWriteExisting,
+                    fs_capnp::OpenMode::WriteExisting => OpenMode::WriteExisting,
+                };
+                let backend = Arc::clone(&self.backend);
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    let handle = backend.open_file(&name, mode, expected)?;
+                    let identity = handle
+                        .native_identity()?
+                        .ok_or("native held identity unavailable")?;
+                    if identity != expected {
+                        return Err("opened native identity differs".into());
+                    }
+                    Ok((handle, identity))
+                })
+                .await
+                .map(|opened| (opened, mode))?
+            };
             let Some((handle, identity)) = opened else {
                 results
                     .get()
@@ -526,60 +555,68 @@ impl directory_handle::Server for Directory {
             Ok(())
         })
     }
-    async fn set_created_permissions(
+    fn set_created_permissions(
         self: Rc<Self>,
         params: directory_handle::SetCreatedPermissionsParams,
         mut results: directory_handle::SetCreatedPermissionsResults,
-    ) -> Result<(), capnp::Error> {
-        let permit = self.server.admit_call()?;
-        let request = params.get()?;
-        let name = name(request.get_name())?;
-        let expected = [request.get_expected_device(), request.get_expected_inode()];
-        let mode = request.get_mode();
-        if expected[1] == 0 || mode & !0o7777 != 0 {
-            return Err(capnp::Error::failed(
-                "invalid own-created mode request".into(),
-            ));
-        }
-        let backend = self.backend.clone();
-        let changed = run_directory(&self.server, permit, backend.clone(), move || {
-            backend.set_created_permissions(&name, expected, mode)
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let changed = {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let name = name(request.get_name())?;
+                let expected = [request.get_expected_device(), request.get_expected_inode()];
+                let mode = request.get_mode();
+                if expected[1] == 0 || mode & !0o7777 != 0 {
+                    return Err(capnp::Error::failed(
+                        "invalid own-created mode request".into(),
+                    ));
+                }
+                let backend = self.backend.clone();
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.set_created_permissions(&name, expected, mode)
+                })
+                .await?
+            };
+            if changed.is_none() {
+                results
+                    .get()
+                    .set_status(fs_capnp::NativeEntryStatus::Refused);
+            }
+            Ok(())
         })
-        .await?;
-        if changed.is_none() {
-            results
-                .get()
-                .set_status(fs_capnp::NativeEntryStatus::Refused);
-        }
-        Ok(())
     }
-    async fn retire_created(
+    fn retire_created(
         self: Rc<Self>,
         params: directory_handle::RetireCreatedParams,
         mut results: directory_handle::RetireCreatedResults,
-    ) -> Result<(), capnp::Error> {
-        let permit = self.server.admit_call()?;
-        let request = params.get()?;
-        let name = name(request.get_name())?;
-        let expected = [request.get_expected_device(), request.get_expected_inode()];
-        if expected[1] == 0 {
-            return Err(capnp::Error::failed(
-                "native expected identity missing".into(),
-            ));
-        }
-        let backend = self.backend.clone();
-        let job = run_directory(&self.server, permit, backend.clone(), move || {
-            backend.retire_created(&name, expected)
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let job = {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let name = name(request.get_name())?;
+                let expected = [request.get_expected_device(), request.get_expected_inode()];
+                if expected[1] == 0 {
+                    return Err(capnp::Error::failed(
+                        "native expected identity missing".into(),
+                    ));
+                }
+                let backend = self.backend.clone();
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.retire_created(&name, expected)
+                })
+                .await?
+            };
+            if let Some(job) = job {
+                results.get().set_job(job_client(self.server.clone(), job));
+            } else {
+                results
+                    .get()
+                    .set_status(fs_capnp::NativeEntryStatus::Refused);
+            }
+            Ok(())
         })
-        .await?;
-        if let Some(job) = job {
-            results.get().set_job(job_client(self.server.clone(), job));
-        } else {
-            results
-                .get()
-                .set_status(fs_capnp::NativeEntryStatus::Refused);
-        }
-        Ok(())
     }
     fn create_file(
         self: Rc<Self>,
@@ -587,13 +624,15 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::CreateFileResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let name = name(params.get()?.get_name())?;
-            let backend = Arc::clone(&self.backend);
-            let job = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.create_file(name)
-            })
-            .await?;
+            let job = {
+                let permit = self.server.admit_call()?;
+                let name = name(params.get()?.get_name())?;
+                let backend = Arc::clone(&self.backend);
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.create_file(name)
+                })
+                .await?
+            };
             let Some(job) = job else {
                 results
                     .get()
@@ -613,19 +652,22 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::RecoveriesResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let request = params.get()?;
-            let raw = request.get_after()?;
-            if !raw.is_empty() && raw.len() != 24 {
-                return Err(capnp::Error::failed("Invalid recovery continuation".into()));
-            }
-            let after = raw.to_vec();
-            let requested_after = after.clone();
-            let backend = self.backend.clone();
-            let page = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.recoveries(&requested_after)
-            })
-            .await?;
+            let (page, after) = {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let raw = request.get_after()?;
+                if !raw.is_empty() && raw.len() != 24 {
+                    return Err(capnp::Error::failed("Invalid recovery continuation".into()));
+                }
+                let after = raw.to_vec();
+                let requested_after = after.clone();
+                let backend = self.backend.clone();
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.recoveries(&requested_after)
+                })
+                .await
+                .map(|page| (page, after))?
+            };
             let Some(page) = page else {
                 results
                     .get()
@@ -649,7 +691,7 @@ impl directory_handle::Server for Directory {
                     .map_err(|_| capnp::Error::failed("Recovery page too large".into()))?,
             );
             for (index, entry) in page.entries.iter().enumerate() {
-                let mut row = rows.reborrow().get(index as u32);
+                let mut row = rows.reborrow().get(wire_u32(index)?);
                 if entry.recovery == [0; 16] || entry.operation == [0; 16] {
                     return Err(capnp::Error::failed(
                         "Invalid native recovery identifiers".into(),
@@ -689,21 +731,23 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::RestoreCapturedResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let request = params.get()?;
-            let recovery: [u8; 16] = request
-                .get_recovery()?
-                .try_into()
-                .map_err(|_| capnp::Error::failed("Invalid recovery ID".into()))?;
-            if recovery == [0; 16] {
-                return Err(capnp::Error::failed("Invalid recovery ID".into()));
-            }
-            let name = name(request.get_name())?;
-            let backend = self.backend.clone();
-            let job = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.restore_captured(recovery, name)
-            })
-            .await?;
+            let job = {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let recovery: [u8; 16] = request
+                    .get_recovery()?
+                    .try_into()
+                    .map_err(|_| capnp::Error::failed("Invalid recovery ID".into()))?;
+                if recovery == [0; 16] {
+                    return Err(capnp::Error::failed("Invalid recovery ID".into()));
+                }
+                let name = name(request.get_name())?;
+                let backend = self.backend.clone();
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.restore_captured(recovery, name)
+                })
+                .await?
+            };
             let Some(job) = job else {
                 results
                     .get()
@@ -720,13 +764,15 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::CreateDirectoryResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let name = name(params.get()?.get_name())?;
-            let backend = Arc::clone(&self.backend);
-            let job = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.create_directory(name)
-            })
-            .await?;
+            let job = {
+                let permit = self.server.admit_call()?;
+                let name = name(params.get()?.get_name())?;
+                let backend = Arc::clone(&self.backend);
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.create_directory(name)
+                })
+                .await?
+            };
             let Some(job) = job else {
                 results
                     .get()
@@ -745,21 +791,23 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::AtomicSaveResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let request = params.get()?;
-            let temporary = name(request.get_temporary())?;
-            let target = name(request.get_target())?;
-            let expected = [request.get_expected_device(), request.get_expected_inode()];
-            if expected[1] == 0 {
-                return Err(capnp::Error::failed(
-                    "invalid AtomicSave temporary identity".into(),
-                ));
+            if {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let temporary = name(request.get_temporary())?;
+                let target = name(request.get_target())?;
+                let expected = [request.get_expected_device(), request.get_expected_inode()];
+                if expected[1] == 0 {
+                    return Err(capnp::Error::failed(
+                        "invalid AtomicSave temporary identity".into(),
+                    ));
+                }
+                let backend = Arc::clone(&self.backend);
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.atomic_save(&temporary, expected, &target)
+                })
+                .await?
             }
-            let backend = Arc::clone(&self.backend);
-            if run_directory(&self.server, permit, backend.clone(), move || {
-                backend.atomic_save(&temporary, expected, &target)
-            })
-            .await?
             .is_none()
             {
                 results
@@ -775,15 +823,17 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::RenameReplaceResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let request = params.get()?;
-            let old = name(request.get_name())?;
-            let new = name(request.get_new_name())?;
-            let backend = Arc::clone(&self.backend);
-            let job = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.rename_replace(&old, new)
-            })
-            .await?;
+            let job = {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let old = name(request.get_name())?;
+                let new = name(request.get_new_name())?;
+                let backend = Arc::clone(&self.backend);
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.rename_replace(&old, new)
+                })
+                .await?
+            };
             let Some(job) = job else {
                 results
                     .get()
@@ -802,15 +852,17 @@ impl directory_handle::Server for Directory {
         mut results: directory_handle::RenameNoReplaceResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let request = params.get()?;
-            let old = name(request.get_name())?;
-            let new = name(request.get_new_name())?;
-            let backend = Arc::clone(&self.backend);
-            let job = run_directory(&self.server, permit, backend.clone(), move || {
-                backend.rename_no_replace(&old, new)
-            })
-            .await?;
+            let job = {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let old = name(request.get_name())?;
+                let new = name(request.get_new_name())?;
+                let backend = Arc::clone(&self.backend);
+                run_directory(&self.server, permit, backend.clone(), move || {
+                    backend.rename_no_replace(&old, new)
+                })
+                .await?
+            };
             let Some(job) = job else {
                 results
                     .get()
@@ -839,12 +891,14 @@ impl native_job::Server for Job {
         mut results: native_job::CreatedTemporaryResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let job = self.job.clone();
-            let temporary = run(&self.server, permit, move || {
-                checked_result(|| job.live_scope(), || job.created_temporary())
-            })
-            .await?;
+            let temporary = {
+                let permit = self.server.admit_call()?;
+                let job = self.job.clone();
+                run(&self.server, permit, move || {
+                    checked_result(|| job.live_scope(), || job.created_temporary())
+                })
+                .await?
+            };
             if let Some(backend) = temporary {
                 results
                     .get()
@@ -867,12 +921,14 @@ impl native_job::Server for Job {
         mut results: native_job::PinReplacementResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let job = self.job.clone();
-            let pin = run(&self.server, permit, move || {
-                checked_result(|| job.live_scope(), || job.pin_replacement())
-            })
-            .await?;
+            let pin = {
+                let permit = self.server.admit_call()?;
+                let job = self.job.clone();
+                run(&self.server, permit, move || {
+                    checked_result(|| job.live_scope(), || job.pin_replacement())
+                })
+                .await?
+            };
             if let Some(pin) = pin {
                 results
                     .get()
@@ -908,12 +964,14 @@ impl native_job::Server for Job {
         mut results: native_job::PollResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let job = Arc::clone(&self.job);
-            let poll = run(&self.server, permit, move || {
-                checked_result(|| job.live_scope(), || job.poll())
-            })
-            .await?;
+            let poll = {
+                let permit = self.server.admit_call()?;
+                let job = Arc::clone(&self.job);
+                run(&self.server, permit, move || {
+                    checked_result(|| job.live_scope(), || job.poll())
+                })
+                .await?
+            };
             let Some(poll) = poll else {
                 results
                     .get()
@@ -928,9 +986,9 @@ impl native_job::Server for Job {
                     "native job exceeded update bound".into(),
                 ));
             }
-            let mut rows = out.init_updates(updates.len() as u32);
+            let mut rows = out.init_updates(wire_u32(updates.len())?);
             for (index, update) in updates.iter().enumerate() {
-                let row = rows.reborrow().get(index as u32);
+                let row = rows.reborrow().get(wire_u32(index)?);
                 match update {
                     JobUpdate::Progress {
                         sequence,
@@ -980,9 +1038,9 @@ impl native_job::Server for Job {
                             ));
                         }
                         out.set_error(message);
-                        let mut ids = out.init_recoveries(recoveries.len() as u32);
+                        let mut ids = out.init_recoveries(wire_u32(recoveries.len())?);
                         for (index, recovery) in recoveries.iter().enumerate() {
-                            ids.set(index as u32, recovery);
+                            ids.set(wire_u32(index)?, recovery);
                         }
                     }
                     JobUpdate::Finished {
@@ -1006,12 +1064,14 @@ impl native_job::Server for Job {
         mut results: native_job::CancelResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let job = Arc::clone(&self.job);
-            if run(&self.server, permit, move || {
-                checked_result(|| job.live_scope(), || job.cancel())
-            })
-            .await?
+            if {
+                let permit = self.server.admit_call()?;
+                let job = Arc::clone(&self.job);
+                run(&self.server, permit, move || {
+                    checked_result(|| job.live_scope(), || job.cancel())
+                })
+                .await?
+            }
             .is_none()
             {
                 results
@@ -1052,12 +1112,14 @@ impl metadata_pin::Server for MetadataPin {
         mut results: metadata_pin::MetadataResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let backend = self.backend.clone();
-            let stat = run(&self.server, permit, move || {
-                checked_result(|| backend.live_scope(), || backend.metadata())
-            })
-            .await?;
+            let stat = {
+                let permit = self.server.admit_call()?;
+                let backend = self.backend.clone();
+                run(&self.server, permit, move || {
+                    checked_result(|| backend.live_scope(), || backend.metadata())
+                })
+                .await?
+            };
             let Some(stat) = stat else {
                 results
                     .get()
@@ -1090,24 +1152,23 @@ impl directory_cursor::Server for Cursor {
         mut results: directory_cursor::PageResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let expected = params.get()?.get_expected_sequence();
-            let backend = self.backend.clone();
-            let page = run(&self.server, permit, move || {
-                backend.check()?;
-                let page = backend.page(expected);
-                backend.check()?;
-                Ok(page)
-            })
-            .await?;
-            let page = match page {
-                Ok(page) => page,
-                Err(_) => {
-                    results
-                        .get()
-                        .set_status(fs_capnp::NativeEntryStatus::Refused);
-                    return Ok(());
-                }
+            let page = {
+                let permit = self.server.admit_call()?;
+                let expected = params.get()?.get_expected_sequence();
+                let backend = self.backend.clone();
+                run(&self.server, permit, move || {
+                    backend.check()?;
+                    let page = backend.page(expected);
+                    backend.check()?;
+                    Ok(page)
+                })
+                .await?
+            };
+            let Ok(page) = page else {
+                results
+                    .get()
+                    .set_status(fs_capnp::NativeEntryStatus::Refused);
+                return Ok(());
             };
             if page.entries.len() > 128
                 || page
@@ -1120,9 +1181,9 @@ impl directory_cursor::Server for Cursor {
             let mut out = results.get();
             out.set_done(page.done);
             out.set_next_sequence(page.next_sequence);
-            let mut rows = out.init_entries(page.entries.len() as u32);
+            let mut rows = out.init_entries(wire_u32(page.entries.len())?);
             for (index, entry) in page.entries.iter().enumerate() {
-                let mut row = rows.reborrow().get(index as u32);
+                let mut row = rows.reborrow().get(wire_u32(index)?);
                 row.set_name(entry.name.as_os_str().as_bytes());
                 if let Some(stat) = &entry.stat {
                     row.set_device(stat.identity[0]);
@@ -1148,25 +1209,27 @@ struct ReplacementPin {
     reason = "capnp methods return the concrete Promise behind generated impl Future"
 )]
 impl fs_capnp::replacement_pin::Server for ReplacementPin {
-    async fn commit_with_history(
+    fn commit_with_history(
         self: Rc<Self>,
         params: fs_capnp::replacement_pin::CommitWithHistoryParams,
         _: fs_capnp::replacement_pin::CommitWithHistoryResults,
-    ) -> Result<(), capnp::Error> {
-        let permit = self.server.admit_call()?;
-        let request = params.get()?;
-        let raw = request.get_receipt()?;
-        if raw.is_empty() || raw.len() > crate::external_history::LIMIT {
-            return Err(capnp::Error::failed(
-                "Invalid certified commit receipt length".into(),
-            ));
-        }
-        let bytes = raw.to_vec();
-        let pin = self.pin.clone();
-        run(&self.server, permit, move || {
-            pin.commit_with_history(&bytes)
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let permit = self.server.admit_call()?;
+            let request = params.get()?;
+            let raw = request.get_receipt()?;
+            if raw.is_empty() || raw.len() > crate::external_history::LIMIT {
+                return Err(capnp::Error::failed(
+                    "Invalid certified commit receipt length".into(),
+                ));
+            }
+            let bytes = raw.to_vec();
+            let pin = self.pin.clone();
+            run(&self.server, permit, move || {
+                pin.commit_with_history(&bytes)
+            })
+            .await
         })
-        .await
     }
 
     fn check(
@@ -1186,15 +1249,17 @@ impl fs_capnp::replacement_pin::Server for ReplacementPin {
         mut results: fs_capnp::replacement_pin::ObserveResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let pin = self.pin.clone();
-            let value = run(&self.server, permit, move || {
-                pin.check()?;
-                let value = pin.observe()?;
-                pin.check()?;
-                Ok(value)
-            })
-            .await?;
+            let value = {
+                let permit = self.server.admit_call()?;
+                let pin = self.pin.clone();
+                run(&self.server, permit, move || {
+                    pin.check()?;
+                    let value = pin.observe()?;
+                    pin.check()?;
+                    Ok(value)
+                })
+                .await?
+            };
             if value.operation == [0; 16]
                 || value.capture == [0; 16]
                 || value.source_owner == [0; 32]
@@ -1226,6 +1291,62 @@ impl fs_capnp::replacement_pin::Server for ReplacementPin {
 #[cfg(test)]
 mod replacement_pin_tests {
     use super::*;
+    use crate::workspace_server::MAX_BACKEND_CALLS;
+    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+    fn assert_connected_pin_custody<'a>(
+        job: &'a crate::directory_client::NativeJobClient,
+        fixture: &'a crate::operations::tests::ActualReplacementFixture,
+        directory: &'a crate::directory::DirectoryCapability,
+        operation: crate::recovery::OperationId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+        Box::pin(async move {
+            let pin = job.pin_replacement().await.unwrap();
+            assert!(pin.commit_with_history(b"{}").await.is_err());
+            pin.check().await.unwrap();
+            let observed = pin.observe().await.unwrap();
+            assert_eq!(&observed.operation, operation.as_bytes());
+            assert_eq!(observed.source_owner, [37; 32]);
+            assert_eq!(observed.source, observed.destination);
+            assert_ne!(observed.source, observed.victim);
+            assert!(matches!(
+                directory
+                    .restore_captured(observed.capture, EntryName::new("restored".into()).unwrap()),
+                Err(crate::FsError::Busy)
+            ));
+            // Duplicate requests share the one genuine native exclusion claim.
+            let duplicate = job.pin_replacement().await.unwrap();
+            assert_eq!(duplicate.observe().await.unwrap(), observed);
+            drop(pin);
+            drop(duplicate);
+            // Observe actual remote-capability release, never assume dropping the
+            // client synchronously released the original-user capture claim.
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(2))
+                .unwrap();
+            let local = loop {
+                match fixture.session.operation_store().unwrap().pin_replacement(
+                    &fixture.session,
+                    &operation,
+                    &fixture.parent,
+                ) {
+                    Ok(pin) => break pin,
+                    Err(crate::FsError::Busy) if std::time::Instant::now() < deadline => {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                    Err(error) => panic!("actual remote capture release failed: {error}"),
+                }
+            };
+            local.check(&fixture.session, &fixture.parent).unwrap();
+            drop(local);
+            let pin = job.pin_replacement().await.unwrap();
+            fixture.revoke().unwrap();
+            assert!(pin.check().await.is_err());
+            assert!(pin.observe().await.is_err());
+            drop(pin);
+        })
+    }
+
     #[test]
     fn actual_connected_replacement_pin_holds_capture_and_refuses_revoked_scope() {
         let mut fixture = crate::operations::tests::completed_replacement_for_transport();
@@ -1295,47 +1416,7 @@ mod replacement_pin_tests {
             let stop_client = client_rpc.get_disconnector();
             let client_task = tokio::task::spawn_local(client_rpc);
             let job = crate::directory_client::NativeJobClient::for_transport_test(raw);
-            let pin = job.pin_replacement().await.unwrap();
-            assert!(pin.commit_with_history(b"{}").await.is_err());
-            pin.check().await.unwrap();
-            let observed = pin.observe().await.unwrap();
-            assert_eq!(&observed.operation, operation.as_bytes());
-            assert_eq!(observed.source_owner, [37; 32]);
-            assert_eq!(observed.source, observed.destination);
-            assert_ne!(observed.source, observed.victim);
-            assert!(matches!(
-                directory
-                    .restore_captured(observed.capture, EntryName::new("restored".into()).unwrap()),
-                Err(crate::FsError::Busy)
-            ));
-            // Duplicate requests share the one genuine native exclusion claim.
-            let duplicate = job.pin_replacement().await.unwrap();
-            assert_eq!(duplicate.observe().await.unwrap(), observed);
-            drop(pin);
-            drop(duplicate);
-            // Observe actual remote-capability release, never assume dropping the
-            // client synchronously released the original-user capture claim.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            let local = loop {
-                match fixture.session.operation_store().unwrap().pin_replacement(
-                    &fixture.session,
-                    &operation,
-                    &fixture.parent,
-                ) {
-                    Ok(pin) => break pin,
-                    Err(crate::FsError::Busy) if std::time::Instant::now() < deadline => {
-                        tokio::time::sleep(std::time::Duration::from_millis(1)).await
-                    }
-                    Err(error) => panic!("actual remote capture release failed: {error}"),
-                }
-            };
-            local.check(&fixture.session, &fixture.parent).unwrap();
-            drop(local);
-            let pin = job.pin_replacement().await.unwrap();
-            fixture.revoke().unwrap();
-            assert!(pin.check().await.is_err());
-            assert!(pin.observe().await.is_err());
-            drop(pin);
+            assert_connected_pin_custody(&job, &fixture, &directory, operation).await;
             drop(job);
             stop_client.await.unwrap();
             stop_server.await.unwrap();
@@ -1389,18 +1470,20 @@ impl fs_capnp::pending_replacement::Server for PendingReplacement {
         mut results: fs_capnp::pending_replacement::AcknowledgedCommittedPinResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let pending = self.pending.clone();
-            let (pin, job) = run(&self.server, permit, move || {
-                pending.check()?;
-                let pin = pending.acknowledged_committed_pin()?;
-                let job = pending.acknowledged_committed_job()?;
-                pin.check()?;
-                pin.observe()?;
-                pending.check()?;
-                Ok((pin, job))
-            })
-            .await?;
+            let (pin, job) = {
+                let permit = self.server.admit_call()?;
+                let pending = self.pending.clone();
+                run(&self.server, permit, move || {
+                    pending.check()?;
+                    let pin = pending.acknowledged_committed_pin()?;
+                    let job = pending.acknowledged_committed_job()?;
+                    pin.check()?;
+                    pin.observe()?;
+                    pending.check()?;
+                    Ok((pin, job))
+                })
+                .await?
+            };
             results
                 .get()
                 .set_handle(capnp_rpc::new_client(ReplacementPin {
@@ -1417,23 +1500,25 @@ impl fs_capnp::pending_replacement::Server for PendingReplacement {
         mut results: fs_capnp::pending_replacement::ArmDaemonHandoffResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let bytes = params.get()?.get_challenge()?;
-            let challenge: [u8; 32] = bytes
-                .try_into()
-                .map_err(|_| capnp::Error::failed("invalid handoff challenge".into()))?;
-            let registry = self.server.handoffs.clone();
-            let pending = self.pending.clone();
-            let ticket = run(&self.server, permit, move || {
-                pending.check()?;
-                let ticket = match registry {
-                    Some(registry) => registry.arm(pending.clone(), challenge)?,
-                    None => pending.arm_daemon_handoff(challenge)?,
-                };
-                pending.check()?;
-                Ok(ticket)
-            })
-            .await?;
+            let ticket = {
+                let permit = self.server.admit_call()?;
+                let bytes = params.get()?.get_challenge()?;
+                let challenge: [u8; 32] = bytes
+                    .try_into()
+                    .map_err(|_| capnp::Error::failed("invalid handoff challenge".into()))?;
+                let registry = self.server.handoffs.clone();
+                let pending = self.pending.clone();
+                run(&self.server, permit, move || {
+                    pending.check()?;
+                    let ticket = match registry {
+                        Some(registry) => registry.arm(pending.clone(), challenge)?,
+                        None => pending.arm_daemon_handoff(challenge)?,
+                    };
+                    pending.check()?;
+                    Ok(ticket)
+                })
+                .await?
+            };
             results.get().set_ticket(&ticket);
             Ok(())
         })
@@ -1445,16 +1530,18 @@ impl fs_capnp::pending_replacement::Server for PendingReplacement {
         mut results: fs_capnp::pending_replacement::ObserveResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let pending = self.pending.clone();
-            let value = run(&self.server, permit, move || {
-                pending.check()?;
-                let value = pending.observe()?;
-                pending.check()?;
-                value.validate()?;
-                Ok(value)
-            })
-            .await?;
+            let value = {
+                let permit = self.server.admit_call()?;
+                let pending = self.pending.clone();
+                run(&self.server, permit, move || {
+                    pending.check()?;
+                    let value = pending.observe()?;
+                    pending.check()?;
+                    value.validate()?;
+                    Ok(value)
+                })
+                .await?
+            };
             let mut out = results.get().init_observation();
             out.set_purpose(match value.purpose {
                 crate::directory_backend::ReplacementPurpose::ReplacementRename => {
@@ -1505,25 +1592,27 @@ impl fs_capnp::pending_replacement::Server for PendingReplacement {
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
             // Finite admission precedes even the bounded payload clone.
-            let permit = self.server.admit_call()?;
-            let request = params.get()?;
-            let raw = request.get_receipt()?;
-            if raw.is_empty() || raw.len() > crate::external_history::LIMIT {
-                return Err(capnp::Error::failed(
-                    "Invalid certified prepare receipt length".into(),
-                ));
-            }
-            let receipt = raw.to_vec();
-            let pending = self.pending.clone();
-            let job = run(&self.server, permit, move || {
-                pending.check()?;
-                let job = pending.start_with_history(&receipt)?;
-                if let Some(scope) = job.live_scope() {
-                    scope?;
+            let job = {
+                let permit = self.server.admit_call()?;
+                let request = params.get()?;
+                let raw = request.get_receipt()?;
+                if raw.is_empty() || raw.len() > crate::external_history::LIMIT {
+                    return Err(capnp::Error::failed(
+                        "Invalid certified prepare receipt length".into(),
+                    ));
                 }
-                Ok(job)
-            })
-            .await?;
+                let receipt = raw.to_vec();
+                let pending = self.pending.clone();
+                run(&self.server, permit, move || {
+                    pending.check()?;
+                    let job = pending.start_with_history(&receipt)?;
+                    if let Some(scope) = job.live_scope() {
+                        scope?;
+                    }
+                    Ok(job)
+                })
+                .await?
+            };
             // The pending capability is consumed: no post-check on its closed
             // reservation and no raw start or automatic mutation replay exists.
             results.get().set_job(job_client(self.server.clone(), job));
@@ -1535,9 +1624,69 @@ impl fs_capnp::pending_replacement::Server for PendingReplacement {
 #[cfg(test)]
 mod pending_replacement_tests {
     use super::*;
+    use crate::workspace_server::MAX_BACKEND_CALLS;
+    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+    fn assert_pending_refuses_uncertified_start<'a>(
+        pending: &'a crate::directory_client::PendingReplacementClient,
+        fixture: &'a crate::operations::tests::ActualPendingFixture,
+        operation: [u8; 16],
+        revoke_before_start: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+        use ed25519_dalek::{Signer, SigningKey};
+        Box::pin(async move {
+            assert!(
+                pending.acknowledged_committed_pin().await.is_err(),
+                "real zero-effect reservation has no committed job/pin"
+            );
+            assert!(pending.acknowledged_committed_job().await.is_err());
+            let observed = pending.observe().await.unwrap();
+            assert_eq!(observed.operation, operation);
+            assert_eq!(observed.source, fixture.temporary_identity);
+            assert_eq!(observed.expected_victim, fixture.victim_identity);
+            fixture.assert_original_entries();
+            if revoke_before_start {
+                fixture.revoke().unwrap();
+                assert!(pending.check_scope().await.is_err());
+                assert!(pending.observe().await.is_err());
+                assert!(pending.acknowledged_committed_pin().await.is_err());
+                assert!(pending.acknowledged_committed_job().await.is_err());
+                fixture.assert_original_entries();
+            } else {
+                // A genuinely signed well-formed receipt is still insufficient:
+                // the actual source has no admitted root-sealed daemon verifier.
+                let signer = SigningKey::from_bytes(&[43; 32]);
+                let person = SigningKey::from_bytes(&[44; 32]);
+                let mut receipt = crate::external_history::PreparedReceipt {
+                    schema: 1,
+                    operation_id: uuid::Uuid::from_bytes(observed.operation).to_string(),
+                    source_owner: observed.source_owner,
+                    intent_digest: observed.intent_digest,
+                    archive_binding_digest: observed.archive_plan_digest,
+                    personal_room: uuid::Uuid::from_u128(123).to_string(),
+                    person: person.verifying_key().to_bytes(),
+                    device: signer.verifying_key().to_bytes(),
+                    transaction_digest: [45; 32],
+                    signature: Vec::new(),
+                };
+                receipt.signature = signer
+                    .sign(&receipt.signing_bytes().unwrap())
+                    .to_bytes()
+                    .to_vec();
+                let bytes = serde_json::to_vec(&receipt).unwrap();
+                assert!(pending.start_with_history(&bytes).await.is_err());
+                fixture.assert_original_entries();
+                assert!(
+                    pending.check_scope().await.is_err(),
+                    "one-shot refusal cannot replay native start"
+                );
+                assert!(pending.observe().await.is_err());
+            }
+        })
+    }
+
     #[test]
     fn actual_connected_pending_work_cannot_start_without_certified_verifier() {
-        use ed25519_dalek::{Signer, SigningKey};
         for revoke_before_start in [false, true] {
             let mut fixture = crate::operations::tests::pending_replacement_for_transport();
             let directory = crate::directory::DirectoryCapability::new(
@@ -1615,53 +1764,13 @@ mod pending_replacement_tests {
                     let client_task = tokio::task::spawn_local(client_rpc);
                     let pending =
                         crate::directory_client::PendingReplacementClient::for_transport_test(raw);
-                    assert!(
-                        pending.acknowledged_committed_pin().await.is_err(),
-                        "real zero-effect reservation has no committed job/pin"
-                    );
-                    assert!(pending.acknowledged_committed_job().await.is_err());
-                    let observed = pending.observe().await.unwrap();
-                    assert_eq!(observed.operation, operation);
-                    assert_eq!(observed.source, fixture.temporary_identity);
-                    assert_eq!(observed.expected_victim, fixture.victim_identity);
-                    fixture.assert_original_entries();
-                    if revoke_before_start {
-                        fixture.revoke().unwrap();
-                        assert!(pending.check_scope().await.is_err());
-                        assert!(pending.observe().await.is_err());
-                        assert!(pending.acknowledged_committed_pin().await.is_err());
-                        assert!(pending.acknowledged_committed_job().await.is_err());
-                        fixture.assert_original_entries();
-                    } else {
-                        // A genuinely signed well-formed receipt is still insufficient:
-                        // the actual source has no admitted root-sealed daemon verifier.
-                        let signer = SigningKey::from_bytes(&[43; 32]);
-                        let person = SigningKey::from_bytes(&[44; 32]);
-                        let mut receipt = crate::external_history::PreparedReceipt {
-                            schema: 1,
-                            operation_id: uuid::Uuid::from_bytes(observed.operation).to_string(),
-                            source_owner: observed.source_owner,
-                            intent_digest: observed.intent_digest,
-                            archive_binding_digest: observed.archive_plan_digest,
-                            personal_room: uuid::Uuid::from_u128(123).to_string(),
-                            person: person.verifying_key().to_bytes(),
-                            device: signer.verifying_key().to_bytes(),
-                            transaction_digest: [45; 32],
-                            signature: Vec::new(),
-                        };
-                        receipt.signature = signer
-                            .sign(&receipt.signing_bytes().unwrap())
-                            .to_bytes()
-                            .to_vec();
-                        let bytes = serde_json::to_vec(&receipt).unwrap();
-                        assert!(pending.start_with_history(&bytes).await.is_err());
-                        fixture.assert_original_entries();
-                        assert!(
-                            pending.check_scope().await.is_err(),
-                            "one-shot refusal cannot replay native start"
-                        );
-                        assert!(pending.observe().await.is_err());
-                    }
+                    assert_pending_refuses_uncertified_start(
+                        &pending,
+                        &fixture,
+                        operation,
+                        revoke_before_start,
+                    )
+                    .await;
                     pending.cancel().await.unwrap();
                     drop(pending);
                     stop_client.await.unwrap();
@@ -1684,117 +1793,213 @@ struct CreatedTemporary {
     server: Rc<Server>,
     backend: Arc<dyn crate::directory_backend::WorkspaceCreatedTemporaryBackend>,
 }
+#[allow(
+    refining_impl_trait,
+    reason = "capnp methods return the concrete Promise behind generated impl Future"
+)]
 impl fs_capnp::created_temporary::Server for CreatedTemporary {
-    async fn set_permissions(
+    fn set_permissions(
         self: Rc<Self>,
         params: fs_capnp::created_temporary::SetPermissionsParams,
         _: fs_capnp::created_temporary::SetPermissionsResults,
-    ) -> Result<(), capnp::Error> {
-        let permit = self.server.admit_call()?;
-        let mode = params.get()?.get_mode();
-        if mode & !0o7777 != 0 {
-            return Err(capnp::Error::failed("invalid own-created mode".into()));
-        }
-        let backend = self.backend.clone();
-        run(&self.server, permit, move || backend.set_permissions(mode)).await
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let permit = self.server.admit_call()?;
+            let mode = params.get()?.get_mode();
+            if mode & !0o7777 != 0 {
+                return Err(capnp::Error::failed("invalid own-created mode".into()));
+            }
+            let backend = self.backend.clone();
+            run(&self.server, permit, move || backend.set_permissions(mode)).await
+        })
     }
 
-    async fn prepare_atomic_save(
+    fn prepare_atomic_save(
         self: Rc<Self>,
         _: fs_capnp::created_temporary::PrepareAtomicSaveParams,
         mut results: fs_capnp::created_temporary::PrepareAtomicSaveResults,
-    ) -> Result<(), capnp::Error> {
-        use crate::directory_backend::AtomicSavePreparation as Outcome;
-        let permit = self.server.admit_call()?;
-        let backend = self.backend.clone();
-        let outcome = run(&self.server, permit, move || {
-            backend.check()?;
-            let outcome = backend.prepare_atomic_save();
-            if matches!(outcome, Outcome::Refused(_)) {
-                backend.check()?;
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            use crate::directory_backend::AtomicSavePreparation as Outcome;
+            let outcome = {
+                let permit = self.server.admit_call()?;
+                let backend = self.backend.clone();
+                run(&self.server, permit, move || {
+                    backend.check()?;
+                    let outcome = backend.prepare_atomic_save();
+                    if matches!(outcome, Outcome::Refused(_)) {
+                        backend.check()?;
+                    }
+                    Ok(outcome)
+                })
+                .await?
+            };
+            match outcome {
+                Outcome::Prepared(pending) => {
+                    results
+                        .get()
+                        .set_pending(capnp_rpc::new_client(PendingReplacement {
+                            server: self.server.clone(),
+                            pending,
+                        }));
+                }
+                Outcome::Refused(_) => results
+                    .get()
+                    .set_status(fs_capnp::NativeEntryStatus::Refused),
+                Outcome::Unknown(error) => {
+                    return Err(capnp::Error::failed(error.chars().take(512).collect()));
+                }
             }
-            Ok(outcome)
+            Ok(())
         })
-        .await?;
-        match outcome {
-            Outcome::Prepared(pending) => {
+    }
+
+    fn prepare_replace(
+        self: Rc<Self>,
+        _: fs_capnp::created_temporary::PrepareReplaceParams,
+        mut results: fs_capnp::created_temporary::PrepareReplaceResults,
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let pending = {
+                let permit = self.server.admit_call()?;
+                let backend = self.backend.clone();
+                run(&self.server, permit, move || {
+                    checked_result(|| backend.live_scope(), || backend.prepare_replace())
+                })
+                .await?
+            };
+            if let Some(pending) = pending {
                 results
                     .get()
                     .set_pending(capnp_rpc::new_client(PendingReplacement {
                         server: self.server.clone(),
                         pending,
-                    }))
+                    }));
+            } else {
+                results
+                    .get()
+                    .set_status(fs_capnp::NativeEntryStatus::Refused);
             }
-            Outcome::Refused(_) => results
-                .get()
-                .set_status(fs_capnp::NativeEntryStatus::Refused),
-            Outcome::Unknown(error) => {
-                return Err(capnp::Error::failed(error.chars().take(512).collect()));
-            }
-        }
-        Ok(())
-    }
-
-    async fn prepare_replace(
-        self: Rc<Self>,
-        _: fs_capnp::created_temporary::PrepareReplaceParams,
-        mut results: fs_capnp::created_temporary::PrepareReplaceResults,
-    ) -> Result<(), capnp::Error> {
-        let permit = self.server.admit_call()?;
-        let backend = self.backend.clone();
-        let pending = run(&self.server, permit, move || {
-            checked_result(|| backend.live_scope(), || backend.prepare_replace())
+            Ok(())
         })
-        .await?;
-        if let Some(pending) = pending {
-            results
-                .get()
-                .set_pending(capnp_rpc::new_client(PendingReplacement {
-                    server: self.server.clone(),
-                    pending,
-                }));
-        } else {
-            results
-                .get()
-                .set_status(fs_capnp::NativeEntryStatus::Refused);
-        }
-        Ok(())
     }
 
-    async fn check_scope(
+    fn check_scope(
         self: Rc<Self>,
         _: fs_capnp::created_temporary::CheckScopeParams,
         _: fs_capnp::created_temporary::CheckScopeResults,
-    ) -> Result<(), capnp::Error> {
-        let permit = self.server.admit_call()?;
-        let backend = self.backend.clone();
-        run(&self.server, permit, move || backend.check()).await
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let permit = self.server.admit_call()?;
+            let backend = self.backend.clone();
+            run(&self.server, permit, move || backend.check()).await
+        })
     }
-    async fn retire(
+    fn retire(
         self: Rc<Self>,
         _: fs_capnp::created_temporary::RetireParams,
         mut results: fs_capnp::created_temporary::RetireResults,
-    ) -> Result<(), capnp::Error> {
-        let permit = self.server.admit_call()?;
-        let backend = self.backend.clone();
-        let job = run(&self.server, permit, move || {
-            checked_result(|| backend.live_scope(), || backend.retire())
+    ) -> Promise<(), capnp::Error> {
+        Promise::from_future(async move {
+            let job = {
+                let permit = self.server.admit_call()?;
+                let backend = self.backend.clone();
+                run(&self.server, permit, move || {
+                    checked_result(|| backend.live_scope(), || backend.retire())
+                })
+                .await?
+            };
+            if let Some(job) = job {
+                results.get().set_job(job_client(self.server.clone(), job));
+            } else {
+                results
+                    .get()
+                    .set_status(fs_capnp::NativeEntryStatus::Refused);
+            }
+            Ok(())
         })
-        .await?;
-        if let Some(job) = job {
-            results.get().set_job(job_client(self.server.clone(), job));
-        } else {
-            results
-                .get()
-                .set_status(fs_capnp::NativeEntryStatus::Refused);
-        }
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod created_temporary_tests {
     use super::*;
+    use crate::workspace_server::MAX_BACKEND_CALLS;
+    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+    fn assert_created_custody<'a>(
+        cap: &'a crate::directory_client::CreatedTemporaryClient,
+        fixture: &'a crate::operations::tests::ActualCreatedTemporaryFixture,
+        revoke_before_retire: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+        Box::pin(async move {
+            cap.check().await.unwrap();
+            fixture.assert_original_entries();
+            cap.set_permissions(0o640).await.unwrap();
+            assert!(cap.set_permissions(0o10000).await.is_err());
+            cap.check().await.unwrap();
+            assert!(
+                cap.prepare_replace().await.is_err(),
+                "no sealed selected replacement permit was admitted"
+            );
+            assert!(
+                matches!(
+                    cap.prepare_atomic_save().await,
+                    crate::directory_backend::AtomicSavePreparation::Refused(_)
+                ),
+                "source must acknowledge genuine no-reservation refusal for this creator without sealed AtomicSave consent"
+            );
+            fixture.assert_original_entries();
+            if revoke_before_retire {
+                fixture.revoke().unwrap();
+                assert!(cap.check().await.is_err());
+                assert!(cap.retire().await.is_err());
+                fixture.assert_original_entries();
+            } else {
+                let mut cleanup = cap.retire().await.unwrap();
+                assert!(
+                    cap.retire().await.is_err(),
+                    "actual native custody is one use"
+                );
+                let mut captured = false;
+                loop {
+                    let report = cleanup.poll().await.unwrap();
+                    let mut finished = false;
+                    for update in report.updates {
+                        match update {
+                            JobUpdate::Item {
+                                item: 0,
+                                state: crate::operations::ItemState::Completed,
+                                destination: None,
+                                error: None,
+                                recoveries,
+                            } => {
+                                assert!(!recoveries.is_empty());
+                                captured = true;
+                            }
+                            JobUpdate::Finished {
+                                completed: 1,
+                                failed: 0,
+                                cancelled: 0,
+                            } => {
+                                assert!(captured);
+                                finished = true;
+                            }
+                            JobUpdate::Progress { item: 0, .. } => {}
+                            _ => panic!("unexpected actual cleanup outcome"),
+                        }
+                    }
+                    if finished {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                cap.check().await.unwrap();
+                fixture.assert_retired_recoverably();
+            }
+        })
+    }
+
     #[test]
     fn actual_connected_created_custody_captures_once_and_refuses_revocation() {
         for revoke_before_retire in [false, true] {
@@ -1857,64 +2062,7 @@ mod created_temporary_tests {
                     let client_task = tokio::task::spawn_local(client_rpc);
                     let job = crate::directory_client::NativeJobClient::for_transport_test(raw);
                     let cap = job.created_temporary().await.unwrap();
-                    cap.check().await.unwrap();
-                    fixture.assert_original_entries();
-                    cap.set_permissions(0o640).await.unwrap();
-                    assert!(cap.set_permissions(0o10000).await.is_err());
-                    cap.check().await.unwrap();
-                    assert!(
-                        cap.prepare_replace().await.is_err(),
-                        "no sealed selected replacement permit was admitted"
-                    );
-                    assert!(matches!(cap.prepare_atomic_save().await,crate::directory_backend::AtomicSavePreparation::Refused(_)), "source must acknowledge genuine no-reservation refusal for this creator without sealed AtomicSave consent");
-                    fixture.assert_original_entries();
-                    if revoke_before_retire {
-                        fixture.revoke().unwrap();
-                        assert!(cap.check().await.is_err());
-                        assert!(cap.retire().await.is_err());
-                        fixture.assert_original_entries();
-                    } else {
-                        let mut cleanup = cap.retire().await.unwrap();
-                        assert!(
-                            cap.retire().await.is_err(),
-                            "actual native custody is one use"
-                        );
-                        let mut captured = false;
-                        loop {
-                            let report = cleanup.poll().await.unwrap();
-                            let mut finished = false;
-                            for update in report.updates {
-                                match update {
-                                    JobUpdate::Item {
-                                        item: 0,
-                                        state: crate::operations::ItemState::Completed,
-                                        destination: None,
-                                        error: None,
-                                        recoveries,
-                                    } => {
-                                        assert!(!recoveries.is_empty());
-                                        captured = true;
-                                    }
-                                    JobUpdate::Finished {
-                                        completed: 1,
-                                        failed: 0,
-                                        cancelled: 0,
-                                    } => {
-                                        assert!(captured);
-                                        finished = true;
-                                    }
-                                    JobUpdate::Progress { item: 0, .. } => {}
-                                    _ => panic!("unexpected actual cleanup outcome"),
-                                }
-                            }
-                            if finished {
-                                break;
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                        }
-                        cap.check().await.unwrap();
-                        fixture.assert_retired_recoverably();
-                    }
+                    assert_created_custody(&cap, &fixture, revoke_before_retire).await;
                     drop(cap);
                     drop(job);
                     stop_client.await.unwrap();
@@ -1938,6 +2086,9 @@ pub(super) fn pending_client(
 
 #[cfg(test)]
 mod pending_handoff_tests {
+    use crate::workspace_server::{PendingHandoffRegistry, serve_pending_connected};
+    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
     #[test]
     fn actual_pending_only_bootstrap_refuses_workspace_and_rearm() {
         let mut fixture = crate::operations::tests::pending_replacement_for_transport();
@@ -1976,7 +2127,11 @@ mod pending_handoff_tests {
                 pending.cancel().await.unwrap();
                 assert!(pending.check_scope().await.is_err());
                 fixture.assert_original_entries();
-                server.retire().unwrap();
+                tokio::task::spawn_blocking(move || server.retire()).await.unwrap().unwrap();
+                // The RPC driver can finish with clean EOF. Observe shutdown
+                // through the actual capability, which must now be unusable.
+                super::history_read_handoff_tests::assert_read_driver_departure(task.await.unwrap());
+                let task = tokio::task::spawn_local(async move { pending.observe().await });
                 assert!(task.await.unwrap().is_err(), "client must observe actual connection shutdown");
             }).await.expect("actual connected pending fixture must complete");
         });
@@ -2029,7 +2184,9 @@ impl HistoryReadSlot {
             .fetch_update(
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
-                |held| (held < 64).then_some(held + 1),
+                |held| {
+                    if held < 64 { held.checked_add(1) } else { None }
+                },
             )
             .map_err(|_| capnp::Error::failed("history Read capability pool busy".into()))?;
         Ok(Self)
@@ -2078,24 +2235,25 @@ impl fs_capnp::history_read_subject::Server for HistoryReadSubject {
         mut results: fs_capnp::history_read_subject::ArmDaemonHandoffResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let challenge: [u8; 32] = params
-                .get()?
-                .get_challenge()?
-                .try_into()
-                .map_err(|_| capnp::Error::failed("invalid history Read challenge".into()))?;
-            let backend = self.backend.clone();
-            let registry = self.server.handoffs.clone();
-            let ticket = run(&self.server, permit, move || {
-                backend.check()?;
-                let ticket = match registry {
-                    Some(registry) => registry.arm_read(backend.clone(), challenge),
-                    None => backend.arm_daemon_handoff(challenge),
-                };
-                backend.check()?;
-                Ok(ticket)
-            })
-            .await?;
+            let ticket = {
+                let permit = self.server.admit_call()?;
+                let challenge: [u8; 32] =
+                    params.get()?.get_challenge()?.try_into().map_err(|_| {
+                        capnp::Error::failed("invalid history Read challenge".into())
+                    })?;
+                let backend = self.backend.clone();
+                let registry = self.server.handoffs.clone();
+                run(&self.server, permit, move || {
+                    backend.check()?;
+                    let ticket = match registry {
+                        Some(registry) => registry.arm_read(backend.clone(), challenge),
+                        None => backend.arm_daemon_handoff(challenge),
+                    };
+                    backend.check()?;
+                    Ok(ticket)
+                })
+                .await?
+            };
             match ticket {
                 Ok(ticket) => results.get().set_ticket(&ticket),
                 Err(_) => results
@@ -2134,16 +2292,18 @@ impl fs_capnp::history_read_subject::Server for HistoryReadSubject {
         mut results: fs_capnp::history_read_subject::ObserveResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            let permit = self.server.admit_call()?;
-            let backend = self.backend.clone();
-            let observation = run(&self.server, permit, move || {
-                backend.check()?;
-                let actual = backend.observe()?;
-                actual.validate()?;
-                backend.check()?;
-                Ok(actual)
-            })
-            .await?;
+            let observation = {
+                let permit = self.server.admit_call()?;
+                let backend = self.backend.clone();
+                run(&self.server, permit, move || {
+                    backend.check()?;
+                    let actual = backend.observe()?;
+                    actual.validate()?;
+                    backend.check()?;
+                    Ok(actual)
+                })
+                .await?
+            };
             let mut out = results.get().init_observation();
             out.set_source_owner(&observation.source_owner);
             out.set_root_device(observation.root[0]);
@@ -2153,9 +2313,9 @@ impl fs_capnp::history_read_subject::Server for HistoryReadSubject {
             out.set_device(observation.identity[0]);
             out.set_inode(observation.identity[1]);
             out.set_name(&observation.name);
-            let mut parents = out.init_parents(observation.parents.len() as u32);
+            let mut parents = out.init_parents(wire_u32(observation.parents.len())?);
             for (i, part) in observation.parents.iter().enumerate() {
-                parents.set(i as u32, part);
+                parents.set(wire_u32(i)?, part);
             }
             Ok(())
         })
@@ -2165,6 +2325,9 @@ impl fs_capnp::history_read_subject::Server for HistoryReadSubject {
 #[cfg(all(test, target_os = "linux"))]
 mod history_read_tests {
     use super::*;
+    use crate::workspace_server::MAX_BACKEND_CALLS;
+    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
     #[test]
     fn connected_history_subject_requires_real_read_and_refuses_revoke() {
         for with_read in [false, true] {
@@ -2278,6 +2441,9 @@ pub(super) fn history_read_client(
 #[cfg(all(test, target_os = "linux"))]
 mod history_read_handoff_tests {
     use super::*;
+    use crate::workspace_server::{PendingHandoffRegistry, serve_history_read_connected};
+    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
     #[test]
     fn actual_read_registry_is_one_shot_and_closed_source_revokes() {
         let fixture = crate::operations::tests::history_read_for_transport(true);
@@ -2287,7 +2453,7 @@ mod history_read_handoff_tests {
         )
         .unwrap();
         let subject = directory.history_read_subject(&fixture.name).unwrap();
-        let registry = PendingHandoffRegistry::default();
+        let registry = Arc::new(PendingHandoffRegistry::default());
         let challenge = [7; 32];
         let ticket = registry.arm_read(subject.clone(), challenge).unwrap();
         assert!(registry.arm_read(subject.clone(), challenge).is_err());
@@ -2298,6 +2464,39 @@ mod history_read_handoff_tests {
         let same = registry.take_read(ticket, challenge).unwrap();
         assert!(Arc::ptr_eq(&same, &subject));
         assert!(registry.take_read(ticket, challenge).is_err());
+        assert!(
+            registry.arm_read(subject.clone(), [8; 32]).is_err(),
+            "consumed Read handoff stays armed until its observed join and retirement"
+        );
+        // Taking a ticket does not retire its lifecycle. Register the actual
+        // transport, observe its owned worker's departure, then retire the route
+        // before attempting to rearm the same source.
+        let (source, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        registry
+            .begin_read(ticket, same.clone(), source.try_clone().unwrap())
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let server =
+            serve_history_read_connected(source, same, runtime.handle().clone(), registry.clone())
+                .unwrap();
+        let joined = server.retire();
+        registry
+            .observed_join(
+                ticket,
+                joined.as_ref().copied().map_err(ToString::to_string),
+            )
+            .unwrap();
+        joined.unwrap();
+        assert!(
+            registry.arm_read(subject.clone(), [8; 32]).is_err(),
+            "observed join alone must not release the original source route"
+        );
+        registry.retire_read(&subject, ticket).unwrap();
+        drop(client);
         let next = registry.arm_read(subject.clone(), [8; 32]).unwrap();
         fixture.session.close();
         assert!(registry.take_read(next, [8; 32]).is_err());
@@ -2347,7 +2546,7 @@ mod history_read_handoff_tests {
             }).await.expect("actual lower Read bootstrap must finish within bound");
         });
     }
-    fn assert_read_driver_departure(result: Result<(), capnp::Error>) {
+    pub(super) fn assert_read_driver_departure(result: Result<(), capnp::Error>) {
         if let Err(error) = result {
             assert_eq!(
                 error.kind,
@@ -2406,6 +2605,8 @@ mod history_read_handoff_tests {
 #[cfg(test)]
 mod pending_purpose_transport_tests {
     use super::*;
+    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
     struct RelabelledPending {
         actual: crate::directory_backend::PendingReplacementObservation,
     }
@@ -2429,7 +2630,7 @@ mod pending_purpose_transport_tests {
             // Malicious reply relabels only this field. The real native generic
             // reservation bytes, operation and digest are left unchanged.
             out.set_purpose(fs_capnp::ReplacementPurpose::AtomicSave);
-            Promise::ok(())
+            std::future::ready(Ok(()))
         }
     }
     #[test]
@@ -2509,32 +2710,39 @@ mod pending_purpose_transport_tests {
 #[cfg(test)]
 mod atomic_prepare_transport_tests {
     use super::*;
-    async fn completed(job: &mut crate::directory_client::NativeJobClient) {
-        let mut item = false;
-        loop {
-            let report = job.poll().await.unwrap();
-            for update in report.updates {
-                match update {
-                    JobUpdate::Item {
-                        item: 0,
-                        state: crate::operations::ItemState::Completed,
-                        error: None,
-                        ..
-                    } => item = true,
-                    JobUpdate::Finished {
-                        completed: 1,
-                        failed: 0,
-                        cancelled: 0,
-                    } => {
-                        assert!(item);
-                        return;
+    use crate::workspace_server::MAX_BACKEND_CALLS;
+    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+    fn completed(
+        job: &mut crate::directory_client::NativeJobClient,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + '_>> {
+        Box::pin(async move {
+            let mut item = false;
+            loop {
+                let report = job.poll().await.unwrap();
+                for update in report.updates {
+                    match update {
+                        JobUpdate::Item {
+                            item: 0,
+                            state: crate::operations::ItemState::Completed,
+                            error: None,
+                            ..
+                        } => item = true,
+                        JobUpdate::Finished {
+                            completed: 1,
+                            failed: 0,
+                            cancelled: 0,
+                        } => {
+                            assert!(item);
+                            return;
+                        }
+                        JobUpdate::Progress { item: 0, .. } => {}
+                        _ => panic!("unexpected actual native effect outcome"),
                     }
-                    JobUpdate::Progress { item: 0, .. } => {}
-                    _ => panic!("unexpected actual native effect outcome"),
                 }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
+        })
     }
     #[test]
     fn actual_connected_prepare_refusal_allows_cleanup_and_fresh_retry_but_disconnect_is_unknown() {
@@ -2604,16 +2812,19 @@ mod atomic_prepare_transport_tests {
 #[cfg(test)]
 mod malformed_atomic_refusal_tests {
     use super::*;
+    use crate::workspace_server::MAX_BACKEND_CALLS;
+    use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+    use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
     struct MalformedRefusal {
         server: Rc<Server>,
         pending: Arc<dyn crate::directory_backend::WorkspacePendingReplacementBackend>,
     }
     impl fs_capnp::created_temporary::Server for MalformedRefusal {
-        async fn prepare_atomic_save(
+        fn prepare_atomic_save(
             self: Rc<Self>,
             _: fs_capnp::created_temporary::PrepareAtomicSaveParams,
             mut results: fs_capnp::created_temporary::PrepareAtomicSaveResults,
-        ) -> Result<(), capnp::Error> {
+        ) -> impl std::future::Future<Output = Result<(), capnp::Error>> + 'static {
             results
                 .get()
                 .set_status(fs_capnp::NativeEntryStatus::Refused);
@@ -2623,7 +2834,7 @@ mod malformed_atomic_refusal_tests {
                     server: self.server.clone(),
                     pending: self.pending.clone(),
                 }));
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
     #[test]

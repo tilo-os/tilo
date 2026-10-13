@@ -89,7 +89,7 @@ impl DaemonDelegation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum EnrollmentReply {
-    Delegated { delegation: DaemonDelegation },
+    Delegated { delegation: Box<DaemonDelegation> },
     Refused { schema: u32, request_id: String },
 }
 impl EnrollmentReply {
@@ -212,14 +212,14 @@ mod tests {
             },
         };
         let reply = EnrollmentReply::Delegated {
-            delegation: DaemonDelegation {
+            delegation: Box::new(DaemonDelegation {
                 schema: 1,
                 request_id: request.request_id.clone(),
                 context,
                 daemon_pid: 42,
                 daemon_start: 43,
                 program_identity: [44, 45],
-            },
+            }),
         };
         let bytes = reply.encode(&request).unwrap();
         assert!(EnrollmentReply::decode(&bytes, &request).is_ok());

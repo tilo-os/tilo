@@ -217,6 +217,112 @@ fn connected_metadata_pin_does_not_upgrade_enumeration_to_read() {
     drop(runtime);
 }
 
+fn assert_cursor_reads(
+    source: &DirectoryConnection,
+    first: u64,
+    first_page: runtime_fs::directory_backend::DirectoryStreamPage,
+) -> std::collections::HashSet<EntryName> {
+    let mut page = first_page;
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        assert!(page.entries.len() <= 128);
+        for row in page.entries {
+            let stat = row.stat.unwrap();
+            assert!(
+                seen.insert(row.name.clone()),
+                "unmodified directory should enumerate each row once"
+            );
+            let handle = source
+                .open_expected(ROOT_DIRECTORY, &row.name, OpenMode::Read, stat.identity)
+                .unwrap();
+            let name = row.name.as_os_str().to_str().unwrap();
+            let expected = name.replace("entry-", "contents-");
+            assert_eq!(source.read(handle, 0, 64).unwrap(), expected.as_bytes());
+            source.release(handle).unwrap();
+        }
+        if page.done {
+            break;
+        }
+        page = source.cursor_page(first, page.next_sequence).unwrap();
+    }
+    seen
+}
+
+fn assert_vanished_cursor_rows(
+    source: &DirectoryConnection,
+    disk: &std::path::Path,
+    seen: &std::collections::HashSet<EntryName>,
+) {
+    let mutating = source.open_cursor(ROOT_DIRECTORY).unwrap();
+    let primed = source.cursor_page(mutating, 0).unwrap();
+    assert_eq!(primed.entries.len(), 128);
+    assert!(!primed.done);
+    // Prime the actual independent native readDir buffer, then remove all names
+    // without assuming its order. Buffered names must be absent, not denied rows.
+    for name in seen {
+        std::fs::remove_file(disk.join(name.as_os_str())).unwrap();
+    }
+    let mut sequence = primed.next_sequence;
+    let mut reached_eof = false;
+    for _ in 0..16 {
+        let page = source.cursor_page(mutating, sequence).unwrap();
+        assert!(
+            page.entries.is_empty(),
+            "vanished names must not become denial rows"
+        );
+        assert_eq!(page.next_sequence, sequence.checked_add(1).unwrap());
+        sequence = page.next_sequence;
+        if page.done {
+            reached_eof = true;
+            break;
+        }
+    }
+    assert!(
+        reached_eof,
+        "actual finite directory must reach observed EOF"
+    );
+    assert!(source.metadata(ROOT_DIRECTORY).is_ok());
+    source.release_cursor(mutating).unwrap();
+}
+
+fn assert_cursor_limit(source: &DirectoryConnection) {
+    let resident: Vec<_> = (0..64)
+        .map(|_| source.open_cursor(ROOT_DIRECTORY).unwrap())
+        .collect();
+    let limit = source.open_cursor(ROOT_DIRECTORY).unwrap_err();
+    assert!(runtime_fs::native_reply::is_operation_refusal(&limit));
+    assert!(!runtime_fs::native_reply::is_native_refusal(&limit));
+    assert!(source.metadata(ROOT_DIRECTORY).is_ok());
+    for cursor in resident {
+        source.release_cursor(cursor).unwrap();
+    }
+}
+
+fn assert_native_statfs(
+    descriptor: &File,
+    native: &runtime_fs::directory_backend::DirectoryFilesystemStats,
+) {
+    let actual = rustix::fs::fstatvfs(descriptor).unwrap();
+    assert_eq!(native.blocks, actual.f_blocks);
+    assert_eq!(native.block_size, u32::try_from(actual.f_bsize).unwrap());
+    assert_eq!(
+        native.fragment_size,
+        u32::try_from(actual.f_frsize).unwrap()
+    );
+    assert_eq!(native.name_max, u32::try_from(actual.f_namemax).unwrap());
+    assert_eq!(native.files, actual.f_files);
+    assert_eq!(
+        native.read_only,
+        actual
+            .f_flag
+            .contains(rustix::fs::StatVfsMountFlags::RDONLY)
+    );
+    assert!(
+        native.blocks > 0,
+        "fixture must observe actual filesystem capacity"
+    );
+}
+
 #[test]
 fn independent_connected_cursors_stream_and_read_more_than_1024_files() {
     let disk = tempfile::tempdir().unwrap();
@@ -286,71 +392,11 @@ fn independent_connected_cursors_stream_and_read_more_than_1024_files() {
         "per-cursor stale position must not retire Home"
     );
     source.release_cursor(second).unwrap();
-    let mut page = first_page;
-    let mut seen = std::collections::HashSet::new();
-    loop {
-        assert!(page.entries.len() <= 128);
-        for row in page.entries {
-            let stat = row.stat.expect("actual owned rows must be observed");
-            assert!(
-                seen.insert(row.name.clone()),
-                "unmodified directory should enumerate each row once"
-            );
-            let handle = source
-                .open_expected(ROOT_DIRECTORY, &row.name, OpenMode::Read, stat.identity)
-                .unwrap();
-            let name = row.name.as_os_str().to_str().unwrap();
-            let expected = name.replace("entry-", "contents-");
-            assert_eq!(source.read(handle, 0, 64).unwrap(), expected.as_bytes());
-            source.release(handle).unwrap();
-        }
-        if page.done {
-            break;
-        }
-        page = source.cursor_page(first, page.next_sequence).unwrap();
-    }
+    let seen = assert_cursor_reads(&source, first, first_page);
     assert_eq!(seen.len(), 1500);
     source.release_cursor(first).unwrap();
-    let mutating = source.open_cursor(ROOT_DIRECTORY).unwrap();
-    let primed = source.cursor_page(mutating, 0).unwrap();
-    assert_eq!(primed.entries.len(), 128);
-    assert!(!primed.done);
-    // Prime the actual independent native readDir buffer, then remove all names
-    // without assuming its order. Buffered names must be absent, not denied rows.
-    for name in &seen {
-        std::fs::remove_file(disk.path().join(name.as_os_str())).unwrap();
-    }
-    let mut sequence = primed.next_sequence;
-    let mut reached_eof = false;
-    for _ in 0..16 {
-        let page = source.cursor_page(mutating, sequence).unwrap();
-        assert!(
-            page.entries.is_empty(),
-            "vanished names must not become denial rows"
-        );
-        assert_eq!(page.next_sequence, sequence + 1);
-        sequence = page.next_sequence;
-        if page.done {
-            reached_eof = true;
-            break;
-        }
-    }
-    assert!(
-        reached_eof,
-        "actual finite directory must reach observed EOF"
-    );
-    assert!(source.metadata(ROOT_DIRECTORY).is_ok());
-    source.release_cursor(mutating).unwrap();
-    let resident: Vec<_> = (0..64)
-        .map(|_| source.open_cursor(ROOT_DIRECTORY).unwrap())
-        .collect();
-    let limit = source.open_cursor(ROOT_DIRECTORY).unwrap_err();
-    assert!(runtime_fs::native_reply::is_operation_refusal(&limit));
-    assert!(!runtime_fs::native_reply::is_native_refusal(&limit));
-    assert!(source.metadata(ROOT_DIRECTORY).is_ok());
-    for cursor in resident {
-        source.release_cursor(cursor).unwrap();
-    }
+    assert_vanished_cursor_rows(&source, disk.path(), &seen);
+    assert_cursor_limit(&source);
     let revoked = source.open_cursor(ROOT_DIRECTORY).unwrap();
     authority.revoke_directory(&root).unwrap();
     assert!(
@@ -365,9 +411,9 @@ fn independent_connected_cursors_stream_and_read_more_than_1024_files() {
 
 #[test]
 fn connected_statfs_observes_actual_source_filesystem_under_enumerate_only() {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let disk = tempfile::tempdir().unwrap();
     std::fs::write(disk.path().join("file"), b"ungranted bytes").unwrap();
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let raw_target = std::ffi::OsString::from_vec(b"../missing-\xff".to_vec());
     std::os::unix::fs::symlink(&raw_target, disk.path().join("link")).unwrap();
     let descriptor = File::open(disk.path()).unwrap();
@@ -392,25 +438,7 @@ fn connected_statfs_observes_actual_source_filesystem_under_enumerate_only() {
         )
         .unwrap();
     let native = session.directory_statfs(&root).unwrap();
-    let actual = rustix::fs::fstatvfs(&descriptor).unwrap();
-    assert_eq!(native.blocks, actual.f_blocks);
-    assert_eq!(native.block_size, u32::try_from(actual.f_bsize).unwrap());
-    assert_eq!(
-        native.fragment_size,
-        u32::try_from(actual.f_frsize).unwrap()
-    );
-    assert_eq!(native.name_max, u32::try_from(actual.f_namemax).unwrap());
-    assert_eq!(native.files, actual.f_files);
-    assert_eq!(
-        native.read_only,
-        actual
-            .f_flag
-            .contains(rustix::fs::StatVfsMountFlags::RDONLY)
-    );
-    assert!(
-        native.blocks > 0,
-        "fixture must observe actual filesystem capacity"
-    );
+    assert_native_statfs(&descriptor, &native);
     let backend = DirectoryWorkspaceBackend::new(session, root.clone()).unwrap();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

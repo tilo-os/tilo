@@ -213,7 +213,7 @@ pub(in crate::setup) fn enroll_selected_editor_read(
             .write(
                 stream,
                 &EnrollmentReply::Delegated {
-                    delegation: pending.delegation(&request)?,
+                    delegation: Box::new(pending.delegation(&request)?),
                 }
                 .encode(&request)?,
             )

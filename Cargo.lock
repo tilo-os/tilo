@@ -13186,6 +13186,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "libc",
+ "postcard",
  "rand_core 0.10.0",
  "runtime-portal",
  "serde",

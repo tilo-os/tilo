@@ -169,12 +169,12 @@ impl WorkspaceFileBackend for SelectedHandle {
     }
 
     fn flush(&self) -> Result<(), String> {
-        if self.mode != OpenMode::Read {
-            self.session.sync_file(&self.file)
-        } else {
+        if self.mode == OpenMode::Read {
             self.session
                 .metadata(&GrantedEntry::File(self.file.clone()))
                 .map(|_| ())
+        } else {
+            self.session.sync_file(&self.file)
         }
         .map_err(|error| error.to_string())
     }

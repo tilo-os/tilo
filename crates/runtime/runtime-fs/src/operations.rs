@@ -127,7 +127,7 @@ mod created_temporary;
 pub use created_temporary::NativeCreatedTemporary;
 
 impl FsJob {
-    /// Obtain only the opaque custody minted by this exact durable CreateFile
+    /// Obtain only the opaque custody minted by this exact durable `CreateFile`
     /// job. A polled receipt, UUID, name or caller label cannot construct it.
     /// # Errors
     /// Refuses unfinished/failed/noncreation jobs and expired native authority.
@@ -175,11 +175,16 @@ pub struct PreparedNativeReplacement {
 impl PreparedNativeReplacement {
     /// Maximum descriptive metadata observation; these bytes grant no authority.
     pub const DESCRIPTION_LIMIT: usize = 2 * 1024 * 1024;
+    /// Identifier of this live admitted replacement.
+    /// # Errors
+    /// Returns `FsError::Closed` when the reservation has been consumed.
     pub fn operation_id(&self) -> Result<&OperationId, FsError> {
         self.job.as_ref().map(|job| &job.id).ok_or(FsError::Closed)
     }
     /// Descriptive purpose of this same live held native reservation; it is
     /// already part of the signed intent bytes, not an execution authority.
+    /// # Errors
+    /// Refuses consumed reservations or stale native intent observations.
     pub fn purpose(&self) -> Result<NativeReplacementPurpose, FsError> {
         self.intent_digest()?;
         Ok(self
@@ -211,7 +216,7 @@ impl PreparedNativeReplacement {
         }
         Ok(expected.digest)
     }
-    /// Exact source-minted canonical metadata bytes hashed by intent_digest.
+    /// Exact source-minted canonical metadata bytes hashed by `intent_digest`.
     /// This description cannot construct Work, grants or history authority.
     /// # Errors
     /// Refuses closed/stale reservations and oversized metadata descriptions.
@@ -230,7 +235,7 @@ impl PreparedNativeReplacement {
         Ok(description)
     }
     /// Observe this actual admitted future protected capture plan. This is not
-    /// evidence of an existing capture, RecoveryId, or immutable byte archive.
+    /// evidence of an existing capture, `RecoveryId`, or immutable byte archive.
     /// # Errors
     /// Refuses closed reservations, changed intent or non-prepared journal state.
     pub fn archive_plan_digest(&self) -> Result<[u8; 32], FsError> {
@@ -999,32 +1004,7 @@ fn execute(work: Work) {
         }
         let mut outcome = match ctx.cancelled() {
             Err(e) => ctx.failure(e),
-            Ok(()) => match &work.request {
-                Request::Operation(operation) => perform(&mut ctx, operation),
-                Request::RetireCreatedTemporary(temporary) => {
-                    created_temporary::retire(&ctx, temporary)
-                }
-                Request::Restore {
-                    recovery,
-                    step,
-                    parent,
-                    name,
-                } => restore(&ctx, recovery, step, parent, name),
-                Request::RestoreCaptured {
-                    _claim: _,
-                    recovery,
-                    step,
-                    parent,
-                    name,
-                } => restore_namespace(&ctx, recovery, step, parent, name),
-                Request::Acknowledge { recovery, note } => match ctx.effect(None, None, || {
-                    work.owner
-                        .acknowledge_recovery(recovery, Some(note.clone()))
-                }) {
-                    Ok(()) => ctx.completed(None),
-                    Err(e) => ctx.failure(e),
-                },
-            },
+            Ok(()) => execute_request(&mut ctx),
         };
         match outcome.state {
             ItemState::Completed => completed = completed.saturating_add(1),
@@ -1098,6 +1078,34 @@ fn execute(work: Work) {
             failed,
             cancelled,
         });
+    }
+}
+fn execute_request(ctx: &mut Context<'_>) -> ItemOutcome {
+    let work = ctx.work;
+    match &work.request {
+        Request::Operation(operation) => perform(ctx, operation),
+        Request::RetireCreatedTemporary(temporary) => created_temporary::retire(ctx, temporary),
+        Request::Restore {
+            recovery,
+            step,
+            parent,
+            name,
+        } => restore(ctx, recovery, step, parent, name),
+        Request::RestoreCaptured {
+            _claim: _,
+            recovery,
+            step,
+            parent,
+            name,
+        } => restore_namespace(ctx, recovery, step, parent, name),
+        Request::Acknowledge { recovery, note } => match ctx.effect(None, None, || {
+            ctx.work
+                .owner
+                .acknowledge_recovery(recovery, Some(note.clone()))
+        }) {
+            Ok(()) => ctx.completed(None),
+            Err(error) => ctx.failure(error),
+        },
     }
 }
 fn perform(ctx: &mut Context<'_>, operation: &FsOperation) -> ItemOutcome {
@@ -1393,7 +1401,7 @@ fn capture_removal(
         check_named(&source.parent, &source.name, source.object.identity())?;
         #[cfg(test)]
         ctx.barrier("RemoveCaptureBoundary");
-        no_replace(&source.parent, &source.name, &custody.directory, &stage)
+        no_replace(&source.parent, &source.name, &custody.directory, stage)
             .map_err(|e| io_error(e.into()))?;
         captured = true;
         sync_dir(&source.parent)?;
@@ -1457,9 +1465,9 @@ fn commit_captured_removal(
         return Ok(ctx.recovery(step, RecoveryKind::QuarantinedNative, error, None));
     }
     let mut removed = false;
-    let result = ctx.session().captured_effect(&custody, || {
+    let result = ctx.session().captured_effect(custody, || {
         ctx.cancelled()?;
-        check_named(&custody.directory, &stage, actual)?;
+        check_named(&custody.directory, stage, actual)?;
         let flags = if directory {
             rustix::fs::AtFlags::REMOVEDIR
         } else {
@@ -4026,6 +4034,9 @@ pub(super) mod tests {
     }
     #[cfg(target_os = "linux")]
     fn original_uid_replacement_case(test: &str, nonowned: bool) {
+        const ORIGINAL_UID: u32 = 60001;
+        const ORIGINAL_GID: u32 = 60002;
+        const SHARED_GID: u32 = 60003;
         use std::io::Write;
         use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -4089,9 +4100,6 @@ pub(super) mod tests {
         }
         // Credential changes are confined to this freshly exec'd, single-test
         // process. No fork inherits locks and no other test changes identity.
-        const ORIGINAL_UID: u32 = 60001;
-        const ORIGINAL_GID: u32 = 60002;
-        const SHARED_GID: u32 = 60003;
         let outer = std::path::PathBuf::from(
             std::env::var_os("TILO_NATIVE_REPLACEMENT_PERMISSION_ROOT").unwrap(),
         );
@@ -4466,7 +4474,7 @@ pub(super) mod tests {
         f.bind_removal();
         f.bind_source_key();
         fs::write(f.source("document"), b"unreadable old").unwrap();
-        fs::set_permissions(f.source("document"), fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(f.source("document"), fs::Permissions::from_mode(0o0)).unwrap();
         let old = fs::metadata(f.source("document")).unwrap().ino();
         fs::write(f.source("temporary"), b"new").unwrap();
         let (id, updates) = f.run(FsOperation::Replace {
@@ -4606,33 +4614,33 @@ pub(super) mod tests {
     /// Real completed native creation for connected custody-only RPC tests.
     /// It grants neither Replace nor Purge and constructs no daemon proof.
     pub(crate) struct ActualCreatedTemporaryFixture {
-        _fixture: Fixture,
+        fixture: Fixture,
         pub session: FsSession,
         pub parent: DirectoryGrant,
         pub job: Option<FsJob>,
     }
     impl ActualCreatedTemporaryFixture {
         pub(crate) fn revoke(&self) -> Result<(), FsError> {
-            self._fixture.authority.revoke_directory(&self._fixture.src)
+            self.fixture.authority.revoke_directory(&self.fixture.src)
         }
         pub(crate) fn assert_original_entries(&self) {
             assert_eq!(
-                fs::read(self._fixture.source("temporary")).unwrap(),
+                fs::read(self.fixture.source("temporary")).unwrap(),
                 b"own save bytes"
             );
             assert_eq!(
-                fs::read(self._fixture.source("document")).unwrap(),
+                fs::read(self.fixture.source("document")).unwrap(),
                 b"untouched document"
             );
         }
         pub(crate) fn assert_retired_recoverably(&self) {
-            assert!(!self._fixture.source("temporary").exists());
+            assert!(!self.fixture.source("temporary").exists());
             assert_eq!(
-                fs::read(self._fixture.source("document")).unwrap(),
+                fs::read(self.fixture.source("document")).unwrap(),
                 b"untouched document"
             );
             assert!(
-                self._fixture
+                self.fixture
                     .store
                     .recoveries()
                     .unwrap()
@@ -4640,7 +4648,7 @@ pub(super) mod tests {
                     .any(|r| r.kind == RecoveryKind::QuarantinedNative)
             );
             let files: Vec<_> =
-                fs::read_dir(self._fixture.disk.path().join("root-capture-guard/entries"))
+                fs::read_dir(self.fixture.disk.path().join("root-capture-guard/entries"))
                     .unwrap()
                     .map(|entry| entry.unwrap().path())
                     .collect();
@@ -4666,45 +4674,41 @@ pub(super) mod tests {
             session: f.session.clone(),
             parent: f.src.clone(),
             job: Some(job),
-            _fixture: f,
+            fixture: f,
         }
     }
 
     /// Genuine metadata/read source custody only. No Edit, Replace, Purge,
     /// daemon enrollment or installed source proof is synthesized by this test.
     pub(crate) struct ActualHistoryReadFixture {
-        _fixture: Fixture,
+        fixture: Fixture,
         pub session: FsSession,
         pub parent: DirectoryGrant,
         pub name: EntryName,
     }
     impl ActualHistoryReadFixture {
         pub(crate) fn revoke(&self) -> Result<(), FsError> {
-            self._fixture.authority.revoke_directory(&self._fixture.src)
+            self.fixture.authority.revoke_directory(&self.fixture.src)
         }
         pub(crate) fn link_name(&self) -> EntryName {
             let alias = name("alias");
             std::os::unix::fs::symlink(
                 self.name.as_os_str(),
-                self._fixture.source("nested").join(alias.as_os_str()),
+                self.fixture.source("nested").join(alias.as_os_str()),
             )
             .unwrap();
             alias
         }
         pub(crate) fn substitute_leaf(&self) {
-            let parent = self._fixture.source("nested");
+            let parent = self.fixture.source("nested");
             fs::rename(parent.join(self.name.as_os_str()), parent.join("held-old")).unwrap();
             fs::write(parent.join(self.name.as_os_str()), b"substituted").unwrap();
         }
         pub(crate) fn move_parent(&self) {
-            fs::rename(
-                self._fixture.source("nested"),
-                self._fixture.source("moved"),
-            )
-            .unwrap();
-            fs::create_dir(self._fixture.source("nested")).unwrap();
+            fs::rename(self.fixture.source("nested"), self.fixture.source("moved")).unwrap();
+            fs::create_dir(self.fixture.source("nested")).unwrap();
             fs::write(
-                self._fixture.source("nested").join(self.name.as_os_str()),
+                self.fixture.source("nested").join(self.name.as_os_str()),
                 b"new-parent",
             )
             .unwrap();
@@ -4737,7 +4741,7 @@ pub(super) mod tests {
             session: fixture.session.clone(),
             parent,
             name,
-            _fixture: fixture,
+            fixture,
         }
     }
     fn name_for_history_parent() -> EntryName {
@@ -4747,7 +4751,7 @@ pub(super) mod tests {
     /// Genuine zero-effect native reservation for connected negative RPC tests.
     /// This fixture does not construct a daemon verifier or a positive receipt.
     pub(crate) struct ActualPendingFixture {
-        _fixture: Fixture,
+        fixture: Fixture,
         pub session: FsSession,
         pub parent: DirectoryGrant,
         pub prepared: Option<PreparedNativeReplacement>,
@@ -4756,7 +4760,7 @@ pub(super) mod tests {
     }
     impl ActualPendingFixture {
         pub(crate) fn revoke(&self) -> Result<(), FsError> {
-            self._fixture.authority.revoke_directory(&self._fixture.src)
+            self.fixture.authority.revoke_directory(&self.fixture.src)
         }
         pub(crate) fn assert_original_entries(&self) {
             use std::os::unix::fs::MetadataExt;
@@ -4772,12 +4776,12 @@ pub(super) mod tests {
                     b"transport old".as_slice(),
                 ),
             ] {
-                let metadata = fs::metadata(self._fixture.source(name)).unwrap();
+                let metadata = fs::metadata(self.fixture.source(name)).unwrap();
                 assert_eq!([metadata.dev(), metadata.ino()], identity);
-                assert_eq!(fs::read(self._fixture.source(name)).unwrap(), bytes);
+                assert_eq!(fs::read(self.fixture.source(name)).unwrap(), bytes);
             }
             assert!(
-                fs::read_dir(self._fixture.disk.path().join("root-capture-guard/entries"))
+                fs::read_dir(self.fixture.disk.path().join("root-capture-guard/entries"))
                     .unwrap()
                     .next()
                     .is_none()
@@ -4786,24 +4790,6 @@ pub(super) mod tests {
     }
     #[test]
     fn genuine_creator_without_selected_authority_cannot_mint_atomic_save() {
-        let fixture = completed_created_temporary_for_transport();
-        let cap = fixture.job.as_ref().unwrap().created_temporary().unwrap();
-        let victim = fixture
-            .session
-            .lookup(&fixture.parent, &name("document"))
-            .unwrap();
-        // The real CreateFile setup durably retained its published source receipt.
-        // Denial must leave that journal and every original inode unchanged.
-        let recoveries = || {
-            fixture
-                ._fixture
-                .store
-                .recoveries()
-                .unwrap()
-                .into_iter()
-                .map(|r| (r.id, r.operation, r.kind, r.original_name, r.acknowledged))
-                .collect::<Vec<_>>()
-        };
         fn journal(
             root: &std::path::Path,
         ) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
@@ -4834,10 +4820,28 @@ pub(super) mod tests {
             walk(root, root, &mut out);
             out
         }
+        let fixture = completed_created_temporary_for_transport();
+        let cap = fixture.job.as_ref().unwrap().created_temporary().unwrap();
+        let victim = fixture
+            .session
+            .lookup(&fixture.parent, &name("document"))
+            .unwrap();
+        // The real CreateFile setup durably retained its published source receipt.
+        // Denial must leave that journal and every original inode unchanged.
+        let recoveries = || {
+            fixture
+                .fixture
+                .store
+                .recoveries()
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.id, r.operation, r.kind, r.original_name, r.acknowledged))
+                .collect::<Vec<_>>()
+        };
         let originals = || {
             use std::os::unix::fs::MetadataExt;
             ["temporary", "document"].map(|name| {
-                let path = fixture._fixture.source(name);
+                let path = fixture.fixture.source(name);
                 let m = fs::symlink_metadata(&path).unwrap();
                 (
                     [m.dev(), m.ino(), m.len(), m.nlink()],
@@ -4861,13 +4865,13 @@ pub(super) mod tests {
             before_recoveries[0].1,
             fixture.job.as_ref().unwrap().operation_id()
         );
-        let before_journal = journal(fixture._fixture.meta.path());
+        let before_journal = journal(fixture.fixture.meta.path());
         assert!(!before_journal.is_empty());
         let before_originals = originals();
         assert!(
             fs::read_dir(
                 fixture
-                    ._fixture
+                    .fixture
                     .disk
                     .path()
                     .join("root-capture-guard/entries")
@@ -4893,7 +4897,7 @@ pub(super) mod tests {
             "denied AtomicSave added or changed a durable recovery"
         );
         assert_eq!(
-            journal(fixture._fixture.meta.path()),
+            journal(fixture.fixture.meta.path()),
             before_journal,
             "denied AtomicSave changed durable journal bytes"
         );
@@ -4905,7 +4909,7 @@ pub(super) mod tests {
         assert!(
             fs::read_dir(
                 fixture
-                    ._fixture
+                    .fixture
                     .disk
                     .path()
                     .join("root-capture-guard/entries")
@@ -4947,7 +4951,7 @@ pub(super) mod tests {
                 decoded.victim_permissions(),
             ),
         ] {
-            let actual = fs::metadata(fixture._fixture.source(name)).unwrap();
+            let actual = fs::metadata(fixture.fixture.source(name)).unwrap();
             assert_eq!(locator.name(), name.as_bytes());
             assert_eq!(locator.identity(), Some([actual.dev(), actual.ino()]));
             assert_eq!(facts.byte_len, actual.len());
@@ -4995,20 +4999,20 @@ pub(super) mod tests {
             temporary_identity: prepared.source_identity(),
             victim_identity: prepared.expected_victim_identity(),
             prepared: Some(prepared),
-            _fixture: fixture,
+            fixture,
         }
     }
     /// Actual production native capture/EXCHANGE fixture for connected RPC tests.
     /// Keeps the host authority, source disk and operation journal alive.
     pub(crate) struct ActualReplacementFixture {
-        _fixture: Fixture,
+        fixture: Fixture,
         pub session: FsSession,
         pub parent: DirectoryGrant,
         pub job: Option<FsJob>,
     }
     impl ActualReplacementFixture {
         pub(crate) fn revoke(&self) -> Result<(), FsError> {
-            self._fixture.authority.revoke_directory(&self._fixture.src)
+            self.fixture.authority.revoke_directory(&self.fixture.src)
         }
     }
     pub(crate) fn completed_replacement_for_transport() -> ActualReplacementFixture {
@@ -5031,7 +5035,7 @@ pub(super) mod tests {
             session: fixture.session.clone(),
             parent: fixture.src.clone(),
             job: Some(job),
-            _fixture: fixture,
+            fixture,
         }
     }
     struct Fixture {
@@ -5072,7 +5076,7 @@ pub(super) mod tests {
                 .admit_directory(
                     fs::File::open(disk.path().join("dst")).unwrap(),
                     owner(),
-                    allowed.clone(),
+                    allowed,
                 )
                 .unwrap();
             let session = authority
@@ -6674,8 +6678,14 @@ pub(super) mod tests {
                 ItemState::Cancelled
             };
             assert_eq!(item(&updates).state, expected);
-            assert!(matches!(&item(&updates).error, Some(FsError::Revoked)) == revoke);
-            assert!(matches!(&item(&updates).error, Some(FsError::Closed)) != revoke);
+            assert_eq!(
+                matches!(&item(&updates).error, Some(FsError::Revoked)),
+                revoke
+            );
+            assert_ne!(
+                matches!(&item(&updates).error, Some(FsError::Closed)),
+                revoke
+            );
             assert!(!path.join("must-not-exist").exists());
             let report = f.store.report(&id).unwrap();
             assert_eq!(report.items.first().unwrap().state, expected);

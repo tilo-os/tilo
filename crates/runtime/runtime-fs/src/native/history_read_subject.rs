@@ -1,6 +1,9 @@
 //! Original-source readable inode custody for canonical external history queries.
 //! Observation bytes never create an access grant or a canonical record identity.
-use super::*;
+use super::{
+    Arc, Dir, DirectoryGrant, EntryName, FileGrant, FsError, FsRight, FsSession, NativeFileAccess,
+    NativeIdentity, NativeObject, Table, io_error, lock,
+};
 
 const MAX_HISTORY_PARENTS: usize = 64;
 const MAX_HISTORY_LOCATOR_BYTES: usize = 4096;
@@ -19,7 +22,7 @@ pub struct NativeHistoryReadObservation {
     pub identity: [u64; 2],
 }
 
-/// Source-resident original Read custody. Only FsSession can mint it from a
+/// Source-resident original Read custody. Only `FsSession` can mint it from a
 /// genuinely opened readable child of its already admitted directory grant.
 pub struct NativeHistoryReadSubject {
     session: FsSession,
@@ -132,7 +135,9 @@ impl NativeHistoryReadSubject {
         if !observed.is_file() || [identity.device, identity.inode] != self.observation.identity {
             return Err(FsError::StaleEntry);
         }
-        self.scope_locked(&table)
+        let result = self.scope_locked(&table);
+        drop(table);
+        result
     }
     // Rewalk the exact granted raw lineage from the held source root. A parent
     // descriptor alone must not silently authorize its old locus after a move.

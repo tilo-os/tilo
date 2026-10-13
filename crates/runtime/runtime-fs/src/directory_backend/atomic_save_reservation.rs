@@ -20,6 +20,8 @@ impl<T> Default for AtomicSaveReservation<T> {
 }
 impl<T> AtomicSaveReservation<T> {
     /// Store the actual returned owner before any fallible caller validation.
+    /// # Errors
+    /// Returns the provider's refusal or unknown-outcome error, retaining that state.
     pub fn capture(&mut self, outcome: AtomicSavePreparation<T>) -> Result<(), String> {
         match outcome {
             AtomicSavePreparation::Prepared(owner) => {
@@ -36,6 +38,8 @@ impl<T> AtomicSaveReservation<T> {
             }
         }
     }
+    /// # Errors
+    /// Refuses reservations that are not currently prepared.
     pub fn prepared(&self) -> Result<&T, String> {
         match &self.state {
             State::Prepared(owner) => Ok(owner),
@@ -43,9 +47,13 @@ impl<T> AtomicSaveReservation<T> {
         }
     }
     /// Failure retains the actual reservation; cancellation remains possible.
+    /// # Errors
+    /// Refuses unprepared reservations or propagates the caller's validation error.
     pub fn validate(&self, check: impl FnOnce(&T) -> Result<(), String>) -> Result<(), String> {
         check(self.prepared()?)
     }
+    /// # Errors
+    /// Refuses reservations that are not currently prepared.
     pub fn claim(&mut self) -> Result<T, String>
     where
         T: Clone,
@@ -56,6 +64,8 @@ impl<T> AtomicSaveReservation<T> {
     }
     /// Only actual cancel ACK releases an unsubmitted reservation. Failed or
     /// poisoned cancellation keeps its owner; unknown/claimed effects refuse.
+    /// # Errors
+    /// Propagates cancellation failures or refuses unresolved reservation custody.
     pub fn release_with(
         &mut self,
         cancel: impl FnOnce(&T) -> Result<(), String>,
@@ -72,6 +82,8 @@ impl<T> AtomicSaveReservation<T> {
     }
     /// Called after an actual creator cleanup job is returned. This transition
     /// cannot prove Finished, release a slot, or authorize any namespace effect.
+    /// # Errors
+    /// Refuses cleanup submission until the reservation has been released.
     pub fn cleanup_submitted(&mut self) -> Result<(), String> {
         if !matches!(self.state, State::Released) {
             return Err("AtomicSave cleanup not released".into());

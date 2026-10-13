@@ -118,7 +118,7 @@ mod tests {
         let expected = SpotifyIdentity::AccountId("immutable-opaque".into());
         let native_started = std::cell::Cell::new(false);
         let refused = verified_at(&expected, "exact-native-token", &api.url(), |_| {
-            native_started.set(true)
+            native_started.set(true);
         });
         assert_eq!(refused, Err(crate::CustodyError::NeedsAuthentication));
         assert!(!native_started.get());
@@ -166,7 +166,7 @@ mod tests {
                 .body(br#"{"id":"legacy-user","account_id":"modern-account"}"#.to_vec()),
         ]);
         verified_at(&legacy, "legacy-token", &api.url(), |token| {
-            assert_eq!(token, "legacy-token")
+            assert_eq!(token, "legacy-token");
         })
         .unwrap();
         api.next_request();

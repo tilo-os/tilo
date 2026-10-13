@@ -56,7 +56,7 @@ impl DirectoryCapability {
         Ok(Arc::new(Self::new(self.session.clone(), root)?))
     }
     /// Open only an existing no-follow regular child. Write truncates; Append
-    /// atomically appends; RWExisting and WriteExisting preserve length. Missing files are never
+    /// atomically appends; `ReadWriteExisting` and `WriteExisting` preserve length. Missing files are never
     /// silently created: creation must have an actual durable native job.
     /// # Errors
     /// Refuses absent rights, wrong type, substituted inode, stale scope or IO.
@@ -195,10 +195,10 @@ impl NativeTerminal {
                 JobUpdate::Item { item: 0, .. }
                     if self.item.is_none() && self.finished.is_none() =>
                 {
-                    self.item = Some(update.clone())
+                    self.item = Some(update.clone());
                 }
                 JobUpdate::Finished { .. } if self.item.is_some() && self.finished.is_none() => {
-                    self.finished = Some(update.clone())
+                    self.finished = Some(update.clone());
                 }
                 _ => {
                     self.refused = true;
@@ -210,34 +210,34 @@ impl NativeTerminal {
         }
     }
     fn completed(&self, operation_id: [u8; 16]) -> Result<JobPoll, String> {
+        let (Some(item), Some(finished)) = (&self.item, &self.finished) else {
+            return Err("Actual successful native terminal updates unavailable".into());
+        };
         if self.refused
             || !matches!(
-                &self.item,
-                Some(JobUpdate::Item {
+                item,
+                JobUpdate::Item {
                     item: 0,
                     state: crate::operations::ItemState::Completed,
                     destination: Some(_),
                     error: None,
                     ..
-                })
+                }
             )
             || !matches!(
-                &self.finished,
-                Some(JobUpdate::Finished {
+                finished,
+                JobUpdate::Finished {
                     completed: 1,
                     failed: 0,
                     cancelled: 0
-                })
+                }
             )
         {
             return Err("Actual successful native terminal updates unavailable".into());
         }
         Ok(JobPoll {
             operation_id,
-            updates: vec![
-                self.item.as_ref().unwrap().clone(),
-                self.finished.as_ref().unwrap().clone(),
-            ],
+            updates: vec![item.clone(), finished.clone()],
         })
     }
 }
@@ -266,12 +266,16 @@ impl DirectoryCapability {
         let directory = Self::new(self.session.clone(), self.root.clone())
             .map_err(|error| error.to_string())?;
         let pending = Arc::new(PendingReplacement::new(directory, prepared)?);
+        Self::poison_pending_state_for_transport_test(&pending);
+        Ok(pending)
+    }
+    #[cfg(test)]
+    fn poison_pending_state_for_transport_test(pending: &PendingReplacement) {
         let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _held = pending.state.lock().unwrap();
             panic!("intentionally poison this actual native pending state for custody regression");
         }));
         assert!(poisoned.is_err());
-        Ok(pending)
     }
     #[cfg(test)]
     pub(crate) fn job_for_transport_test(
@@ -400,7 +404,7 @@ impl WorkspaceDirectoryBackend for DirectoryCapability {
             state.1 = None;
             0
         };
-        Ok(DirectoryRows {
+        let rows = DirectoryRows {
             entries: page
                 .entries
                 .into_iter()
@@ -410,7 +414,9 @@ impl WorkspaceDirectoryBackend for DirectoryCapability {
                 })
                 .collect(),
             next,
-        })
+        };
+        drop(state);
+        Ok(rows)
     }
     fn directory(&self, name: &EntryName) -> Result<Arc<dyn WorkspaceDirectoryBackend>, String> {
         Ok(self.directory(name).map_err(|e| e.to_string())?)
@@ -516,6 +522,7 @@ impl NativeJob {
         let pin = Arc::new(ReplacementPin { directory, pin });
         crate::directory_backend::WorkspaceReplacementPinBackend::check(pin.as_ref())?;
         *cached = Some(Arc::downgrade(&pin));
+        drop(cached);
         Ok(pin)
     }
 }
@@ -592,6 +599,7 @@ impl WorkspaceJobBackend for NativeJob {
         let value = Arc::new(value);
         *cached = Some(value.clone());
         crate::directory_backend::WorkspaceCreatedTemporaryBackend::check(value.as_ref())?;
+        drop(cached);
         Ok(value)
     }
 
@@ -661,6 +669,7 @@ impl WorkspaceJobBackend for NativeJob {
             .lock()
             .map_err(|_| "Native terminal lock poisoned")?
             .record(&updates);
+        drop(job);
         Ok(JobPoll {
             operation_id,
             updates,
@@ -866,6 +875,7 @@ impl crate::directory_backend::WorkspacePendingReplacementBackend for PendingRep
         });
         state.submitted = Some(job.clone());
         self.current(&state)?;
+        drop(state);
         Ok(job)
     }
     fn acknowledged_committed_job(&self) -> Result<Arc<dyn WorkspaceJobBackend>, String> {
@@ -894,16 +904,18 @@ impl crate::directory_backend::WorkspacePendingReplacementBackend for PendingRep
         self.current(&state)?;
         self.receipt_clients
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < 64).then_some(count + 1)
+                count.checked_add(1).filter(|_| count < 64)
             })
             .map_err(|_| "Native receipt client limit reached")?;
-        Ok(Arc::new(AcknowledgedJob {
+        let job = Arc::new(AcknowledgedJob {
             _pin: pin,
             _client: ReceiptClient(self.receipt_clients.clone()),
             native,
             terminal: Mutex::new(Some(terminal)),
             operation,
-        }))
+        });
+        drop(state);
+        Ok(job)
     }
     fn acknowledged_committed_pin(
         &self,
@@ -925,6 +937,7 @@ impl crate::directory_backend::WorkspacePendingReplacementBackend for PendingRep
             .map_err(|e| e.to_string())?;
         crate::directory_backend::WorkspaceReplacementPinBackend::check(pin.as_ref())?;
         self.current(&state)?;
+        drop(state);
         Ok(pin)
     }
     fn cancel(&self) -> Result<(), String> {
@@ -936,6 +949,7 @@ impl crate::directory_backend::WorkspacePendingReplacementBackend for PendingRep
             return Err("Submitted replacement cannot be undone by cancel".into());
         }
         state.prepared.take();
+        drop(state);
         Ok(())
     }
 }
@@ -944,7 +958,7 @@ impl crate::directory_backend::WorkspacePendingReplacementBackend for PendingRep
 // checking post-admission scope fails. Unknown cannot drop it or re-arm another.
 enum AtomicReservation {
     Empty,
-    Reserved(crate::operations::PreparedNativeReplacement),
+    Reserved(Box<crate::operations::PreparedNativeReplacement>),
     Ready(Arc<PendingReplacement>),
 }
 struct CreatedTemporary {
@@ -970,9 +984,8 @@ impl crate::directory_backend::WorkspaceCreatedTemporaryBackend for CreatedTempo
         if let Err(error) = self.check() {
             return Outcome::Unknown(error);
         }
-        let mut slot = match self.atomic.lock() {
-            Ok(slot) => slot,
-            Err(_) => return Outcome::Unknown("AtomicSave reservation lock poisoned".into()),
+        let Ok(mut slot) = self.atomic.lock() else {
+            return Outcome::Unknown("AtomicSave reservation lock poisoned".into());
         };
         match &*slot {
             AtomicReservation::Empty => {}
@@ -1003,7 +1016,7 @@ impl crate::directory_backend::WorkspaceCreatedTemporaryBackend for CreatedTempo
                 };
             }
         };
-        *slot = AtomicReservation::Reserved(prepared);
+        *slot = AtomicReservation::Reserved(Box::new(prepared));
         let AtomicReservation::Reserved(prepared) = &*slot else {
             return Outcome::Unknown("Missing actual native reservation".into());
         };
@@ -1018,7 +1031,7 @@ impl crate::directory_backend::WorkspaceCreatedTemporaryBackend for CreatedTempo
         };
         let pending = Arc::new(PendingReplacement::with_observation(
             directory,
-            prepared,
+            *prepared,
             observation,
         ));
         // Source ownership precedes every fallible post-admission check.
@@ -1028,6 +1041,7 @@ impl crate::directory_backend::WorkspaceCreatedTemporaryBackend for CreatedTempo
         {
             return Outcome::Unknown(error);
         }
+        drop(slot);
         Outcome::Prepared(pending)
     }
 
@@ -1087,7 +1101,36 @@ impl crate::directory_backend::WorkspaceCreatedTemporaryBackend for CreatedTempo
         // The actual queued effect may already remove the old temp name.
         // Post-admission checking therefore observes source scope, not that name.
         self.directory.check().map_err(|error| error.to_string())?;
-        self.directory.retain_job(job)
+        let retained = self.directory.retain_job(job);
+        drop(reservation);
+        retained
+    }
+}
+
+struct HistoryReadSubject {
+    subject: Arc<crate::NativeHistoryReadSubject>,
+}
+impl crate::directory_backend::WorkspaceHistoryReadSubjectBackend for HistoryReadSubject {
+    fn check_scope(&self) -> Result<(), String> {
+        self.subject
+            .check_scope()
+            .map_err(|error| error.to_string())
+    }
+    fn check(&self) -> Result<(), String> {
+        self.subject.check().map_err(|error| error.to_string())
+    }
+    fn observe(&self) -> Result<crate::directory_backend::HistoryReadObservation, String> {
+        let actual = self.subject.observe().map_err(|error| error.to_string())?;
+        let observation = crate::directory_backend::HistoryReadObservation {
+            source_owner: actual.source_owner,
+            root: actual.root,
+            parent: actual.parent,
+            parents: actual.parents,
+            name: actual.name,
+            identity: actual.identity,
+        };
+        observation.validate()?;
+        Ok(observation)
     }
 }
 
@@ -1152,32 +1195,5 @@ mod terminal_receipt_tests {
             native.poll().is_err(),
             "cached observations never renew revoked source authority"
         );
-    }
-}
-
-struct HistoryReadSubject {
-    subject: Arc<crate::NativeHistoryReadSubject>,
-}
-impl crate::directory_backend::WorkspaceHistoryReadSubjectBackend for HistoryReadSubject {
-    fn check_scope(&self) -> Result<(), String> {
-        self.subject
-            .check_scope()
-            .map_err(|error| error.to_string())
-    }
-    fn check(&self) -> Result<(), String> {
-        self.subject.check().map_err(|error| error.to_string())
-    }
-    fn observe(&self) -> Result<crate::directory_backend::HistoryReadObservation, String> {
-        let actual = self.subject.observe().map_err(|error| error.to_string())?;
-        let observation = crate::directory_backend::HistoryReadObservation {
-            source_owner: actual.source_owner,
-            root: actual.root,
-            parent: actual.parent,
-            parents: actual.parents,
-            name: actual.name,
-            identity: actual.identity,
-        };
-        observation.validate()?;
-        Ok(observation)
     }
 }

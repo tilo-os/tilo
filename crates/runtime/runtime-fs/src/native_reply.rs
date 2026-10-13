@@ -13,7 +13,7 @@ impl std::error::Error for NativeRefused {}
 pub fn is_native_refusal(error: &io::Error) -> bool {
     error
         .get_ref()
-        .is_some_and(|inner| inner.is::<NativeRefused>())
+        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<NativeRefused>)
 }
 pub(crate) fn check(status: crate::fs_capnp::NativeEntryStatus) -> Result<(), NotAvailable> {
     match status {
@@ -50,7 +50,7 @@ pub fn is_operation_refusal(error: &io::Error) -> bool {
     is_native_refusal(error)
         || error
             .get_ref()
-            .is_some_and(|inner| inner.is::<BoundedAdmission>())
+            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<BoundedAdmission>)
 }
 
 pub(crate) fn check_payload(

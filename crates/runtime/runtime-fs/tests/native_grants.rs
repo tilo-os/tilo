@@ -1014,15 +1014,15 @@ fn special_file_descriptor_never_acquires_regular_file_effects() {
 #[test]
 fn explicit_child_access_preserves_raw_names_lineage_and_readonly_lookup() {
     use runtime_fs::NativeFileAccess;
-    let owned = tempfile::tempdir().unwrap();
+    let disk = tempfile::tempdir().unwrap();
     let raw = OsString::from_vec(vec![b'f', 0xff]);
-    let path = owned.path().join(&raw);
+    let path = disk.path().join(&raw);
     std::fs::write(&path, b"original").unwrap();
     let authority = NativeGrantAuthority::new();
     let owner = files_owner();
     let root = authority
         .admit_directory(
-            std::fs::File::open(owned.path()).unwrap(),
+            std::fs::File::open(disk.path()).unwrap(),
             owner.clone(),
             vec![FsRight::Enumerate, FsRight::Read, FsRight::Write],
         )
@@ -1042,7 +1042,7 @@ fn explicit_child_access_preserves_raw_names_lineage_and_readonly_lookup() {
     session.validate_read_write(&editable).unwrap();
     assert_eq!(session.read_at(&editable, 0, 8).unwrap(), b"original");
     assert_eq!(session.write_at(&editable, 0, b"edited!!").unwrap(), 8);
-    symlink(&name.as_os_str(), owned.path().join("link")).unwrap();
+    symlink(name.as_os_str(), disk.path().join("link")).unwrap();
     assert!(
         session
             .lookup_file_for(
@@ -1070,13 +1070,13 @@ fn explicit_child_access_preserves_raw_names_lineage_and_readonly_lookup() {
 #[test]
 fn explicit_child_access_does_not_upgrade_readonly_parent_rights() {
     use runtime_fs::NativeFileAccess;
-    let owned = tempfile::tempdir().unwrap();
-    std::fs::write(owned.path().join("chosen"), b"original").unwrap();
+    let disk = tempfile::tempdir().unwrap();
+    std::fs::write(disk.path().join("chosen"), b"original").unwrap();
     let authority = NativeGrantAuthority::new();
     let owner = files_owner();
     let root = authority
         .admit_directory(
-            std::fs::File::open(owned.path()).unwrap(),
+            std::fs::File::open(disk.path()).unwrap(),
             owner.clone(),
             vec![FsRight::Enumerate, FsRight::Read],
         )
