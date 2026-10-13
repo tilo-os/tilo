@@ -76,18 +76,22 @@ Rebuild only the bundle, then reload:
   (rerun without --relay-bin/--room-service-bin).
 
 Headless Chromium (tools/web/chrome.mjs: $CHROME, else Playwright's
-chromium; every launch() is a fresh profile, so a fresh person):
+chromium; every launch() is a fresh profile, so a fresh person). Headless
+Chromium draws WebGPU only through SwiftShader, so pass its flags; the first
+load compiles the bundle and takes a minute or two there:
   node --input-type=module -e "
     import {launch} from './tools/web/chrome.mjs';
-    const browser = await launch();
+    const browser = await launch({args: ['--enable-features=Vulkan',
+      '--use-vulkan=swiftshader', '--use-angle=swiftshader']});
     const tab = await browser.tab();
-    await tab.navigate('<the URL run.py prints>');
-    await tab.waitFor('document.body.innerText.length > 0');
+    await tab.navigate('<a URL run.py prints>');
+    await tab.waitFor('globalThis.tiloMount', {timeout: 240000});
+    (await import('node:fs')).writeFileSync('shot.png', await tab.screenshot());
     console.log(tab.log.join('\\n'));
     await browser.close();"
-  The Notes URL run.py prints opens Notes full tab in the room. A person who
-  joins is a guest: the service admits 5 per address per 10 minutes, so
-  restart run.py (which keeps the room) to test more fresh profiles.
+  `tab.reload()` loads the same profile again. A person who joins is a guest:
+  the service admits 5 per address per 10 minutes, so restart run.py (which
+  keeps the room) to test more fresh profiles.
 
 Other TILO_ROOMS_* and TILO_RELAY_* variables in the environment reach the
 service unchanged (for example TILO_ROOMS_SEED_APPS, TILO_ROOMS_CHAT_CHANNELS,
@@ -381,7 +385,8 @@ def main():
 Tilo is up in {time.monotonic() - started:.1f}s, room {args.name!r} ({room}), bundle {version}
 
   open        {web_origin}/
-  Notes       {web_origin}/app/#/@{host}/w/{room}/so.tilo.notes
+  Notes       {web_origin}/#/@{host}/w/{room}/so.tilo.notes   (on the desktop)
+  full tab    {web_origin}/app/#/@{host}/w/{room}/so.tilo.notes
   room API    {api_origin}   relay {relay_origin}
   reuse       --bundle {bundle} --relay-bin {bin_dir / 'tilo-relay'} --room-service-bin {bin_dir / 'tilo-room-service'}
   state       {state}   (--fresh forgets it)
