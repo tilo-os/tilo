@@ -20,6 +20,10 @@
 //!   capability shares with the saver ([`watched_folders`]).
 //! - [`FocusModeTriggers`] fires when Do Not Disturb or the focus schedule
 //!   switches on or off.
+//! - [`RecordChangedTriggers`] fires on a committed change to a record of a
+//!   watched kind in the saver's room.
+//! - [`IncomingMessageTriggers`] fires on a message someone else received in
+//!   the saver's rooms (a change its app marks as one).
 //!
 //! What an event says (the app, the workspace, the file, the mode) is the
 //! trigger's payload ([`TriggerSpec::payload`]); each value is handed to the
@@ -39,6 +43,11 @@
 //! each other device waits [`CLAIM_GRACE`] per rank before taking a fire
 //! time nobody has claimed — so an elected device that is asleep or offline
 //! is covered by the next one.
+//!
+//! A record trigger runs on one of the saver's devices the same way:
+//! devices rank themselves by a hash of the change, the first runs it at
+//! once, each other waits [`CLAIM_GRACE`] per rank and drops it if the
+//! run's first change has appeared.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -53,6 +62,7 @@ use serde_json::{Map, Value};
 use settings_store::hardware::KeyChord;
 use sha2::{Digest as _, Sha256};
 use tilo_actions::params::ParamType;
+use tilo_automation::dispatch::RecordEvent;
 use tilo_automation::{
     CatchUp, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, RunId, Schedule, ScheduleClaim,
     Shortcut, TriggerSpec, Weekday,
@@ -232,6 +242,9 @@ pub enum TriggerEvent<'a> {
     Focus(FocusState),
     /// Files changed inside watched folders since the last look.
     Files(&'a [FolderChange]),
+    /// Changes committed to records of this device's rooms since the last
+    /// look.
+    Records(&'a [RecordEvent]),
 }
 
 /// Whether each focus mode is on.
@@ -306,7 +319,7 @@ impl FolderChange {
 }
 
 /// One trigger that fired: run `shortcut` in `room`, as run `run`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Firing {
     pub room: String,
     pub shortcut: String,
@@ -332,6 +345,7 @@ impl Firing {
                         && match input.ty {
                             ParamType::Boolean => value.is_boolean(),
                             ParamType::Text => value.is_string(),
+                            ParamType::Object => value.is_object(),
                             _ => false,
                         }
                 })
@@ -364,6 +378,10 @@ pub trait TriggerSource: Send {
         armed: &[Armed<'_>],
         context: TriggerContext<'_>,
     ) -> Vec<Firing>;
+
+    /// Runs another of the person's devices started; a source holding one
+    /// for its turn drops it.
+    fn forget_started(&mut self, _started: &BTreeSet<RunId>) {}
 }
 
 /// Fires a shortcut whose keyboard trigger names the pressed chord.
@@ -608,7 +626,7 @@ pub fn watched_folders(
 }
 
 /// One schedule's persisted state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct LedgerEntry {
     /// The trigger as it was when armed; a changed schedule starts over.
     trigger: TriggerSpec,
@@ -616,7 +634,7 @@ struct LedgerEntry {
     next_fire_ms: i64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct ScheduleLedger {
     /// Keyed by `room/shortcut/trigger index`.
     #[serde(default)]
@@ -858,6 +876,193 @@ fn weekday_of(date: NaiveDate) -> Weekday {
     }
 }
 
+/// A record firing this device holds back while devices ranked before it
+/// get their turn.
+#[derive(Clone, Debug)]
+struct Held {
+    firing: Firing,
+    start: DateTime<Utc>,
+}
+
+/// Where `device` stands for a change; lowest first. Every device of the
+/// person ranks the same way, so they agree without talking.
+fn change_device_rank(change: &str, device: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"tilo.shortcut.change-runner\0");
+    hasher.update(change.as_bytes());
+    hasher.update([0]);
+    hasher.update(device.as_bytes());
+    hasher.finalize().into()
+}
+
+/// How many online devices rank before the local one for `change`.
+fn change_rank(change: &str, devices: &PersonalDevices) -> usize {
+    let Some(local) = devices.local.as_deref() else {
+        return 0;
+    };
+    let mine = change_device_rank(change, local);
+    devices
+        .online
+        .iter()
+        .filter(|device| device.as_str() != local)
+        .filter(|device| change_device_rank(change, device) < mine)
+        .count()
+}
+
+/// Shared by both record sources: hold each firing for its turn and hand
+/// it over when the turn comes. The run's own first change is the claim: a
+/// held firing whose run already started elsewhere is dropped
+/// ([`TriggerSource::forget_started`]).
+#[derive(Debug, Default)]
+struct RecordElection {
+    held: Vec<Held>,
+}
+
+impl RecordElection {
+    fn offer(
+        &mut self,
+        firings: Vec<Firing>,
+        change: &str,
+        context: TriggerContext<'_>,
+    ) -> Vec<Firing> {
+        let rank = change_rank(change, context.devices);
+        if rank == 0 {
+            return firings;
+        }
+        let wait = CLAIM_GRACE
+            .checked_mul(i32::try_from(rank).unwrap_or(i32::MAX))
+            .unwrap_or(ChronoDuration::MAX);
+        let start = context
+            .clock
+            .now()
+            .checked_add_signed(wait)
+            .unwrap_or(DateTime::<Utc>::MAX_UTC);
+        self.held
+            .extend(firings.into_iter().map(|firing| Held { firing, start }));
+        Vec::new()
+    }
+
+    fn due(&mut self, now: DateTime<Utc>) -> Vec<Firing> {
+        let (due, waiting): (Vec<Held>, Vec<Held>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|held| held.start <= now);
+        self.held = waiting;
+        due.into_iter().map(|held| held.firing).collect()
+    }
+
+    fn forget_started(&mut self, started: &BTreeSet<RunId>) {
+        self.held.retain(|held| !started.contains(&held.firing.run));
+    }
+
+    /// Due firings, then the firings of `event`'s changes whose trigger
+    /// `wanted` accepts, those this device runs now.
+    fn observe(
+        &mut self,
+        event: TriggerEvent<'_>,
+        armed: &[Armed<'_>],
+        context: TriggerContext<'_>,
+        wanted: fn(&TriggerSpec) -> bool,
+    ) -> Vec<Firing> {
+        let mut ready = self.due(context.clock.now());
+        if let TriggerEvent::Records(events) = event {
+            for change in events {
+                let firings = record_firings(armed, change, wanted);
+                ready.extend(self.offer(firings, &change.change, context));
+            }
+        }
+        ready
+    }
+}
+
+/// What `event` fires among `armed` in its room, through the dispatcher a
+/// bot's host uses too, so both fire on a change the same way.
+fn record_firings(
+    armed: &[Armed<'_>],
+    event: &RecordEvent,
+    wanted: fn(&TriggerSpec) -> bool,
+) -> Vec<Firing> {
+    use tilo_automation::dispatch::{self, Armed as DispatchArmed, Event, Firer};
+    let mut firings = Vec::new();
+    for armed in armed.iter().filter(|armed| armed.room == event.room) {
+        let Some(saver) = armed.shortcut.saved_by.as_deref() else {
+            continue;
+        };
+        let dispatched = dispatch::dispatch(
+            &[DispatchArmed {
+                firer: Firer::Shortcut {
+                    shortcut: &armed.shortcut.id,
+                    saver,
+                },
+                shortcut: armed.shortcut,
+            }],
+            Event::Record(event),
+        );
+        for fired in dispatched
+            .firings
+            .into_iter()
+            .filter(|fired| wanted(&fired.trigger))
+        {
+            firings.push(Firing {
+                room: armed.room.clone(),
+                shortcut: armed.shortcut.id.clone(),
+                trigger: fired.trigger,
+                run: fired.run,
+                claim: None,
+                inputs: fired.inputs,
+            });
+        }
+    }
+    firings
+}
+
+/// Fires a shortcut's record-changed triggers on matching changes, on one
+/// of the saver's devices.
+#[derive(Debug, Default)]
+pub struct RecordChangedTriggers {
+    election: RecordElection,
+}
+
+impl TriggerSource for RecordChangedTriggers {
+    fn observe(
+        &mut self,
+        event: TriggerEvent<'_>,
+        armed: &[Armed<'_>],
+        context: TriggerContext<'_>,
+    ) -> Vec<Firing> {
+        self.election.observe(event, armed, context, |trigger| {
+            matches!(trigger, TriggerSpec::RecordChanged { .. })
+        })
+    }
+
+    fn forget_started(&mut self, started: &BTreeSet<RunId>) {
+        self.election.forget_started(started);
+    }
+}
+
+/// Fires a shortcut's incoming-message triggers on a message someone else
+/// received in the saver's rooms, on one of the saver's devices.
+#[derive(Debug, Default)]
+pub struct IncomingMessageTriggers {
+    election: RecordElection,
+}
+
+impl TriggerSource for IncomingMessageTriggers {
+    fn observe(
+        &mut self,
+        event: TriggerEvent<'_>,
+        armed: &[Armed<'_>],
+        context: TriggerContext<'_>,
+    ) -> Vec<Firing> {
+        self.election.observe(event, armed, context, |trigger| {
+            matches!(trigger, TriggerSpec::IncomingMessage { .. })
+        })
+    }
+
+    fn forget_started(&mut self, started: &BTreeSet<RunId>) {
+        self.election.forget_started(started);
+    }
+}
+
 /// Every trigger source a session runs, reading one clock and one view of
 /// the person's devices.
 pub struct TriggerHost {
@@ -881,6 +1086,8 @@ impl TriggerHost {
                 Box::new(WorkspaceJoinedTriggers::default()),
                 Box::new(FileChangedTriggers),
                 Box::new(FocusModeTriggers::default()),
+                Box::new(RecordChangedTriggers::default()),
+                Box::new(IncomingMessageTriggers::default()),
             ],
         }
     }
@@ -923,6 +1130,14 @@ impl TriggerHost {
             .iter_mut()
             .flat_map(|source| source.observe(event, armed, context))
             .collect()
+    }
+
+    /// Runs another of the person's devices already started: no source
+    /// starts them here.
+    pub fn forget_started(&mut self, started: &BTreeSet<RunId>) {
+        for source in &mut self.sources {
+            source.forget_started(started);
+        }
     }
 }
 
@@ -1658,5 +1873,152 @@ mod tests {
         assert_eq!(counting.0.load(std::sync::atomic::Ordering::Relaxed), 0);
         triggers.observe(TriggerEvent::Tick, &[]);
         assert_eq!(counting.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    fn a_post(change: &str, by: &str) -> RecordEvent {
+        RecordEvent {
+            room: "room".into(),
+            record: "rec-1".into(),
+            kind: "chat.workspace".into(),
+            change: change.into(),
+            actor: tilo_actions::interaction::InteractionActor::new(
+                by,
+                tilo_actions::interaction::ActorKind::Person,
+            ),
+            did: tilo_actions::entry::Did::verb(
+                tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
+                [],
+            ),
+            arguments: serde_json::Map::new(),
+            item: None,
+            before: None,
+            after: None,
+            caused_by: None,
+            incoming_message: true,
+            shortcut: None,
+            run: None,
+        }
+    }
+
+    fn watch_chat() -> Shortcut {
+        event_shortcut(
+            &TriggerSpec::RecordChanged {
+                kind: "chat.workspace".into(),
+                actions: vec![],
+                fields: vec![],
+                by: tilo_automation::shortcut::ActorFilter::Anyone,
+            },
+            &[("event", "object")],
+        )
+    }
+
+    fn observe_as(
+        source: &mut dyn TriggerSource,
+        events: &[RecordEvent],
+        saved: &Shortcut,
+        device: &str,
+        clock: &ManualClock,
+    ) -> Vec<Firing> {
+        let armed = [Armed {
+            room: "room".into(),
+            shortcut: saved,
+            claims: &[],
+        }];
+        let devices = PersonalDevices {
+            local: Some(device.into()),
+            online: ["laptop", "desktop"].map(String::from).into(),
+        };
+        source.observe(
+            TriggerEvent::Records(events),
+            &armed,
+            TriggerContext {
+                clock,
+                devices: &devices,
+            },
+        )
+    }
+
+    /// The device that goes first for `change`, and the other one.
+    fn change_order(change: &str) -> (&'static str, &'static str) {
+        if change_device_rank(change, "laptop") < change_device_rank(change, "desktop") {
+            ("laptop", "desktop")
+        } else {
+            ("desktop", "laptop")
+        }
+    }
+
+    fn morning_clock() -> ManualClock {
+        ManualClock::new(
+            at("2026-10-12T09:00:00Z"),
+            FixedOffset::east_opt(0).expect("offset"),
+        )
+    }
+
+    #[test]
+    fn a_record_change_fires_the_savers_shortcut_on_the_elected_device_once() {
+        let clock = morning_clock();
+        let saved = watch_chat();
+        let event = [a_post("c1", "bob")];
+        let (first, second) = change_order("c1");
+        let mut on_first = RecordChangedTriggers::default();
+        let mut on_second = RecordChangedTriggers::default();
+        let fired = observe_as(&mut on_first, &event, &saved, first, &clock);
+        assert_eq!(fired.len(), 1, "the first-ranked device runs it at once");
+        assert!(fired[0].inputs["event"].is_object());
+        assert!(
+            observe_as(&mut on_second, &event, &saved, second, &clock).is_empty(),
+            "the other device holds it"
+        );
+        // The run's first change reaches the other device before its turn.
+        on_second.forget_started(&BTreeSet::from([fired[0].run]));
+        clock.set(at("2026-10-12T09:00:00Z") + CLAIM_GRACE);
+        assert!(
+            observe_as(&mut on_second, &[], &saved, second, &clock).is_empty(),
+            "a run started elsewhere is not run again"
+        );
+    }
+
+    #[test]
+    fn the_second_device_takes_over_when_the_first_never_ran_it() {
+        let clock = morning_clock();
+        let start = at("2026-10-12T09:00:00Z");
+        let saved = watch_chat();
+        let event = [a_post("c2", "bob")];
+        let (_, second) = change_order("c2");
+        let mut source = RecordChangedTriggers::default();
+        assert!(observe_as(&mut source, &event, &saved, second, &clock).is_empty());
+        clock.set(start + CLAIM_GRACE - ChronoDuration::seconds(1));
+        assert!(observe_as(&mut source, &[], &saved, second, &clock).is_empty());
+        clock.set(start + CLAIM_GRACE);
+        assert_eq!(
+            observe_as(&mut source, &[], &saved, second, &clock).len(),
+            1
+        );
+        clock.advance(CLAIM_GRACE);
+        assert!(
+            observe_as(&mut source, &[], &saved, second, &clock).is_empty(),
+            "and runs it once"
+        );
+    }
+
+    #[test]
+    fn an_incoming_message_fires_only_the_incoming_message_trigger() {
+        let clock = morning_clock();
+        let saved = event_shortcut(
+            &TriggerSpec::IncomingMessage {
+                app_id: None,
+                from: None,
+            },
+            &[("event", "object")],
+        );
+        let event = [a_post("c3", "bob")];
+        let (first, _) = change_order("c3");
+        let mut messages = IncomingMessageTriggers::default();
+        let mut changes = RecordChangedTriggers::default();
+        assert_eq!(
+            observe_as(&mut messages, &event, &saved, first, &clock).len(),
+            1
+        );
+        assert!(observe_as(&mut changes, &event, &saved, first, &clock).is_empty());
     }
 }

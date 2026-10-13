@@ -64,11 +64,20 @@ pub enum Role {
     Viewer,
     Commenter,
     Editor,
+    /// An Editor who also moderates: other people's content through the
+    /// `moderation` node, and the membership of those ranked below.
+    Moderator,
     Owner,
 }
 
 impl Role {
-    pub const ALL: [Self; 4] = [Self::Viewer, Self::Commenter, Self::Editor, Self::Owner];
+    pub const ALL: [Self; 5] = [
+        Self::Viewer,
+        Self::Commenter,
+        Self::Editor,
+        Self::Moderator,
+        Self::Owner,
+    ];
 
     /// Whether a holder of `self` may hand out `other` through an invite: an
     /// invite never carries more than its inviter's preset.
@@ -77,12 +86,20 @@ impl Role {
         self.rank() >= other.rank()
     }
 
+    /// Whether `self` ranks strictly above `other`: a Moderator's
+    /// governance reaches only the members it outranks.
+    #[must_use]
+    pub const fn outranks(self, other: Self) -> bool {
+        self.rank() > other.rank()
+    }
+
     const fn rank(self) -> u8 {
         match self {
             Self::Viewer => 0,
             Self::Commenter => 1,
             Self::Editor => 2,
-            Self::Owner => 3,
+            Self::Moderator => 3,
+            Self::Owner => 4,
         }
     }
 
@@ -92,6 +109,7 @@ impl Role {
             Self::Viewer => "Viewer",
             Self::Commenter => "Commenter",
             Self::Editor => "Editor",
+            Self::Moderator => "Moderator",
             Self::Owner => "Owner",
         }
     }
@@ -119,6 +137,9 @@ pub enum Subject {
     Shortcut(String),
     /// An app acting under its own identity.
     App(String),
+    /// An installed bot, by installation id. It acts for its installer and
+    /// never as them.
+    Bot(String),
     /// A person working from a device that is not one of theirs.
     ForeignDevice,
 }
@@ -153,6 +174,11 @@ impl Subject {
     pub fn app(id: impl Into<String>) -> Self {
         Self::App(id.into())
     }
+
+    #[must_use]
+    pub fn bot(id: impl Into<String>) -> Self {
+        Self::Bot(id.into())
+    }
 }
 
 impl fmt::Display for Subject {
@@ -164,6 +190,7 @@ impl fmt::Display for Subject {
             Self::Task(id) => write!(f, "task {id}"),
             Self::Shortcut(id) => write!(f, "Shortcut {id}"),
             Self::App(id) => write!(f, "app {id}"),
+            Self::Bot(id) => write!(f, "bot {}", short(id)),
             Self::ForeignDevice => f.write_str("a device that is not theirs"),
         }
     }

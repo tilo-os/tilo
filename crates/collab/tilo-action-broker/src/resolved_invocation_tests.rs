@@ -535,6 +535,7 @@ fn directory_request(
         revision: revision.map(str::to_owned),
         on_behalf_of: None,
         wait_ms: None,
+        appearance: None,
     }
 }
 

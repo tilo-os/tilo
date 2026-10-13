@@ -500,6 +500,8 @@ pub fn sample_actions() -> Vec<Invoke<Library>> {
 #[cfg(test)]
 pub(crate) fn sample_document() -> automerge::AutoCommit {
     let mut doc = automerge::AutoCommit::new();
+    <Library as ui::tilo_resource::Resource>::initialize(&mut doc)
+        .expect("the current library schema initializes");
     ui::tilo_resource::Fields::write_fields(&sample_library(), &mut doc, &automerge::ROOT)
         .expect("the sample library writes");
     doc
@@ -515,6 +517,8 @@ pub(crate) fn library_of(doc: &automerge::AutoCommit) -> Library {
 #[cfg(test)]
 pub(crate) fn empty_document() -> automerge::AutoCommit {
     let mut doc = automerge::AutoCommit::new();
+    <Library as ui::tilo_resource::Resource>::initialize(&mut doc)
+        .expect("the current library schema initializes");
     ui::tilo_resource::Fields::write_fields(&Library::default(), &mut doc, &automerge::ROOT)
         .expect("an empty library writes");
     doc

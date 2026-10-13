@@ -31,7 +31,7 @@ use crate::shell::fabric_clock::{ClockSyncFailure, ClockSyncState};
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState, SpeakerGroup,
-    SpeakerGroupId, SpeakerGroupMember, SpeakerListener, SpeakerMemberState, SpeakerMembership,
+    SpeakerGroupId, SpeakerGroupMember, SpeakerListener, SpeakerMemberStatus, SpeakerMembership,
     SpeakerRole, SpeakerTrim,
 };
 
@@ -522,7 +522,7 @@ impl SpeakerGroupCore {
             .iter()
             .zip(states)
             .zip(channels)
-            .filter(|((_, state), _)| *state == SpeakerMemberState::Ready)
+            .filter(|((_, state), _)| *state == SpeakerMemberStatus::Ready)
             .map(|((member, _), channel)| SessionMember {
                 route: member_route_id(session_id, &member.device, member.output),
                 device: member.device.clone(),
@@ -911,7 +911,7 @@ impl SpeakerGroupCore {
                 .into_iter()
                 .zip(&group.members)
                 .filter(|(state, member)| {
-                    *state == SpeakerMemberState::AwaitingConsent && online(&member.device)
+                    *state == SpeakerMemberStatus::AwaitingConsent && online(&member.device)
                 })
                 .map(|(_, member)| member.device.clone())
                 .collect::<BTreeSet<_>>();
@@ -1375,7 +1375,7 @@ pub struct SpeakerMemberView {
     pub output_label: Option<String>,
     pub role: SpeakerRole,
     pub trim: SpeakerTrim,
-    pub state: SpeakerMemberState,
+    pub state: SpeakerMemberStatus,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1394,7 +1394,7 @@ impl SpeakerGroupView {
     pub fn ready_members(&self) -> usize {
         self.members
             .iter()
-            .filter(|member| member.state == SpeakerMemberState::Ready)
+            .filter(|member| member.state == SpeakerMemberStatus::Ready)
             .count()
     }
 }

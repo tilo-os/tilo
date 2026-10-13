@@ -1353,7 +1353,7 @@ mod command_tests {
         assert!(error.to_string().contains("rolled back or replayed"));
         let entry: app_cli::client::VerifiedEntry = serde_json::from_value(serde_json::json!({
             "entry": {
-                "package_id": "so.tilo.catalogue-test", "name": {"en": "Catalogue test"}, "description": {"en": "x".repeat(super::MAX_REGISTRY_CATALOGUE_BYTES)},
+                "package_id": "so.tilo.catalogue-test", "kind": "app", "name": {"en": "Catalogue test"}, "description": {"en": "x".repeat(super::MAX_REGISTRY_CATALOGUE_BYTES)},
                 "tagline": {"en": ""}, "images": {}, "supported_languages": [], "categories": [],
                 "source_url": null, "homepage": null, "publisher_pubkey_hex": "17".repeat(32),
                 "versions": [], "updated_at_unix": 0, "signature_hex": ""

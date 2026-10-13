@@ -27,6 +27,8 @@ ui::embedded_catalog!(static CATALOG, ["en-US"]);
     kind = "music.library",
     label = "Music",
     params = library,
+    version = 2,
+    migrate = crate::library_migration::migrate,
     search = Library::search_entries
 )]
 impl Library {
