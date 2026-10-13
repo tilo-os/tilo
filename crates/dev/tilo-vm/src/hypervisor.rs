@@ -771,7 +771,7 @@ impl Hypervisor for Qemu {
     }
 
     fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
-        // os/dev/vm.sh takes no extra QEMU arguments, so no credential.
+        // The boot script receives the registered public key at each start.
         Ok(overlay_disk(vm)?.into_iter().collect())
     }
 
@@ -781,6 +781,12 @@ impl Hypervisor for Qemu {
         let mut command = Self::script(vm, &["boot", display, "--disk", &disk])
             .env("TILO_MEM", vm.memory().to_string())
             .env("TILO_SMP", vm.cpus().to_string());
+        if let Some(key) = &vm.entry.key {
+            command = command.env(
+                "TILO_VM_ROOT_KEY_FILE",
+                sshkey::public_path(Path::new(key)).display().to_string(),
+            );
+        }
         if vm.entry.emulated {
             command = command.env("TILO_ACCEL", "tcg");
         }
@@ -804,7 +810,9 @@ impl Hypervisor for Qemu {
     }
 
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
-        vec![Self::script(vm, &["shutdown"])]
+        // Let the CLI own shutdown waiting and escalation to authenticated
+        // guest poweroff, rather than vm.sh's legacy password-based gssh.
+        vec![Self::script(vm, &["cmd", "system_powerdown"])]
     }
 
     fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
@@ -825,10 +833,25 @@ impl Hypervisor for Qemu {
             serial: true,
             screenshot: true,
             reset: true,
-            credentials: None,
+            credentials: Some("SMBIOS type 11 OEM string"),
             control: Some("QEMU monitor (HMP)"),
             direct_kernel: false,
             boot_esp: false,
+        }
+    }
+
+    fn running(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
+        let output = runner
+            .output(&Self::script(vm, &["status"]))
+            .ok()
+            .filter(|output| output.success)?;
+        let status = output.stdout.trim();
+        if status == "stopped" {
+            Some(false)
+        } else if status.starts_with("running (pid ") && status.ends_with(')') {
+            Some(true)
+        } else {
+            None
         }
     }
 
@@ -837,16 +860,21 @@ impl Hypervisor for Qemu {
     }
 
     fn screenshot(&self, vm: &Vm<'_>, out: &Path) -> Option<CommandLine> {
-        // vm.sh writes $TILO_RUN/<name>.png.
-        let dir = out
-            .parent()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-        let stem = out
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        Some(Self::script(vm, &["shot", &stem]).env("TILO_RUN", dir))
+        // TILO_RUN also selects the running VM's monitor. Keep it unchanged:
+        // capture there, then move the image to the requested evidence path.
+        // Pass the destination as an argument, never interpolate it into shell.
+        Some(
+            CommandLine::new(
+                "bash",
+                &[
+                    "-c",
+                    "image=$(bash os/dev/vm.sh shot \"tilo-vm-shot-$$\") && mv -- \"$image\" \"$1\"",
+                    "tilo-vm-shot",
+                ],
+            )
+            .arg(out.display().to_string())
+            .env("TILO_SSH_PORT", vm.ssh_port().to_string()),
+        )
     }
 
     fn reset(&self, vm: &Vm<'_>) -> Option<CommandLine> {
@@ -1519,8 +1547,144 @@ mod tests {
                 entry: &entry
             })[0]
                 .display(),
-            "TILO_SSH_PORT=2223 bash os/dev/vm.sh shutdown"
+            "TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_powerdown"
         );
+    }
+
+    #[test]
+    fn qemu_running_observes_script_status_for_shutdown_and_start() {
+        let entry = entry();
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        for (status, expected) in [
+            ("stopped\n", Some(false)),
+            ("running (pid 42)\n", Some(true)),
+            ("unavailable", None),
+        ] {
+            let mut runner = fake(status);
+            assert_eq!(Qemu.running(&vm, &mut runner), expected);
+            assert_eq!(
+                runner.0[0].display(),
+                "TILO_SSH_PORT=2223 bash os/dev/vm.sh status"
+            );
+        }
+        let mut runner = fake("stopped");
+        runner.1.success = false;
+        assert_eq!(Qemu.running(&vm, &mut runner), None);
+        assert_eq!(
+            Qemu.stop(&vm)[0].display(),
+            "TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_powerdown"
+        );
+    }
+
+    #[test]
+    fn qemu_start_passes_registered_public_key_to_boot_script() {
+        let entry = VmEntry {
+            key: Some("/private keys/reference_ed25519".into()),
+            ..entry()
+        };
+        let command = Qemu
+            .start(&Vm {
+                name: "dev",
+                entry: &entry,
+            })
+            .remove(0);
+        assert!(command.env.contains(&(
+            "TILO_VM_ROOT_KEY_FILE".into(),
+            "/private keys/reference_ed25519.pub".into(),
+        )));
+        assert_eq!(
+            Qemu.capabilities().credentials,
+            Libvirt.capabilities().credentials
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn qemu_boot_script_encodes_public_key_as_smbios_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/dev/vm.sh");
+        std::fs::copy(script, temp.path().join("vm.sh")).unwrap();
+        // Substitute only host/QEMU operations; execute the production boot path.
+        std::fs::write(
+            temp.path().join("_common.sh"),
+            r#"
+set -eu
+TILO_RUN="$PWD"
+TILO_DISK="$PWD/disk"
+TILO_VM_ARCH=x86_64 TILO_XRES=1280 TILO_YRES=800
+TILO_MEM=4096 TILO_SMP=2 TILO_SSH_PORT=2299
+TILO_SERIAL="$PWD/serial" TILO_MON="$PWD/monitor"
+TILO_PIDFILE="$PWD/pid" TILO_CONSOLE="$PWD/console"
+TILO_VM_HOSTFWD="" TILO_QEMU_LOG="$PWD/qemu.log"
+die() { echo "$*" >&2; exit 1; }
+msg() { :; }
+inenv() { return 1; }
+firmware_setup() { :; }
+firmware_varstore() { echo vars; }
+display_qemu_args() { :; }
+machine_args() { :; }
+qemu_accel_args() { echo '-accel tcg'; }
+pflash_args() { :; }
+lan_qemu_args() { :; }
+input_qemu_args() { :; }
+console_qemu_args() { :; }
+swtpm_start() { :; }
+tpm_qemu_args() { :; }
+secboot_qemu_args() { :; }
+start_qemu() { printf '%s' "$1"; }
+"#,
+        )
+        .unwrap();
+        std::fs::write(temp.path().join("disk"), "").unwrap();
+        let key = temp.path().join("public key");
+        let public = format!("{KEY} comment ' ; $(touch injected)");
+        std::fs::write(&key, format!("{public}\n")).unwrap();
+        let run = |path: &Path| {
+            std::process::Command::new("bash")
+                .arg(temp.path().join("vm.sh"))
+                .arg("boot")
+                .current_dir(temp.path())
+                .env("TILO_VM_ROOT_KEY_FILE", path)
+                .output()
+                .unwrap()
+        };
+        let output = run(&key);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains(&format!(
+            "-smbios type=11,value={}",
+            sshkey::smbios_credential(&public)
+        )));
+        assert!(!temp.path().join("injected").exists());
+        assert!(!run(&temp.path().join("missing")).status.success());
+        std::fs::write(&key, "").unwrap();
+        assert!(!run(&key).status.success());
+    }
+
+    #[test]
+    fn qemu_screenshot_keeps_monitor_runtime_and_passes_destination_as_data() {
+        let entry = entry();
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let destination = Path::new("/evidence/checkpoint 'one'.png");
+        let command = Qemu.screenshot(&vm, destination).unwrap();
+        assert_eq!(command.program, "bash");
+        assert_eq!(command.args[0], "-c");
+        assert_eq!(
+            command.args[1],
+            "image=$(bash os/dev/vm.sh shot \"tilo-vm-shot-$$\") && mv -- \"$image\" \"$1\""
+        );
+        assert_eq!(command.args[2], "tilo-vm-shot");
+        assert_eq!(command.args[3], destination.display().to_string());
+        assert_eq!(command.env, vec![("TILO_SSH_PORT".into(), "2223".into())]);
     }
 
     /// WHPX uses a child, fresh vars and hardware acceleration, and headless direct boot preserves an
