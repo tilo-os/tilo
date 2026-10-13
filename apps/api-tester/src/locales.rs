@@ -3,4 +3,3 @@
 // tilo-app:locale=en-US
 
 ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
-

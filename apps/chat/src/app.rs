@@ -3891,35 +3891,19 @@ impl Widget for ChatApp {
             ),
         })
     }
-    #[expect(
-        clippy::float_cmp,
-        reason = "the clamped target is compared exactly: identical means the scroll did not move"
-    )]
     fn apply_primary_vertical_scroll(
         &mut self,
         action: ui::widget::PrimaryScrollAction,
     ) -> ui::widget::PrimaryScrollResult {
-        use ui::widget::PrimaryScrollResult;
-        let Some(region) = self.primary_vertical_scroll() else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        let Some(next) = action.offset(region.metrics) else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        if next == region.metrics.offset {
-            return PrimaryScrollResult::Unchanged(region);
-        }
-        if region.key == "thread" {
-            self.thread_scroll.set_offset_y(ui::num::f32_of_f64(next));
-        } else {
-            self.scroll = region.metrics.max_scroll() - next;
-            self.timeline_at_end = self.scroll <= 0.5;
-        }
-        self.canonical_dirty = true;
-        self.primary_vertical_scroll().map_or(
-            PrimaryScrollResult::Unsupported,
-            PrimaryScrollResult::Changed,
-        )
+        action.apply_to(self, Self::primary_vertical_scroll, |app, region, next| {
+            if region.key == "thread" {
+                app.thread_scroll.set_offset_y(ui::num::f32_of_f64(next));
+            } else {
+                app.scroll = region.metrics.max_scroll() - next;
+                app.timeline_at_end = app.scroll <= 0.5;
+            }
+            app.canonical_dirty = true;
+        })
     }
 
     fn is_focusable(&self) -> bool {
