@@ -2,7 +2,6 @@
 use super::composition_parts::{Parts, retained_parts};
 use super::{Element, Manual, MeasureConstraint, Widget};
 use crate::{PresenceCtx, Theme, text_render::TextRenderer};
-use automerge::ObjId;
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::{

@@ -32,7 +32,7 @@
 //! steward over the channel itself.
 //!
 //! And one plane admits a device to a room's governance itself:
-//! [`RoomOperation::AgentMembership`], a delegated agent of this relay's own
+//! [`RoomOperation::DelegateMembership`], a delegated agent of this relay's own
 //! user joining, as a governed member, a room this relay governs. Agents are
 //! collaborators: each has its own device key, a certificate and a
 //! delegation its person's root signed, and the governor records it on the
@@ -113,7 +113,7 @@ pub(crate) enum RoomOperation {
     /// A delegated agent of this relay's user becoming a governed member of
     /// a room this relay governs (see the module documentation).
     #[cfg(any(test, feature = "agents"))]
-    AgentMembership,
+    DelegateMembership,
 }
 
 /// What a same-owner room does with one of its owner's devices it does not
@@ -148,7 +148,7 @@ impl RoomOperation {
             Self::ContentDiscovery | Self::Environment => OwnerDevice::Admit,
             Self::State | Self::Replay | Self::RemoteAction => OwnerDevice::Refuse,
             #[cfg(any(test, feature = "agents"))]
-            Self::StewardedChannelKeys | Self::AgentMembership => OwnerDevice::Refuse,
+            Self::StewardedChannelKeys | Self::DelegateMembership => OwnerDevice::Refuse,
         }
     }
 }
@@ -307,7 +307,7 @@ impl RelayTrust<'_> {
         device: &[u8; 32],
         workspace_id: u64,
         now_ns: u64,
-    ) -> Option<tilo_relay_protocol::agents::AgentDelegation> {
+    ) -> Option<tilo_relay_protocol::delegation::Delegation> {
         self.agents
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -454,7 +454,7 @@ pub(crate) fn decide_in(
         };
     }
     #[cfg(any(test, feature = "agents"))]
-    if op == RoomOperation::AgentMembership {
+    if op == RoomOperation::DelegateMembership {
         // Never by membership, enrolment or federation: only this relay's
         // user's own agent, inside its delegation, in a room governed here.
         let delegated = own_user

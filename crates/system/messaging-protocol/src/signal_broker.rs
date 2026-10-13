@@ -51,6 +51,33 @@ impl Authorization {
         self.retained = Some(lease);
         self
     }
+    /// Refuse `route` unless Contacts still routes its person through
+    /// `route.sender` within `scope`, the frozen route matching exactly.
+    pub(crate) fn listed(
+        &self,
+        route: &Route,
+        scope: &str,
+        enabled: bool,
+    ) -> Result<(), SendError> {
+        let sender = tilo_contact_directory::routing::SenderAccount {
+            id: route.sender.clone(),
+            service: route.service.clone(),
+            scope: scope.to_owned(),
+            enabled,
+        };
+        if tilo_contact_directory::routing::routes(
+            &self.directory,
+            &route.person,
+            &route.service,
+            &[sender],
+        )
+        .contains(route)
+        {
+            Ok(())
+        } else {
+            Err(SendError::Revoked)
+        }
+    }
 }
 pub trait SignalAuthority: Send + Sync {
     /// Revalidate the frozen account independently of any recipient route.
@@ -189,25 +216,11 @@ impl SignalBroker {
         .map_err(|_| SendError::Revoked)?;
         crate::routing::check(&auth.accounts, &protocol, &self.owner, &auth.binding)
             .map_err(|_| SendError::Revoked)?;
-        let sender = tilo_contact_directory::routing::SenderAccount {
-            id: route.sender.clone(),
-            service: "signal".into(),
-            scope: self.scope.clone(),
-            enabled: auth
-                .accounts
-                .get(&accounts::AccountId::new(route.sender.as_str()))
-                .is_some_and(|account| account.enabled),
-        };
-        if !tilo_contact_directory::routing::routes(
-            &auth.directory,
-            &route.person,
-            "signal",
-            &[sender],
-        )
-        .contains(route)
-        {
-            return Err(SendError::Revoked);
-        }
+        let enabled = auth
+            .accounts
+            .get(&accounts::AccountId::new(route.sender.as_str()))
+            .is_some_and(|account| account.enabled);
+        auth.listed(route, &self.scope, enabled)?;
         Ok(auth)
     }
     fn send_once(&self, request: SendRequest) -> Result<SendReceipt, SendError> {

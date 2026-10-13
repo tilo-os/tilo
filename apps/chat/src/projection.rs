@@ -218,6 +218,7 @@ pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message 
         attachment: message.attachment.0.clone(),
         pinned: message.pinned,
         work: message.work.as_ref().and_then(work_row),
+        appearance: message.appearance.0.clone(),
     }
 }
 

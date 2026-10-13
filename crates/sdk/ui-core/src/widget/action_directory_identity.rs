@@ -1,5 +1,4 @@
 //! Inert continuity promises supplied by an actual owning surface or provider.
-use std::io::Write;
 
 /// Comparison-only coverage of an owning surface's effective invocation domain.
 /// This never authorizes invocation, disclosure, or document publication.
@@ -23,22 +22,12 @@ impl ActionDirectoryInvocationDomain {
     /// copying its data or requiring a hashing dependency in the application.
     /// The caller must truthfully cover the complete domain described above.
     pub fn versioned(evidence: &tilo_actions::ContinuationEvidence) -> Self {
-        struct Sink(blake3::Hasher);
-        impl Write for Sink {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.update(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let mut sink = Sink(blake3::Hasher::new());
-        sink.0.update(b"tilo.directory-invocation-domain\0v1");
-        if evidence.write_canonical_identity(&mut sink).is_err() {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"tilo.directory-invocation-domain\0v1");
+        if evidence.write_canonical_identity(&mut hasher).is_err() {
             return Self::Unsupported;
         }
-        Self::Versioned(*sink.0.finalize().as_bytes())
+        Self::Versioned(*hasher.finalize().as_bytes())
     }
 
     pub(crate) fn is_supported(self) -> bool {
