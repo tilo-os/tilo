@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Check the copy Settings actually uses, including conditional/table keys."""
+"""Every Fluent key a crate's source resolves exists in each catalogue it ships.
+
+A key with no message renders as the key itself, so a missing entry ships an
+untranslatable identifier to the screen. Keys passed straight to a resolver
+(`t`, `t_args`, `tr`, `tr_args`) are checked in every crate with a
+`locales/en-US.ftl`; Settings also routes keys through conditionals and
+tables, so its key-shaped literals in a known namespace are checked too.
+Lookups fall back to the toolkit's catalogue, so its messages count for all.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MESSAGE = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*)\s*=", re.MULTILINE)
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\Z")
 KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+\Z")
-RESOLVER = re.compile(r"\b(?:t|t_args)\s*\(")
+RESOLVER = re.compile(r"\b(?:t|t_args|tr|tr_args)\s*\(")
 # These argument positions are stable machine identifiers, never Fluent IDs.
 MACHINE_CALL = re.compile(
     r"(?:\bButton::new|\.(?:with_id|thread_name|name))\s*\("
@@ -76,20 +84,37 @@ def used_keys(text: str, namespaces: set[str]) -> list[tuple[str, int]]:
     return found
 
 
+TOOLKIT = "crates/sdk/ui-core"
+# Crates whose copy keys also travel through conditionals and tables.
+INDIRECT = {"apps/settings"}
+
+
+def catalogues(crate: Path) -> dict[str, set[str]]:
+    return {path.stem: set(MESSAGE.findall(path.read_text()))
+            for path in sorted((crate / "locales").glob("*.ftl"))}
+
+
+def copy_crates(root: Path) -> list[Path]:
+    return sorted(ftl.parents[1] for pattern in ("apps/*", "crates/*/*")
+                  for ftl in root.glob(f"{pattern}/locales/en-US.ftl"))
+
+
 def missing_copy(root: Path) -> list[str]:
-    settings = root / "apps/settings"
-    catalogues = {locale: set(MESSAGE.findall((settings / f"locales/{locale}.ftl").read_text()))
-                  for locale in ("en-US", "de-DE")}
-    namespaces = {key.partition("-")[0] for key in catalogues["en-US"]}
+    toolkit = catalogues(root / TOOLKIT)
     errors = []
-    for path in sorted((settings / "src").rglob("*.rs")):
-        # This module names capture-only scenarios; it is not a live pane.
-        if path.name == "scenarios.rs":
-            continue
-        for key, line in used_keys(path.read_text(), namespaces):
-            for locale, keys in catalogues.items():
-                if key not in keys:
-                    errors.append(f"{path.relative_to(root)}:{line}: {locale} lacks {key}")
+    for crate in copy_crates(root):
+        own = catalogues(crate)
+        name = crate.relative_to(root).as_posix()
+        indirect = name in INDIRECT
+        namespaces = {key.partition("-")[0] for key in own["en-US"]} if indirect else set()
+        for path in sorted((crate / "src").rglob("*.rs")):
+            # Settings' scenarios name capture-only states, not live panes.
+            if indirect and path.name == "scenarios.rs":
+                continue
+            for key, line in used_keys(path.read_text(), namespaces):
+                for locale, keys in own.items():
+                    if key not in keys and key not in toolkit.get(locale, toolkit["en-US"]):
+                        errors.append(f"{path.relative_to(root)}:{line}: {locale} lacks {key}")
     return errors
 
 
@@ -98,7 +123,7 @@ def main() -> int:
     if errors:
         print("\n".join(errors))
         return 1
-    print("Settings source copy is covered in en-US and de-DE")
+    print("app copy OK (every resolved key is in each shipped catalogue)")
     return 0
 
 
