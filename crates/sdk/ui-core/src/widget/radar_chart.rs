@@ -22,7 +22,7 @@ use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, handle_chart_event, moved_index,
+    ChartInspection, ChartNavAction, InteractiveChart, handle_chart_event, moved_index,
 };
 
 #[derive(Clone, Debug)]
@@ -117,7 +117,7 @@ impl Default for RadarStyle {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Hovered {
+pub(crate) struct Hovered {
     series: usize,
     axis: usize,
 }
@@ -129,11 +129,8 @@ pub struct RadarChart {
     title: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
-    hovered: Option<Hovered>,
+    inspection: ChartInspection<Hovered>,
     activated: Option<(String, String)>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
     toggles: chart_legend::SeriesToggles,
 }
 
@@ -146,11 +143,8 @@ impl RadarChart {
             title: String::new(),
             height: 400.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
+            inspection: ChartInspection::default(),
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
             toggles: chart_legend::SeriesToggles::default(),
         }
     }
@@ -173,7 +167,7 @@ impl RadarChart {
         self.series = series;
         self.toggles
             .retain(|id| self.series.iter().any(|series| series.id == id));
-        self.hovered = None;
+        self.inspection.hovered = None;
     }
     pub fn is_series_visible(&self, id: &str) -> bool {
         self.series.iter().any(|series| series.id == id) && !self.toggles.is_hidden(id)
@@ -185,11 +179,12 @@ impl RadarChart {
         let changed = self.toggles.set(id, visible);
         if changed {
             if self
+                .inspection
                 .hovered
                 .and_then(|hovered| self.series.get(hovered.series))
                 .is_some_and(|series| series.id == id)
             {
-                self.hovered = None;
+                self.inspection.hovered = None;
             }
         }
         changed
@@ -204,7 +199,7 @@ impl RadarChart {
         self.activated.take()
     }
     pub fn inspect(&mut self, series_id: &str, axis_id: &str) -> bool {
-        self.hovered = self.series.iter().enumerate().find_map(|(series, values)| {
+        self.inspection.hovered = self.series.iter().enumerate().find_map(|(series, values)| {
             (!self.toggles.is_hidden(&values.id) && values.id == series_id)
                 .then(|| {
                     self.axes
@@ -221,18 +216,17 @@ impl RadarChart {
                 })
                 .flatten()
         });
-        self.keyboard_inspection = self.hovered.is_some();
-        if let Some(hovered) = self.hovered
+        self.inspection.keyboard = self.inspection.hovered.is_some();
+        if let Some(hovered) = self.inspection.hovered
             && let Some(series) = self.series.get(hovered.series)
             && let Some(point) = self.value_point(series, hovered.axis)
         {
-            self.pointer = point;
+            self.inspection.pointer = point;
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
 
     fn geometry(&self) -> (Point, f64) {
@@ -306,12 +300,9 @@ impl RadarChart {
 }
 
 impl InteractiveChart for RadarChart {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = Hovered;
+    fn inspection(&mut self) -> &mut ChartInspection<Hovered> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
         let mut nearest: Option<(f64, Hovered)> = None;
@@ -323,7 +314,7 @@ impl InteractiveChart for RadarChart {
                 let Some(point) = self.value_point(series, axis) else {
                     continue;
                 };
-                let distance = point.distance(self.pointer);
+                let distance = point.distance(self.inspection.pointer);
                 if distance <= 22.0 && nearest.is_none_or(|current| distance < current.0) {
                     nearest = Some((
                         distance,
@@ -335,10 +326,7 @@ impl InteractiveChart for RadarChart {
                 }
             }
         }
-        self.hovered = nearest.map(|(_, hovered)| hovered);
-    }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
+        self.inspection.hovered = nearest.map(|(_, hovered)| hovered);
     }
     fn toggle_legend_at(&mut self, point: Point) -> bool {
         if !self.style.legend.interactive {
@@ -351,7 +339,7 @@ impl InteractiveChart for RadarChart {
     }
 
     fn activate_hovered(&mut self) -> bool {
-        let Some(hovered) = self.hovered else {
+        let Some(hovered) = self.inspection.hovered else {
             return false;
         };
         let (Some(series), Some(axis)) =
@@ -379,20 +367,20 @@ impl InteractiveChart for RadarChart {
                 })
             })
             .collect::<Vec<_>>();
-        let current = self.hovered.and_then(|hovered| {
+        let current = self.inspection.hovered.and_then(|hovered| {
             candidates.iter().position(|candidate| {
                 candidate.series == hovered.series && candidate.axis == hovered.axis
             })
         });
-        self.hovered = moved_index(current, candidates.len(), action)
+        self.inspection.hovered = moved_index(current, candidates.len(), action)
             .and_then(|index| candidates.get(index).copied());
-        if let Some(hovered) = self.hovered
+        if let Some(hovered) = self.inspection.hovered
             && let Some(series) = self.series.get(hovered.series)
             && let Some(point) = self.value_point(series, hovered.axis)
         {
-            self.pointer = point;
+            self.inspection.pointer = point;
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
@@ -415,12 +403,12 @@ impl Widget for RadarChart {
             return;
         }
         let (center, radius) = self.geometry();
-        if self.keyboard_inspection
-            && let Some(hovered) = self.hovered
+        if self.inspection.keyboard
+            && let Some(hovered) = self.inspection.hovered
             && let Some(series) = self.series.get(hovered.series)
             && let Some(point) = self.value_point(series, hovered.axis)
         {
-            self.pointer = point;
+            self.inspection.pointer = point;
         }
         if !self.title.is_empty() {
             tr.draw_style(
@@ -502,7 +490,7 @@ impl Widget for RadarChart {
             );
             for axis in 0..self.axes.len() {
                 if let Some(point) = self.value_point(series, axis) {
-                    let selected = self.hovered.is_some_and(|hovered| {
+                    let selected = self.inspection.hovered.is_some_and(|hovered| {
                         hovered.series == series_index && hovered.axis == axis
                     });
                     if selected {
@@ -580,7 +568,7 @@ impl Widget for RadarChart {
         } else {
             self.toggles.clear_hits();
         }
-        if let Some(hovered) = self.hovered.filter(|_| self.style.tooltip)
+        if let Some(hovered) = self.inspection.hovered.filter(|_| self.style.tooltip)
             && let (Some(series), Some(axis)) =
                 (self.series.get(hovered.series), self.axes.get(hovered.axis))
         {
@@ -592,7 +580,7 @@ impl Widget for RadarChart {
                 transform,
                 tr,
                 theme,
-                self.pointer,
+                self.inspection.pointer,
                 self.rect,
                 150.0,
                 (&title, &detail),
