@@ -1127,6 +1127,14 @@ fn takes_window_icon(event_loop: &ActiveEventLoop) -> bool {
         .is_ok_and(|display| matches!(display.as_raw(), RawDisplayHandle::Wayland(_)))
 }
 
+/// The slow-event reporting threshold in milliseconds, when the developer
+/// overrides it with `TILO_SLOW_EVENT_MS`; see `slow_event`.
+pub(super) fn slow_event_threshold_ms() -> Option<u64> {
+    std::env::var("TILO_SLOW_EVENT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
 /// The Wayland application id (X11 `WM_CLASS`) of the primary window: the
 /// app's own (`explicit`, an input surface's), else its package's. See
 /// `resolve_app_id`: a shared id collapses per-app compositor lookups.
