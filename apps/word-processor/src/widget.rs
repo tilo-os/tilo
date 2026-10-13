@@ -10218,34 +10218,18 @@ impl Widget for WordProcessorWidget {
         })
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "the clamped target is compared exactly: identical means the scroll did not move"
-    )]
     fn apply_primary_vertical_scroll(
         &mut self,
         action: ui::widget::PrimaryScrollAction,
     ) -> ui::widget::PrimaryScrollResult {
-        use ui::widget::PrimaryScrollResult;
-        let Some(region) = self.primary_vertical_scroll() else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        let Some(next) = action.offset(region.metrics) else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        if next == region.metrics.offset {
-            return PrimaryScrollResult::Unchanged(region);
-        }
-        if self.styles_panel_full_window() {
-            self.panel_scroll = next;
-        } else {
-            self.scroll_y = next;
-        }
-        self.lifecycle.dirty = true;
-        self.primary_vertical_scroll().map_or(
-            PrimaryScrollResult::Unsupported,
-            PrimaryScrollResult::Changed,
-        )
+        action.apply_to(self, Self::primary_vertical_scroll, |doc, _, next| {
+            if doc.styles_panel_full_window() {
+                doc.panel_scroll = next;
+            } else {
+                doc.scroll_y = next;
+            }
+            doc.lifecycle.dirty = true;
+        })
     }
 
     fn native_input_snapshot(
