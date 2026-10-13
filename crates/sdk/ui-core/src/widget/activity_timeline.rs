@@ -2584,7 +2584,7 @@ impl ActivityTimeline {
             &meta_style,
         );
         // Right-aligned to the same gutter as the rows' time column, so the
-        // band header's "2 h ago" and the rows' "1 h ago" share one edge.
+        // band header's "2 hr ago" and the rows' "1 hr ago" share one edge.
         tr.draw_style(
             scene,
             &rel,

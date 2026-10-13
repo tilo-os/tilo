@@ -310,22 +310,7 @@ permission-prompt-always = Immer erlauben
 permission-prompt-deny = Ablehnen
 permission-prompt-requested = { $capability } – angefragt von { $app }
 
-# Relative Zeitangaben in Verlaufs- und Aktivitätszeilen.
-relative-time-just-now = gerade eben
-relative-time-minutes = { $count ->
-        [one] vor { $count } Min.
-       *[other] vor { $count } Min.
-    }
-relative-time-hours = { $count ->
-        [one] vor { $count } Std.
-       *[other] vor { $count } Std.
-    }
-relative-time-days = { $count ->
-        [one] vor { $count } Tag
-       *[other] vor { $count } Tagen
-    }
-
-# Grobe relative Zeitangaben („vor 3 Tagen“) in Listen und Karten.
+# Grobe relative Zeitangaben („vor 3 Tagen“) in Verlaufszeilen, Listen und Karten.
 relative-ago-just-now = gerade eben
 relative-ago-minutes = vor { $count } Min.
 relative-ago-hours = vor { $count } Std.
