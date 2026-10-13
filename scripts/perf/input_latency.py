@@ -146,9 +146,9 @@ def summarize_physical_notes_latency(lines, scratch_page):
         if not isinstance(identities, list) or len(identities) != 1:
             raise ValueError('Coalesced input does not prove every intermediate body was displayed')
         identity = identities[0]
-        if type(identity) is not int or identity in by_input:
-            raise ValueError('Duplicate or invalid physical input/frame mapping')
-        by_input[identity] = frame
+        if type(identity) is not int:
+            raise ValueError('Invalid physical input/frame mapping')
+        by_input.setdefault(identity, []).append(frame)
     seen = set()
     samples = []
     previous_presented = previous_delivery = None
@@ -171,7 +171,23 @@ def summarize_physical_notes_latency(lines, scratch_page):
             raise ValueError('Input changed its authoritative surface')
         if identity not in by_input:
             raise ValueError('Input has no drawn frame')
-        frame = by_input[identity]
+        candidates = by_input[identity]
+        positive = [candidate for candidate in candidates
+                    if feedback.get(candidate['cpu_frame_id'], {}).get('discarded') is False
+                    and type(feedback[candidate['cpu_frame_id']].get('presented_time_ns')) is int]
+        if not positive:
+            raise ValueError('Exact drawn frame lacks positive hardware presentation feedback')
+        frame = min(positive, key=lambda candidate:
+                    feedback[candidate['cpu_frame_id']]['presented_time_ns'])
+        # Earlier submitted buffers may be discarded. They must have exact
+        # negative feedback and the same content-free drawn state, so a later
+        # unrelated frame or a missing earlier presentation cannot qualify.
+        for candidate in candidates:
+            if candidate['cpu_frame_id'] >= frame['cpu_frame_id']:
+                continue
+            if (feedback.get(candidate['cpu_frame_id'], {}).get('discarded') is not True
+                    or candidate.get('state') != frame.get('state')):
+                raise ValueError('Earlier input draw is not a verified discarded identical body')
         before, state = event.get('before'), frame.get('state')
         for snap in (before, state):
             if not isinstance(snap, dict) or snap.get('app') != 'so.tilo.notes':
@@ -228,4 +244,5 @@ def summarize_physical_notes_latency(lines, scratch_page):
             'clock': 'CLOCK_MONOTONIC', 'samples': samples, 'latency': measured,
             'limitations': ['Excludes peripheral scan before the trusted kernel/libinput timestamp.',
                             'Requires isolated character presses, no coalesced or IME-only samples.',
+                            'Includes opt-in content-free state and timing diagnostics; their overhead must be checked before normal-mode performance certification.',
                             'Hardware presentation timestamps do not measure panel pixel response.']}

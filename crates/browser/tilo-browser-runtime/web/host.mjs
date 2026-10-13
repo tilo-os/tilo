@@ -3,7 +3,7 @@ import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createDataLoader} from './data-loader.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
-import {MountRegistry,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,pageWheelAsPixels} from './host-core.mjs';
+import {MountRegistry,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
@@ -394,6 +394,15 @@ export async function mountDesktop(target,options={}) {
     // Every wheel over the surface is the runtime's: sideways swipes step the
     // strip or scroll an app, Ctrl+wheel is pinch zoom. None may scroll,
     // zoom or navigate the page's history.
+    // A mouse wheel's notches reach the runtime as the lines a native wheel
+    // sends; this runs before the runtime's own canvas listener.
+    on(surface,'wheel',event=>{
+      if(event.target!==canvas)return;
+      const lines=wheelNotchesAsLines(event,config.mac);
+      if(!lines)return;
+      event.preventDefault();event.stopImmediatePropagation();
+      canvas.dispatchEvent(new WheelEvent('wheel',lines));
+    },{capture:true,passive:false});
     on(canvas,'wheel',event=>{
       event.preventDefault();
       const pixels=pageWheelAsPixels(event,canvas.clientWidth,canvas.clientHeight);

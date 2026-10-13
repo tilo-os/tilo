@@ -108,9 +108,20 @@ fn physical_observer_matches_real_note_dispatch_to_the_drawn_body_without_text_l
     // This test uses an IME event, not a fabricated physical key serial:
     // display-latency qualification must still reject its absent physical start.
     assert!(effect["wayland_serial"].is_null());
+    // Discarded buffers retain the same witness on bounded subsequent draws.
+    for id in 72..103 {
+        let retry = trace
+            .drawn(Some(id), app.harness().native_input_snapshot())
+            .expect("bounded retry witness");
+        assert_eq!(retry["cpu_frame_id"], id);
+        assert_eq!(retry["input_ids"], frame["input_ids"]);
+        assert_eq!(retry["state"], frame["state"]);
+        assert_eq!(retry["observer_session"], frame["observer_session"]);
+        assert!(!retry.to_string().contains("é"));
+    }
     assert!(
         trace
-            .drawn(Some(72), app.harness().native_input_snapshot())
+            .drawn(Some(103), app.harness().native_input_snapshot())
             .is_none()
     );
     for row in [effect, frame] {
@@ -155,4 +166,42 @@ fn native_typing_evidence_tracks_canonical_and_rendered_text_without_logging_con
         assert!(observed.get("body").is_none());
         assert!(observed.get("text").is_none());
     }
+}
+
+#[test]
+fn semantic_new_page_open_adopts_focused_line_and_types_without_pointer_focus() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    app.call(
+        "new-note",
+        serde_json::json!({"title":"Input diagnostic scratch"}),
+    )
+    .unwrap();
+    app.settle();
+    let page = app.read_document(read::list_pages)[0].id;
+    app.call_on(
+        &notes::actions::page_resource_id(page),
+        "open",
+        serde_json::json!({}),
+    )
+    .unwrap();
+    app.settle();
+    let before = app
+        .harness()
+        .native_input_snapshot()
+        .expect("Notes observer");
+    assert_eq!(before["editor_binding_page"], page.to_string());
+    assert_eq!(before["body_chars"], 0);
+    assert_eq!(before["editor_focused"], true);
+    assert_eq!(before["active_line_present"], true);
+    assert_eq!(before["active_line_focused"], true);
+    assert_eq!(before["active_line_disabled"], false);
+    assert_eq!(before["editor_composing"], false);
+    assert_eq!(before["sidebar_renaming"], false);
+    app.harness().key("a");
+    assert_eq!(
+        body(&app, page),
+        "a",
+        "semantic Open must admit ordinary typing without a pointer workaround"
+    );
 }
