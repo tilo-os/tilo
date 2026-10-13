@@ -89,6 +89,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 tempfile.workspace = true
 tilo-copy-lint = { path = "../../crates/dev/copy-lint" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-process = { path = "../../crates/platform/tilo-process" }
 
 [target.'cfg(unix)'.dev-dependencies]
 tilo-fs = { path = "../../crates/system/fs" }

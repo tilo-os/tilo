@@ -22372,12 +22372,10 @@ impl ShellOverlayHost {
                         - 28.0
                         - 8.0 * f64_of_usize(nav_columns.saturating_sub(1)))
                         / f64_of_usize(nav_columns);
-                    let x = navigation_surface.x0
-                        + 14.0
-                        + f64_of_usize(column) * (column_width + 8.0);
-                    let y = navigation_surface.y0
-                        + 31.0
-                        + f64_of_usize(row) * SHORTCUT_NAVIGATION_STEP;
+                    let x =
+                        navigation_surface.x0 + 14.0 + f64_of_usize(column) * (column_width + 8.0);
+                    let y =
+                        navigation_surface.y0 + 31.0 + f64_of_usize(row) * SHORTCUT_NAVIGATION_STEP;
                     text_renderer.draw_style(
                         scene,
                         &t(label),
@@ -22523,10 +22521,8 @@ impl ShellOverlayHost {
                     let band = group_index
                         .checked_div(reference_columns)
                         .unwrap_or_default();
-                    let x =
-                        body.x0 + f64_of_usize(column) * (reference_width + reference_gap);
-                    let y = reference_top
-                        + f64_of_usize(band) * (reference_height + reference_gap);
+                    let x = body.x0 + f64_of_usize(column) * (reference_width + reference_gap);
+                    let y = reference_top + f64_of_usize(band) * (reference_height + reference_gap);
                     let group = Rect::new(x, y, x + reference_width, y + reference_height);
                     groups_bottom = groups_bottom.max(group.y1);
                     ui::surface::card(
@@ -22548,8 +22544,7 @@ impl ShellOverlayHost {
                             .with_weight(TextWeight::Semibold),
                     );
                     for (row_index, (label, chord)) in group_rows.iter().enumerate() {
-                        let entry_y =
-                            group.y0 + 29.0 + f64_of_usize(row_index) * reference_step;
+                        let entry_y = group.y0 + 29.0 + f64_of_usize(row_index) * reference_step;
                         text_renderer.draw_style(
                             scene,
                             label,

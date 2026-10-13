@@ -1136,16 +1136,10 @@ mod tests {
             self.changes
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn name(&self) -> &'static str {
             "TestLeaf"
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
         }
     }
 

@@ -2760,9 +2760,7 @@ impl FrameHarness {
         let recompose_for_viewport = viewport_changed
             && (self.history_chrome_enabled
                 || self.history.is_some()
-                || crate::widget::layout::tree_composition_follows_allocation(
-                    self.root.as_ref(),
-                ));
+                || crate::widget::layout::tree_composition_follows_allocation(self.root.as_ref()));
         let structure = self.full_relayout_forced_now()
             || !self.layout_built
             || recompose_for_viewport
@@ -12365,9 +12363,7 @@ mod undo_driver_tests {
             node
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             use automerge::{ReadDoc, transaction::Transactable};
@@ -12397,10 +12393,6 @@ mod undo_driver_tests {
 
         fn name(&self) -> &'static str {
             "Typer"
-        }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            self.rect
         }
     }
 
@@ -12620,9 +12612,7 @@ mod dispatched_action_driver_tests {
             node
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             let doc = ctx.state.document_mut();
@@ -12686,10 +12676,6 @@ mod dispatched_action_driver_tests {
 
         fn name(&self) -> &'static str {
             "ActionEditor"
-        }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            self.rect
         }
 
         fn is_focusable(&self) -> bool {
@@ -13701,9 +13687,7 @@ mod framed_tests {
             taffy.widget_leaf(style, node_map, self)
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if matches!(
@@ -13716,10 +13700,6 @@ mod framed_tests {
                 self.presses = self.presses.saturating_add(1);
                 *ctx.handled = true;
             }
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
         }
 
         fn name(&self) -> &'static str {
@@ -13760,7 +13740,10 @@ mod framed_tests {
         let frames = Framed::harness(&probe).rebuilt_frames();
         Framed::harness_mut(&mut probe).resize((360, 180)).unwrap();
         let harness = Framed::harness(&probe);
-        assert!(!harness.last_relayout().rebuilt, "resize recomposed the tree");
+        assert!(
+            !harness.last_relayout().rebuilt,
+            "resize recomposed the tree"
+        );
         assert!(harness.last_relayout().measured, "resize re-solved sizes");
         assert_eq!(harness.layout_node_ids(), ids, "the taffy tree was kept");
         assert_eq!(harness.rebuilt_frames(), frames);
@@ -13840,13 +13823,7 @@ mod framed_tests {
             }
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
-        }
+        crate::rect_geometry!();
 
         fn name(&self) -> &'static str {
             "Tall"

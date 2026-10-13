@@ -322,9 +322,7 @@ impl Widget for CaptureMirrorImage {
         )
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -397,10 +395,6 @@ impl Widget for CaptureMirrorImage {
 
     fn name(&self) -> &'static str {
         "CaptureMirrorImage"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

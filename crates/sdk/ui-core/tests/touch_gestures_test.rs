@@ -41,9 +41,7 @@ impl Widget for Probe {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = tilo_ui::widget::layout_rect(taffy, node, origin);
-    }
+    tilo_ui::rect_geometry!();
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui::widget::EventCtx<'_>) {
         match event {
@@ -75,10 +73,6 @@ impl Widget for Probe {
 
     fn name(&self) -> &'static str {
         "Probe"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 
