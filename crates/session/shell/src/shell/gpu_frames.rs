@@ -134,28 +134,17 @@ fn probe_sampleable(device: &wgpu::Device) {
 /// The layouts clients are told the presenting device samples, with a version
 /// that changes when they do (`0` until a device is published).
 ///
-/// Only LINEAR, for now. Sampling a client's compressed (UBWC) buffer was seen
-/// to read wrong pixels on the Yoga's Adreno ("pixel … is …, the client wrote
-/// …" in `a_gpu_client_writing_a_compressed_buffer_is_sampled_exactly_for_fifty_frames`),
-/// so no client is asked to allocate one until that race is understood. The
-/// probe still finds every sampleable layout (logged above), and importing
-/// one a client chose anyway still works.
+/// Every layout the probe confirmed, the Qualcomm compressed (UBWC) ones
+/// included. Sampling a client's compressed buffer used to read what the
+/// buffer held a frame or two earlier, because the Vulkan import did not
+/// wait for the client's GPU writes; each commit's import now makes the GPU
+/// wait for them ([`ui::dmabuf_import::wait_for_writes`]), which
+/// `a_gpu_client_writing_a_compressed_buffer_is_sampled_exactly_for_fifty_frames`
+/// checks pixel for pixel.
 #[cfg(target_os = "linux")]
 pub fn sampleable_formats() -> (u64, Vec<smithay::backend::allocator::Format>) {
     let known = SAMPLEABLE.lock().unwrap_or_else(PoisonError::into_inner);
-    (known.version, advertised(&known.formats))
-}
-
-/// Of the layouts the device samples, the ones clients are offered.
-#[cfg(target_os = "linux")]
-fn advertised(
-    sampled: &[smithay::backend::allocator::Format],
-) -> Vec<smithay::backend::allocator::Format> {
-    sampled
-        .iter()
-        .filter(|format| format.modifier == smithay::backend::allocator::Modifier::Linear)
-        .copied()
-        .collect()
+    (known.version, known.formats.clone())
 }
 
 /// Whether the presenting device was confirmed to sample a client buffer of
@@ -1401,23 +1390,29 @@ pub(crate) fn wait_readable(dmabuf: &smithay::backend::allocator::dmabuf::Dmabuf
 mod tests {
     use super::*;
 
-    /// Clients are offered LINEAR only: a compressed or tiled layout the
-    /// device samples stays importable but is not advertised.
+    /// Clients are offered every layout the device was confirmed to sample,
+    /// compressed ones included: each commit's import waits on the GPU for
+    /// the client's writes, so sampling them reads what the client wrote.
     #[cfg(target_os = "linux")]
     #[test]
-    fn only_linear_layouts_are_advertised() {
+    fn every_sampleable_layout_is_advertised() {
         use smithay::backend::allocator::{Format, Fourcc, Modifier};
         let format = |code, modifier: u64| Format {
             code,
             modifier: Modifier::from(modifier),
         };
-        let linear = format(Fourcc::Xrgb8888, 0);
-        let sampled = [
-            linear,
+        let sampled = vec![
+            format(Fourcc::Xrgb8888, 0),
             format(Fourcc::Xrgb8888, 0x0500_0000_0000_0001),
             format(Fourcc::Argb8888, 0x0500_0000_0000_0004),
         ];
-        assert_eq!(advertised(&sampled), [linear]);
+        let version = {
+            let mut known = SAMPLEABLE.lock().unwrap_or_else(PoisonError::into_inner);
+            known.version = known.version.wrapping_add(1);
+            known.formats.clone_from(&sampled);
+            known.version
+        };
+        assert_eq!(sampleable_formats(), (version, sampled));
     }
 
     fn present() -> Option<PresentDevice> {
