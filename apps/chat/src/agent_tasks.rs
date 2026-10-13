@@ -117,12 +117,19 @@ impl AgentTaskView {
         let Some(task) = self.current() else {
             return Vec::new();
         };
-        self.turns
+        let mut turns = self
+            .turns
             .iter()
             .filter(|turn| {
                 turn.task_id == task.task_id
                     && (turn.run_epoch == 0 || Some(turn.run_epoch) == task.run_epoch)
             })
+            .collect::<Vec<_>>();
+        // The public read groups directions and outputs separately. The
+        // conversation follows when each turn happened, not its storage lane.
+        turns.sort_by_key(|turn| turn.received_at);
+        turns
+            .into_iter()
             .map(|turn| {
                 let id = ui::tilo_resource::Id::from_raw(format!(
                     "task-turn:{}:{}:{}:{}",
@@ -135,7 +142,14 @@ impl AgentTaskView {
                     } else {
                         turn.author.clone()
                     }),
-                    text: turn.text.clone(),
+                    text: if turn.kind == "agent-output" {
+                        crate::i18n::t_args(
+                            "chat-agent-task-output",
+                            &[("text", turn.text.clone().into())],
+                        )
+                    } else {
+                        turn.text.clone()
+                    },
                     ts: turn.received_at,
                     ..crate::record::Message::default()
                 };
@@ -329,7 +343,7 @@ impl AgentTaskClient {
     }
 
     /// Capture-only fixture, called by the framework's explicit shot scenario.
-    pub(crate) fn stage_capture(&mut self, workspace: &str, agent: &str) {
+    pub(crate) fn stage_capture(&mut self, workspace: &str, agent: &str) -> &mut AgentTaskView {
         workspace.clone_into(&mut self.workspace);
         self.pending.clear();
         let mut view = AgentTaskView::default();
@@ -338,11 +352,11 @@ impl AgentTaskClient {
             total: 1,
             tasks: vec![AgentTaskFrontier {
                 task_id: "task:review".into(),
-                title: "Review the resource action contract".into(),
+                title: "Example: Review search actions".into(),
                 assigned_agent: agent.into(),
                 run_epoch: Some(7),
                 active_agent: Some(agent.into()),
-                after_revision: Some(2),
+                after_revision: Some(6),
                 applied_revision: Some(1),
                 execution: Some(AgentTaskExecution {
                     phase: "executing".into(),
@@ -355,18 +369,80 @@ impl AgentTaskClient {
         view.receipt = AgentTaskReceipt::Saved {
             task_id: "task:review".into(),
             run_epoch: 7,
-            revision: 2,
+            revision: 6,
         };
         view.turns.push(AgentTaskTurn {
             task_id: "task:review".into(),
-            run_epoch: 7,
-            revision: 2,
-            text: "Keep the existing search action and test both normal and compact conversation layouts before changing the resource contract.".into(),
+            run_epoch: 0,
+            revision: 0,
+            text: "Review search actions. Keep the existing open action and show me what you find."
+                .into(),
             received_at: crate::demo::NOW,
             author: String::new(),
             kind: String::new(),
         });
-        self.views.insert(agent.to_owned(), view);
+        // These are deterministic public turns, not a model session or hidden
+        // reasoning. Their shape is the read-conversation wire contract.
+        for (revision, seconds, text) in [
+            (
+                3,
+                30,
+                "Example activity: reading the published search actions. No changes requested.",
+            ),
+            (
+                4,
+                60,
+                "Example action output: read-content returned the search contract. The existing open action accepts a result anchor.",
+            ),
+            (
+                5,
+                90,
+                "Example resource output: search contract notes. Next: check the compact conversation layout.",
+            ),
+        ] {
+            view.turns.push(AgentTaskTurn {
+                task_id: "task:review".into(),
+                run_epoch: 7,
+                revision,
+                text: text.into(),
+                received_at: crate::demo::NOW + seconds,
+                author: format!("agent:{agent}"),
+                kind: "agent-output".into(),
+            });
+        }
+        view.turns.push(AgentTaskTurn {
+            task_id: "task:review".into(),
+            run_epoch: 7,
+            revision: 6,
+            text: "Please check the narrow layout too, before making changes.".into(),
+            received_at: crate::demo::NOW + 120,
+            author: String::new(),
+            kind: String::new(),
+        });
+        self.views
+            .entry(agent.to_owned())
+            .insert_entry(view)
+            .into_mut()
+    }
+
+    /// A saved task awaiting explicit approval; only used by shot scenarios.
+    pub(crate) fn stage_queued_capture(&mut self, workspace: &str, agent: &str) {
+        let view = self.stage_capture(workspace, agent);
+        for task in &mut view.tasks {
+            task.run_epoch = Some(0);
+            task.active_agent = None;
+            task.execution = None;
+            task.after_revision = Some(0);
+            task.applied_revision = None;
+            task.status = "queued".into();
+            view.selected = Some((task.task_id.clone(), 0));
+        }
+        view.receipt = AgentTaskReceipt::Queued;
+        view.turns.truncate(1);
+        for turn in &mut view.turns {
+            turn.run_epoch = 0;
+            turn.revision = 0;
+        }
     }
 
     pub(crate) fn actions_mut(&mut self) -> &mut RemoteActions {
@@ -1167,19 +1243,19 @@ mod tests {
         assert!(client.direct("scribe", "Do not drop search.".into(), 5));
         assert!(client.take_cleared_drafts().is_empty());
         let pending = client.pending.remove(0);
-        client.settle_invocation(&pending.purpose, &succeeded(serde_json::json!({"result":{"direction_added":{"task_id":"task:review","revision":3}}})));
+        client.settle_invocation(&pending.purpose, &succeeded(serde_json::json!({"result":{"direction_added":{"task_id":"task:review","revision":7}}})));
         assert!(matches!(
             client.views["scribe"].receipt,
-            AgentTaskReceipt::Saved { revision: 3, .. }
+            AgentTaskReceipt::Saved { revision: 7, .. }
         ));
         assert_eq!(
             client.take_cleared_drafts(),
             vec![("task:task:review:7".into(), 5)]
         );
         let messages = client.views["scribe"].conversation_messages("conversation", "me");
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[1].text, "Do not drop search.");
-        assert!(messages[1].id.contains("task:review:7:3"));
+        assert_eq!(messages.len(), 6);
+        assert_eq!(messages[5].text, "Do not drop search.");
+        assert!(messages[5].id.contains("task:review:7:7"));
         let mut other_run = client.views["scribe"].tasks[0].clone();
         other_run.run_epoch = Some(8);
         other_run.applied_revision = Some(99);
@@ -1255,8 +1331,37 @@ mod tests {
         let messages = client.views["scribe"].conversation_messages("conversation", "me");
         assert_eq!(messages.len(), 3);
         assert_ne!(messages[0].id, messages[1].id);
-        assert_eq!(messages[1].text, "Appended the requested paragraph.");
-        assert_eq!(messages[2].text, "The document is updated.");
+        assert_eq!(
+            messages[1].text,
+            "Work update: Appended the requested paragraph."
+        );
+        assert_eq!(messages[2].text, "Work update: The document is updated.");
+    }
+
+    #[test]
+    fn public_read_turns_are_projected_in_time_order_without_rewriting_authority() {
+        let mut client = AgentTaskClient::new();
+        client.stage_capture("room", "scribe");
+        let purpose = Purpose::Conversation {
+            agent: "scribe".into(),
+            task_id: "task:review".into(),
+            run_epoch: 7,
+        };
+        client.settle_invocation(&purpose, &succeeded(serde_json::json!({
+            "task_id":"task:review", "run_epoch":7, "turns":[
+                {"task_id":"task:review","run_epoch":7,"revision":2,"author":"person","text":"Keep the original","received_at":30},
+                {"task_id":"task:review","run_epoch":7,"revision":2,"kind":"agent-output","author":"agent:scribe","text":"Read the resource","received_at":20}
+            ]
+        })));
+        let messages = client.views["scribe"].conversation_messages("conversation", "me");
+        assert_eq!(messages[0].author, "agent:scribe");
+        assert_eq!(messages[0].text, "Work update: Read the resource");
+        assert_eq!(messages[1].author, "person");
+        assert_eq!(messages[1].text, "Keep the original");
+        assert!(
+            messages.iter().all(|message| message.work.is_none()),
+            "a public text update is not an applied-action receipt"
+        );
     }
 
     #[test]

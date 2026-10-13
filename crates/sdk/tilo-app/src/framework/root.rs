@@ -190,7 +190,20 @@ fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut tilo_actions::Resou
             .any(|existing| existing.id == "open")
     {
         let spec = item_open_spec(resource.id.as_str());
+        let view_label = if resource.label.trim().is_empty() {
+            spec.label.clone()
+        } else {
+            resource.label.clone()
+        };
         resource.actions.push(spec);
+        // The opener is also a presentation binding, not just a verb in the
+        // catalogue. Keep an app's explicit views; otherwise advertise the
+        // item view that this exact bound opener actually shows.
+        if resource.views.is_empty() {
+            resource.views.push(
+                tilo_actions::ResourceViewSpec::new("item", view_label, "open").with_primary(true),
+            );
+        }
     }
     for child in &mut resource.children {
         offer_item_open(item_of, child);

@@ -1289,6 +1289,7 @@ mod tests {
         let offer = Offer {
             app: "calculator".to_string(),
             broker_peer_id: None,
+            broker_provider: None,
             descriptor: ActionDescriptor {
                 semantic_identity: None,
                 address: ActionAddress::new("calculator.range:main", "sample"),
@@ -1651,6 +1652,7 @@ mod tests {
             offers: vec![Offer {
                 app: "calculator".to_string(),
                 broker_peer_id: None,
+                broker_provider: None,
                 descriptor: ActionDescriptor {
                     semantic_identity: None,
                     address: ActionAddress::new("calculator.range:main", "sample"),

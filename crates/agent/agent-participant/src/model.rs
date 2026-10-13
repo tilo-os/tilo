@@ -107,6 +107,7 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
             let offer = Offer {
                 app: route.app_id.clone(),
                 broker_peer_id: None,
+                broker_provider: None,
                 descriptor: descriptor.clone(),
             };
             targets
@@ -130,6 +131,7 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
             let offer = Offer {
                 app: app.clone(),
                 broker_peer_id: None,
+                broker_provider: None,
                 descriptor: ActionDescriptor {
                     semantic_identity: None,
                     address: ActionAddress::new(
@@ -157,6 +159,7 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
         let offer = Offer {
             app: app.clone(),
             broker_peer_id: None,
+            broker_provider: None,
             descriptor: ActionDescriptor {
                 semantic_identity: None,
                 address: ActionAddress::new(format!("app.{app}"), surface::OPEN_ACTION),
