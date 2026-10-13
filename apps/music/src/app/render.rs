@@ -692,7 +692,7 @@ impl Continuable for MusicApp {
         }))
         .ok()?;
         Some(ui::collaboration::ContinuationMetadata {
-            schema_version: ui::app::semantic_schema::MEDIA_POSITION_V1,
+            schema_version: ui::collaboration::semantic_schema::MEDIA_POSITION_V1,
             bytes,
         })
     }
@@ -702,7 +702,7 @@ impl Continuable for MusicApp {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ObjId,
     ) -> bool {
-        if metadata.schema_version != ui::app::semantic_schema::MEDIA_POSITION_V1 {
+        if metadata.schema_version != ui::collaboration::semantic_schema::MEDIA_POSITION_V1 {
             return false;
         }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&metadata.bytes) else {

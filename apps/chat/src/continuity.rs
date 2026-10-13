@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::app::ChatApp;
 use crate::model::ChannelKind;
 
-pub const CHAT_CONTINUATION_SCHEMA: u16 = ui::app::semantic_schema::REALTIME_SESSION_V1;
+pub const CHAT_CONTINUATION_SCHEMA: u16 = ui::collaboration::semantic_schema::REALTIME_SESSION_V1;
 const CHAT_REALTIME_PROVIDER: &str = "tilo.chat";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
