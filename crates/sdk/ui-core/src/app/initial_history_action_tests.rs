@@ -808,12 +808,22 @@ fn ordinary_native_pump_exports_admission_before_any_action() {
                 "default diagnostics remain quiet"
             );
         }
+        let previous_events = checkpoint["events"].as_array().unwrap();
         tilo_startup_metrics::mark("admission-probe-done");
         let later: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(later["native_admission"], checkpoint["native_admission"]);
-        assert_eq!(later["events"][0], checkpoint["events"][0]);
-        assert_eq!(later["events"][1]["name"], "admission-probe-done");
+        let current_events = later["events"].as_array().unwrap();
+        assert_eq!(current_events.len(), previous_events.len() + 1);
+        assert_eq!(
+            current_events.get(..previous_events.len()).unwrap(),
+            previous_events,
+            "every existing startup event must remain unchanged"
+        );
+        assert_eq!(
+            current_events.last().unwrap()["name"],
+            "admission-probe-done"
+        );
         return;
     }
     for case in ["enabled", "disabled"] {
