@@ -75,8 +75,6 @@ mod ghost_cursor_render_test;
 mod group_row_visual_journey;
 #[path = "host_entry_points.rs"]
 mod host_entry_points;
-#[path = "icon_grid_test.rs"]
-mod icon_grid_test;
 #[path = "immersive_widget_geometry.rs"]
 mod immersive_widget_geometry;
 #[path = "incremental_render_regressions.rs"]
