@@ -26,16 +26,13 @@ use std::num::NonZeroUsize;
 
 use lru::LruCache;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 use ui::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use vello::peniko::{
-    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat as Format,
-};
+use vello::peniko::{Color, Fill, ImageBrush, ImageData as PenikoImage};
 
 use ui::theme::Theme;
 
@@ -991,13 +988,7 @@ fn make_image(rgba: Vec<u8>, w: u32, h: u32) -> Option<PenikoImage> {
     if rgba.len() != (w as usize) * (h as usize) * 4 {
         return None;
     }
-    Some(PenikoImage {
-        data: Blob::new(Arc::new(rgba)),
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: w,
-        height: h,
-    })
+    Some(ui::raster::rgba8(rgba, w, h))
 }
 
 /// Decode a PNG to RGBA8. Errors are stringly-typed; the caller only cares
@@ -1374,10 +1365,6 @@ mod tests {
     /// Non-blocking guarantees: requests return at once and arrive via drain,
     /// duplicates are no-ops, the offline layer never requests, and LRU bounds memory.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn tile_requests_never_block_and_the_resident_set_is_bounded() {
         // Phase `request_returns_immediately_results_arrive_via_channel`.
         // `request()` must return *immediately* (no blocking on I/O or decode) and
@@ -1666,10 +1653,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn failed_tiles_are_negative_cached_with_capped_exponential_backoff() {
         // Phase `failed_fetch_is_negative_cached_and_suppresses_refetch`.
         // The core of the fix: a tile whose *real* fetch fails must be

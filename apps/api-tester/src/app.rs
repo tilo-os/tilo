@@ -1055,10 +1055,6 @@ impl ApiTesterApp {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive form-to-verb mapping makes contextual management easy to audit"
-    )]
     fn submit_form(&mut self) {
         let Some(form) = self.form.take() else {
             return;

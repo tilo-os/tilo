@@ -571,10 +571,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn fcast_receivers_load_hls_served_without_other_runtime_files() {
         // Phase `simulated_fcast_receiver_accepts_the_production_connect_and_hls_load`.
         {

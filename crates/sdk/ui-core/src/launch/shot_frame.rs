@@ -12,7 +12,7 @@ use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
-use taffy::prelude::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::prelude::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
@@ -125,10 +125,7 @@ impl ShotFrame {
         let child = widget.build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
         let root = self.taffy.new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(w),
-                    height: Dimension::length(h),
-                },
+                size: Size::from_lengths(w, h),
                 ..Default::default()
             },
             &[child],

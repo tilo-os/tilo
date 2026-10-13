@@ -415,10 +415,6 @@ impl InteractiveChart for SunburstChart {
 impl Widget for SunburstChart {
     crate::widget::chart_navigation::chart_leaf!();
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the retained draw pass keeps segment, center-label, and tooltip painting together"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -526,10 +522,7 @@ impl Widget for SunburstChart {
                     } else {
                         segment.detail
                     })
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect();
         Some(

@@ -123,10 +123,7 @@ fn pin_under_gutter(taffy: &mut TaffyTree<()>, node: NodeId, metrics: &Metrics, 
         node,
         Style {
             position: taffy::Position::Absolute,
-            size: Size {
-                width: Dimension::auto(),
-                height: Dimension::auto(),
-            },
+            size: Size::auto(),
             inset: taffy::Rect {
                 left: length(num::f32_of_f64(metrics.text_edge)),
                 right: length(num::f32_of_f64(metrics.gutter)),
@@ -1449,10 +1446,7 @@ impl Widget for MainPanel {
         // through the whole toolkit for a branch that can't be taken (see
         // `ui::widget::TaffyTreeExt`).
         let style = Style {
-            size: Size {
-                width: Dimension::auto(),
-                height: Dimension::auto(),
-            },
+            size: Size::auto(),
             overflow: taffy::Point {
                 x: taffy::Overflow::Hidden,
                 y: taffy::Overflow::Hidden,
@@ -2057,11 +2051,11 @@ impl Widget for MainPanel {
                 .with_name("New note")
                 .with_description("Create the first note in this workspace")
                 .with_action_target("notes.first_note")
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.empty_action_focused,
-                    ..Default::default()
-                });
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.empty_action_focused),
+                );
             // Only the painted pill takes the click; without its own bounds
             // the button would claim the whole panel, whose centre is empty.
             return Some(if self.empty_action_rect.width() > 0.0 {
@@ -2530,7 +2524,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn metadata_bands_tags_and_backlinks_clear_the_editor_and_keep_identity() {
         use ui::headless::Framed;

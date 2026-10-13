@@ -403,10 +403,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn media_cache_is_atomic_bounded_and_rejects_corruption() {
         // Phase `media_cache_is_atomic_content_addressed_and_survives_reload`.
         {

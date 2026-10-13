@@ -1,11 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use super::{
     WEEKDAYS, custom_timer_duration_seconds, remaining_fraction, repeat_summary, timezone_label,
     timezone_results,
@@ -228,10 +220,6 @@ fn command(command: &str, activity_id: Option<&str>) {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
 fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
     let mut app = TestApp::<ClocksShell>::new().unwrap();
 

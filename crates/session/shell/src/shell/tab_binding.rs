@@ -1183,10 +1183,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn activation_focuses_and_reveals_the_exact_surface_and_its_group() {
         // Phase `workspace_activity_is_one_focusable_tiled_window_per_workspace`.
         {
@@ -1349,10 +1345,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn launch_placements_are_claimed_exactly_once_by_the_matching_window() {
         // Phase `launch_records_place_a_window_in_its_claimed_tab_or_a_live_fallback`.
         {
@@ -1748,10 +1740,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn launches_documents_and_drops_land_beside_or_inside_the_right_group() {
         // Phase `launches_open_beside_or_inside_the_focused_group`.
         {
@@ -2118,10 +2106,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn closing_or_destroying_a_surface_prunes_its_records_without_stale_state() {
         // Phase `closing_a_host_window_prunes_its_group_before_the_next_open_and_reorder`.
         {
@@ -2422,10 +2406,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn failed_launch_cleanup_retires_only_the_unpainted_tab_it_owns() {
         // Phase `failed_sole_launch_retires_unpainted_foreign_tab_restores_focus_and_allows_retry`.
         {
@@ -2648,10 +2628,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn tab_labels_take_the_best_known_name_and_rename_only_the_label() {
         // Phase `renaming_a_tab_rewrites_only_its_visible_label`.
         {
@@ -2868,10 +2844,6 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn adopted_toplevels_land_in_their_room_and_persist_only_real_identity() {
         // Phase `adopt_toplevel_creates_strip_when_workspace_empty`.
         // Adoption into a workspace with no strips must synthesize a default strip + group rather than orphan the surface.

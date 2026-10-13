@@ -4,11 +4,7 @@
 //! for the controls, or Tilo's mapping where it gave none; a VM that inhibits shortcuts gets the
 //! shell's chords until focus leaves or the release chord hands them back.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test harness failures are assertions"
-)]
+#![allow(clippy::expect_used, reason = "test harness failures are assertions")]
 
 use std::ops::{Deref, DerefMut};
 

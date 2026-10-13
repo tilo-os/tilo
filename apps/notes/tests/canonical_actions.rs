@@ -3,7 +3,6 @@ use automerge::transaction::Transactable;
 use notes::{actions, read};
 use tilo_actions::Action as _;
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn duplicate_subtree_round_trips_rich_content_and_mints_fresh_ids() {
     // Catches metadata-only/Markdown copies, lost native marks, wrong link remaps,

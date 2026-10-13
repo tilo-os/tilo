@@ -11,7 +11,7 @@
 //! app-owned durable mutation.
 
 use crate::widget::{AppModel, ModelPath};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
@@ -492,10 +492,7 @@ impl Widget for TimePicker {
         let n_spinners: f32 = if self.seconds.is_some() { 3.0 } else { 2.0 };
         let total_w = n_spinners * SPINNER_WIDTH + (n_spinners - 1.0) * COLON_WIDTH;
         let style = Style {
-            size: Size {
-                width: Dimension::length(total_w),
-                height: Dimension::length(PICKER_HEIGHT),
-            },
+            size: Size::from_lengths(total_w, PICKER_HEIGHT),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
@@ -682,11 +679,11 @@ impl Widget for TimePicker {
                 .with_action_target(&self.id)
                 .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(value)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused()),
+                ),
         )
     }
 

@@ -280,10 +280,7 @@ impl Widget for Breadcrumb {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
-            min_size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::length(line_h),
-            },
+            min_size: Size::from_lengths(0.0, line_h),
             flex_shrink: 1.0,
             ..Default::default()
         };

@@ -491,10 +491,7 @@ impl Widget for RangeChart {
                     } else {
                         b.detail.clone()
                     })
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .collect();
         Some(root)

@@ -16,9 +16,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard; the sample counters are bounded by the screen"
 )]
@@ -204,10 +202,6 @@ fn tile_rect(fb: &mut FrameBuilder, surface_id: u64) -> Rect {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario keeps each capture path beside the same protected client"
-)]
 fn a_protected_window_is_captured_as_the_placeholder_and_an_unprotected_one_as_its_pixels() {
     const SURFACE: u64 = 0xCA97_0001;
     const APP: &str = "org.example.capture-protection.vault";

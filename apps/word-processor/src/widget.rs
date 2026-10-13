@@ -6065,10 +6065,7 @@ impl WordProcessorWidget {
                         .with_name(review_action_a11y_label(action, self.review.changes()))
                         .with_bounds(*rect)
                         .with_action_target(review_action_target(action))
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        }),
+                        .with_state(AccessState::new().focusable(true)),
                 )
             })
             .collect();
@@ -6116,10 +6113,7 @@ impl WordProcessorWidget {
                         .with_description(description)
                         .with_bounds(*rect)
                         .with_action_target(format!("word-processor.image-placement:{id}"))
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        }),
+                        .with_state(AccessState::new().focusable(true)),
                 ))
             })
             .collect::<Vec<_>>();
@@ -6422,12 +6416,12 @@ impl WordProcessorWidget {
         }
 
         A11yTreeNode {
-            node: AccessNode::new(Role::Document).with_state(AccessState {
-                focusable: true,
-                focused: self.lifecycle.focused,
-                multiline: true,
-                ..Default::default()
-            }),
+            node: AccessNode::new(Role::Document).with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.lifecycle.focused)
+                    .multiline(true),
+            ),
             children,
         }
     }
@@ -10284,10 +10278,6 @@ impl Widget for WordProcessorWidget {
         }))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the editor binds, rebases and reconciles in one sync pass"
-    )]
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // The toolbar is painted inside the document's authored chrome rather
         // than exposed as another accessibility child. Its deferred native
@@ -10434,10 +10424,6 @@ impl Widget for WordProcessorWidget {
         self.modal_capture().is_some()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the frame compositor keeps its ordered page/chrome layers together"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,

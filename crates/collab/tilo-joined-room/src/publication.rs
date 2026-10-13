@@ -536,7 +536,20 @@ pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> R
         return Ok(());
     };
     let bytes = encode(&view.peer.room_message(), MAX_BYTES)?;
-    if bytes == existing.bytes {
+    let binding = if matches!(
+        existing.binding.target,
+        tilo_peer_state::owner_commit::CommitTarget::NativeCheckpointRoot { .. }
+    ) {
+        crate::checkpoint::binding(
+            view.record.room,
+            view.peer
+                .workspace_checkpoint_root()?
+                .ok_or("native checkpoint root disappeared")?,
+        )
+    } else {
+        existing.binding.clone()
+    };
+    if bytes == existing.bytes && binding == existing.binding {
         return Ok(());
     }
     let total = bounds(state(view)?)?;
@@ -559,6 +572,7 @@ pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> R
     publication.governance = vec![StoredOutgoing {
         id: *blake3::hash(&bytes).as_bytes(),
         bytes,
+        binding,
         ..existing
     }];
     Ok(())
@@ -722,6 +736,16 @@ fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Re
         .ok_or("unsupported native governance checkpoint")?;
     if retention != Retention::Checkpoint || channel != entry.channel {
         return Err("native governance checkpoint transport mismatch".into());
+    }
+    if let tilo_peer_state::owner_commit::CommitTarget::NativeCheckpointRoot { root } =
+        entry.binding.target
+    {
+        if view.peer.workspace_checkpoint_root()? != Some(root)
+            || entry.binding != crate::checkpoint::binding(view.record.room, root)
+        {
+            return Err("native checkpoint publication differs from signed root".into());
+        }
+        return Ok(());
     }
     if !view
         .record

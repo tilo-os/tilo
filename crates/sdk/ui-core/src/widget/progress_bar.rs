@@ -419,10 +419,7 @@ impl Widget for ProgressBar {
         // labelled bar is a polite live region keyed by its name, so progress
         // updates announce without moving focus.
         let mut node = if self.indeterminate {
-            AccessNode::new(Role::ProgressBar).with_state(AccessState {
-                busy: true,
-                ..Default::default()
-            })
+            AccessNode::new(Role::ProgressBar).with_state(AccessState::new().busy(true))
         } else {
             let pct = pct_to_i64((self.progress.clamp(0.0, 1.0) * 100.0).round());
             AccessNode::new(Role::ProgressBar).with_value(format!("{pct}%"))

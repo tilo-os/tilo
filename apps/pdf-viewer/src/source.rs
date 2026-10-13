@@ -34,7 +34,7 @@ fn profiling() -> bool {
 
 use anyhow::{Context, anyhow};
 use tilo_content::{ContentState, ContentStore};
-use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
+use vello::peniko::{Blob, ImageData as PenikoImage};
 
 use crate::markup::{ImportedPage, PagePlanEntry};
 use crate::model::{
@@ -968,13 +968,7 @@ impl RasterBackend {
         if w == 0 || h == 0 || bitmap.pixels().len() != (w as usize) * (h as usize) * 4 {
             return None;
         }
-        let img = PenikoImage {
-            data: Blob::new(bitmap.shared_pixels()),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: w,
-            height: h,
-        };
+        let img = ui::raster::rgba8(Blob::new(bitmap.shared_pixels()), w, h);
         self.cache_image(key, img.clone());
         Some(img)
     }
@@ -1040,13 +1034,7 @@ impl RasterBackend {
         if w == 0 || h == 0 || bitmap.pixels().len() != (w as usize) * (h as usize) * 4 {
             return None;
         }
-        let image = PenikoImage {
-            data: Blob::new(bitmap.shared_pixels()),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: w,
-            height: h,
-        };
+        let image = ui::raster::rgba8(Blob::new(bitmap.shared_pixels()), w, h);
         self.tiles.insert(key, image.clone());
         Some(image)
     }
@@ -3311,13 +3299,8 @@ mod tests {
             page: 0,
             target_width: 4_096,
         };
-        let oversized_image = PenikoImage {
-            data: Blob::new(Arc::new(vec![0; MAX_PENDING_RESULT_BYTES + 1])),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: 4_097,
-            height: 2_048,
-        };
+        let oversized_image =
+            ui::raster::rgba8(vec![0; MAX_PENDING_RESULT_BYTES + 1], 4_097, 2_048);
         assert!(matches!(
             bound_page_event(RasterEvent::Rendered {
                 request,

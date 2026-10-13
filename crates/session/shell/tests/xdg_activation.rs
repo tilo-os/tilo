@@ -1,11 +1,5 @@
 //! Wire-level presence and rejection tests for `xdg_activation_v1`.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test harness failures are assertions"
-)]
-
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1};
@@ -93,10 +87,6 @@ type Harness = crate::support::wayland::Harness<Client>;
 
 #[test]
 #[serial_test::serial(process_env)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn xdg_activation_needs_an_attributed_token_and_activates_once() {
     // Phase `activation_global_is_advertised_but_unattributed_tokens_are_not_authority`.
     {

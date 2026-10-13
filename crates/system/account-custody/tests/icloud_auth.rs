@@ -2,12 +2,7 @@
 //! Protection and session renewal, against the provider's fake idmsa/setup
 //! endpoints.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test fixtures"
-)]
+#![allow(clippy::unwrap_used, clippy::panic, reason = "test fixtures")]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -1,5 +1,4 @@
 //! The runtime must own a profile exclusively and preserve workspace identity.
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 #[test]
 #[allow(
