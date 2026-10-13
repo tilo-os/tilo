@@ -3083,6 +3083,7 @@ COPY --from=native-builder-payload \
 COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/
 # The shell and the browser engine must resolve every library they load from
 # this rootfs: a gap is a loader error at the first launch, on a device.
+ARG TILO_WITH_BROWSER
 ARG CHROMIUM_RUNTIME_VERSION
 RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll \
         /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-relay-firstboot \
@@ -3101,6 +3102,13 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
          exit 1; \
        fi; } \
     && engine="/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}/lib/chromium" \
+    && { if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
+         test -x "$engine/tilo-chromium-host" \
+         && test -s "$engine/libcef.so" \
+         && /usr/bin/tilo-runtime-bundle verify \
+              "/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}" \
+              --require-publisher "$(cat /usr/share/tilo/browser-runtime-publisher.hex)"; \
+       fi; } \
     && { [ ! -d "$engine" ] || { \
          missing="$(LD_LIBRARY_PATH="$engine" ldd "$engine/tilo-chromium-host" "$engine/libcef.so" \
                     | awk '/not found/ { print $1 }' | sort -u)" \

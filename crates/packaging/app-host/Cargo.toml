@@ -91,6 +91,11 @@ workspace-hack = { version = "0.1" }
 getrandom.workspace = true
 tokio = { workspace = true, features = ["full"] }
 ed25519-dalek.workspace = true
+blake3.workspace = true
+registry-types = { path = "../registry-types" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-test-env = { path = "../../dev/test-env" }
+toml.workspace = true
 
 [[test]]
 name = "it"

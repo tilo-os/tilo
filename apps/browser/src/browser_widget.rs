@@ -3741,9 +3741,11 @@ pub(crate) enum EngineProblem {
     Failed,
 }
 
-/// Where the engine runtime is offered for install: its Store page, the
-/// same consented route every package takes.
-pub(crate) const ENGINE_INSTALL_URI: &str = "tilo-store:app/so.tilo.browser-engine";
+/// Exceptional repair of the offline engine baseline. Store resolves the
+/// installed Browser root and reviews its exact declared optional component;
+/// opening this handoff never consents to a payload download.
+pub(crate) const ENGINE_INSTALL_URI: &str =
+    "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.9-chromium";
 
 /// Live browsing runs the Chromium engine runtime
 /// ([`ui::webview::chromium::runtime`]); there is no other engine and no
@@ -3863,8 +3865,8 @@ fn engine_problem_state(
         EngineProblem::NotInstalled => {
             let state = EmptyState::new(ui::webview::chromium::runtime::NOT_INSTALLED_MESSAGE)
                 .with_icon(Icon::Download)
-                .with_message("Install it to open web pages.")
-                .with_action("Install")
+                .with_message(ui::i18n!("browser-engine-repair-message"))
+                .with_action(ui::i18n!("browser-engine-repair-action"))
                 .with_action_id("browser.install-engine");
             match install {
                 Some(binding) => state.on_action(binding),
@@ -3873,7 +3875,7 @@ fn engine_problem_state(
         }
         EngineProblem::Failed => EmptyState::new(ui::webview::chromium::runtime::FAILED_MESSAGE)
             .with_icon(Icon::Info)
-            .with_message("Close Browser and open it again."),
+            .with_message(ui::i18n!("browser-engine-reopen")),
     };
     Box::new(
         Column::new()
@@ -9155,6 +9157,11 @@ mod tests {
 
         // Phase `a_missing_engine_offers_its_install_instead_of_instructions`.
         {
+            assert_eq!(
+                ENGINE_INSTALL_URI,
+                "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.9-chromium",
+                "repair names the consuming app and exact declaration, not a catalogue alias"
+            );
             let engine = unavailable_engine(BrowsingMode::Normal, EngineProblem::NotInstalled);
             engine.send(WebViewCommand::Navigate("https://tilo.so".into()));
             let message = engine

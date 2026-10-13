@@ -52,6 +52,9 @@ pub struct AppHostServer {
     store: Arc<PackageStore>,
     catalog: Arc<Catalog>,
     max_store_bytes: u64,
+    // One runtime operation per issuing connection, including after disconnect
+    // while a non-cancellable blocking installer is completing.
+    runtime_gate: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppHostServer {
@@ -64,6 +67,7 @@ impl AppHostServer {
             store,
             catalog,
             max_store_bytes,
+            runtime_gate: Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 }
@@ -691,6 +695,98 @@ fn run_host_command(command: std::process::Command) -> Result<String, Error> {
     reason = "capnp-rpc Server methods run on a single-threaded LocalSet via the non-atomic capnp::capability::Rc; the futures are never sent across threads"
 )]
 impl app_host::Server for AppHostServer {
+    async fn inspect_optional_runtime(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::InspectOptionalRuntimeParams,
+        mut results: app_host::InspectOptionalRuntimeResults,
+    ) -> Result<(), Error> {
+        let p = params.get()?;
+        let app = p.get_app_id()?.to_str()?;
+        let root = parse_id(p.get_consumer_root()?)?;
+        let runtime = p.get_runtime()?.to_str()?;
+        if app.len() > 256 || runtime.len() > 256 {
+            return Err(failed("runtime request exceeds input limit"));
+        }
+        let app = app.to_owned();
+        let runtime = runtime.to_owned();
+        let permit = Arc::clone(&self.runtime_gate)
+            .try_acquire_owned()
+            .map_err(|_| failed("a runtime operation is already active on this connection"))?;
+        let catalog = Arc::clone(&self.catalog);
+        let review = blocking(move || {
+            let _permit = permit;
+            crate::runtime_transaction::inspect(&catalog, &app, root, &runtime).map_err(failed)
+        })
+        .await?;
+        results
+            .get()
+            .set_review_json(serde_json::to_string(&review).map_err(failed)?);
+        Ok(())
+    }
+
+    async fn acquire_optional_runtime(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::AcquireOptionalRuntimeParams,
+        _results: app_host::AcquireOptionalRuntimeResults,
+    ) -> Result<(), Error> {
+        let p = params.get()?;
+        let json = p.get_review_json()?.to_str()?;
+        if json.len() > 16 * 1024 {
+            return Err(failed("runtime review exceeds input limit"));
+        }
+        let review = serde_json::from_str(json).map_err(failed)?;
+        let mut observer = if p.has_progress() {
+            Some(p.get_progress()?)
+        } else {
+            None
+        };
+        let permit = Arc::clone(&self.runtime_gate)
+            .try_acquire_owned()
+            .map_err(|_| failed("a runtime operation is already active on this connection"))?;
+        let catalog = Arc::clone(&self.catalog);
+        let (sender, mut receiver) =
+            tokio::sync::watch::channel(crate::runtime_transaction::RuntimeProgress::default());
+        let work = blocking(move || {
+            let _permit = permit;
+            crate::runtime_transaction::acquire(&catalog, &review, &mut |progress| {
+                sender.send_replace(crate::runtime_transaction::RuntimeProgress {
+                    installing: matches!(
+                        progress.phase,
+                        app_cli::install::InstallPhase::Installing { .. }
+                    ),
+                    received: progress.received,
+                    total: progress.total,
+                });
+            })
+            .map_err(failed)
+        });
+        tokio::pin!(work);
+        loop {
+            tokio::select! {
+                biased;
+                changed = receiver.changed() => {
+                    if changed.is_err() { return work.await; }
+                    let latest = *receiver.borrow_and_update();
+                    if let Some(client) = &observer {
+                        let mut request = client.update_request();
+                        let mut output = request.get();
+                        output.set_installing(latest.installing);
+                        output.set_received(latest.received);
+                        output.set_total(latest.total.unwrap_or_default());
+                        output.set_total_known(latest.total.is_some());
+                        // A stalled/disconnected observer cannot block the installer
+                        // or build an unbounded notification queue.
+                        let reported = tokio::time::timeout(
+                            std::time::Duration::from_secs(2), request.send().promise,
+                        ).await;
+                        if !matches!(reported, Ok(Ok(_))) { observer = None; }
+                    }
+                }
+                result = &mut work => return result,
+            }
+        }
+    }
+
     fn list(
         self: capnp::capability::Rc<Self>,
         _params: app_host::ListParams,

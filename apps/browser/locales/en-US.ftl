@@ -60,3 +60,6 @@ browser-service-forget-fence-failed = The selected account could not be fenced f
 
 browser-service-forget-retry = Retry forgetting this account
 browser-service-forget-retry-failed = Account deletion could not be completed. Saved credentials have not been revoked; retry forgetting this account.
+browser-engine-repair-message = The built-in web component is missing. Review its repair in Store; nothing downloads without your consent.
+browser-engine-repair-action = Review repair
+browser-engine-reopen = Close Browser and open it again.

@@ -54,6 +54,12 @@ struct ByPinning {
     triedBytes  @1 :UInt64;
 }
 
+# Connection-owned best-effort progress. One latest value and at most one
+# outstanding notification; losing the observer does not roll back installation.
+interface RuntimeProgress {
+    update @0 (installing :Bool, received :UInt64, total :UInt64, totalKnown :Bool) -> ();
+}
+
 interface AppHost {
     # All currently-known package entries.
     list       @0 () -> (entries :List(PackageEntry));
@@ -112,5 +118,12 @@ interface AppHost {
     # Exact archive/root from review, reverified against current host trust.
     installLocal @19 (tappBytes :Data, reviewedRoot :Text,
                       reviewedArchiveHash :Text) -> (id :Data);
+    # Metadata-only exact installed consumer/runtime review. No payload is fetched.
+    inspectOptionalRuntime @20 (appId :Text, consumerRoot :Data, runtime :Text)
+        -> (reviewJson :Text);
+    # Explicit consent to the exact review. Revalidates signed declaration and
+    # configured offer identity, then uses the shared bounded signed installer.
+    # Disconnect/Back does not roll back or necessarily interrupt installation.
+    acquireOptionalRuntime @21 (reviewJson :Text, progress :RuntimeProgress) -> ();
 
 }

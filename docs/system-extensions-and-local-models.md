@@ -19,6 +19,41 @@ staged and measured like an OS update, so Secure Boot, boot-health confirmation,
 and rollback remain meaningful. systemd-sysext is useful for additive userspace
 files, but it is not the kernel-driver transaction mechanism.
 
+## Application runtime bundles
+
+An application's `optional-runtimes` declaration describes a read-only mount
+used when that exact signed runtime is installed. It is not permission to
+fetch every listed capability during application installation or update, nor
+is it a statement that the runtime is absent from the OS image. The standard
+image includes Browser and its signed Chromium engine so web rendering does
+not require a setup download. Browser-free images are explicit development
+profiles, not the release default.
+
+The Store receives an exact consuming-app/runtime request through
+`tilo-store:runtime/<app-id>/<runtime-name>/<version>`. Its existing authenticated
+app-host capability checks the installed application's signed manifest,
+current package root and exact optional declaration before resolving an offer.
+The review shows the configured source and signed download size; package and
+publisher identities remain available under Technical details. Inspection
+does not acquire component bytes, and a verified installed bundle can be
+reused offline.
+
+Explicit acquisition rechecks the consuming root and immutable offer identity
+before passing the admitted offer to the existing signed, bounded installer.
+The confined Store never executes a privileged installer directly or supplies
+its own trust keys or download URLs. Required application runtimes still
+install before the app can be replaced; optional ones do not download silently.
+Connection-owned notifications report real download bytes and a separate
+verification/install phase, without inventing an installation percentage.
+Failure offers a fresh review and retry, not an automatic second download.
+
+Acquisition does not change a running application's sandbox: close and reopen
+that application through the normal launcher to obtain the runtime mount.
+Back leaves active work running in the background; it is not cancellation or
+rollback. Durable download resume is not promised. Local model and
+system-extension transactions below retain their own catalogue and lifecycle
+contracts.
+
 ## Trust and catalogue rules
 
 The catalogue may describe artifacts, compatibility, display metadata, and

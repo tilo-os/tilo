@@ -45,6 +45,7 @@ use crate::reports::{Reports as Store, reports as verbs};
 use crate::resource::{ReportProjection, StoreEffect};
 use crate::sources::distinct_categories;
 use crate::worker::{Outcome, Request, StoreWorker};
+mod runtime;
 mod view;
 
 /// Build a taffy node from `children` already built in the same tree.
@@ -396,6 +397,7 @@ pub struct StoreApp {
     worker: Option<StoreWorker>,
     pub(crate) package_content: Option<ui::framework::content::ContentStore>,
     pub(crate) imported_review: Option<(String, String, String)>,
+    pub(crate) runtime_recovery: Option<crate::runtime_recovery::Recovery>,
     launch_requests: Vec<ui::collaboration::CollabRequest>,
     pending_launches: HashMap<u64, std::sync::mpsc::Sender<LaunchCompletion>>,
     next_launch_request: Option<u64>,
@@ -497,6 +499,7 @@ impl StoreApp {
             worker: None,
             package_content: None,
             imported_review: None,
+            runtime_recovery: None,
             launch_requests: Vec::new(),
             pending_launches: HashMap::new(),
             next_launch_request: Some(1),
@@ -724,6 +727,9 @@ impl StoreApp {
 
     /// Return to the catalogue from whichever page is open.
     fn show_catalogue(&mut self) {
+        if let Some(recovery) = &mut self.runtime_recovery {
+            recovery.visible = false;
+        }
         self.focused_detail = None;
         self.pending_detail = None;
         self.remotes_open = false;
@@ -1075,16 +1081,38 @@ impl Widget for StoreApp {
         if recompose {
             // A resize only reflows retained controls. Replacing them here
             // discards input state and their text/layout caches.
-            self.can_go_back
-                .set(self.safety_open || self.remotes_open || self.focused_detail.is_some());
-            let catalogue =
-                !self.safety_open && !self.remotes_open && self.focused_detail.is_none();
+            self.can_go_back.set(
+                self.runtime_visible()
+                    || self.safety_open
+                    || self.remotes_open
+                    || self.focused_detail.is_some(),
+            );
+            let catalogue = !self.runtime_visible()
+                && !self.safety_open
+                && !self.remotes_open
+                && self.focused_detail.is_none();
             let actions = if catalogue {
-                Self::catalogue_actions()
+                let mut actions = Self::catalogue_actions();
+                if self.runtime_recovery.is_some() {
+                    let mut repair = ui::widget::Button::new(
+                        "store.runtime.show",
+                        &ui::i18n!("store-runtime-show"),
+                    );
+                    if let Some(binding) = crate::bindings::effect(&StoreEffect::ShowRuntime) {
+                        repair = repair.on_action(binding);
+                    }
+                    actions.push(Box::new(repair));
+                }
+                actions
             } else {
                 Vec::new()
             };
-            root.set_content_header(self.page_title(), actions);
+            let title = if self.runtime_visible() {
+                ui::i18n!("store-runtime-title")
+            } else {
+                self.page_title().to_owned()
+            };
+            root.set_content_header(&title, actions);
             root.set_content(self.compose(theme));
             self.composition_context = Some((theme.clone(), locale, pseudo));
             self.composition_dirty = false;
@@ -1250,11 +1278,17 @@ pub enum Finish {
     /// The app's card is no longer busy.
     Package,
     /// The registry took the app's report: record its case.
-    Submitted { app_id: String },
+    Submitted {
+        app_id: String,
+    },
     /// The registry confirmed the app's case: record its status.
-    Case { app_id: String },
+    Case {
+        app_id: String,
+    },
     /// The reviewed local file was installed.
     ImportedPackage,
+    RuntimeReview,
+    RuntimeAcquire,
     /// Nothing beside the status line.
     Status,
 }
@@ -1418,6 +1452,19 @@ impl StoreApp {
         effect: StoreEffect,
         cx: &mut EffectCx<Store, Self>,
     ) -> EffectAnswer {
+        if effect == StoreEffect::InspectRuntime {
+            let mut value = self.runtime_recovery.as_ref().map_or(
+                serde_json::Value::Null,
+                crate::runtime_recovery::Recovery::inspection,
+            );
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "progress_status".into(),
+                    serde_json::Value::String(self.status_line.clone()),
+                );
+            }
+            return Ok(Effected::value(value));
+        }
         if let StoreEffect::InspectCatalogue { app } = &effect {
             return self.inspect_catalogue(app.as_deref()).map(Effected::value);
         }
@@ -1485,6 +1532,46 @@ impl StoreApp {
             ));
         }
         match effect {
+            StoreEffect::ReviewRuntime { app, runtime } => {
+                let target = crate::runtime_recovery::RuntimeTarget::new(app, runtime)?;
+                return self.review_runtime(target);
+            }
+            StoreEffect::AcquireRuntime { review } => {
+                self.reserve_job()?;
+                let recovery = self
+                    .runtime_recovery
+                    .as_mut()
+                    .ok_or_else(|| ui::i18n!("store-runtime-review-required"))?;
+                let review = recovery.consent(&review)?;
+                self.status_line = ui::i18n!("store-runtime-acquiring");
+                self.structure_dirty = true;
+                return Ok(Job::admitted(
+                    Request::AcquireRuntime(Box::new(review)),
+                    Finish::RuntimeAcquire,
+                ));
+            }
+            StoreEffect::RetryRuntime => {
+                let recovery = self
+                    .runtime_recovery
+                    .as_ref()
+                    .ok_or_else(|| ui::i18n!("store-runtime-review-required"))?;
+                if !matches!(recovery.phase, crate::runtime_recovery::Phase::Failed(_)) {
+                    return Err(ui::i18n!("store-runtime-review-required"));
+                }
+                return self.review_runtime(recovery.target.clone());
+            }
+            StoreEffect::ShowRuntime => {
+                let recovery = self
+                    .runtime_recovery
+                    .as_mut()
+                    .ok_or_else(|| ui::i18n!("store-runtime-review-required"))?;
+                recovery.visible = true;
+                self.structure_dirty = true;
+            }
+            StoreEffect::BackRuntime | StoreEffect::ShowCatalogue => self.show_catalogue(),
+            StoreEffect::InspectRuntime => {
+                return Err(ui::i18n!("store-runtime-inspect-route"));
+            }
             StoreEffect::InspectCatalogue { .. } => {
                 return Err("Catalogue inspection must use the resource effect route.".into());
             }
@@ -1626,7 +1713,6 @@ impl StoreApp {
                 self.status_line = "Opening the Flatpak reference…".into();
                 self.structure_dirty = true;
             }
-            StoreEffect::ShowCatalogue => self.show_catalogue(),
             StoreEffect::SetTechnicalDetails { expanded } => {
                 self.technical_details_open = expanded;
                 self.structure_dirty = true;
@@ -1838,6 +1924,12 @@ impl StoreApp {
             .as_ref()
             .is_some_and(|worker| worker.request_job(request, done));
         if !queued {
+            if matches!(finish, Finish::RuntimeReview | Finish::RuntimeAcquire)
+                && let Some(recovery) = &mut self.runtime_recovery
+            {
+                recovery.phase =
+                    crate::runtime_recovery::Phase::Failed(ui::i18n!("store-runtime-unavailable"));
+            }
             if finish == Finish::Package {
                 self.active_operation = None;
             }
@@ -1878,6 +1970,20 @@ impl StoreApp {
             self.pending_jobs = self.pending_jobs.saturating_sub(1);
         }
         self.structure_dirty = true;
+        if matches!(finish, Finish::RuntimeReview | Finish::RuntimeAcquire)
+            && let Some(recovery) = &mut self.runtime_recovery
+        {
+            if *finish == Finish::RuntimeReview {
+                recovery.reviewed(outcome.as_ref().map_err(Clone::clone).and_then(|finished| {
+                    finished
+                        .runtime_review
+                        .clone()
+                        .ok_or_else(|| ui::i18n!("store-runtime-review-required"))
+                }));
+            } else {
+                recovery.acquired(outcome.as_ref().map(|_| ()).map_err(Clone::clone));
+            }
+        }
         let finished = outcome?;
         if *finish == Finish::ImportedPackage {
             self.imported_review = None;
@@ -1900,7 +2006,11 @@ impl StoreApp {
                     moderation_status_label(case.status),
                     cx,
                 )?,
-                Finish::Package | Finish::Status | Finish::ImportedPackage => {}
+                Finish::Package
+                | Finish::Status
+                | Finish::ImportedPackage
+                | Finish::RuntimeReview
+                | Finish::RuntimeAcquire => {}
             }
         }
         self.set_status_line(finished.status);
@@ -2112,6 +2222,7 @@ impl StoreApp {
         rows.push(self.remotes_row());
         rows.push(self.moderation_row());
         rows.extend(self.latest_job_row());
+        rows.extend(self.runtime_row());
         rows
     }
 
@@ -2157,6 +2268,7 @@ impl StoreApp {
                 .map(Self::remote_live_row);
         }
         match id {
+            "store:runtime-repair" => self.runtime_row(),
             REMOTES_ID => Some(self.remotes_row()),
             crate::resource::MODERATION_ID => Some(self.moderation_row()),
             LATEST_JOB_ID => self.latest_job_row(),

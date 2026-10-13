@@ -85,6 +85,59 @@ impl BlockingClient {
             .map_err(|e| e.to_string())
     }
 
+    /// Inspect an installed app's exact optional runtime without fetching payload.
+    ///
+    /// # Errors
+    /// Returns signed declaration, installed identity or repository refusal.
+    pub fn inspect_optional_runtime(
+        &self,
+        app_id: &str,
+        root: PackageId,
+        runtime: &str,
+    ) -> Result<crate::runtime_transaction::RuntimeReview, String> {
+        let mut request = self.client.inspect_optional_runtime_request();
+        request.get().set_app_id(app_id);
+        request.get().set_consumer_root(root.as_bytes());
+        request.get().set_runtime(runtime);
+        let response = self.wait(request.send().promise)?;
+        let json = text_result(response.get().map_err(|e| e.to_string())?.get_review_json())?;
+        serde_json::from_str(&json).map_err(|e| e.to_string())
+    }
+
+    /// Acquire the exact displayed review after explicit consent. The call
+    /// completes only after verified installation. Disconnect is not rollback.
+    ///
+    /// # Errors
+    /// Returns changed consumer/offer, download, signer or installation failure.
+    pub fn acquire_optional_runtime(
+        &self,
+        review: &crate::runtime_transaction::RuntimeReview,
+    ) -> Result<(), String> {
+        self.acquire_optional_runtime_reporting(review, |_| {})
+    }
+
+    /// Acquire with connection-owned, best-effort real download/install progress.
+    /// Disconnecting the observer does not cancel or roll back installation.
+    ///
+    /// # Errors
+    /// Returns the same exact admission and installation errors as acquisition.
+    pub fn acquire_optional_runtime_reporting(
+        &self,
+        review: &crate::runtime_transaction::RuntimeReview,
+        progress: impl FnMut(crate::runtime_transaction::RuntimeProgress) + 'static,
+    ) -> Result<(), String> {
+        let observer: crate::app_host_capnp::runtime_progress::Client = capnp_rpc::new_client(
+            ProgressObserver(std::cell::RefCell::new(Box::new(progress))),
+        );
+        let mut request = self.client.acquire_optional_runtime_request();
+        request.get().set_progress(observer);
+        request
+            .get()
+            .set_review_json(serde_json::to_string(review).map_err(|e| e.to_string())?);
+        self.wait(request.send().promise)?;
+        Ok(())
+    }
+
     /// Review immutable file bytes using the host's current trusted attestors.
     ///
     /// # Errors
@@ -384,6 +437,26 @@ impl BlockingClient {
                 .map_err(|e| e.to_string())?
                 .get_status(),
         )
+    }
+}
+
+type ProgressCallback = Box<dyn FnMut(crate::runtime_transaction::RuntimeProgress)>;
+struct ProgressObserver(std::cell::RefCell<ProgressCallback>);
+
+impl crate::app_host_capnp::runtime_progress::Server for ProgressObserver {
+    fn update(
+        self: capnp::capability::Rc<Self>,
+        params: crate::app_host_capnp::runtime_progress::UpdateParams,
+        _results: crate::app_host_capnp::runtime_progress::UpdateResults,
+    ) -> impl core::future::Future<Output = Result<(), capnp::Error>> + 'static {
+        let result = params.get().map(|p| {
+            (self.0.borrow_mut())(crate::runtime_transaction::RuntimeProgress {
+                installing: p.get_installing(),
+                received: p.get_received(),
+                total: p.get_total_known().then(|| p.get_total()),
+            });
+        });
+        std::future::ready(result)
     }
 }
 

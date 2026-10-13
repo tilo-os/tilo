@@ -61,6 +61,32 @@ impl ReportProjection {
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "store.effect", device_only)]
 pub enum StoreEffect {
+    /// Review a missing optional runtime. Fetches signed metadata, never payload.
+    #[effect(job, kind = "read")]
+    ReviewRuntime {
+        #[param("Exact installed consuming app identity")]
+        app: String,
+        #[param("Exact declared runtime name/version")]
+        runtime: String,
+    },
+    /// Download and verify the exact reviewed optional runtime.
+    #[effect(job)]
+    AcquireRuntime {
+        #[param("Exact JSON review returned by inspect-runtime; explicit download consent")]
+        review: String,
+    },
+    /// Retry runtime inspection. A fresh offer requires fresh download consent.
+    #[effect(job, kind = "read")]
+    RetryRuntime,
+    /// Show the current runtime repair without starting another operation.
+    #[effect(kind = "read")]
+    ShowRuntime,
+    /// Back to apps. In-progress repair continues; this does not cancel or roll back.
+    #[effect(kind = "read")]
+    BackRuntime,
+    /// Inspect runtime repair, including exact review metadata and failure.
+    #[effect(returns, kind = "read")]
+    InspectRuntime,
     /// Inspect catalogue.
     ///
     /// Read this window's current filtered page, repository scopes and worker state.
@@ -466,6 +492,17 @@ impl ResourceApp for StoreShell {
         } else if let Some(argument) = input.argument() {
             if argument == "tilo-store:catalogue" {
                 StoreEffect::ShowCatalogue
+            } else if argument.starts_with("tilo-store:runtime/") {
+                match crate::runtime_recovery::RuntimeTarget::from_uri(argument) {
+                    Ok(target) => StoreEffect::ReviewRuntime {
+                        app: target.app,
+                        runtime: target.runtime,
+                    },
+                    Err(error) => {
+                        tracing::warn!(%error, "invalid runtime repair link");
+                        return Vec::new();
+                    }
+                }
             } else if argument.starts_with("tilo-store:") {
                 match parse_store_uri(argument) {
                     Ok(app) => StoreEffect::ShowDetails { app },
@@ -627,6 +664,132 @@ mod tests {
             .set("FLATHUB_API_BASE", "http://127.0.0.1:9")
             .set("TILO_STORE_HTTP_TIMEOUT", "1");
         Offline { env, dir }
+    }
+
+    struct RuntimeUnavailableHost;
+    impl app_host::app_host_capnp::app_host::Server for RuntimeUnavailableHost {}
+
+    fn runtime_review_fixture() -> app_host::runtime_transaction::RuntimeReview {
+        use app_host::runtime_transaction::{RuntimeOffer, RuntimeReview};
+        RuntimeReview {
+            consumer_app: "so.tilo.browser".into(),
+            consumer_root: "ab".repeat(32),
+            runtime: "tilo-runtime/2026.10.9-chromium".into(),
+            offer: Some(RuntimeOffer {
+                registry: "Tilo".into(),
+                package_id: "so.tilo.runtime.chromium".into(),
+                version: "0.1.1".into(),
+                root: "cd".repeat(32),
+                publisher: "ef".repeat(32),
+                archive_hash: "01".repeat(32),
+                size_bytes: 42,
+            }),
+        }
+    }
+
+    #[test]
+    fn runtime_native_controls_and_agents_share_the_published_consent() {
+        use crate::runtime_recovery::{Phase, Recovery, RuntimeTarget};
+        let _offline = offline();
+        let (service, connection) =
+            app_host::testing::ConnectedService::start(RuntimeUnavailableHost).unwrap();
+        let mut app = TestApp::<StoreShell>::new().unwrap();
+        app.with_surface::<StoreApp, _>(|store| store.connect_test_host(connection))
+            .unwrap()
+            .unwrap();
+        app.settle();
+        let review = runtime_review_fixture();
+        app.with_surface(|store: &mut StoreApp| {
+            store.runtime_recovery = Some(Recovery {
+                target: RuntimeTarget::new(review.consumer_app.clone(), review.runtime.clone())
+                    .unwrap(),
+                phase: Phase::Review(review.clone()),
+                visible: true,
+            });
+        })
+        .unwrap();
+        app.effect(&StoreEffect::ShowRuntime).unwrap();
+        let snapshot = app
+            .effect(&StoreEffect::InspectRuntime)
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(snapshot["phase"], "review");
+        assert_eq!(snapshot["review"], serde_json::to_value(&review).unwrap());
+        let visible = app.harness().inspection_json().unwrap();
+        assert!(visible.contains("Download and add"), "{visible}");
+        assert!(!visible.contains("Publisher identity"), "{visible}");
+        assert!(!visible.contains("Archive hash"), "{visible}");
+        app.harness().click_named("store.detail.technical").unwrap();
+        app.settle();
+        let details = app.harness().inspection_json().unwrap();
+        assert!(details.contains("Publisher identity"), "{details}");
+        assert!(details.contains("Archive hash"), "{details}");
+        app.effect(&StoreEffect::SetTechnicalDetails { expanded: false })
+            .unwrap();
+        let audit = app.harness().native_app_audit();
+        assert!(
+            !audit
+                .issues
+                .iter()
+                .any(|issue| issue.code == "stale-action-binding"),
+            "{audit:?}"
+        );
+        let bindings = ui::widget::controls::control_action_bindings(app.harness().root_widget());
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.control_id == "store.runtime.acquire"
+                    && matches!(&binding.kind, ui::widget::ControlBindingKind::Action(address)
+                if address.action == StoreEffect::ACQUIRE_RUNTIME.id))
+        );
+        let mut altered = review;
+        altered.consumer_root = "02".repeat(32);
+        assert!(
+            app.effect(&StoreEffect::AcquireRuntime {
+                review: serde_json::to_string(&altered).unwrap(),
+            })
+            .is_err()
+        );
+        assert_eq!(
+            app.effect(&StoreEffect::InspectRuntime)
+                .unwrap()
+                .value
+                .unwrap()["phase"],
+            "review"
+        );
+        app.harness().click_named("store.runtime.acquire").unwrap();
+        app.settle();
+        // The real worker's connected fixture refuses runtime RPCs. A host
+        // failure must remain actionable without a fallback download path.
+        let failed = app
+            .effect(&StoreEffect::InspectRuntime)
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(failed["phase"], "failed", "{failed}");
+        assert!(
+            failed["error"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty())
+        );
+        app.effect(&StoreEffect::BackRuntime).unwrap();
+        assert_eq!(
+            app.effect(&StoreEffect::InspectRuntime)
+                .unwrap()
+                .value
+                .unwrap()["visible"],
+            false
+        );
+        app.effect(&StoreEffect::ShowRuntime).unwrap();
+        assert!(
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains("Review again")
+        );
+        drop(app);
+        service.shutdown().unwrap();
     }
 
     struct AvailableFeed {

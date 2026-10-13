@@ -37,7 +37,10 @@ const APP_ID: &str = "so.tilo.linked-e2e";
 
 /// What the stand-in registry serves, by request path.
 #[derive(Clone, Default)]
-struct Served(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
+struct Served(
+    Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    Arc<Mutex<Vec<String>>>,
+);
 
 impl Served {
     fn put(&self, path: &str, bytes: Vec<u8>) {
@@ -75,6 +78,7 @@ fn serve(mut stream: TcpStream, served: &Served) {
     }
     let path = request.split_whitespace().nth(1).unwrap_or("/");
     let path = path.split('?').next().unwrap_or(path);
+    served.1.lock().unwrap().push(path.to_string());
     let body = served.0.lock().unwrap().get(path).cloned();
     let (status, body) = match body {
         Some(body) => ("200 OK", body),
@@ -136,7 +140,7 @@ fn tapp(manifest: &str, payload: &Path) -> Vec<u8> {
     tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap()
 }
 
-fn app_tapp(root: &Path, runtime: &str) -> Vec<u8> {
+fn app_tapp(root: &Path, runtime: &str, optional: &[&str]) -> Vec<u8> {
     let payload = root.join("app-payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
     std::fs::write(payload.join("bin/app"), b"#!/bin/true\n").unwrap();
@@ -149,6 +153,7 @@ version = "2.0.0"
 kind = "app"
 name = "Linked"
 runtime = "{runtime}"
+optional-runtimes = {optional:?}
 
 [package.isa]
 {isa}
@@ -323,7 +328,7 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     let served = Served::default();
     let port = served.start();
     let base = format!("http://127.0.0.1:{port}");
-    let app = app_tapp(root, &needed);
+    let app = app_tapp(root, &needed, &[]);
     served.put("/linked.tapp", app.clone());
     let app_entry = entry(
         APP_ID,
@@ -598,5 +603,161 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
     assert!(
         !damaged.status.success(),
         "damaged retained runtime must not count as a completed install"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one device and registry exercise consent, verification failure and retry together"
+)]
+fn optional_runtime_download_requires_an_explicit_request() {
+    let root = tempfile::tempdir().unwrap();
+    let owner = SigningKey::from_bytes(&[22_u8; 32]);
+    let identity = runtime_bundle::Identity::generate();
+    let identity_path = root.path().join("runtime-publisher.json");
+    std::fs::write(&identity_path, identity.to_json_bytes()).unwrap();
+    let trust = root.path().join("trusted.txt");
+    std::fs::write(&trust, format!("{}\n", identity.public_key_hex())).unwrap();
+    let (device_version, device_bundle) =
+        runtime_bundle(root.path(), "device", b"base toolkit", &identity_path);
+    let (optional_version, optional_bundle) =
+        runtime_bundle(root.path(), "optional", b"optional toolkit", &identity_path);
+    let device_ref = format!("tilo-runtime/{device_version}");
+    let optional_ref = format!("tilo-runtime/{optional_version}");
+    let runtimes = root.path().join("runtimes");
+    std::fs::create_dir(&runtimes).unwrap();
+    std::fs::rename(device_bundle, runtimes.join(&device_version)).unwrap();
+    runtime_bundle::gc::BundleRoot::new(&runtimes)
+        .pin(&device_version)
+        .unwrap();
+
+    let served = Served::default();
+    let base = format!("http://127.0.0.1:{}", served.start());
+    let app = app_tapp(root.path(), &device_ref, &[&optional_ref]);
+    let runtime = runtime_tapp(&optional_bundle, &optional_ref, "0.1.7");
+    served.put("/app.tapp", app.clone());
+    served.put("/optional.tapp", runtime.clone());
+    let entries = vec![
+        entry(
+            APP_ID,
+            "2.0.0",
+            &format!("{base}/app.tapp"),
+            &app,
+            &device_ref,
+        ),
+        entry(
+            registry_types::NATIVE_RUNTIME_PACKAGE_ID,
+            "0.1.7",
+            &format!("{base}/optional.tapp"),
+            &runtime,
+            &optional_ref,
+        ),
+    ];
+    served.put(
+        "/entries",
+        serde_json::to_vec(&snapshot(entries, &owner, None)).unwrap(),
+    );
+    let config = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let apps = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config.path().join("registries.toml"),
+        toml::to_string_pretty(&RegistriesFile {
+            registries: vec![RegistryConfig {
+                name: "local".into(),
+                base_url: base,
+                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+                enabled: true,
+                channel: tilo_app_package::version::ReleaseChannel::Stable,
+            }],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let installer = tilo_install_bin();
+    let _env = scoped_env(&[
+        ("TILO_STORE_CONFIG_DIR", config.path()),
+        ("TILO_STORE_CACHE_DIR", cache.path()),
+        ("TILO_APPS_DATA_DIR", apps.path()),
+        ("TILO_INSTALL_BIN", &installer),
+        ("TILO_RUNTIME_BUNDLE_DIR", &runtimes),
+        ("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust),
+        ("XDG_DATA_HOME", data.path()),
+    ]);
+    let offer = app_cli::available()
+        .apps
+        .into_iter()
+        .find(|app| app.package_id == APP_ID)
+        .unwrap();
+    app_cli::install::install_app(&offer).unwrap();
+    app_cli::install::update_app_reporting(&offer, &mut |_| {}).unwrap();
+    app_cli::install::rollback_app_reporting(&offer, &mut |_| {}).unwrap();
+    assert!(!app_cli::runtime_installed(&optional_ref));
+    assert!(
+        served
+            .1
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|path| !path.starts_with("/optional.tapp")),
+        "ordinary app install, update and rollback must not request optional artifact bytes"
+    );
+
+    let missing = app_cli::install::acquire_optional_runtime_reporting(
+        &offer,
+        "tilo-runtime/not-offered",
+        &mut |_| {},
+    )
+    .expect_err("a missing offer is an actionable error");
+    assert!(matches!(
+        missing,
+        app_cli::install::InstallError::OptionalRuntimeUnavailable { .. }
+    ));
+    assert!(missing.user_message().contains("tilo-runtime/not-offered"));
+
+    // A signed offer is not enough: corrupt artifact bytes must still fail.
+    served.put("/optional.tapp", b"corrupt archive".to_vec());
+    assert!(
+        app_cli::install::acquire_optional_runtime_reporting(&offer, &optional_ref, &mut |_| {},)
+            .is_err()
+    );
+    assert!(!app_cli::runtime_installed(&optional_ref));
+
+    // The runtime's signer is checked independently of the registry publisher.
+    std::fs::write(
+        &trust,
+        format!(
+            "{}\n",
+            runtime_bundle::Identity::generate().public_key_hex()
+        ),
+    )
+    .unwrap();
+    served.put("/optional.tapp", runtime);
+    assert!(
+        app_cli::install::acquire_optional_runtime_reporting(&offer, &optional_ref, &mut |_| {},)
+            .is_err()
+    );
+    assert!(!app_cli::runtime_installed(&optional_ref));
+    std::fs::write(&trust, format!("{}\n", identity.public_key_hex())).unwrap();
+    let mut progress = Vec::new();
+    app_cli::install::acquire_optional_runtime_reporting(&offer, &optional_ref, &mut |event| {
+        progress.push(event)
+    })
+    .unwrap();
+    assert!(
+        !progress.is_empty(),
+        "explicit acquisition reports real progress"
+    );
+    assert!(app_cli::runtime_installed(&optional_ref));
+    assert!(app_cli::runtime_installed(&device_ref));
+    let requested = served.1.lock().unwrap().len();
+    app_cli::install::acquire_optional_runtime_reporting(&offer, &optional_ref, &mut |_| {})
+        .unwrap();
+    assert_eq!(
+        served.1.lock().unwrap().len(),
+        requested,
+        "retry reuses verified installation"
     );
 }
