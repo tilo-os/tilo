@@ -919,6 +919,10 @@ pub struct State {
     pub presentation_state: smithay::wayland::presentation::PresentationState,
     /// Original timestamp of the currently dispatched trusted physical key.
     pub physical_key_input_time_ns: Option<u64>,
+    /// Key presses and releases the seat forwarded to a client, ever. The loop
+    /// tells keys only a client took, which change no shell pixels, from keys
+    /// the shell kept by how far this moves while it dispatches them.
+    pub client_keys_delivered: u64,
     pub presentation_feedback: crate::compositor::presentation::PresentationFeedback,
 
     /// `xdg_wm_base` global state — toplevels and popups.
@@ -2020,6 +2024,7 @@ impl State {
             compositor_state,
             presentation_state,
             physical_key_input_time_ns: None,
+            client_keys_delivered: 0,
             presentation_feedback: crate::compositor::presentation::PresentationFeedback::default(),
             xdg_shell_state,
             xdg_activation_state,

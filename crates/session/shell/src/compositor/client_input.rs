@@ -618,6 +618,9 @@ impl State {
             },
         );
         let delivered = forward && has_focus && intercepted.is_none();
+        if delivered {
+            self.client_keys_delivered = self.client_keys_delivered.wrapping_add(1);
+        }
         if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
             if let Some((delivery_time_ns, observed_surface)) =
                 delivery_time_ns.zip(observed_surface)
