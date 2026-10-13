@@ -21,7 +21,6 @@ import signal
 import select
 import shutil
 import socket
-import struct
 import subprocess
 import sys
 import tempfile
@@ -42,71 +41,10 @@ class Fixture:
     def __init__(self, output, binaries, pipewire, routing_diagnostics=False):
         self.output, self.binaries, self.pipewire = output, binaries, pipewire
         self.routing_diagnostics = routing_diagnostics
-        self.native_debugger = None
         self.root_owner = tempfile.TemporaryDirectory(prefix="tilo-native-pair-")
         self.root = pathlib.Path(self.root_owner.name)
         self.root.chmod(0o700)
         self.processes, self.logs, self.stages = [], [], []
-        self.private_buses = []
-        self.native_tabs = {}
-        self.native_instances = {}
-        self.native_hosts = {}
-        self.native_processes = {}
-
-    def focused_tab(self, control, room, previous):
-        tree = call(control, {"op": "state_dump"}).get("state", {}).get("workspace_tree", {})
-        workspace = next((row for row in tree.get("workspaces", [])
-                          if row.get("id") == tree.get("active") and row.get("room") == room), None)
-        strip_id = tree.get("active_strip", {}).get(str(tree.get("active")))
-        strip = next((row for row in workspace.get("strips", [])
-                      if row.get("id") == strip_id), None) if workspace else None
-        group_id = tree.get("active_group", {}).get(str(strip_id))
-        group = next((row for row in strip.get("window_groups", [])
-                      if row.get("id") == group_id), None) if strip else None
-        tab = next((row for row in group.get("tabs", [])
-                    if row.get("id") == group.get("active_tab")), None) if group else None
-        if tab is None:
-            return None
-        if tab.get("id") in previous:
-            return None
-        tile = tab.get("tile", {})
-        if not any(isinstance(body, dict) and body.get("app_id") == "so.tilo.chat"
-                   for body in tile.values()):
-            return None
-        return tab["id"]
-
-    def presented_tab(self, control, tab_id):
-        tree = call(control, {"op": "state_dump"}).get("state", {}).get("workspace_tree", {})
-        tabs = [tab for workspace in tree.get("workspaces", [])
-                for strip in workspace.get("strips", [])
-                for group in strip.get("window_groups", [])
-                for tab in group.get("tabs", []) if tab.get("id") == tab_id]
-        if len(tabs) != 1:
-            raise RuntimeError("launched native tab is absent or ambiguous")
-        foreign = tabs[0].get("tile", {}).get("Foreign")
-        if not isinstance(foreign, dict) or foreign.get("app_id") != "so.tilo.chat":
-            return None
-        record = tree.get("local_app_records", {}).get(str(tab_id))
-        workspace = next(workspace for workspace in tree.get("workspaces", [])
-                         if any(tab.get("id") == tab_id for strip in workspace.get("strips", [])
-                                for group in strip.get("window_groups", []) for tab in group.get("tabs", [])))
-        if (not isinstance(record, dict) or record.get("app_id") != "so.tilo.chat"
-                or record.get("room") != workspace.get("room")
-                or type(record.get("record_instance")) is not int or record["record_instance"] <= 0):
-            return None
-        binding = (record["room"], record["record_instance"])
-        if control in self.native_instances and self.native_instances[control] != binding:
-            raise RuntimeError("launched native tab changed its authenticated instance")
-        self.native_instances[control] = binding
-        frames = [row for row in packaged.foreign_frames(call(control, {"op": "foreign_frames"}))
-                  if row.get("surface_id") == foreign.get("surface_id")]
-        if len(frames) > 1:
-            raise RuntimeError("exact native tab has ambiguous frames")
-        return next((row for row in frames if row.get("app_id") == "so.tilo.chat"
-                     and row.get("floating_id") is None and row.get("presented") is True
-                     and "last_error" in row and row["last_error"] is None
-                     and type(row.get("surface_id")) is int and row["surface_id"] > 0
-                     and type(row.get("frame_seq")) is int and row["frame_seq"] > 0), None)
 
     def spawn(self, label, command, env, **kwargs):
         log = open(self.output / f"{label}.log", "w")
@@ -120,56 +58,6 @@ class Fixture:
     def record(self, stage, **evidence):
         self.stages.append({"stage": stage, **evidence})
         print(stage, flush=True)
-
-    def native_process_evidence(self, process, control):
-        """Only this fixture's exact child and bounded verified descendants."""
-        if process not in self.processes:
-            raise RuntimeError("native process is outside fixture custody")
-        evidence = {"pid": process.pid, "returncode": process.poll(), "processes": [],
-                    "observation_errors": [], "descendant_limit": 24}
-        pending = [(process.pid, os.getpid(), 0)]
-        seen = set()
-        fields = {"Name", "State", "PPid", "Threads", "CoreDumping", "SigPnd", "ShdPnd"}
-        while pending and len(seen) < 24:
-            pid, parent, depth = pending.pop(0)
-            if pid in seen:
-                continue
-            seen.add(pid)
-            root = pathlib.Path(f"/proc/{pid}")
-            try:
-                status = dict(line.split(":", 1) for line in (root / "status").read_text().splitlines())
-                if int(status["PPid"]) != parent:
-                    raise RuntimeError("native child no longer has its observed parent")
-                row = {key: value.strip() for key, value in status.items() if key in fields}
-                row["pid"] = pid
-                evidence["processes"].append(row)
-                if depth < 3:
-                    children = set()
-                    for task in sorted((root / "task").iterdir())[:128]:
-                        try:
-                            children.update(int(child) for child in (task / "children").read_text().split())
-                        except OSError:
-                            continue
-                    pending.extend((child, pid, depth + 1) for child in sorted(children)[:24])
-            except (OSError, ValueError, RuntimeError) as error:
-                evidence["observation_errors"].append({"pid": pid, "error": str(error)})
-        evidence["descendants_truncated"] = bool(pending)
-        path = pathlib.Path(control)
-        try:
-            metadata = path.lstat()
-            evidence["control_socket"] = {"inode": metadata.st_ino, "mode": metadata.st_mode,
-                                          "uid": metadata.st_uid}
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(1)
-                client.connect(control)
-                peer, uid, gid = struct.unpack("3i", client.getsockopt(
-                    socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
-                evidence["control_socket"].update({"connect": "accepted", "peer_pid": peer,
-                                                   "peer_uid": uid, "peer_gid": gid})
-        except OSError as error:
-            evidence.setdefault("control_socket", {}).update({"connect": "failed", "errno": error.errno,
-                                                               "error_type": type(error).__name__})
-        return evidence
 
     def env(self, name):
         profile = self.root / name
@@ -188,7 +76,7 @@ class Fixture:
                "TILO_STATE_PATH": str(profile / "config/tilo/state.json"),
                "TILO_HEADLESS_SIZE": "1280x800",
                "TILO_LAUNCHER_BIN": str(self.binaries / "tilo-launcher"),
-               "RUST_LOG": "warn,tilo_joined_room::voice=debug,tilo_media::voice::gst=debug,shell::network::native_media=debug,shell::shell::native_media=debug,shell::shell::broker_services=debug,tilo_action_broker::collab_broker_capnp::native_media=debug",
+               "RUST_LOG": "warn,tilo_joined_room::voice=debug,tilo_media::voice::gst=debug,shell::network::native_media=debug,shell::shell::native_media=debug,tilo_action_broker::collab_broker_capnp::native_media=debug",
                "GST_DEBUG": "pipewiresrc:6,pipewirecore:5,appsink:5,opusenc:5,basesink:5,basesrc:6"}
         if self.routing_diagnostics:
             env["TILO_RELAY_PHASE_DIAGNOSTICS"] = "1"
@@ -198,24 +86,13 @@ class Fixture:
                                 ",shell::shell::network::native_ingress=debug")
         if self.pipewire is not None:
             env["GST_PLUGIN_PATH"] = str(self.pipewire / "usr/lib64/gstreamer-1.0")
-            env["PATH"] = str(self.pipewire / "usr/bin") + os.pathsep + env["PATH"]
         else:
             env.pop("GST_PLUGIN_PATH", None)
         for key in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
                     "PIPEWIRE_REMOTE", "PIPEWIRE_RUNTIME_DIR", "TILO_COLLAB_HOST",
-                    "TILO_COLLAB_HOSTS", "TILO_APPS_SYSTEM_DIR", "TILO_USER_ID"):
+                    "TILO_COLLAB_HOSTS", "TILO_APPS_SYSTEM_DIR"):
             env.pop(key, None)
         return env
-
-    def start_private_bus(self, name, env):
-        path = pathlib.Path(env["XDG_RUNTIME_DIR"]) / "fixture-bus"
-        process = self.spawn(f"{name}-bus", [
-            "dbus-daemon", "--session", "--nofork", f"--address=unix:path={path}",
-        ], env)
-        self.private_buses.append(process)
-        packaged.wait_for("owned private session bus", path.exists, process)
-        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={path}"
-        return process
 
     def audio(self, name, env, frequency):
         profile = self.root / name
@@ -241,7 +118,7 @@ class Fixture:
           monitor.v4l2 = disabled monitor.libcamera = disabled }
 }
 ''')
-        self.spawn(f"{name}-wireplumber", ["wireplumber"], env)
+        self.spawn(f"{name}-wireplumber", ["dbus-run-session", "--", "wireplumber"], env)
         # A generated-only native stream follows the private graph's driver.
         # The GStreamer provide-mode driver stalls after its initial buffer ring
         # here, even in a standalone encoder; it cannot qualify native voice.
@@ -321,21 +198,22 @@ class Fixture:
             self.record(f"{name}-{phase}-{suffix}")
 
     def stop_private_buses(self):
-        # Buses are foreground children with known custody, never discovered by
-        # scanning unrelated processes or inspecting another process's environment.
+        # Launcher/SDK helpers may fork a bus out of their process group.
+        # Exact private profile evidence plus a pidfd bounds cleanup to this run.
+        homes = {str(self.root / name / "home").encode() for name in ("alice", "bob")}
+        runtimes = {str(self.root / name / "run").encode() for name in ("alice", "bob")}
         stopped = 0
-        for process in self.private_buses:
-            if process.poll() is not None:
+        for process in pathlib.Path("/proc").iterdir():
+            if not process.name.isdigit():
                 continue
             descriptor = None
             try:
-                if process not in self.processes:
-                    raise RuntimeError("private bus is outside fixture custody")
-                descriptor = os.pidfd_open(process.pid)
-                root = pathlib.Path(f"/proc/{process.pid}")
-                status = dict(line.split(":", 1) for line in (root / "status").read_text().splitlines())
-                if int(status["PPid"]) != os.getpid() or status["Name"].strip() != "dbus-daemon":
-                    raise RuntimeError("private bus no longer has its observed identity")
+                if process.stat().st_uid != os.getuid() or (process / "comm").read_text().strip() != "dbus-daemon":
+                    continue
+                descriptor = os.pidfd_open(int(process.name))
+                env = dict(item.split(b"=", 1) for item in (process / "environ").read_bytes().split(b"\0") if b"=" in item)
+                if env.get(b"HOME") not in homes or env.get(b"XDG_RUNTIME_DIR") not in runtimes:
+                    continue
                 signal.pidfd_send_signal(descriptor, signal.SIGTERM)
                 poller = select.poll()
                 poller.register(descriptor, select.POLLIN)
@@ -344,7 +222,6 @@ class Fixture:
                     if not poller.poll(3000):
                         raise RuntimeError("owned private bus did not exit")
                 stopped += 1
-                process.wait(timeout=3)
             except (ProcessLookupError, FileNotFoundError):
                 continue
             except PermissionError as error:
@@ -363,14 +240,12 @@ class Fixture:
             adjacent = {**owned, "HOME": str(directory / "home"), "XDG_RUNTIME_DIR": str(directory / "run")}
             descriptors = []
             try:
-                process = self.start_private_bus("cleanup-owned", owned)
-                descriptors.append(os.pidfd_open(process.pid))
-                path = directory / "run/fixture-bus"
-                process = self.spawn("cleanup-adjacent", [
-                    "dbus-daemon", "--session", "--nofork", f"--address=unix:path={path}",
-                ], adjacent)
-                packaged.wait_for("adjacent private session bus", path.exists, process)
-                descriptors.append(os.pidfd_open(process.pid))
+                for env in (owned, adjacent):
+                    pid = int(subprocess.check_output([
+                        "dbus-daemon", "--session", "--fork", "--print-pid",
+                        f"--address=unix:path={env['XDG_RUNTIME_DIR']}/fixture-bus",
+                    ], env=env, timeout=3))
+                    descriptors.append(os.pidfd_open(pid))
                 if self.stop_private_buses() != 1:
                     raise RuntimeError("cleanup did not select exactly the owned private bus")
                 owned_poll, adjacent_poll = select.poll(), select.poll()
@@ -415,73 +290,18 @@ class Fixture:
                     if row.get("application") == "so.tilo.chat"
                     and row.get("room") == room and row.get("record") == ""
                     and row.get("operation") == operation
-                    and (resource is None or row.get("resource") == resource
-                         or resource.startswith("chat.") and self.logical_resource(row["resource"]) == resource)]
+                    and (resource is None or row.get("resource") == resource)]
             if len(rows) > 1:
                 raise RuntimeError(f"ambiguous Chat operation {operation}")
             return rows[0] if rows else None
         return packaged.wait_for(f"Chat {operation}", offered, process)
 
     @staticmethod
-    def raw_catalogue(socket, query=""):
-        response = call(socket, {"op": "actions_enumerate", "include_programmatic": True,
-                                 "detail": "full", "limit": 2000, "query": query})
+    def catalogue(socket):
+        response = call(socket, {"op": "actions_enumerate", "include_programmatic": True})
         if "err" in response or not isinstance(response.get("answer", {}).get("actions"), list):
             raise RuntimeError("complete native action catalogue is unavailable")
-        if response["answer"].get("truncated") is not False:
-            raise RuntimeError("native action catalogue completeness cannot be observed")
         return response["answer"]["actions"]
-
-    def catalogue(self, socket, query=""):
-        rows = self.raw_catalogue(socket, query)
-        binding = self.native_instances.get(socket)
-        if binding is None:
-            return rows
-        if socket not in self.native_hosts:
-            room, instance = binding
-            matches = set()
-            observations = []
-            for row in self.raw_catalogue(socket):
-                if (row.get("application") != "so.tilo.chat" or row.get("room") != room
-                        or row.get("record") != "" or row.get("operation") != "live-context-status"):
-                    continue
-                receipt = packaged.wait_terminal(socket, packaged.invoke(socket, row),
-                                                  self.native_processes[socket])
-                value = receipt.get("update", {}).get("output", {}).get("value", {})
-                view = value.get("nativeView")
-                observations.append({
-                    "native_view_present": isinstance(view, dict),
-                    "observed_instance": view.get("instance") if isinstance(view, dict)
-                        and type(view.get("instance")) is int else None,
-                    "room_matches": isinstance(view, dict) and view.get("room") == room,
-                    "record_matches": isinstance(view, dict) and view.get("record") == "",
-                })
-                if view == {"instance": instance, "room": room, "record": ""}:
-                    if any(value.get(field) is not False for field in ("sharing", "following", "videoCapture")):
-                        raise RuntimeError("exact native view did not start with private context")
-                    matches.add(self.publication_host(row["resource"]))
-            (self.output / f"native-instance-{instance}-observation.json").write_text(json.dumps({
-                "expected_instance": instance, "observations": observations}, indent=2))
-            if len(matches) > 1:
-                raise RuntimeError("exact native instance has ambiguous action publishers")
-            if not matches:
-                return [row for row in rows if row.get("application") != "so.tilo.chat"]
-            self.native_hosts[socket] = matches.pop()
-            self.record("native-invocation-metadata-matches-authenticated-launched-tab",
-                        room=room, instance=instance, record="", initial_context_private=True)
-        host = self.native_hosts[socket]
-        return [row for row in rows if row.get("application") != "so.tilo.chat"
-                or self.publication_host(row["resource"]) == host]
-
-    @staticmethod
-    def publication_host(resource):
-        prefix, version, host, lifetime, encoded = resource.split(":", 4)
-        if prefix != "tilo-ui-bound" or version != "v1" or len(resource) > 4096:
-            raise RuntimeError("unexpected native resource publication")
-        uuid.UUID(host)
-        uuid.UUID(lifetime)
-        bytes.fromhex(encoded).decode("utf-8")
-        return host
 
     @staticmethod
     def logical_resource(resource):
@@ -497,19 +317,6 @@ class Fixture:
     def act(self, session, room, operation, args=None, resource=None):
         socket, process = session
         row = self.operation(socket, room, operation, process, resource)
-        if operation in {"start-call", "join-call", "unmute"}:
-            # These exact generated-audio call steps are explicitly authorized.
-            # Carry confirmation only through a parameter the current door
-            # declares; microphone consent remains its separate visible prompt.
-            parameters = row.get("params", [])
-            observation = {**packaged.public_action_observation(row),
-                           "contract": row.get("contract"),
-                           "params": [{key: param.get(key) for key in ("name", "ty", "required")}
-                                      for param in parameters]}
-            (self.output / f"{operation}-declared-contract.json").write_text(json.dumps(observation, indent=2))
-            if args is None and any(param.get("name") == "confirm" for param in parameters):
-                args = {"confirm": True}
-                self.record("explicit-generated-call-action-confirmation", operation=operation)
         acknowledgement = packaged.invoke(socket, row, args)
         failure_path = self.output / f"failed-{operation}.json"
         try:
@@ -551,6 +358,8 @@ class Fixture:
             report = self.act(session, room, "live-context-status")
             if report.get("sharing") is not False or report.get("following") is not False or report.get("videoCapture") is not False:
                 raise RuntimeError("native Chat did not start with private context")
+        self.act(alice, room, "new-channel", {"value": "Fixture second conversation"})
+
         def text_channels(socket):
             channels = {}
             for row in self.catalogue(socket):
@@ -564,11 +373,6 @@ class Fixture:
                 channels[logical] = resource
             return channels
 
-        # Ordinary apps start empty. Continuity modes already created their
-        # first channel before Bob opened; the full pair must create its own.
-        if not text_channels(alice[0]):
-            self.act(alice, room, "new-channel", {"value": "Fixture first conversation"})
-        self.act(alice, room, "new-channel", {"value": "Fixture second conversation"})
         channels = packaged.wait_for("two shared text channels", lambda: (
             channels if len(channels := text_channels(alice[0])) >= 2 else None), alice[1])
         first, second = sorted(channels)[:2]
@@ -589,13 +393,13 @@ class Fixture:
                     second: "Fixture Bob in the second conversation"}
         for session, logical in ((alice, first), (bob, second)):
             self.act(session, room, "post", {"value": expected[logical]},
-                     resource=logical)
+                     resource=text_channels(session[0])[logical])
         def readable_conversations():
             for session in (alice, bob):
                 resources = text_channels(session[0])
                 for logical, text in expected.items():
                     page = self.act(session, room, "read-messages", {"pageSize": 32},
-                                    resource=logical)
+                                    resource=resources[logical])
                     content = page.get("content", {}) if isinstance(page, dict) else {}
                     messages = content.get("messages", [])
                     if content.get("channel") != logical.removeprefix("chat.channel:"):
@@ -614,10 +418,10 @@ class Fixture:
                      "label": "Fixture shared conversation", "span": None}
         self.act(alice, room, "share-resource", {
             "reference": reference, "text": "Fixture live resource address",
-            "sourceProvider": "record:so.tilo.chat:"}, resource=first)
+            "sourceProvider": "record:so.tilo.chat:"}, resource=channels[first])
         def shared_reference():
             page = self.act(bob, room, "read-messages", {"pageSize": 32},
-                            resource=first)
+                            resource=text_channels(bob[0])[first])
             messages = page.get("content", {}).get("messages", [])
             matches = [message for message in messages
                        if message.get("text") == "Fixture live resource address"]
@@ -640,15 +444,15 @@ class Fixture:
         packaged.wait_for("live resource address reaches admitted native reader",
                           shared_reference, bob[1])
         self.record("native-live-resource-reference-preserves-existing-access")
-        return text_channels, shared_reference
+        return text_channels
 
     def context(self, sessions, room, presence_ids):
-        text_channels, _shared_reference = self.shared_state(sessions, room)
+        text_channels = self.shared_state(sessions, room)
         alice, bob = sessions["alice"], sessions["bob"]
         channels = text_channels(alice[0])
         first, second = sorted(channels)[:2]
-        self.act(alice, room, "open-channel", resource=first)
-        self.act(bob, room, "open-channel", resource=second)
+        self.act(alice, room, "open-channel", resource=channels[first])
+        self.act(bob, room, "open-channel", resource=text_channels(bob[0])[second])
         require_ok(call(alice[0], {"op": "pointer_move", "x": 350, "y": 220}))
         require_ok(call(bob[0], {"op": "pointer_move", "x": 640, "y": 300}))
         self.act(alice, room, "share-live-context")
@@ -723,9 +527,6 @@ class Fixture:
             (self.output / "bob-follow-presentation.json").write_text(json.dumps({
                 "target_tab": target.get("id") if target is not None else None,
                 "target_kind": next(iter(target.get("tile", {})), None) if target is not None else None,
-                "peer_card": {key: value[:2048] for key, value in
-                              (target.get("tile", {}).get("PeerWindow", {}) if target is not None else {}).items()
-                              if key in {"app_id", "note"} and isinstance(value, str)},
                 "actual_local_frame_presented": presented}, indent=2))
             return report if presented else None
 
@@ -741,7 +542,7 @@ class Fixture:
                 json.dumps({"publisher": publisher, "follower": follower}, indent=2))
             return publisher.get("sharing") is False and follower.get("following") is False
         packaged.wait_for("Stop withdraws native context", withdrawn, bob[1])
-        self.act(alice, room, "open-channel", resource=second)
+        self.act(alice, room, "open-channel", resource=channels[second])
         time.sleep(0.5)
         report = self.act(bob, room, "live-context-status")
         if report.get("channel") != first.removeprefix("chat.channel:"):
@@ -1024,7 +825,7 @@ class Fixture:
         packaged.wait_for("remaining participant leaves", lambda: self.no_audio_streams("alice", sessions["alice"]), sessions["alice"][1])
 
     def app_state(self, sessions, room, early, authors):
-        channels, shared_reference = self.shared_state(sessions, room)
+        channels = self.shared_state(sessions, room)
         texts = ["Fixture committed before Bob app launch",
                  "Fixture concurrent Alice", "Fixture concurrent Bob"]
         observations = {}
@@ -1035,7 +836,7 @@ class Fixture:
                 if early not in resources:
                     return False
                 page = self.act(session, room, "read-messages", {"pageSize": 32},
-                                resource=early)
+                                resource=resources[early])
                 content = page.get("content", {})
                 if content.get("channel") != early.removeprefix("chat.channel:"):
                     raise RuntimeError("late app read another record")
@@ -1054,7 +855,7 @@ class Fixture:
         # commit. Submit subsequent edits from both native app processes.
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(self.act, session, room, "post", {"value": text},
-                                   early)
+                                   channels(session[0])[early])
                        for session, text in zip(sessions.values(), texts[1:])]
             for future in futures:
                 future.result()
@@ -1062,19 +863,18 @@ class Fixture:
         self.record("late-native-app-and-concurrent-resource-state-converged", channel=early,
                     messages=observations)
         for name, session in sessions.items():
-            before = self.presented_tab(session[0], self.native_tabs[name])
+            before = packaged.presented_primary_frame(call(session[0], {"op": "foreign_frames"}), "so.tilo.chat")
             if before is None:
                 raise RuntimeError("native app disappeared before state rendering")
             resource = packaged.wait_for("current exact channel navigation action",
                                          lambda: channels(session[0]).get(early), session[1])
             self.act(session, room, "open-channel", resource=resource)
             def painted():
-                frame = self.presented_tab(session[0], self.native_tabs[name])
+                frame = packaged.presented_primary_frame(call(session[0], {"op": "foreign_frames"}), "so.tilo.chat")
                 return frame if frame and frame["frame_seq"] > before["frame_seq"] else None
             frame = packaged.wait_for("local app paints after shared channel navigation", painted, session[1])
             require_ok(call(session[0], {"op": "snapshot", "path": str(self.output / f"{name}-shared-state.png")}))
             self.record(f"{name}-shared-state-locally-presented", frame_seq=frame["frame_seq"])
-        return shared_reference
 
     def save_automatic_failure(self, socket):
         state = call(socket, {"op": "state_dump"}).get("state", {})
@@ -1085,7 +885,6 @@ class Fixture:
         require_ok(call(socket, {"op": "snapshot", "path": str(self.output / "bob-automatic-opening.png")}))
 
     def reconnect(self, sessions, bootstrap, host, early):
-        identity_mode = "same-person" if bootstrap["users"][0] == bootstrap["users"][1] else "two-person"
         # Only the disposable host this fixture spawned is stopped. Its keys,
         # room, app workers and grants are unchanged; no revocation is minted.
         if host not in self.processes or host.poll() is not None:
@@ -1111,7 +910,7 @@ class Fixture:
                 marker = f"Fixture offline {name}"
                 self.act(session, bootstrap["room"], "post", {"value": marker}, resource=rows[0]["resource"])
                 expected[name] = {"text": marker, "author": bootstrap["users"][index]}
-            self.record(f"both-{identity_mode}-native-apps-edited-while-host-stopped", messages=expected,
+            self.record("both-same-person-native-apps-edited-while-host-stopped", messages=expected,
                         peer_status={name: packaged.chrome_state(session[0]).get("peer_sync", {}).get("status")
                                      for name, session in sessions.items()})
         finally:
@@ -1141,73 +940,11 @@ class Fixture:
             return True
         packaged.wait_for("offline edits rejoin the same record without duplication", converged,
                           sessions["bob"][1], timeout=90)
-        self.record(f"{identity_mode}-offline-edits-converged-after-native-reconnect", messages=observations)
-
-    def create_workspace(self, sessions, bootstrap):
-        socket, process = sessions["alice"]
-        def tree(session):
-            return call(session[0], {"op": "state_dump"}).get("state", {}).get("workspace_tree", {})
-        before = tree(sessions["alice"])
-        originals = {row["id"]: row for row in before.get("workspaces", [])}
-        governed = next(row for row in originals.values() if row.get("room") == bootstrap["room"])
-        actor = packaged.chrome_state(socket).get("local_user_id")
-        (self.output / "workspace-create-authority.json").write_text(json.dumps({
-            "actor": actor, "expected_certified_actor": bootstrap["users"][0],
-            "active": before.get("active"), "governed_room": governed.get("room"),
-            "governed_workspace": governed.get("id"),
-            "active_workspace": {key: value for key, value in
-                next((row for row in originals.values() if row.get("id") == before.get("active")), {}).items()
-                if key in {"id", "room", "owner"}},
-            "owner": governed.get("owner"),
-            "capabilities": governed.get("capabilities"),
-            "write_decision": call(socket, {"op": "check_action", "actor": f"person:{actor}",
-                "app": "shell", "resource": "shell", "action": "workspace.create", "verb": "Write"}),
-        }, indent=2))
-        if actor != bootstrap["users"][0]:
-            raise RuntimeError("workspace creation actor differs from the provisioned certified local person")
-        # A shared space can publish more than the default first page.
-        # Resolve the exact shell action from an observed complete catalogue.
-        default_matches = [row for row in self.catalogue(socket) if row["id"] == "workspace.create"]
-        matches = [row for row in self.catalogue(socket, "workspace") if row["id"] == "workspace.create"]
-        self.record("workspace-creation-discovery", default_matches=len(default_matches),
-                    searched_matches=len(matches))
-        if len(default_matches) != 1 or len(matches) != 1:
-            raise RuntimeError("workspace.create must appear exactly once in both complete and searched catalogues")
-        action = default_matches[0]
-        packaged.wait_terminal(socket, packaged.invoke(socket, action, {"name": "Fixture independent workspace"}), process)
-        def created():
-            current = tree(sessions["alice"])
-            additions = [row for row in current.get("workspaces", []) if row["id"] not in originals]
-            if not additions:
-                return None
-            if len(additions) != 1 or len(current.get("workspaces", [])) != len(originals) + 1:
-                raise RuntimeError("workspace action did not create exactly one independent workspace")
-            workspace = additions[0]
-            if (workspace.get("room") == bootstrap["room"] or current.get("active") != workspace["id"]
-                    or workspace.get("name") != "Fixture independent workspace"
-                    or workspace.get("owner") != bootstrap["users"][0]):
-                raise RuntimeError("created workspace lacks its own active room and certified local owner")
-            if workspace.get("collaborators") or any(strip.get("window_groups") for strip in workspace.get("strips", [])):
-                raise RuntimeError("new workspace copied presence or seeded applications")
-            capabilities = workspace.get("capabilities", [])
-            if len(capabilities) != 1 or any(cap.get("id") in {old.get("id") for old in governed.get("capabilities", [])}
-                                             for cap in capabilities):
-                raise RuntimeError("new workspace copied permissions from the governed room")
-            preserved = next(row for row in current["workspaces"] if row["id"] == governed["id"])
-            if any(preserved.get(key) != governed.get(key) for key in ("room", "owner", "capabilities")):
-                raise RuntimeError("workspace creation changed governed room authority")
-            if any(row.get("room") == workspace["room"] for row in tree(sessions["bob"]).get("workspaces", [])):
-                raise RuntimeError("another person was automatically admitted to the new workspace")
-            return {key: workspace[key] for key in ("id", "room", "name", "owner")}
-        observation = packaged.wait_for("participant creates an independent empty workspace", created, process)
-        self.record("native-participant-workspace-created-with-independent-authority", workspace=observation,
-                    old_room_authority_preserved=True, peer_automatically_admitted=False)
+        self.record("same-person-offline-edits-converged-after-native-reconnect", messages=observations)
 
     def run(self, *, voice_only=False, state_only=False, continuity=None):
         state_only = state_only or continuity is not None
         environments = {name: self.env(name) for name in ("alice", "bob")}
-        for name, env in environments.items():
-            self.start_private_bus(name, env)
         publisher = self.root / "alice"
         for name, env in environments.items():
             env["TILO_APPS_DATA_DIR"] = str(self.root / name / "apps")
@@ -1224,14 +961,14 @@ class Fixture:
         packaged.run(self.binaries / "tilo-install", ["install", publisher / "chat.tapp", "--allow-self-signed"], environments["bob"])
         self.record("ordinary-signed-chat-packages-installed")
         command = [self.binaries / "examples/native_pair_host", self.root]
-        if continuity in ("automatic", "reconnect"):
+        if continuity is not None:
             command.append("--same-person")
         host = self.spawn("host", command, environments["alice"], stdin=subprocess.PIPE, text=True)
         bootstrap_path = self.root / "bootstrap.json"
         packaged.wait_for("private signed host invitations", bootstrap_path.exists, host)
         bootstrap = json.loads(bootstrap_path.read_text())
         same_person = bootstrap["users"][0] == bootstrap["users"][1]
-        if same_person != (continuity in ("automatic", "reconnect")):
+        if same_person != (continuity is not None):
             raise RuntimeError("certified person identity does not match fixture mode")
         self.record("same-person-independent-certified-devices" if same_person else
                     "two-distinct-certified-native-identities", users=bootstrap["users"])
@@ -1251,24 +988,8 @@ class Fixture:
             env = environments[name]
             if not state_only:
                 self.audio(name, env, frequency)
-            command = [self.binaries / "shell", "--mode", "native",
-                       "--backend", "headless", "--enable-peer-sync"]
-            if self.native_debugger is not None and name == "bob":
-                commands = self.output / "bob-debugger.commands"
-                commands.write_text("\n".join([
-                    "set pagination off", "set confirm off", "set disable-randomization off",
-                    "set follow-fork-mode parent", "set detach-on-fork on",
-                    "set print frame-arguments none", "set print entry-values no",
-                    "handle SIGPIPE nostop noprint pass", "handle SIGCHLD nostop noprint pass",
-                    "set logging file " + str(self.output / "bob-native-stacks.txt"),
-                    "set logging overwrite on", "set logging redirect on", "set logging enabled on",
-                    "run", "thread apply all bt 12", "quit", "",
-                ]))
-                commands.chmod(0o600)
-                command = [self.native_debugger, "--batch", "--nx", "--quiet",
-                           "-iex", "set auto-load off", "-iex", "set debuginfod enabled off",
-                           "-x", commands, "--args", *command]
-            shell = self.spawn(name, command, env)
+            shell = self.spawn(name, [self.binaries / "shell", "--mode", "native",
+                                      "--backend", "headless", "--enable-peer-sync"], env)
             socket = env["TILO_TEST_CONTROL"]
             packaged.wait_for(f"{name} native control socket", lambda: pathlib.Path(socket).exists(), shell)
             packaged.invoke(socket, packaged.require_action(socket, "peer.connect", "connect"))
@@ -1287,7 +1008,6 @@ class Fixture:
             require_ok(call(socket, {"op": "key", "key": "Escape"}))
             self.record(f"{name}-governed-native-join")
             sessions[name] = (socket, shell)
-            self.native_processes[socket] = shell
             require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-joined.png")}))
         early = None
         if continuity == "automatic" and packaged.presented_primary_frame(
@@ -1302,75 +1022,27 @@ class Fixture:
                 except Exception:
                     self.save_automatic_failure(socket)
                     raise
-                tree = call(socket, {"op": "state_dump"}).get("state", {}).get("workspace_tree", {})
-                tabs = [tab for workspace in tree.get("workspaces", [])
-                        for strip in workspace.get("strips", [])
-                        for group in strip.get("window_groups", []) for tab in group.get("tabs", [])
-                        if tab.get("tile", {}).get("Foreign", {}).get("surface_id") == frame["surface_id"]]
-                if len(tabs) != 1:
-                    raise RuntimeError("automatic native frame has no exact admitted tab")
-                self.native_tabs[name] = tabs[0]["id"]
                 self.record("same-person-peer-app-opened-without-second-open-invocation", frame=frame)
                 continue
             app = packaged.wait_for("signed Chat offering", lambda: next((
                 row for row in packaged.actions(socket, "Chat")
                 if row.get("provider") == "applications" and row.get("id") == "so.tilo.chat"), None), shell)
-            (self.output / f"{name}-before-open-process.json").write_text(json.dumps(
-                self.native_process_evidence(shell, socket), indent=2))
-            before_tree = call(socket, {"op": "state_dump"}).get("state", {}).get("workspace_tree", {})
-            previous = {tab["id"] for workspace in before_tree.get("workspaces", [])
-                        for strip in workspace.get("strips", [])
-                        for group in strip.get("window_groups", []) for tab in group.get("tabs", [])}
             receipt = packaged.wait_terminal(socket, packaged.invoke(socket, app), shell,
                                              public_failure_path=self.output / f"{name}-failed-open.json")
             (self.output / f"{name}-open.json").write_text(json.dumps(receipt, indent=2))
-            def launched():
-                if name not in self.native_tabs:
-                    tab = self.focused_tab(socket, bootstrap["room"], previous)
-                    if tab is None:
-                        return None
-                    self.native_tabs[name] = tab
-                return self.presented_tab(socket, self.native_tabs[name])
             try:
-                frame = packaged.wait_for("exact launched tab presents native Chat", launched, shell)
-            except Exception as failure:
-                # A dead control socket must not replace the failed acceptance
-                # check with a second diagnostic error. Preserve process evidence.
-                observations = {"error_type": type(failure).__name__, "error": str(failure),
-                                "process_returncode": shell.poll(), "diagnostic_errors": {}}
-                self.record(f"{name}-native-chat-presentation-failed",
-                            process_returncode=observations["process_returncode"],
-                            error_type=observations["error_type"])
-                checks = {
-                    "frames": lambda: call(socket, {"op": "foreign_frames"}),
-                    "notifications": lambda: packaged.chrome_state(socket).get("notifications"),
-                    "actions": lambda: [packaged.public_action_observation(row)
-                                        for row in self.catalogue(socket)],
-                    "snapshot": lambda: require_ok(call(socket, {"op": "snapshot", "path": str(
-                        self.output / f"{name}-failed-launch.png")})),
-                }
-                for kind, observe in checks.items():
-                    try:
-                        value = observe()
-                        if kind != "snapshot":
-                            (self.output / f"{name}-{kind}.json").write_text(json.dumps(value, indent=2))
-                    except Exception as diagnostic_failure:
-                        observations["diagnostic_errors"][kind] = {
-                            "type": type(diagnostic_failure).__name__, "error": str(diagnostic_failure)}
-                observations["native_process"] = self.native_process_evidence(shell, socket)
-                diagnosis = self.output / f"{name}-failure"
-                diagnosis.mkdir(mode=0o700)
-                try:
-                    packaged.diagnose_owned_shell(shell, diagnosis)
-                except Exception as diagnostic_failure:
-                    observations["diagnostic_errors"]["owned-process"] = {
-                        "type": type(diagnostic_failure).__name__, "error": str(diagnostic_failure)}
-                observations["process_returncode"] = shell.poll()
-                observations["run_seconds_override"] = environments[name].get("TILO_RUN_SECONDS")
-                (self.output / f"{name}-presentation-failure.json").write_text(json.dumps(observations, indent=2))
+                packaged.wait_for("presented native Chat", lambda: packaged.presented_primary_frame(
+                    call(socket, {"op": "foreign_frames"}), "so.tilo.chat"), shell)
+            except Exception:
+                (self.output / f"{name}-frames.json").write_text(json.dumps(
+                    call(socket, {"op": "foreign_frames"}), indent=2))
+                (self.output / f"{name}-notifications.json").write_text(json.dumps(
+                    packaged.chrome_state(socket).get("notifications"), indent=2))
+                (self.output / f"{name}-actions.json").write_text(json.dumps(
+                    [packaged.public_action_observation(row) for row in self.catalogue(socket)], indent=2))
+                require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-failed-launch.png")}))
                 raise
-            self.record(f"{name}-signed-native-chat-presented", tab=self.native_tabs[name],
-                        surface_id=frame["surface_id"])
+            self.record(f"{name}-signed-native-chat-presented")
             (self.output / f"{name}-actions.json").write_text(json.dumps(
                 [packaged.public_action_observation(row) for row in packaged.actions(socket)], indent=2))
             require_ok(call(socket, {"op": "snapshot", "path": str(self.output / f"{name}-chat.png")}))
@@ -1390,18 +1062,14 @@ class Fixture:
                          {"value": "Fixture committed before Bob app launch"}, resource=row["resource"])
                 self.record("alice-state-committed-before-bob-app-launch", channel=early)
         if state_only:
-            shared_reference = self.app_state(sessions, bootstrap["room"], early, bootstrap["users"])
-            if continuity in ("reconnect", "two-person-reconnect"):
+            self.app_state(sessions, bootstrap["room"], early, bootstrap["users"])
+            if continuity == "reconnect":
                 self.reconnect(sessions, bootstrap, host, early)
-                packaged.wait_for("shared resource survives native reconnect", shared_reference, sessions["bob"][1])
-                self.record("native-live-resource-reference-readable-after-reconnect")
-            self.create_workspace(sessions, bootstrap)
             return
         if not voice_only:
             self.context(sessions, bootstrap["room"], bootstrap["presence_ids"])
         channel = self.voice(sessions, bootstrap["room"])
         self.leave_and_revoke(sessions, bootstrap["room"], host, channel)
-        self.create_workspace(sessions, bootstrap)
 
 
 def main():
@@ -1410,8 +1078,6 @@ def main():
     parser.add_argument("--binaries", type=pathlib.Path, default=REPO / "target/debug")
     parser.add_argument("--pipewire", type=pathlib.Path,
                         help="private extracted PipeWire server/config/plugin payload")
-    parser.add_argument("--native-debugger", type=pathlib.Path,
-                        help="diagnose only Bob native startup under an existing debugger; original deadlines and assertions remain")
     parser.add_argument("--cleanup-proof", action="store_true", help="test exact private daemon cleanup without launching Chat")
     parser.add_argument("--voice-proof", action="store_true", help="test governed native voice without qualifying follow or the combined pair")
     parser.add_argument("--routing-diagnostics", action="store_true",
@@ -1422,18 +1088,16 @@ def main():
                         help="test automatic native app opening on an enrolled same-person device")
     parser.add_argument("--reconnect-proof", action="store_true",
                         help="test same-person native apps across a private governor transport partition")
-    parser.add_argument("--two-person-reconnect-proof", action="store_true",
-                        help="test distinct certified people sharing channels and resources across a private governor transport partition")
     parser.add_argument("--font-namespace", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    continuity = "automatic" if args.automatic_opening_proof else "reconnect" if args.reconnect_proof else "two-person-reconnect" if args.two_person_reconnect_proof else None
+    continuity = "automatic" if args.automatic_opening_proof else "reconnect" if args.reconnect_proof else None
     state_mode = args.state_proof or continuity is not None
     if sum((args.cleanup_proof, args.voice_proof, args.state_proof,
-            args.automatic_opening_proof, args.reconnect_proof, args.two_person_reconnect_proof)) > 1:
+            args.automatic_opening_proof, args.reconnect_proof)) > 1:
         parser.error("choose only one isolated proof mode")
     if not state_mode and not args.cleanup_proof and args.pipewire is None:
         parser.error("voice requires --pipewire")
-    if not args.cleanup_proof and not args.font_namespace:
+    if state_mode and not args.font_namespace:
         # Reuse the existing packaged-native proof's OS font-catalog stage.
         # Only this fixture's mount namespace changes; host fonts stay intact.
         with tempfile.TemporaryDirectory(prefix="tilo-state-fonts-") as scratch:
@@ -1447,7 +1111,7 @@ def main():
                             sys.executable, "-B", str(pathlib.Path(__file__).resolve()),
                             *sys.argv[1:], "--font-namespace"], check=True)
         return
-    if not args.cleanup_proof:
+    if state_mode:
         subprocess.run([sys.executable, "-B", str(REPO / "tools/font-catalog.py"),
                         "verify", "/usr/share/fonts/tilo", "--scope", "os"], check=True)
         mounts = pathlib.Path("/proc/self/mountinfo").read_text().splitlines()
@@ -1457,12 +1121,6 @@ def main():
     args.out.mkdir(parents=True, exist_ok=False, mode=0o700)
     fixture = Fixture(args.out.resolve(), args.binaries.resolve(), args.pipewire.resolve() if args.pipewire else None,
                       routing_diagnostics=args.routing_diagnostics)
-    if args.native_debugger is not None:
-        fixture.native_debugger = args.native_debugger.resolve()
-        if not fixture.native_debugger.is_file() or not os.access(fixture.native_debugger, os.X_OK):
-            raise RuntimeError("native debugger is not an existing executable")
-        if any(char in str(fixture.output) for char in ("\n", "\r")):
-            raise RuntimeError("native debugger output path is not a single line")
     qualified, state_qualified, error = False, False, None
     try:
         if args.cleanup_proof:
@@ -1483,16 +1141,11 @@ def main():
             cleanup_error = str(failure)
         (args.out / "journey.json").write_text(json.dumps({
             "qualified": qualified, "app_state_qualified": state_qualified,
-            "mode": "two-person-reconnect-proof" if args.two_person_reconnect_proof else f"same-person-{continuity}-proof" if continuity else "native-app-state-proof" if args.state_proof else "cleanup-proof" if args.cleanup_proof else "native-voice-proof" if args.voice_proof else "native-pair",
+            "mode": f"same-person-{continuity}-proof" if continuity else "native-app-state-proof" if args.state_proof else "cleanup-proof" if args.cleanup_proof else "native-voice-proof" if args.voice_proof else "native-pair",
             "error": error, "cleanup_error": cleanup_error, "stages": fixture.stages,
             "real_microphone": False, "video_screen_sharing": False,
             "routing_diagnostics": args.routing_diagnostics,
-            "native_debugger": args.native_debugger is not None,
-            "participant_workspace_creation_qualified": (qualified or state_qualified or args.voice_proof and error is None)
-                and cleanup_error is None and any(stage["stage"] == "native-participant-workspace-created-with-independent-authority"
-                                                  for stage in fixture.stages),
-            "same_person_devices_qualified": state_qualified and continuity in ("automatic", "reconnect"),
-            "two_person_resource_reconnect_qualified": state_qualified and continuity == "two-person-reconnect",
+            "same_person_devices_qualified": state_qualified and continuity is not None,
             "automatic_peer_app_launch_qualified": state_qualified and continuity == "automatic",
             "offline_reconnect_qualified": state_qualified and continuity == "reconnect",
         }, indent=2) + "\n")

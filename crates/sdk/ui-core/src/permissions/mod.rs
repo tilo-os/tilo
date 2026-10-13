@@ -606,26 +606,9 @@ impl PermissionContext {
             _ => &self.standing,
         };
         let standing = self.usable(held, once);
-        // A fresh app-action projection cannot turn read-only launch
-        // participation into record authorship. Retain both decisions and
-        // their grants; the projection is still sampled even when launch
-        // participation refuses the edit.
-        let record_ceiling = self
-            .action_authority
-            .as_ref()
-            .is_some_and(|authority| authority.matches(node) && kind == ActionKind::Undoable);
-        let launch = record_ceiling.then(|| self.usable(&self.standing, once));
         let mut verdict = standing.verdict(&standing.node(node), kind, &cx);
         if privileged {
             verdict = verdict.privileged();
-        }
-        if let Some(launch) = launch.as_ref() {
-            let mut ceiling = launch.verdict(&launch.node(node), kind, &cx);
-            if privileged {
-                ceiling = ceiling.privileged();
-            }
-            verdict.answer = verdict.answer.min(ceiling.answer);
-            verdict.parts.extend(ceiling.parts);
         }
         Ok(read(&verdict))
     }
@@ -758,12 +741,7 @@ impl PermissionContext {
             &action.id,
         );
         self.verdict_for(&node, need.kind, need.privileged, true, |verdict| {
-            let mut spent = verdict.spent();
-            // The same one-use grant can appear in both the original launch
-            // policy and its current host projection. Spend its identity once.
-            spent.sort_unstable();
-            spent.dedup();
-            (verdict.answer, spent)
+            (verdict.answer, verdict.spent())
         })
         .unwrap_or((Answer::Deny, Vec::new()))
     }

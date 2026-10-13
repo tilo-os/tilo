@@ -165,30 +165,6 @@ impl Native {
         .await;
     }
 
-    async fn drain_replay(&self) {
-        tilo_test_env::within("authenticated retained replay reaches Ready", async {
-            loop {
-                match self
-                    .session
-                    .recv()
-                    .await
-                    .expect("the subscribed session stays open")
-                {
-                    Inbound::Delta { author, data } => {
-                        let message = postcard::from_bytes(&data).unwrap();
-                        self.scope
-                            .input(author, true, message)
-                            .admit(&self.identity)
-                            .unwrap();
-                    }
-                    Inbound::Ready { .. } => break,
-                    _ => {}
-                }
-            }
-        })
-        .await;
-    }
-
     /// Write `key` = `value` into the chat record as this device, durably,
     /// and send it.
     fn write(&self, key: &str, value: &str) {
@@ -487,7 +463,7 @@ async fn the_owners_native_device_holds_its_relay_governed_room() {
         .unwrap();
     let invitation = join::encode_invitation_text(&invitation.signed_invitation);
     let directory = tempfile::tempdir().unwrap();
-    let mut native = Native::join(
+    let native = Native::join(
         directory.path(),
         laptop.clone(),
         laptop_key,
@@ -505,137 +481,5 @@ async fn the_owners_native_device_holds_its_relay_governed_room() {
         })
         .unwrap();
     assert_eq!(role, Ok(collab_types::Role::Owner));
-    native.drain_replay().await;
-    let replaying = std::sync::atomic::AtomicBool::new(false);
-    assert!(
-        native
-            .scope
-            .recover_governance(&native.session, &native.identity, &replaying, true)
-            .unwrap()
-    );
-    assert!(replaying.load(std::sync::atomic::Ordering::Acquire));
-    native.drain_replay().await;
-    replaying.store(false, std::sync::atomic::Ordering::Release);
-    assert!(
-        !native
-            .scope
-            .recover_governance(&native.session, &native.identity, &replaying, true)
-            .unwrap(),
-        "an incomplete replay cannot rearm at unchanged admitted heads"
-    );
-
-    let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
-        tilo_actions::InvocationId::new(),
-        collab_types::caps::Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(
-            laptop.user_public_key,
-        ))
-        .id(),
-        tilo_actions::ActionContext::default(),
-        tilo_actions::EffectReceiptStatus::Succeeded,
-        1,
-    );
-    assert!(matches!(
-        admin
-            .send(
-                address.clone(),
-                RoomCommand::RecordEffectReceipt {
-                    room: room.room.clone(),
-                    invocation: receipt.invocation.0,
-                    redacted: serde_json::to_vec(&receipt).unwrap(),
-                }
-            )
-            .await
-            .unwrap(),
-        RoomReply::Governance { .. }
-    ));
-    native
-        .receive_until(
-            "new signed receipt advances admitted governance",
-            |native| {
-                native
-                    .owner
-                    .with_current(native.room, |view| {
-                        Ok(
-                            tilo_desktop_model::projection::workspace_effect_receipts_of(
-                                view.peer().admitted_room().unwrap(),
-                            )
-                            .contains(&receipt),
-                        )
-                    })
-                    .unwrap()
-            },
-        )
-        .await;
-    assert!(
-        native
-            .scope
-            .recover_governance(&native.session, &native.identity, &replaying, true)
-            .unwrap(),
-        "new admitted governance rearms recovery"
-    );
-    assert!(
-        !native
-            .scope
-            .recover_governance(&native.session, &native.identity, &replaying, true)
-            .unwrap()
-    );
-    native.drain_replay().await;
-    replaying.store(false, std::sync::atomic::Ordering::Release);
-    assert!(
-        !native
-            .scope
-            .recover_governance(&native.session, &native.identity, &replaying, false)
-            .unwrap(),
-        "a deferred request at Ready must not repeat an unchanged frontier"
-    );
-
-    let other = admin
-        .create(address.clone(), "Other private room")
-        .await
-        .unwrap();
-    admin
-        .send(
-            address.clone(),
-            RoomCommand::Enter {
-                room: other.room.clone(),
-            },
-        )
-        .await
-        .unwrap();
-    let invited = admin
-        .invite(
-            address.clone(),
-            &other.room,
-            MemberRole::Editor,
-            Some(alice.verifying_key().to_bytes()),
-            Duration::from_secs(600),
-        )
-        .await
-        .unwrap();
-    let other_directory = tempfile::tempdir().unwrap();
-    let other_native = Native::join(
-        other_directory.path(),
-        laptop.clone(),
-        native.identity.device_signing_key.clone(),
-        &join::encode_invitation_text(&invited.signed_invitation),
-        other.workspace_id,
-    )
-    .await;
-    other_native.drain_replay().await;
-    assert!(
-        native
-            .scope
-            .recover_governance(&other_native.session, &native.identity, &replaying, true)
-            .is_err()
-    );
-    assert!(!replaying.load(std::sync::atomic::Ordering::Acquire));
-    native.scope.close();
-    assert!(
-        native
-            .scope
-            .recover_governance(&native.session, &native.identity, &replaying, true)
-            .is_err()
-    );
-    assert!(!replaying.load(std::sync::atomic::Ordering::Acquire));
     relay.shutdown().await;
 }

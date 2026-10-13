@@ -311,14 +311,9 @@ async fn record_receipt_elsewhere(
         *invocation,
         redacted,
     )?;
-    tracing::debug!(phase = "request", "native governed effect receipt progress");
     network
         .record_governed_effect_receipt(room, *invocation, redacted.to_vec())
         .await?;
-    tracing::debug!(
-        phase = "governor_ack",
-        "native governed effect receipt progress"
-    );
     // A transport acknowledgement is not our commit barrier: wait until the
     // governor's signed receipt is in this device's actual admitted room.
     tokio::time::timeout(GOVERNED_OPEN_TIMEOUT, async {
@@ -348,10 +343,6 @@ async fn record_receipt_elsewhere(
                 Ok(None)
             })?;
             if let Some(receipt) = receipt {
-                tracing::debug!(
-                    phase = "admitted",
-                    "native governed effect receipt progress"
-                );
                 return Ok(receipt);
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
