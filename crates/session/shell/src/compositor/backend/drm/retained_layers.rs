@@ -620,20 +620,18 @@ mod tests {
                 let alpha = f32::from(pixel[3]) / 255.0;
                 for channel in 0..3 {
                     let source = f32::from(pixel[channel]) / 255.0;
-                    premultiplied[channel] =
-                        source * alpha + premultiplied[channel] * (1.0 - alpha);
+                    premultiplied[channel] = source + premultiplied[channel] * (1.0 - alpha);
                 }
                 premultiplied[3] = alpha + premultiplied[3] * (1.0 - alpha);
             }
         }
         assert!(premultiplied[3] > 0.0, "the backdrop must cover the sample");
-        // The compositor blends premultiplied source-over, then stores
-        // straight RGBA8, as the dense fine stage does.
+        // Both independently rasterized layers and the dense oracle are
+        // premultiplied RGBA8. Source-over must not multiply source twice.
         let mut actual = [0_u8; 4];
         for channel in 0..3 {
-            actual[channel] = ui::num::u8_of_f64(f64::from(
-                (premultiplied[channel] / premultiplied[3] * 255.0).round(),
-            ));
+            actual[channel] =
+                ui::num::u8_of_f64(f64::from((premultiplied[channel] * 255.0).round()));
         }
         actual[3] = ui::num::u8_of_f64(f64::from((premultiplied[3] * 255.0).round()));
         actual
