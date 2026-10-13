@@ -20,9 +20,10 @@ use runtime_collab::{
 };
 use runtime_portal::{fd_transport, process_binding::ExecutingPeer};
 use sha2::{Digest, Sha256};
+use std::os::fd::AsFd;
 use std::{
     io::{self, Read},
-    os::{fd::AsRawFd, unix::net::UnixStream},
+    os::unix::net::UnixStream,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -520,12 +521,9 @@ impl PreparedTarget {
                     .reject_empty()
                     .write(stream, &self.context()?)
                     .map_err(io::Error::other)?;
-                for (tag, fd) in [
-                    (84, root_proof.as_raw_fd()),
-                    (85, root_endpoint.as_raw_fd()),
-                ] {
+                for (tag, fd) in [(84, root_proof.as_fd()), (85, root_endpoint.as_fd())] {
                     self.check()?;
-                    fd_transport::send_with_fd(stream.as_raw_fd(), &[tag], fd)?;
+                    fd_transport::send_with_fd(stream.as_fd(), &[tag], fd)?;
                     let mut ack = [0];
                     stream.read_exact(&mut ack)?;
                     if ack != [tag] {
@@ -579,11 +577,7 @@ impl PreparedTarget {
                     let custody = self.selection.source.track_proof(custody)?;
                     // Transport ACK is not daemon admission or a source grant.
                     // Root completes enrollment before ordinary delegation.
-                    fd_transport::send_with_fd(
-                        stream.as_raw_fd(),
-                        &[62],
-                        daemon_endpoint.as_raw_fd(),
-                    )?;
+                    fd_transport::send_with_fd(stream.as_fd(), &[62], daemon_endpoint.as_fd())?;
                     let mut ack = [0];
                     stream.read_exact(&mut ack)?;
                     if ack != [62] {
@@ -618,11 +612,7 @@ impl PreparedTarget {
                     let custody = self.selection.source.track_proof(custody)?;
                     // The fresh Read stream is not a clone of Files or of the
                     // edit issuer. The daemon independently admits its purpose.
-                    fd_transport::send_with_fd(
-                        stream.as_raw_fd(),
-                        &[62],
-                        reader_endpoint.as_raw_fd(),
-                    )?;
+                    fd_transport::send_with_fd(stream.as_fd(), &[62], reader_endpoint.as_fd())?;
                     let mut ack = [0];
                     stream.read_exact(&mut ack)?;
                     if ack != [62] {

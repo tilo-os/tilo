@@ -11,8 +11,7 @@ mod forget;
 pub(crate) use forget::PendingForget;
 
 const ANCHOR: &str = "service:";
-const CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", crate::resource::LOCALES);
+use crate::resource::CATALOG;
 
 #[derive(Clone)]
 pub(crate) struct Selection {

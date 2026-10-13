@@ -14,6 +14,7 @@ use crate::setup::{
     prepared_identity::PreparedIdentity,
     prepared_setup::{self, Manifest, PreparedSetupReview, RetainedHomePlan},
 };
+use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use zeroize::Zeroizing;
@@ -100,8 +101,7 @@ fn original_retained_input_child() {
         std::env::var_os("TILO_RETAINED_SOURCE_FIXTURE_HOME").unwrap(),
     ))
     .unwrap();
-    runtime_portal::fd_transport::send_with_fd(stream.as_raw_fd(), &[4], source.file.as_raw_fd())
-        .unwrap();
+    runtime_portal::fd_transport::send_with_fd(stream.as_fd(), &[4], source.file.as_fd()).unwrap();
     let mut ack = [0];
     std::io::Read::read_exact(&mut stream, &mut ack).unwrap();
     assert_eq!(ack, [4]);
@@ -133,7 +133,7 @@ fn original_composite_capture_child() {
     let mut ready = unsafe { File::from_raw_fd(92) };
     ready.write_all(&[92]).unwrap();
     drop(ready);
-    let (tag, fd) = runtime_portal::fd_transport::recv_with_owned_fd(stream.as_raw_fd()).unwrap();
+    let (tag, fd) = runtime_portal::fd_transport::recv_with_fd(stream.as_fd()).unwrap();
     assert_eq!(tag, [75]);
     let held = File::from(fd.expect("actual original Home descriptor"));
     let path = std::fs::read_link(format!("/proc/self/fd/{}", held.as_raw_fd())).unwrap();
@@ -200,8 +200,7 @@ fn original_composite_capture_child() {
     .unwrap();
     let _checked = grant.review(&directory.path().join("checked")).unwrap();
     let package = grant.package().unwrap();
-    runtime_portal::fd_transport::send_with_fd(stream.as_raw_fd(), &[76], package.as_raw_fd())
-        .unwrap();
+    runtime_portal::fd_transport::send_with_fd(stream.as_fd(), &[76], package.as_fd()).unwrap();
     let mut ack = [0];
     stream.read_exact(&mut ack).unwrap();
     assert_eq!(ack, [76]);

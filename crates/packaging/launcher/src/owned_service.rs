@@ -1453,8 +1453,7 @@ mod tests {
         let worker = std::thread::spawn(move || observed.supervise(child));
         let mut numbers = [0; 12];
         receiver.read_exact(&mut numbers).unwrap();
-        let (bytes, init) =
-            runtime_portal::fd_transport::recv_with_owned_fd(receiver.as_raw_fd()).unwrap();
+        let (bytes, init) = runtime_portal::fd_transport::recv_with_fd(&receiver).unwrap();
         assert_eq!(bytes, [0]);
         let init = init.expect("canonical registration must send actual init pidfd");
         assert!(

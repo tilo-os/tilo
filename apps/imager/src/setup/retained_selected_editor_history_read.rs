@@ -6,6 +6,7 @@ use super::{
         CertifiedNativeHistoryDaemon, PendingDaemonEnrollment, RootSelectedEditor,
     },
 };
+use std::os::fd::AsFd;
 use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
@@ -157,7 +158,6 @@ pub(in crate::setup) fn enroll_selected_editor_read(
     use std::{
         fs::File,
         io::{Read, Write},
-        os::fd::AsRawFd,
     };
     input.check_selected_editor_history_read(&cancel)?;
     let held = stream.try_clone()?;
@@ -218,17 +218,13 @@ pub(in crate::setup) fn enroll_selected_editor_read(
                 .encode(&request)?,
             )
             .map_err(io::Error::other)?;
-        fd_transport::send_with_fd(
-            stream.as_raw_fd(),
-            &[61],
-            pending.peer().pidfd().as_raw_fd(),
-        )?;
+        fd_transport::send_with_fd(stream.as_fd(), &[61], pending.peer().pidfd())?;
         let mut ack = [0];
         stream.read_exact(&mut ack)?;
         if ack != [61] {
             return Err(refused());
         }
-        let (tag, fd) = fd_transport::recv_with_owned_fd(stream.as_raw_fd())?;
+        let (tag, fd) = fd_transport::recv_with_fd(stream.as_fd())?;
         if tag != [62] {
             return Err(refused());
         }

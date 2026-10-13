@@ -23,6 +23,7 @@ use runtime_portal::{
     request_rendezvous::{self, DirectoryPin, Rendezvous},
 };
 use sha2::{Digest, Sha256};
+use std::os::fd::AsFd;
 use std::{
     ffi::OsString,
     io::{self, Write},
@@ -214,7 +215,7 @@ fn run_current(
 }
 
 fn receive_endpoint(stream: &mut UnixStream, tag: u8) -> io::Result<UnixStream> {
-    let (bytes, descriptor) = fd_transport::recv_with_owned_fd(stream.as_raw_fd())?;
+    let (bytes, descriptor) = fd_transport::recv_with_fd(stream.as_fd())?;
     if bytes != [tag] {
         return Err(refused());
     }

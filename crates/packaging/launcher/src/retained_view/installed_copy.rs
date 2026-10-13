@@ -3,6 +3,7 @@
 //! independently reviewed operation authority and quiescent output transaction.
 //! No mounted source, block device or writable archive is delivered to the user.
 use super::*;
+use std::os::fd::AsFd;
 
 static UNKNOWN_DELIVERY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -281,7 +282,7 @@ impl RootConsumerChannel {
         }
         let mut io = Handoff::new(&mut self.stream, cancellation, Duration::from_secs(30))?;
         let (bytes, descriptor) = io.retry(libc::POLLIN, |stream| {
-            runtime_portal::fd_transport::recv_with_owned_fd(stream.as_raw_fd())
+            runtime_portal::fd_transport::recv_with_fd(stream.as_fd())
         })?;
         if bytes != [84] {
             return Err(refused("installed Copy endpoint order differs"));
@@ -491,9 +492,9 @@ impl InstalledCopyIssue {
                 custody.possible_delivery = true;
                 io.retry(libc::POLLOUT, |stream| {
                     runtime_portal::fd_transport::send_with_fd(
-                        stream.as_raw_fd(),
+                        stream.as_fd(),
                         &[index],
-                        file.as_raw_fd(),
+                        file.as_fd(),
                     )
                 })?;
                 let mut ack = [0];

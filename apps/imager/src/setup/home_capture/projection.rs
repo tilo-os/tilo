@@ -4,6 +4,7 @@
 use super::{failure, process::Incarnation};
 use runtime_portal::fd_transport;
 use serde::{Deserialize, Serialize};
+use std::os::fd::AsFd;
 use std::{
     ffi::CString,
     fs::File,
@@ -260,7 +261,7 @@ impl<'a> Slot<'a> {
         }
         let mut child = Reap(pid);
         drop(sender);
-        let received = fd_transport::recv_with_owned_fd(receiver.as_raw_fd());
+        let received = fd_transport::recv_with_fd(receiver.as_fd());
         let status = child.wait()?;
         let (bytes, descriptor) = received?;
         if bytes.len() != 4 {

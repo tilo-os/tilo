@@ -6,10 +6,11 @@ use super::{
 };
 use runtime_collab::open_selected::{MAX_WIRE_BYTES, RootReceipt, RootReply, RootRequest};
 use runtime_portal::{fd_transport, process_binding::ExecutingPeer};
+use std::os::fd::AsFd;
 use std::{
     fs::File,
     io::{self, Read},
-    os::{fd::AsRawFd, unix::net::UnixStream},
+    os::unix::net::UnixStream,
     sync::{
         Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -226,16 +227,16 @@ impl Dispatcher {
                 .write(&mut *stream, &bytes)
                 .map_err(io::Error::other)?;
             for (tag, fd) in [
-                (80, executing.pidfd().as_raw_fd()),
-                (81, objects.selected.as_raw_fd()),
-                (82, objects.parent.as_raw_fd()),
-                (83, objects.proof.as_raw_fd()),
+                (80, executing.pidfd()),
+                (81, objects.selected.as_fd()),
+                (82, objects.parent.as_fd()),
+                (83, objects.proof.as_fd()),
             ] {
                 self.check(authorize.as_ref())?;
                 if !executing.current() {
                     return Err(refused());
                 }
-                fd_transport::send_with_fd(stream.as_raw_fd(), &[tag], fd)?;
+                fd_transport::send_with_fd(stream.as_fd(), &[tag], fd)?;
                 let mut ack = [0];
                 stream.read_exact(&mut ack)?;
                 if ack != [tag] || Instant::now() >= deadline {

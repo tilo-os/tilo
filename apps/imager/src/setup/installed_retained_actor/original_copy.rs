@@ -4,6 +4,7 @@ use super::*;
 use crate::setup::{
     home_capture::OriginalCopyReadAdmission, prepared_setup::AuthenticatedInstalledOriginalCopy,
 };
+use std::os::fd::AsFd;
 struct CopyOwner {
     installed: Arc<AuthenticatedInstalledOriginalCopy>,
     proof: Mutex<ProofClient>,
@@ -79,9 +80,8 @@ impl ReviewedInstalledOriginalCopy {
         let mut proof = ProofClient::connect(stream, &request, cancel)?;
         let held = proof.stream.try_clone()?;
         let directory = with_proof_deadline(&held, cancel, || {
-            use std::os::fd::AsRawFd;
             let (bytes, descriptor) =
-                runtime_portal::fd_transport::recv_with_owned_fd(proof.stream.as_raw_fd())?;
+                runtime_portal::fd_transport::recv_with_fd(proof.stream.as_fd())?;
             if bytes != b"TILOCPD1" || !proof.peer.current() {
                 return Err(refused());
             }

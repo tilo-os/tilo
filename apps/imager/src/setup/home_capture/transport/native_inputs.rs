@@ -1,5 +1,6 @@
 //! Real authenticated processes and SCM_RIGHTS; no synthetic ExecutingPeer.
 use super::*;
+use std::os::fd::AsFd;
 use std::{
     os::{
         fd::FromRawFd,
@@ -130,8 +131,7 @@ fn mounted_input_fixture_child() {
         control.read_exact(&mut pid).unwrap();
         let mut channel = HostChannel::authenticate(stream, u32::from_ne_bytes(pid), 1000).unwrap();
         channel.authenticate_as_root().unwrap();
-        let (bytes, descriptor) =
-            fd_transport::recv_with_owned_fd(channel.stream.as_raw_fd()).unwrap();
+        let (bytes, descriptor) = fd_transport::recv_with_fd(channel.stream.as_fd()).unwrap();
         assert_eq!(bytes, [3]);
         let file = File::from(descriptor.unwrap());
         assert!(file.metadata().unwrap().is_file());
@@ -169,9 +169,9 @@ fn mounted_input_fixture_child() {
                 .unwrap()
         };
         fd_transport::send_with_fd(
-            stream.as_raw_fd(),
+            stream.as_fd(),
             &[if role == "tag" { 2 } else { 3 }],
-            file.as_raw_fd(),
+            file.as_fd(),
         )
         .unwrap();
     }

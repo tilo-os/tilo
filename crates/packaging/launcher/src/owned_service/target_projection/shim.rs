@@ -3,6 +3,7 @@
 use super::*;
 use runtime_portal::process_binding;
 use std::ffi::CString;
+use std::os::fd::AsFd;
 
 pub struct RootTargetBootstrap {
     record: Record,
@@ -157,16 +158,11 @@ impl RootTargetBootstrap {
         let mnt = File::open("/proc/self/ns/mnt")?;
         process_binding::complete(&mut self.ready)?;
         bounded(&self.ready)?;
-        for (index, fd) in [
-            view.as_raw_fd(),
-            mnt.as_raw_fd(),
-            receipt.as_raw_fd(),
-            exposure.as_raw_fd(),
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, fd) in [view.as_fd(), mnt.as_fd(), receipt.as_fd(), exposure.as_fd()]
+            .into_iter()
+            .enumerate()
         {
-            runtime_portal::fd_transport::send_with_fd(self.ready.as_raw_fd(), &[index as u8], fd)?;
+            runtime_portal::fd_transport::send_with_fd(self.ready.as_fd(), &[index as u8], fd)?;
             let mut ack = [0];
             self.ready.read_exact(&mut ack)?;
             if ack != [1] {
@@ -195,7 +191,6 @@ impl MountedTargetBootstrap {
         spec: &sandbox_core::landlock::RulesetSpec,
         on_skip: impl FnMut(&std::path::Path, &landlock::PathFdError),
     ) -> Result<landlock::RestrictionStatus, sandbox_core::landlock::LandlockBuildError> {
-        use std::os::fd::AsFd;
         root()?;
         let view = self
             .readonly_view

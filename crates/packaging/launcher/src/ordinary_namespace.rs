@@ -8,6 +8,7 @@ use crate::{
     managed::EnrolledProcessObserver,
     owned_service::{NamespaceOwner, ServiceAuthority, ServiceCancellation},
 };
+use std::os::fd::AsFd;
 use std::{
     fs::File,
     io::{self, Read, Write},
@@ -164,15 +165,15 @@ impl NamespaceWitness {
             io.write_all(&value.to_be_bytes())?;
         }
         for (index, fd) in [
-            self.init.as_raw_fd(),
-            self.pid_namespace.as_raw_fd(),
-            self.mount_namespace.as_raw_fd(),
+            self.init.as_fd(),
+            self.pid_namespace.as_fd(),
+            self.mount_namespace.as_fd(),
         ]
         .into_iter()
         .enumerate()
         {
             io.retry(libc::POLLOUT, |stream| {
-                runtime_portal::fd_transport::send_with_fd(stream.as_raw_fd(), &[index as u8], fd)
+                runtime_portal::fd_transport::send_with_fd(stream.as_fd(), &[index as u8], fd)
             })?;
             let mut ack = [0];
             io.read_exact(&mut ack)?;
@@ -202,7 +203,7 @@ impl NamespaceWitness {
         let mut descriptors = Vec::new();
         for index in 0..3_u8 {
             let (bytes, fd) = io.retry(libc::POLLIN, |stream| {
-                runtime_portal::fd_transport::recv_with_owned_fd(stream.as_raw_fd())
+                runtime_portal::fd_transport::recv_with_fd(stream.as_fd())
             })?;
             if bytes != [index] || !peer.current() {
                 return Err(refused("ordinary namespace descriptor framing differs"));

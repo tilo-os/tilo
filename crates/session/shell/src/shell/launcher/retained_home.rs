@@ -16,7 +16,8 @@ use crate::shell::{
 };
 use runtime_collab::retained_person::RetainedLaunchBinding;
 use sha2::{Digest, Sha256};
-use std::{io, os::fd::AsRawFd, os::unix::net::UnixStream, sync::Arc, time::Duration};
+use std::os::fd::AsFd;
+use std::{io, os::unix::net::UnixStream, sync::Arc, time::Duration};
 
 const RESOURCE: &str = "retained-home";
 const CONTEXT_DOMAIN: &[u8] = b"tilo-ordinary-retained-home-context-v1\0";
@@ -647,9 +648,9 @@ impl Registration {
         self.prepared.check(command)?;
         gate.set_write_timeout(Some(Duration::from_secs(10)))?;
         runtime_portal::fd_transport::send_with_fd(
-            gate.as_raw_fd(),
+            gate.as_fd(),
             &[self.prepared.opcode()],
-            self.endpoint.as_raw_fd(),
+            self.endpoint.as_fd(),
         )?;
         let launcher = self.root.release(gate, pid)?;
         child.check_peer(&launcher)?;

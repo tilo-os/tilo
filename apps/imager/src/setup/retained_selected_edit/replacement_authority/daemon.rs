@@ -20,7 +20,7 @@ use std::{
     fs::File,
     io::{self, Read, Write},
     os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
+        fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
         unix::net::UnixStream,
     },
     sync::{
@@ -433,7 +433,7 @@ impl CertifiedNativeHistoryDaemon {
             if let Some(handoff) = handoff {
                 let (record, provider, program) = handoff.descriptors()?;
                 send_file(&mut stream, 63, record)?;
-                send_descriptor(&mut stream, 64, provider.as_raw_fd())?;
+                send_descriptor(&mut stream, 64, provider.as_fd())?;
                 send_file(&mut stream, 65, program)?;
             }
             let bytes = wire_frame::Framing::little_endian(
@@ -562,7 +562,7 @@ impl CertifiedNativeHistoryDaemon {
             if let Some(handoff) = handoff {
                 let (record, provider, program) = handoff.descriptors()?;
                 send_file(&mut stream, 68, record)?;
-                send_descriptor(&mut stream, 69, provider.as_raw_fd())?;
+                send_descriptor(&mut stream, 69, provider.as_fd())?;
                 send_file(&mut stream, 70, program)?;
             }
             let bytes = wire_frame::Framing::little_endian(HistoryReadReply::LIMIT)
@@ -655,14 +655,14 @@ impl Drop for CertifiedNativeHistoryDaemon {
     }
 }
 fn send_file(stream: &mut UnixStream, tag: u8, file: &File) -> io::Result<()> {
-    send_descriptor(stream, tag, file.as_raw_fd())
+    send_descriptor(stream, tag, file.as_fd())
 }
 fn send_descriptor(
     stream: &mut UnixStream,
     tag: u8,
-    descriptor: std::os::fd::RawFd,
+    descriptor: impl std::os::fd::AsFd,
 ) -> io::Result<()> {
-    fd_transport::send_with_fd(stream.as_raw_fd(), &[tag], descriptor)?;
+    fd_transport::send_with_fd(stream.as_fd(), &[tag], descriptor)?;
     let mut ack = [0];
     stream.read_exact(&mut ack)?;
     if ack != [tag] {

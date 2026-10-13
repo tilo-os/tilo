@@ -12,6 +12,7 @@ use runtime_collab::open_selected::{
     self, RootReceipt, RootRefusal, RootReply, RootRequest, discovery, encode_reply, v2,
 };
 use runtime_portal::{fd_transport, process_binding};
+use std::os::fd::AsFd;
 use std::{
     collections::VecDeque,
     ffi::OsString,
@@ -848,7 +849,7 @@ fn require_stream(file: &File) -> io::Result<()> {
     Ok(())
 }
 fn receive_file(stream: &mut UnixStream, tag: u8) -> io::Result<File> {
-    let (bytes, descriptor) = fd_transport::recv_with_owned_fd(stream.as_raw_fd())?;
+    let (bytes, descriptor) = fd_transport::recv_with_fd(stream.as_fd())?;
     if bytes != [tag] {
         return Err(refused());
     }
@@ -1078,8 +1079,8 @@ mod tests {
             .reject_empty()
             .write(&mut shell, b"closed context observation")
             .unwrap();
-        for (tag, fd) in [(84, proof.as_raw_fd()), (85, launcher.as_raw_fd())] {
-            fd_transport::send_with_fd(shell.as_raw_fd(), &[tag], fd).unwrap();
+        for (tag, fd) in [(84, proof.as_fd()), (85, launcher.as_fd())] {
+            fd_transport::send_with_fd(shell.as_fd(), &[tag], fd).unwrap();
             let mut ack = [0];
             shell.read_exact(&mut ack).unwrap();
             assert_eq!(ack, [tag]);

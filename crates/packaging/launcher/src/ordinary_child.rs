@@ -4,6 +4,7 @@
 use crate::{owned_service::ServiceCancellation, retained_view::ConsumerCommand};
 use runtime_portal::{fd_transport, process_binding::ExecutingPeer};
 use sha2::{Digest, Sha256};
+use std::os::fd::AsFd;
 use std::{
     fs::File,
     io::{self, Read, Write},
@@ -90,8 +91,8 @@ fn kernel_pid(fd: &OwnedFd) -> io::Result<u32> {
     }
     found.filter(|pid| *pid > 1).ok_or_else(denied)
 }
-fn tagged_send(stream: &mut UnixStream, tag: u8, fd: i32) -> io::Result<()> {
-    fd_transport::send_with_fd(stream.as_raw_fd(), &[tag], fd)?;
+fn tagged_send(stream: &mut UnixStream, tag: u8, fd: impl std::os::fd::AsFd) -> io::Result<()> {
+    fd_transport::send_with_fd(stream.as_fd(), &[tag], fd)?;
     let mut ack = [0];
     stream.read_exact(&mut ack)?;
     if ack != [tag] {
@@ -100,7 +101,7 @@ fn tagged_send(stream: &mut UnixStream, tag: u8, fd: i32) -> io::Result<()> {
     Ok(())
 }
 fn tagged_receive(stream: &mut UnixStream, tag: u8) -> io::Result<OwnedFd> {
-    let (bytes, fd) = fd_transport::recv_with_owned_fd(stream.as_raw_fd())?;
+    let (bytes, fd) = fd_transport::recv_with_fd(stream.as_fd())?;
     if bytes != [tag] {
         return Err(denied());
     }
@@ -416,29 +417,21 @@ impl OwnedOrdinaryChild {
         }
         stream.write_all(MAGIC)?;
         stream.write_all(&self.digest)?;
-        tagged_send(stream, 90, self.pidfd.as_raw_fd())?;
-        tagged_send(stream, 91, self.namespace.as_raw_fd())?;
-        tagged_send(
-            stream,
-            92,
-            self.gate.as_ref().ok_or_else(denied)?.as_raw_fd(),
-        )?;
+        tagged_send(stream, 90, self.pidfd.as_fd())?;
+        tagged_send(stream, 91, self.namespace.as_fd())?;
+        tagged_send(stream, 92, self.gate.as_ref().ok_or_else(denied)?.as_fd())?;
         tagged_send(
             stream,
             93,
-            self.child.stdout.as_ref().ok_or_else(denied)?.as_raw_fd(),
+            self.child.stdout.as_ref().ok_or_else(denied)?.as_fd(),
         )?;
         tagged_send(
             stream,
             94,
-            self.child.stderr.as_ref().ok_or_else(denied)?.as_raw_fd(),
+            self.child.stderr.as_ref().ok_or_else(denied)?.as_fd(),
         )?;
-        tagged_send(
-            stream,
-            95,
-            self.remote.as_ref().ok_or_else(denied)?.as_raw_fd(),
-        )?;
-        tagged_send(stream, 96, root_namespace.as_raw_fd())?;
+        tagged_send(stream, 95, self.remote.as_ref().ok_or_else(denied)?.as_fd())?;
+        tagged_send(stream, 96, root_namespace.as_fd())?;
         self.gate.take();
         self.child.stdout.take();
         self.child.stderr.take();
@@ -996,11 +989,11 @@ impl BootstrapTransfer {
         } = self;
         stream.write_all(BOOTSTRAP_MAGIC)?;
         stream.write_all(&start.to_be_bytes())?;
-        tagged_send(stream, 86, peer.pidfd().as_raw_fd())?;
-        tagged_send(stream, 87, helper.as_raw_fd())?;
-        tagged_send(stream, 88, endpoint.as_raw_fd())?;
-        tagged_send(stream, 97, namespaces.child.as_raw_fd())?;
-        tagged_send(stream, 98, namespaces.parent.as_raw_fd())?;
+        tagged_send(stream, 86, peer.pidfd())?;
+        tagged_send(stream, 87, helper.as_fd())?;
+        tagged_send(stream, 88, endpoint.as_fd())?;
+        tagged_send(stream, 97, namespaces.child.as_fd())?;
+        tagged_send(stream, 98, namespaces.parent.as_fd())?;
         if !peer.current()
             || peer.start_time()? != start
             || !same(&namespaces.child, &namespace(peer.pid())?)?
@@ -1545,7 +1538,7 @@ impl ConsumingBootstrapEntry {
         control.set_read_timeout(Some(Duration::from_secs(10)))?;
         control.set_write_timeout(Some(Duration::from_secs(10)))?;
         let (shell, endpoint) = UnixStream::pair()?;
-        tagged_send(&mut control, 89, endpoint.as_raw_fd())?;
+        tagged_send(&mut control, 89, endpoint.as_fd())?;
         if !parent.current() || !same(&helper, &protected_consuming_helper()?)? {
             return Err(denied());
         }

@@ -15,7 +15,7 @@ use std::{
     fs::File,
     io::{self, Read, Write},
     os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+        fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd},
         unix::{
             ffi::OsStrExt,
             fs::{FileExt, MetadataExt, OpenOptionsExt},
@@ -1085,7 +1085,7 @@ fn receive_json_bound<T: serde::de::DeserializeOwned>(
 }
 fn receive_fd(io: &mut Handoff<'_>, index: u8) -> io::Result<std::os::fd::OwnedFd> {
     let (bytes, fd) = io.retry(libc::POLLIN, |stream| {
-        runtime_portal::fd_transport::recv_with_owned_fd(stream.as_raw_fd())
+        runtime_portal::fd_transport::recv_with_fd(stream.as_fd())
     })?;
     if bytes != [index] {
         return Err(refused("retained view descriptor order differs"));
@@ -1156,7 +1156,7 @@ impl std::error::Error for FailedViewIssue {
 fn send_issue_fd(
     io: &mut Handoff<'_>,
     index: u8,
-    fd: RawFd,
+    fd: std::os::fd::BorrowedFd<'_>,
     progress: &mut IssueProgress,
 ) -> io::Result<()> {
     if index > 1 {
@@ -1169,7 +1169,7 @@ fn send_issue_fd(
         if index == 1 {
             *progress = IssueProgress::PossibleView;
         }
-        runtime_portal::fd_transport::send_with_fd(stream.as_raw_fd(), &[index], fd)
+        runtime_portal::fd_transport::send_with_fd(stream.as_fd(), &[index], fd)
     })
 }
 
@@ -1337,10 +1337,7 @@ impl RootConsumerChannel {
             let view = exposure.file()?;
             {
                 let mut io = Handoff::new(&mut self.stream, cancellation, Duration::from_secs(30))?;
-                for (index, fd) in [sealed.as_raw_fd(), view.as_raw_fd()]
-                    .into_iter()
-                    .enumerate()
-                {
+                for (index, fd) in [sealed.as_fd(), view.as_fd()].into_iter().enumerate() {
                     own_helper()?;
                     binding.verify_peer_program(&self.peer)?;
                     observation.check()?;
@@ -1670,9 +1667,8 @@ mod tests {
         let cancellation = ServiceCancellation::default();
         let mut progress = IssueProgress::NoView;
         let mut io = Handoff::new(&mut sender, &cancellation, Duration::from_secs(1)).unwrap();
-        send_issue_fd(&mut io, 0, held.as_raw_fd(), &mut progress).unwrap();
-        let (tag, received) =
-            runtime_portal::fd_transport::recv_with_owned_fd(receiver.as_raw_fd()).unwrap();
+        send_issue_fd(&mut io, 0, held.as_fd(), &mut progress).unwrap();
+        let (tag, received) = runtime_portal::fd_transport::recv_with_fd(receiver.as_fd()).unwrap();
         assert_eq!(tag, [0]);
         let received = File::from(received.unwrap());
         assert_eq!(
@@ -1686,9 +1682,8 @@ mod tests {
             )
         );
         assert_eq!(progress, IssueProgress::NoView);
-        send_issue_fd(&mut io, 1, held.as_raw_fd(), &mut progress).unwrap();
-        let (tag, received) =
-            runtime_portal::fd_transport::recv_with_owned_fd(receiver.as_raw_fd()).unwrap();
+        send_issue_fd(&mut io, 1, held.as_fd(), &mut progress).unwrap();
+        let (tag, received) = runtime_portal::fd_transport::recv_with_fd(receiver.as_fd()).unwrap();
         assert_eq!(tag, [1]);
         assert!(received.is_some());
         assert_eq!(progress, IssueProgress::PossibleView);
@@ -1702,7 +1697,7 @@ mod tests {
             let cancellation = ServiceCancellation::default();
             let mut progress = IssueProgress::NoView;
             let mut io = Handoff::new(&mut sender, &cancellation, Duration::from_secs(1)).unwrap();
-            assert!(send_issue_fd(&mut io, index, held.as_raw_fd(), &mut progress).is_err());
+            assert!(send_issue_fd(&mut io, index, held.as_fd(), &mut progress).is_err());
             assert_eq!(progress, expected);
         }
     }
@@ -1715,7 +1710,7 @@ mod tests {
         let mut progress = IssueProgress::NoView;
         let mut io = Handoff::new(&mut sender, &cancellation, Duration::from_secs(1)).unwrap();
         assert_eq!(
-            send_issue_fd(&mut io, 1, held.as_raw_fd(), &mut progress)
+            send_issue_fd(&mut io, 1, held.as_fd(), &mut progress)
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::Interrupted
@@ -2362,7 +2357,7 @@ impl RootConsumerChannel {
             let sealed = seal_parent_receipt(&receipt)?;
             exposure.mark_possible_delivery()?;
             let mut io = Handoff::new(&mut self.stream, cancellation, Duration::from_secs(30))?;
-            for (index, fd) in [sealed.as_raw_fd(), exposure.file()?.as_raw_fd()]
+            for (index, fd) in [sealed.as_fd(), exposure.file()?.as_fd()]
                 .into_iter()
                 .enumerate()
             {
@@ -2462,7 +2457,7 @@ impl RetainedLaunchGate {
     ) -> io::Result<Option<OrdinaryLaunchGate>> {
         let (bytes, endpoint) =
             qpe_exchange(&mut gate, cancellation, Duration::from_secs(10), |gate| {
-                runtime_portal::fd_transport::recv_with_owned_fd(gate.as_raw_fd())
+                runtime_portal::fd_transport::recv_with_fd(gate.as_fd())
             })?;
         match (bytes.as_slice(), endpoint) {
             ([1], None) => Ok(None),
@@ -2518,7 +2513,7 @@ mod selected_edit_gate_guards {
         let cancel = ServiceCancellation::default();
         let mut handoff = Handoff::new(&mut stream, &cancel, Duration::from_millis(20)).unwrap();
         let mut progress = IssueProgress::NoView;
-        send_issue_fd(&mut handoff, 1, directory.as_raw_fd(), &mut progress).unwrap();
+        send_issue_fd(&mut handoff, 1, directory.as_fd(), &mut progress).unwrap();
         let mut ack = [0];
         assert_eq!(
             handoff.read_exact(&mut ack).unwrap_err().kind(),

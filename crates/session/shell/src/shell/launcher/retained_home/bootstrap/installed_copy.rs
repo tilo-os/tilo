@@ -1,6 +1,7 @@
 //! A short-lived target-owner importer, endorsed on the existing owner channel.
 use super::super::CONTEXT_DOMAIN;
 use super::*;
+use std::os::fd::AsFd;
 use std::os::unix::process::CommandExt;
 
 pub(super) struct CopyImporterCustody {
@@ -132,7 +133,7 @@ impl AdmittedRootHelper {
                     &serde_json::to_vec(&observation).map_err(io::Error::other)?,
                 )
                 .map_err(io::Error::other)?;
-            fd_transport::send_with_fd(owner_channel.as_raw_fd(), &[83], peer.pidfd().as_raw_fd())?;
+            fd_transport::send_with_fd(owner_channel.as_fd(), &[83], peer.pidfd())?;
             let mut ack = [0];
             owner_channel.read_exact(&mut ack)?;
             if ack != [1] || !peer.current() {
