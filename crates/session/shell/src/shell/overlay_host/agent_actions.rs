@@ -698,6 +698,7 @@ fn resolve_step(
         confirmation: None,
         revision: Some(offer.revision),
         on_behalf_of: None,
+        appearance: None,
         wait_ms: Some(1_000),
     }));
     Step::Next(Phase::Invoke { invocation, answer })

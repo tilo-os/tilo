@@ -583,6 +583,7 @@ impl AgentParticipant {
             revision: None,
             on_behalf_of: None,
             wait_ms: None,
+            appearance: None,
         };
         let answer = Arc::new(std::sync::Mutex::new(None));
         let (arrived, control) = (Arc::clone(&answer), Arc::clone(&self.control));

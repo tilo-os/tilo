@@ -32,6 +32,8 @@ pub enum ActorKind {
     Shortcut,
     /// An application acting under its own identity.
     App,
+    /// An installed bot acting as itself, for its installer.
+    Bot,
 }
 
 impl ActorKind {

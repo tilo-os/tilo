@@ -263,6 +263,7 @@ mod tests {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         }
     }
 
@@ -449,6 +450,7 @@ mod tests {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             };
             match now(host.invoke(&caller, open)) {
                 Err(ActionHostError::Refused { reason }) => assert!(
