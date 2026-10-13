@@ -89,6 +89,173 @@ async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redee
     relay.shutdown().await;
 }
 
+/// A person's device certificate, as a guest's browser makes one.
+fn guest_device() -> (SigningKey, DeviceCert) {
+    let root = SigningKey::from_bytes(&rand::random());
+    let key = SigningKey::from_bytes(&rand::random());
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "guest".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, &root).unwrap();
+    (key, cert)
+}
+
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_refused_alone() {
+    use ed25519_dalek::Signer as _;
+    use tilo_relay_protocol::rooms::{JoinReply, JoinStep, join_proof_digest};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Public").await.unwrap();
+    let mut proofs = Vec::new();
+    let mut people = Vec::new();
+    for index in 0..6_u8 {
+        let token = [index + 1; 8];
+        let issued = rooms
+            .pre_admit(
+                &cert,
+                PreAdmitRequest {
+                    request_id: [index + 1; 32],
+                    grant: signed_pre_admission(&created.room, &token),
+                    recipient_user_public_key: None,
+                    inviter_name: None,
+                },
+            )
+            .await
+            .unwrap();
+        let (device, device_cert) = guest_device();
+        people.push(device_cert.user_public_key);
+        let JoinReply::Challenge { challenge } = rooms
+            .page_join(JoinStep::Ask {
+                invitation: issued.signed_invitation,
+                device_cert,
+                request_id: rand::random(),
+            })
+            .await
+        else {
+            panic!("no challenge");
+        };
+        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
+        // The last guest presents someone else's token.
+        let token = if index == 5 { [1; 8] } else { token };
+        proofs.push(JoinStep::ProvePreAdmitted {
+            challenge,
+            signature,
+            name: format!("Guest {index}"),
+            token: token.to_vec(),
+        });
+    }
+    let before = rooms.summary(&created.room).await.unwrap().generation;
+    let answers = n0_future::join_all(proofs.into_iter().map(|proof| rooms.page_join(proof))).await;
+    for answer in answers.iter().take(5) {
+        assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
+    }
+    assert!(
+        matches!(answers.last(), Some(JoinReply::Refused(reason)) if reason.contains("token")),
+        "{:?}",
+        answers.last()
+    );
+    let summary = rooms.summary(&created.room).await.unwrap();
+    assert_eq!(summary.generation, before + 1, "one change admits them all");
+    let members: Vec<_> = summary
+        .members
+        .iter()
+        .map(|member| member.user_public_key)
+        .collect();
+    for person in people.iter().take(5) {
+        assert!(members.contains(person));
+    }
+    assert!(!members.contains(&people[5]));
+    relay.shutdown().await;
+}
+
+/// Concurrent pre-admissions and challenges share their room's writes, and
+/// every one of them is written before it is answered: after a restart each
+/// guest still proves its challenge and is admitted.
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes each relay after its phase; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_a_restart() {
+    use ed25519_dalek::Signer as _;
+    use tilo_relay_protocol::rooms::{JoinReply, JoinStep, join_proof_digest};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Public").await.unwrap();
+    let issued = n0_future::join_all((0..8_u8).map(|index| {
+        let rooms = rooms.clone();
+        let room = created.room.clone();
+        let cert = cert.clone();
+        async move {
+            rooms
+                .pre_admit(
+                    &cert,
+                    PreAdmitRequest {
+                        request_id: [index + 1; 32],
+                        grant: signed_pre_admission(&room, &[index + 1; 8]),
+                        recipient_user_public_key: None,
+                        inviter_name: None,
+                    },
+                )
+                .await
+                .unwrap()
+        }
+    }))
+    .await;
+    let guests: Vec<_> = issued.iter().map(|_| guest_device()).collect();
+    let asked = n0_future::join_all(issued.iter().zip(&guests).map(
+        |(issued, (_, device_cert))| {
+            rooms.page_join(JoinStep::Ask {
+                invitation: issued.signed_invitation.clone(),
+                device_cert: device_cert.clone(),
+                request_id: rand::random(),
+            })
+        },
+    ))
+    .await;
+    relay.shutdown().await;
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    for (index, (asked, (device, _))) in asked.into_iter().zip(&guests).enumerate() {
+        let JoinReply::Challenge { challenge } = asked else {
+            panic!("no challenge: {asked:?}");
+        };
+        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
+        let token = u8::try_from(index + 1).unwrap();
+        let answer = rooms
+            .page_join(JoinStep::ProvePreAdmitted {
+                challenge,
+                signature,
+                name: format!("Guest {index}"),
+                token: vec![token; 8],
+            })
+            .await;
+        assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
+    }
+    relay.shutdown().await;
+}
+
 #[tokio::test]
 #[cfg_attr(
     feature = "agents",

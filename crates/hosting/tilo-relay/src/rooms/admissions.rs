@@ -52,7 +52,7 @@ impl Admissions {
         Ok(admissions)
     }
 
-    fn save(&self) -> Result<(), String> {
+    pub(super) fn save(&self) -> Result<(), String> {
         let bytes = postcard::to_stdvec(self).map_err(|error| error.to_string())?;
         tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())
     }
@@ -61,6 +61,7 @@ impl Admissions {
     /// same grant again is a retry. A full table evicts a spent grant, or
     /// else one expired by `now_ns`, so visitors who never redeemed their
     /// invitation cannot lock a public room's joins.
+    /// Unwritten: the room's next write saves it.
     pub(super) fn record(
         &mut self,
         invite_id: [u8; 32],
@@ -99,7 +100,7 @@ impl Admissions {
             grant,
             spent: false,
         });
-        self.save()
+        Ok(())
     }
 
     /// The unspent, unexpired grant of `invite_id` whose token is `token`.
@@ -124,17 +125,20 @@ impl Admissions {
         Ok(&granted.grant)
     }
 
-    /// Spend the grant of `invite_id` and tell the owner with `notice`.
-    pub(super) fn spend(&mut self, invite_id: [u8; 32], notice: RoomNotice) -> Result<(), String> {
-        for granted in &mut self.grants {
-            if granted.invite_id == invite_id {
-                granted.spent = true;
+    /// Spend the grant of each invitation and tell the owner with its
+    /// notice, in one write.
+    pub(super) fn spend(&mut self, spent: Vec<([u8; 32], RoomNotice)>) -> Result<(), String> {
+        for (invite_id, notice) in spent {
+            for granted in &mut self.grants {
+                if granted.invite_id == invite_id {
+                    granted.spent = true;
+                }
             }
+            if self.notices.len() >= MAX_NOTICES {
+                self.notices.remove(0);
+            }
+            self.notices.push(notice);
         }
-        if self.notices.len() >= MAX_NOTICES {
-            self.notices.remove(0);
-        }
-        self.notices.push(notice);
         self.save()
     }
 
@@ -218,7 +222,7 @@ mod tests {
             role: RoomRole::Editor,
             at_ns: 1,
         };
-        admissions.spend([7; 32], notice.clone()).unwrap();
+        admissions.spend(vec![([7; 32], notice.clone())]).unwrap();
         let restored = Admissions::open(&room).unwrap();
         assert!(restored.grant_for([7; 32], b"token", 1).is_err());
         assert_eq!(restored.notices(), vec![notice]);
