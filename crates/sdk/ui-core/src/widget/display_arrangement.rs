@@ -548,9 +548,7 @@ impl Widget for DisplayArrangement {
         self.rect == Rect::ZERO
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -719,10 +717,6 @@ impl Widget for DisplayArrangement {
 
     fn test_id(&self) -> Option<&str> {
         Some("display.arrangement")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

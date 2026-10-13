@@ -160,9 +160,7 @@ impl Widget for OverlayProbe {
         node
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw_overlay(
         &mut self,
@@ -173,10 +171,6 @@ impl Widget for OverlayProbe {
         _: &PresenceCtx,
     ) {
         self.draws.set(self.draws.get() + 1);
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

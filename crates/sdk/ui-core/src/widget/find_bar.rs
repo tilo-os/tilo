@@ -1587,12 +1587,7 @@ mod tests {
             };
             taffy.widget_leaf(style, node_map, self)
         }
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
-        fn get_rect(&self) -> Rect {
-            self.rect
-        }
+        crate::rect_geometry!();
         fn name(&self) -> &'static str {
             "page"
         }
