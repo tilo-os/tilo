@@ -2377,7 +2377,7 @@ impl InstallerApp {
         ));
         if self.disks.is_empty() {
             children.push(Box::new(
-                Text::new("No disks found — is this running on real hardware?")
+                Text::new(&crate::i18n::t("installer-storage-no-drives"))
                     .with_role(TextRole::Body)
                     .with_color(danger),
             ));
@@ -2479,19 +2479,19 @@ impl InstallerApp {
                 .with_test_id("install_method"),
             ));
         }
-        let guidance = if self.install_method == InstallMethod::Erase {
-            "Erase disk deletes every partition and operating system on the selected disk."
+        let guidance = crate::i18n::t(if self.install_method == InstallMethod::Erase {
+            "installer-storage-erase-warning"
         } else {
-            "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (35 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
-        };
+            "installer-storage-keep-guidance"
+        });
         children.push(Box::new(
-            Text::new(guidance).with_role(TextRole::Caption).with_color(
-                if self.install_method == InstallMethod::Erase {
+            Text::new(&guidance)
+                .with_role(TextRole::Caption)
+                .with_color(if self.install_method == InstallMethod::Erase {
                     danger
                 } else {
                     dim
-                },
-            ),
+                }),
         ));
     }
 
@@ -2572,6 +2572,19 @@ impl InstallerApp {
             })
             .with_role(TextRole::Title),
         ));
+        if self.profile_completion.is_none() || !completion.full_name.is_complete() {
+            children.push(Box::new(
+                Text::new(&crate::i18n::t("installer-account-name")).with_role(TextRole::Body),
+            ));
+            children.push(Box::new(
+                TextInput::from_state(&self.full_name).with_id("installer.full_name"),
+            ));
+            children.push(Box::new(
+                Text::new(&crate::i18n::t("installer-account-name-note"))
+                    .with_role(TextRole::Caption)
+                    .with_color(dim),
+            ));
+        }
         if self.profile_completion.is_none() || !completion.username.is_complete() {
             children.push(Box::new(Text::new("Username").with_role(TextRole::Body)));
             children.push(Box::new(
@@ -2583,24 +2596,16 @@ impl InstallerApp {
                     .with_color(dim),
             ));
         }
-        if self.profile_completion.is_none() || !completion.full_name.is_complete() {
-            children.push(Box::new(
-                Text::new("Full name (optional)").with_role(TextRole::Body),
-            ));
-            children.push(Box::new(
-                TextInput::from_state(&self.full_name).with_id("installer.full_name"),
-            ));
-        }
         let tpm_pin = matches!(
             self.verified_boot_state(),
             VerifiedBootState::TargetVerified
         );
         children.push(Box::new(
-            Text::new(if tpm_pin {
-                "TPM-protected startup PIN"
+            Text::new(&crate::i18n::t(if tpm_pin {
+                "installer-account-pin"
             } else {
-                "Startup and unlock passphrase"
-            })
+                "installer-account-password"
+            }))
             .with_role(TextRole::Body),
         ));
         children.push(Box::new(
@@ -2610,20 +2615,20 @@ impl InstallerApp {
                 .with_secret(true),
         ));
         children.push(Box::new(
-            Text::new(if tpm_pin {
-                "Use at least 6 digits. The TPM rate-limits guesses; keep the recovery key for hardware changes."
+            Text::new(&crate::i18n::t(if tpm_pin {
+                "installer-account-pin-note"
             } else {
-                "Choose at least 15 characters, ideally several unrelated words. It decrypts the disk at startup and unlocks your session later."
-            })
+                "installer-account-password-note"
+            }))
             .with_role(TextRole::Caption)
             .with_color(dim),
         ));
         children.push(Box::new(
-            Text::new(if tpm_pin {
-                "Confirm TPM-protected startup PIN"
+            Text::new(&crate::i18n::t(if tpm_pin {
+                "installer-account-pin-confirm"
             } else {
-                "Confirm startup and unlock passphrase"
-            })
+                "installer-account-password-confirm"
+            }))
             .with_role(TextRole::Body),
         ));
         children.push(Box::new(
@@ -2639,10 +2644,16 @@ impl InstallerApp {
         let dim = theme.text_dim;
 
         children.push(Box::new(
-            Text::new("Keyboard layout").with_role(TextRole::Title),
+            Text::new(&crate::i18n::t("installer-welcome-title")).with_role(TextRole::Title),
         ));
         children.push(Box::new(
-            Text::new("Pick the layout that matches your keyboard. The preview below shows exactly what each key will type.")
+            Text::new(&crate::i18n::t("installer-welcome-note")).with_role(TextRole::Body),
+        ));
+        children.push(Box::new(
+            Text::new("Keyboard layout").with_role(TextRole::Body),
+        ));
+        children.push(Box::new(
+            Text::new(&crate::i18n::t("installer-keyboard-note"))
                 .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
@@ -2652,12 +2663,12 @@ impl InstallerApp {
                 .with_placeholder("Select a keyboard layout"),
         ));
         children.push(Box::new(KeyboardView::new(&self.keymap)));
+        children.push(self.nav_row(Step::Keyboard, self.next_control(), "Next", false));
         children.push(Box::new(
             Text::new("Need files from this computer, or removing an alongside Tilo install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.")
                 .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
-        children.push(self.nav_row(Step::Keyboard, self.next_control(), "Next", false));
     }
 
     fn compose_options_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
@@ -4054,6 +4065,52 @@ mod tests {
             )
             .expect("compute compact installer layout");
         app.apply_layout(&taffy, app_node, Point::ORIGIN);
+    }
+
+    #[test]
+    fn welcome_and_account_explain_choices_in_person_first_order() {
+        let mut app = InstallerApp::with_disks(Vec::new());
+        layout_at(&mut app, 800.0, 600.0);
+        assert!(find_accessible(&app, &crate::i18n::t("installer-welcome-title")).is_some());
+        assert!(find_accessible(&app, &crate::i18n::t("installer-welcome-note")).is_some());
+        let next = find_test_id(&app, "Next").expect("first-page continuation");
+        assert!(next.get_rect().height() > 0.0);
+        assert!(next.get_rect().y0 >= 0.0);
+        assert!(
+            next.get_rect().y1 <= 600.0,
+            "continue must not begin below the fold"
+        );
+
+        app.step = Step::Account;
+        app.dirty_structure = true;
+        layout_at(&mut app, 800.0, 600.0);
+        let name = find_test_id(&app, "installer.full_name").expect("display name field");
+        let username = find_test_id(&app, "installer.username").expect("sign-in field");
+        assert!(name.get_rect().height() > 0.0);
+        assert!(username.get_rect().y0 >= name.get_rect().y1);
+        assert!(find_accessible(&app, &crate::i18n::t("installer-account-name-note")).is_some());
+        let next = find_test_id(&app, "Next").expect("account continuation");
+        assert!(
+            next.get_rect().y1 <= 600.0,
+            "continue must remain visible at normal text size"
+        );
+    }
+
+    #[test]
+    fn storage_explains_missing_drives_and_the_confirmation_boundary() {
+        let mut app = InstallerApp::with_disks(Vec::new());
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+        assert!(find_accessible(&app, &crate::i18n::t("installer-storage-no-drives")).is_some());
+        assert!(
+            find_accessible(&app, &crate::i18n::t("installer-storage-erase-warning")).is_some()
+        );
+        app.install_method = InstallMethod::Alongside;
+        app.dirty_structure = true;
+        let _ = build(&mut app);
+        assert!(
+            find_accessible(&app, &crate::i18n::t("installer-storage-keep-guidance")).is_some()
+        );
     }
 
     // --- pure state-machine ---------------------------------------
