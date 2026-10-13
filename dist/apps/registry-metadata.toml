@@ -74,9 +74,6 @@ tagline = "Version control you can see"
 [apps.hex-editor]
 description = "Inspect and edit binary files with precision."
 tagline = "See every byte"
-[apps.hot-reload-demo]
-description = "A small document you can keep editing while its code reloads in the same windows."
-tagline = "Change the app without closing it"
 [apps.imager]
 description = "Write verified Tilo and disk images to removable media."
 tagline = "Prepare media with confidence"
