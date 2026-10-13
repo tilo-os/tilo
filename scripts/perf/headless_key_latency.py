@@ -51,6 +51,7 @@ KEY_LINE = re.compile(
     r"KEY-LATENCY app=(?P<app>\S*) key_to_commit_us=(?P<key_to_commit_us>\d+) "
     r"key_to_submit_us=(?P<key_to_submit_us>\d+) key_to_present_us=(?P<key_to_present_us>\d+)")
 GPU_LINE = re.compile(r"CPU-FRAME serial=\d+ .*?\bgpu_us=(\d+)")
+UPLOAD_LINE = re.compile(r"CPU-FRAME serial=\d+ .*?\bshm_upload_bytes=(\d+)")
 # What each rendered frame repainted (damage) and rasterised, and whether it
 # rendered the whole output.
 PAINT_LINE = re.compile(
@@ -216,6 +217,9 @@ def measure(args: argparse.Namespace) -> dict:
                  "kept_frames": len(painted) - len(rendered),
                  "damage_px": pixel_distribution([d for d, _, _ in rendered]),
                  "raster_px": pixel_distribution([r for _, r, _ in rendered])}
+    uploads = [int(m[1]) for m in UPLOAD_LINE.finditer(text)]
+    if uploads:
+        paint["shm_upload_bytes"] = pixel_distribution(uploads)
     result = {"label": args.label, "app": app, "size": f"{args.width}x{args.height}",
               "hz": args.hz, "keys_sent": args.keys, "damage": args.damage, "input": args.input, **paint,
               # Rendered frames per key sent: a key answered by one commit should cost one.
@@ -250,6 +254,10 @@ def table(results: list[dict]) -> str:
                 f"output, {r.get('kept_frames', 0)} more kept the image unchanged; "
                 f"damage p50 {r['damage_px']['p50']} px, "
                 f"rasterised p50 {r['raster_px']['p50']} px p90 {r['raster_px']['p90']} px")
+        if "shm_upload_bytes" in r:
+            up = r["shm_upload_bytes"]
+            lines.append(f"{r['label']}: wl_shm bytes uploaded per frame p50 {up['p50']} "
+                         f"p90 {up['p90']} max {up['max']}")
     return "\n".join(lines)
 
 
