@@ -828,10 +828,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn offline_panel_owns_zoom_depth_selection_and_hit_testing() {
         // Phase `zoom_depth_is_owned_and_clamped_by_panel`.
         {

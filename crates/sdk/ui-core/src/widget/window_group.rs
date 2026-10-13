@@ -2119,6 +2119,12 @@ impl FloatingSurfaceProvider for WindowGroup {
         }
     }
 
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        for (_, host) in &mut self.hosts {
+            FloatingSurfaceProvider::on_floating_surface_ime_source_changed(host, id);
+        }
+    }
+
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         for (_, host) in &mut self.hosts {
             FloatingSurfaceProvider::on_floating_surface_event_source(host, id);
@@ -2155,8 +2161,11 @@ impl FloatingSurfaceProvider for WindowGroup {
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
-        self.active_host_mut()
-            .and_then(FloatingSurfaceProvider::take_floating_surface_request)
+        // A detached presentation remains interactive even when its source tab
+        // is not selected. Drain every retained owner, not only the tiled one.
+        self.hosts
+            .iter_mut()
+            .find_map(|(_, host)| FloatingSurfaceProvider::take_floating_surface_request(host))
     }
 
     fn take_capture_studio_request(&mut self) -> Option<super::CaptureMode> {
@@ -2192,6 +2201,28 @@ impl FloatingSurfaceProvider for WindowGroup {
             );
         }
         self.draw_tab_drag_visual(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        self.hosts.iter_mut().any(|(_, host)| {
+            FloatingSurfaceProvider::draw_floating_surface(
+                host,
+                id,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )
+        })
     }
 
     fn set_floating_surface_bounds(&mut self, bounds: Rect) {

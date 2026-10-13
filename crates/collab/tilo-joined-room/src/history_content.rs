@@ -6,6 +6,9 @@ use std::{
 };
 use tilo_content::{ContentBackend, DirBackend};
 
+/// Native document snapshots share this backend with smaller receipt/index blocks.
+const MAX_HISTORY_BLOCK: usize = 3 * 1024 * 1024;
+
 /// Durable content custody shared by owner stores using the same state directory.
 /// This is not an authority: an admitted signed room root authenticates references.
 pub struct HistoryContent {
@@ -30,7 +33,7 @@ impl HistoryContent {
     /// # Errors
     /// Quota, invalid block size or durable content I/O failure.
     pub fn put(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
-        if bytes.len() > crate::effect_history::MAX_BLOCK {
+        if bytes.len() > MAX_HISTORY_BLOCK {
             return Err("native history block capacity exceeded".into());
         }
         let hash = *blake3::hash(bytes).as_bytes();
@@ -80,16 +83,14 @@ impl HistoryContent {
         let mut bytes = Vec::new();
         reader
             .take(
-                u64::try_from(crate::effect_history::MAX_BLOCK)
+                u64::try_from(MAX_HISTORY_BLOCK)
                     .map_err(|e| e.to_string())?
                     .checked_add(1)
                     .ok_or("history size overflow")?,
             )
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
-        if bytes.len() > crate::effect_history::MAX_BLOCK
-            || *blake3::hash(&bytes).as_bytes() != hash
-        {
+        if bytes.len() > MAX_HISTORY_BLOCK || *blake3::hash(&bytes).as_bytes() != hash {
             return Err("native owner history block integrity failed".into());
         }
         Ok(bytes)

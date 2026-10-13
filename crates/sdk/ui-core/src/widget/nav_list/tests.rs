@@ -167,6 +167,32 @@ fn a_bound_selection_flows_both_ways() {
 }
 
 #[test]
+fn a_followed_list_shows_the_state_it_follows() {
+    let state = std::rc::Rc::new(Cell2::new((mailboxes(), Some("sent".to_owned()))));
+    let source = std::rc::Rc::clone(&state);
+    let mut h = harness(
+        NavList::new(Vec::new()).follow(move || source.try_borrow().ok().map(|s| s.clone())),
+        Theme::dark(),
+    );
+    assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("sent"));
+    assert!(h.root::<NavList>().row_rect("travel").is_some());
+
+    {
+        let mut next = state.borrow_mut();
+        next.0[0].items.push(NavItem::new("drafts", "Drafts"));
+        next.1 = Some("drafts".to_owned());
+    }
+    h.relayout_at((280, 360)).expect("layout");
+    assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("drafts"));
+
+    // A state that cannot be read leaves the list as it was.
+    let held = state.borrow_mut();
+    h.relayout_at((280, 360)).expect("layout");
+    assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("drafts"));
+    drop(held);
+}
+
+#[test]
 fn new_sections_keep_the_selection_and_what_was_folded() {
     let mut h = harness(NavList::new(mailboxes()).selected("travel"), Theme::dark());
     focus(&mut h);

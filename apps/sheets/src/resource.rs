@@ -31,13 +31,7 @@ use crate::workbook::{
     Sheet, Workbook,
 };
 
-/// Sheets' Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[
-    ("en-US", include_str!("../locales/en-US.ftl")),
-    ("de-DE", include_str!("../locales/de-DE.ftl")),
-];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// The most cells one write, sort or import changes.
 pub const MAX_WRITES: usize = 16 * 1024;

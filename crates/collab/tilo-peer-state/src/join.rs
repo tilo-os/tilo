@@ -28,6 +28,7 @@ pub enum MemberRole {
     Viewer,
     Commenter,
     Editor,
+    Moderator,
 }
 
 impl From<MemberRole> for collab_types::Role {
@@ -36,6 +37,7 @@ impl From<MemberRole> for collab_types::Role {
             MemberRole::Viewer => Self::Viewer,
             MemberRole::Commenter => Self::Commenter,
             MemberRole::Editor => Self::Editor,
+            MemberRole::Moderator => Self::Moderator,
         }
     }
 }

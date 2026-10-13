@@ -282,6 +282,13 @@ pub fn action_control_bindings(widget: &dyn Widget) -> Vec<ControlBindingMetadat
     if let Some(controls) = capability::<dyn ActionControls>(widget) {
         return controls.action_control_bindings();
     }
+    children_action_control_bindings(widget)
+}
+
+/// The action-emitter bindings of `widget`'s exposed children. A wrapper's own
+/// bindings are semantic and never consume action availability, so this is a
+/// wrapper's whole action inventory without materializing accessibility.
+pub fn children_action_control_bindings(widget: &dyn Widget) -> Vec<ControlBindingMetadata> {
     let mut bindings = Vec::new();
     widget.for_each_child(&mut |child| bindings.extend(action_control_bindings(child)));
     bindings
@@ -300,9 +307,13 @@ pub fn has_action_control_bindings(widget: &dyn Widget) -> bool {
     if let Some(controls) = capability::<dyn ActionControls>(widget) {
         return controls.has_action_control_bindings();
     }
-    // Without ActionControls, this widget contributes only semantic bindings.
-    // Those never consume ActionEmitter availability; inspect exposed children
-    // directly rather than materializing the widget's accessibility subtree.
+    children_have_action_control_bindings(widget)
+}
+
+/// Whether any of `widget`'s exposed children contain controls consuming
+/// action availability; the counterpart of
+/// [`children_action_control_bindings`].
+pub fn children_have_action_control_bindings(widget: &dyn Widget) -> bool {
     let mut found = false;
     widget.for_each_child(&mut |child| {
         if !found {

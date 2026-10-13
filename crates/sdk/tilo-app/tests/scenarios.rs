@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! Screenshot scenarios on the framework: actions stage the resource, views
 //! and surfaces stage their own view state, and the capture shows both.

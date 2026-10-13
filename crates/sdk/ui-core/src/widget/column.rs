@@ -292,20 +292,10 @@ flow_capabilities!(Column);
 
 impl crate::widget::controls::ActionControls for Column {
     fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        let mut bindings = Vec::new();
-        self.for_each_child(&mut |child| {
-            bindings.extend(crate::widget::controls::action_control_bindings(child));
-        });
-        bindings
+        crate::widget::controls::children_action_control_bindings(self)
     }
     fn has_action_control_bindings(&self) -> bool {
-        let mut found = false;
-        self.for_each_child(&mut |child| {
-            if !found {
-                found = crate::widget::controls::has_action_control_bindings(child);
-            }
-        });
-        found
+        crate::widget::controls::children_have_action_control_bindings(self)
     }
 }
 
@@ -489,10 +479,7 @@ mod tests {
             let column_node = col.build_layout(&mut taffy, &theme, &mut node_map);
             let host_node = taffy.parent_node(
                 Style {
-                    size: taffy::Size {
-                        width: length(400.0_f32),
-                        height: length(300.0_f32),
-                    },
+                    size: taffy::Size::from_lengths(400.0_f32, 300.0_f32),
                     ..Default::default()
                 },
                 &[column_node],

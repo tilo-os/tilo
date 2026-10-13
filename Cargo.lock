@@ -287,9 +287,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automation",
- "tilo-automerge-fork",
  "tilo-content",
- "tilo-doc",
  "tilo-model-gateway",
  "tilo-test-env",
  "tilo-user-identity",
@@ -1902,6 +1900,7 @@ dependencies = [
  "emoji",
  "fnv",
  "image",
+ "moderation-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -4337,11 +4336,11 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-copy-lint",
- "tilo-doc-codecs",
  "tilo-files",
  "tilo-fs",
  "tilo-history",
  "tilo-paths",
+ "tilo-process",
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-user-identity",
@@ -6171,16 +6170,6 @@ name = "host-info"
 version = "0.1.0"
 dependencies = [
  "libc",
- "workspace-hack",
-]
-
-[[package]]
-name = "hot-reload-demo"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "tilo-app",
- "tilo-history",
  "workspace-hack",
 ]
 
@@ -9050,6 +9039,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "moderation-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "module-lattice"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10876,7 +10874,6 @@ name = "pdf-viewer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "blake3",
  "fnv",
  "image",
  "runtime-dylib",
@@ -12435,6 +12432,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app-package",
+ "tilo-automation",
  "tilo-clock",
  "tilo-net",
  "tilo-secrets",
@@ -12481,8 +12479,11 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-action-policy",
  "tilo-advisory-lock",
  "tilo-app-package",
+ "tilo-automation",
+ "tilo-bot-directory",
  "tilo-clock",
  "tilo-files",
  "tilo-net",
@@ -13506,9 +13507,9 @@ dependencies = [
 
 [[package]]
 name = "ruzstd"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a252f5e20f038fe7b4ea53e073e65398d652c864cc162fc77c56c2f13717b888"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 
 [[package]]
 name = "ryu"
@@ -14182,6 +14183,7 @@ dependencies = [
  "accesskit_unix",
  "accounts",
  "agent-provider-config",
+ "app-cli",
  "ash",
  "base64",
  "blake3",
@@ -14203,6 +14205,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "emoji",
  "file-explorer",
+ "flate2",
  "fnv",
  "fs-protocol",
  "futures-util",
@@ -14239,6 +14242,7 @@ dependencies = [
  "rand_chacha 0.10.0",
  "rand_core 0.10.0",
  "rcgen",
+ "registry-types",
  "reis",
  "resvg",
  "runtime-collab",
@@ -15789,6 +15793,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-session",
+ "tilo-resource",
  "tilo-rt",
  "tilo-test-env",
  "tilo-ui",
@@ -15808,6 +15813,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]
@@ -15826,7 +15832,9 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-content",
  "tilo-test-env",
+ "unicode-normalization",
  "uuid",
 ]
 
@@ -15895,6 +15903,7 @@ dependencies = [
  "themes",
  "tilo-actions",
  "tilo-app",
+ "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
@@ -16031,6 +16040,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app-package",
+ "tilo-automation",
+ "tilo-clock",
  "tilo-rt",
  "tokio",
  "workspace-hack",
@@ -16084,6 +16095,7 @@ dependencies = [
 name = "tilo-automation"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -16151,6 +16163,19 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-bot-directory"
+version = "0.1.0"
+dependencies = [
+ "app-cli",
+ "registry-types",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-action-policy",
+ "tilo-automation",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -16372,6 +16397,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-connector"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "blake3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-secrets",
+ "tokio",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-contact-directory"
 version = "0.1.0"
 dependencies = [
@@ -16394,7 +16435,6 @@ dependencies = [
  "tilo-files",
  "tilo-paths",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -16569,6 +16609,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "uuid",
+ "web-time",
 ]
 
 [[package]]
@@ -17295,6 +17336,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-moderation"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "moderation-model",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-net",
+ "tilo-resource",
+ "tilo-secrets",
+ "tokio",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-moq"
 version = "0.1.0"
 dependencies = [
@@ -17557,11 +17618,13 @@ dependencies = [
  "hex",
  "neighbour-wire",
  "postcard",
+ "registry-types",
  "serde",
  "serde_bytes",
  "serde_json",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
@@ -17664,6 +17727,7 @@ name = "tilo-reference"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "proptest",
  "serde",
  "serde_json",
  "tilo-actions",
@@ -17676,6 +17740,7 @@ name = "tilo-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-cli",
  "app-registry",
  "base64",
  "blake3",
@@ -17719,25 +17784,31 @@ dependencies = [
  "tilo-actions",
  "tilo-agent-participant",
  "tilo-app-package",
+ "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-bot-directory",
  "tilo-browser-peer",
  "tilo-clock",
+ "tilo-connector",
  "tilo-delivery-protocol",
  "tilo-doc",
  "tilo-environment",
  "tilo-files",
  "tilo-fs",
  "tilo-identity-host",
+ "tilo-moderation",
  "tilo-moq",
  "tilo-paths",
  "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
+ "tilo-resource",
  "tilo-rt",
  "tilo-seal",
+ "tilo-secrets",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -18376,6 +18447,7 @@ dependencies = [
  "two-face",
  "unic-langid",
  "unicode-linebreak",
+ "unicode-normalization",
  "unicode-properties",
  "unicode-script",
  "url",
@@ -22247,7 +22319,6 @@ dependencies = [
  "unic-langid",
  "unic-langid-impl",
  "unicode-bidi",
- "unicode-normalization",
  "unicode-properties",
  "url",
  "usvg",

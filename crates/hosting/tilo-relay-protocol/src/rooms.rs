@@ -74,6 +74,9 @@ pub enum RoomRole {
     Commenter,
     /// Reads and writes.
     Editor,
+    /// Writes, moderates other people's content and removes or bans members
+    /// ranked below Moderator.
+    Moderator,
 }
 
 /// A person governance records in a room.
@@ -336,6 +339,25 @@ pub enum RoomsRequest {
         /// Caller-chosen idempotency key.
         request_id: [u8; 32],
         /// The member.
+        user_public_key: [u8; 32],
+    },
+    /// Remove a person, when a member, and keep them out until unbanned.
+    /// The owner, and a Moderator for members ranked below Moderator.
+    Ban {
+        /// The room.
+        room: String,
+        /// Caller-chosen idempotency key.
+        request_id: [u8; 32],
+        /// The person.
+        user_public_key: [u8; 32],
+    },
+    /// Let a banned person be admitted again.
+    Unban {
+        /// The room.
+        room: String,
+        /// Caller-chosen idempotency key.
+        request_id: [u8; 32],
+        /// The person.
         user_public_key: [u8; 32],
     },
     /// Issue a single-use invitation that admits whoever redeems it with

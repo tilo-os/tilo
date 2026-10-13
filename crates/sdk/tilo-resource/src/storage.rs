@@ -1359,7 +1359,8 @@ impl<T: Model> Model for Grid<T> {
 /// id a server gave the upload.
 ///
 /// Its JSON form is `{"state": "done", "result": O}` or `{"state": "failed",
-/// "result": {"reason": .., "partial": O}}`. It is read through one JSON value
+/// "result": {"reason": .., "partial": O}}`, `partial` left out when nothing
+/// was done. It is read through one JSON value
 /// ([`Settled::from_json_value`]), so `O` is decoded by its value decoder
 /// alone, never through serde's buffered copy of a tagged enum.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1399,14 +1400,14 @@ impl<O> Settled<O> {
     }
 }
 
-impl<'de, O: serde::de::DeserializeOwned> Deserialize<'de> for Settled<O> {
+impl<'de, O: serde::de::DeserializeOwned + Default> Deserialize<'de> for Settled<O> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = <serde_json::Value as Deserialize>::deserialize(deserializer)?;
         Self::from_json_value(value).map_err(serde::de::Error::custom)
     }
 }
 
-impl<O: serde::de::DeserializeOwned> Settled<O> {
+impl<O: serde::de::DeserializeOwned + Default> Settled<O> {
     /// Read from its JSON form.
     ///
     /// # Errors
@@ -1418,7 +1419,10 @@ impl<O: serde::de::DeserializeOwned> Settled<O> {
                 let (reason, partial) = failed_parts(result)?;
                 Self::Failed {
                     reason,
-                    partial: serde_json::from_value(partial)?,
+                    partial: partial
+                        .map(serde_json::from_value)
+                        .transpose()?
+                        .unwrap_or_default(),
                 }
             }
         })
@@ -1450,11 +1454,13 @@ fn settled_parts(value: serde_json::Value) -> Result<(bool, serde_json::Value), 
     Ok((done, result))
 }
 
-/// A failed settlement's `reason` and its `partial` result.
+/// A failed settlement's `reason` and its `partial` result, absent when it
+/// did nothing: whoever settles may not know `O`, as a connector's host
+/// relaying the service's refusal does not.
 #[inline(never)]
 fn failed_parts(
     result: serde_json::Value,
-) -> Result<(String, serde_json::Value), serde_json::Error> {
+) -> Result<(String, Option<serde_json::Value>), serde_json::Error> {
     use serde::de::Error as _;
     let serde_json::Value::Object(mut fields) = result else {
         return Err(serde_json::Error::custom("a failure is an object"));
@@ -1464,10 +1470,7 @@ fn failed_parts(
         Some(_) => return Err(serde_json::Error::custom("`reason` is a string")),
         None => return Err(serde_json::Error::missing_field("reason")),
     };
-    let partial = fields
-        .remove("partial")
-        .ok_or_else(|| serde_json::Error::missing_field("partial"))?;
-    Ok((reason, partial))
+    Ok((reason, fields.remove("partial")))
 }
 
 impl<O: Default> Settled<O> {
@@ -1483,7 +1486,7 @@ impl<O: Default> Settled<O> {
 
 /// A settlement stores as one JSON value: it is written once, by the owning
 /// device.
-impl<O: Serialize + serde::de::DeserializeOwned + 'static> Model for Settled<O> {
+impl<O: Serialize + serde::de::DeserializeOwned + Default + 'static> Model for Settled<O> {
     crate::model::leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1532,7 +1535,9 @@ fn settle_steps(doc: &mut Doc, steps: &[String]) {
     }
 }
 
-impl<T: Model, O: Serialize + serde::de::DeserializeOwned + 'static> Model for OutboxEntry<T, O> {
+impl<T: Model, O: Serialize + serde::de::DeserializeOwned + Default + 'static> Model
+    for OutboxEntry<T, O>
+{
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
     crate::model::leaf_paths!();
@@ -1719,7 +1724,9 @@ fn outbox_entry(doc: &mut Doc, slot: Slot<'_>, id: &Id) -> Result<(ObjId, ObjId)
     Ok((map, value))
 }
 
-impl<T: Model, O: Serialize + serde::de::DeserializeOwned + 'static> Model for Outbox<T, O> {
+impl<T: Model, O: Serialize + serde::de::DeserializeOwned + Default + 'static> Model
+    for Outbox<T, O>
+{
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
     crate::model::leaf_paths!();
@@ -1782,7 +1789,7 @@ impl<T: Model, O: Serialize + serde::de::DeserializeOwned + 'static> Model for O
 
 /// What a settlement of an outbox of results `O` stores, from its JSON form,
 /// and whether it settled done.
-fn settled_text<O: Serialize + serde::de::DeserializeOwned + 'static>(
+fn settled_text<O: Serialize + serde::de::DeserializeOwned + Default + 'static>(
     outcome: &serde_json::Value,
 ) -> Result<(String, bool), ModelError> {
     let outcome = Settled::<O>::from_json(outcome)?;
@@ -1793,7 +1800,7 @@ fn settled_text<O: Serialize + serde::de::DeserializeOwned + 'static>(
 
 /// The settlement of the outbox entry `item`, as JSON; `None` while it is
 /// pending.
-fn settled_json<T: Model, O: Serialize + serde::de::DeserializeOwned + 'static>(
+fn settled_json<T: Model, O: Serialize + serde::de::DeserializeOwned + Default + 'static>(
     item: &dyn std::any::Any,
 ) -> Option<serde_json::Value> {
     item.downcast_ref::<OutboxEntry<T, O>>()?

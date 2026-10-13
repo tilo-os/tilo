@@ -48,10 +48,22 @@ pub struct MetricsSnapshot {
     /// presence forwarded to subscribers as they arrived, not replay.
     #[serde(default)]
     pub bytes_sent_live: u64,
+    /// Peer sessions connected when the snapshot was taken (a gauge, unlike
+    /// the counters above).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sessions_open: u64,
     /// Egress per workspace (relay room), for the frames that belong to one.
     /// Lists only rooms that were sent something since the daemon started.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub rooms: BTreeMap<u64, RoomEgress>,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if passes a reference"
+)]
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Bytes one relay room's frames put on the wire since the daemon started.

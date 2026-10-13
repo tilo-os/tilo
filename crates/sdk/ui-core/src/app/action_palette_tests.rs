@@ -451,11 +451,7 @@ pub(super) fn synth_enter() -> WindowEvent {
         None,
         Key::Named(NamedKey::Enter),
     );
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    crate::synthetic_input::keyboard_input(event)
 }
 
 #[test]

@@ -47,6 +47,16 @@ inputs = ["tools/android/atl_entry.c", "tools/android/test_sticky_entry.c", "too
 suites = ["tools/android/test_sticky_entry.py"]
 
 [[group]]
+name = "headless-launch-preflight"
+inputs = ["scripts/headless-examples/spawn-headless.sh"]
+suites = ["scripts/headless-examples/test_spawn_headless.py"]
+
+[[group]]
+name = "chat-task-approval"
+inputs = ["apps/chat/"]
+suites = ["apps/chat/tests/test_agent_start_surface.py"]
+
+[[group]]
 name = "session-diagnostics"
 inputs = ["dist/session/tilo-flight-recorder.py"]
 suites = ["os/tests/flight_recorder_test.py"]
@@ -443,7 +453,6 @@ inputs = [
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
-  "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_latency_bench_test.py",
   "scripts/perf/device_notes_latency_test.py",
@@ -483,13 +492,12 @@ suites = [
 [[group]]
 name = "developer-scripts"
 inputs = [
-  "scripts/tests/", "scripts/demo/", "scripts/app-launch-sweep.py",
+  "scripts/tests/", "scripts/app-launch-sweep.py",
   "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py", "scripts/agent-loop/",
 ]
 suites = [
   "scripts/tests/test_agent_loop_usage.py",
   "scripts/tests/test_app_launch_sweep.py",
-  "scripts/tests/test_demo_scripts.py",
   "scripts/tests/test_runtime_mcp_proof.py",
   "scripts/tests/test_tilo_mcp_server.py",
 ]
@@ -946,6 +954,8 @@ inputs = [
   "tools/with-test-environment.sh",
   "tools/atspi_external_client.py",
   "scripts/headless-examples/",
+  "apps/store/fixtures/published/snapshot379.json.gz.b64",
+  "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64",
 ]
 readers = [
   "crates/session/shell/examples/files_clipboard_native.rs",
@@ -957,6 +967,7 @@ readers = [
   "crates/session/shell/tests/input_method_wire.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
+  "crates/session/shell/src/compositor/chooser_service.rs",
 ]
 
 

@@ -55,7 +55,7 @@ impl Rooms {
         if room.governing().is_err() {
             return Ok(());
         }
-        let host = &self.inner.host;
+        let key = &self.inner.host.key;
         let now = SystemTime::now();
         let authority = room.peer().authority().user_public_key;
         let members = room.peer().member_identities(now)?;
@@ -101,7 +101,7 @@ impl Rooms {
                 .cloned()
                 .collect::<Vec<_>>();
             let mut candidate = room.peer().clone();
-            let published = match candidate.publish_governed_revocations(&batch, &host.key, now) {
+            let published = match candidate.publish_governed_revocations(&batch, key, now) {
                 Ok(published) => published,
                 Err(error) => {
                     refused.get_or_insert(error);
@@ -109,7 +109,7 @@ impl Rooms {
                 }
             };
             if published {
-                room.commit(candidate, &host.key, now, |record, _| {
+                room.commit(candidate, key, now, |record, _| {
                     Ok(record.collaboration.clone())
                 })?;
                 tracing::info!(

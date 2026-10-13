@@ -50,7 +50,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
         "so.tilo.chat",
         &room.room,
         &hex::encode(writer_device.cert.user_public_key),
-        false,
+        tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();

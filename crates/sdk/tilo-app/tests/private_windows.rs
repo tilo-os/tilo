@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! A private window: an app that offers them opens one with `--private`, on
 //! a profile of its own thrown away with the process, attached to no

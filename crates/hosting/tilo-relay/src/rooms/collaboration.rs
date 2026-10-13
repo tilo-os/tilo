@@ -28,6 +28,17 @@ use tilo_peer_state::StatePeer;
 
 use super::{GovernedRoom, RoomRecord, Rooms, system_time};
 
+/// A change to who is in a room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+enum Membership {
+    Remove,
+    Ban,
+    Unban,
+    /// No changes until this Unix millisecond; reading stays allowed.
+    Restrict(u64),
+    Unrestrict,
+}
+
 /// Pending challenges of one kind a room keeps at once.
 const MAX_PENDING_CHALLENGES: usize = 4096;
 /// How long a join or membership challenge may be answered.
@@ -84,6 +95,33 @@ pub(super) struct CollaborationState {
     administration: Vec<AdministrationRecord>,
 }
 
+impl CollaborationState {
+    /// Drop what the room keeps about how `people` joined: their
+    /// invitations, join receipts and pending membership challenges. An
+    /// invitation whose records are gone is refused as not issued here, so
+    /// it still cannot be redeemed again.
+    fn forget(&mut self, people: &std::collections::BTreeSet<[u8; 32]>) {
+        let theirs = |device: &DeviceCert| people.contains(&device.user_public_key);
+        let redeemed: std::collections::BTreeSet<[u8; 32]> = self
+            .join_completions
+            .iter()
+            .filter(|completion| theirs(&completion.bootstrap.device_cert))
+            .map(|completion| completion.bootstrap.invite_id)
+            .collect();
+        self.join_completions
+            .retain(|completion| !theirs(&completion.bootstrap.device_cert));
+        self.invitations.retain(|record| {
+            !redeemed.contains(&record.issued.invite_id)
+                && !record
+                    .grant
+                    .recipient_user_public_key
+                    .is_some_and(|recipient| people.contains(&recipient))
+        });
+        self.membership_challenges
+            .retain(|record| !theirs(&record.device_cert));
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct InvitationRecord {
     request_id: [u8; 32],
@@ -112,8 +150,9 @@ struct JoinCompletionRecord {
     remote_endpoint: [u8; 32],
     request_id: [u8; 32],
     proof_digest: [u8; 32],
-    /// The delivered bootstrap with its governance messages replaced by one
-    /// digest entry (see [`JoinCompletionRecord::receipt`]).
+    /// The delivered bootstrap with the room's state it carried left out and
+    /// its governance messages replaced by one digest entry (see
+    /// [`JoinCompletionRecord::receipt`]).
     bootstrap: JoinBootstrap,
 }
 
@@ -122,10 +161,12 @@ struct JoinCompletionRecord {
 const JOIN_RECEIPT_TAG: &[u8] = b"tilo.join-receipt.v1\0";
 
 impl JoinCompletionRecord {
-    /// Durable receipt for a delivered join reply. The reply's governance
-    /// messages are the room's complete committed publication, so the
-    /// receipt keeps every other bootstrap field and one digest over the
-    /// whole reply in their place.
+    /// Durable receipt for a delivered join reply: the joiner's own fields
+    /// and one digest over the whole reply. The roster, revocations, rows
+    /// and governance messages are the room's state at delivery; a replay
+    /// rebuilds them from the room and answers only while the digest still
+    /// matches. Keeping them here made every receipt as large as the room,
+    /// and the room record grow with the square of its members.
     fn receipt(
         remote_endpoint: [u8; 32],
         request_id: [u8; 32],
@@ -139,6 +180,9 @@ impl JoinCompletionRecord {
             request_id,
             proof_digest,
             bootstrap: JoinBootstrap {
+                certified_roster: Vec::new(),
+                revocations: Vec::new(),
+                records: Vec::new(),
                 governance_messages: vec![marker],
                 ..delivered.clone()
             },
@@ -154,14 +198,17 @@ impl JoinCompletionRecord {
         }
     }
 
-    /// The exact reply this completion delivered, rebuilt with the current
-    /// publication and answered only while it is unchanged. Once governance
-    /// has moved on, the member refreshes through the membership challenge.
+    /// The exact reply this completion delivered, rebuilt from the room and
+    /// answered only while it is unchanged. Once the room has moved on, the
+    /// member refreshes through the membership challenge.
     fn replay(&self, room: &GovernedRoom) -> Result<JoinBootstrap, CollaborationError> {
         let delivered = self
             .delivered_digest()
             .ok_or_else(|| CollaborationError::new("join completion receipt is malformed"))?;
         let rebuilt = JoinBootstrap {
+            certified_roster: room.peer().certificates(),
+            revocations: room.peer().revocations(),
+            records: room.peer().rows(),
             governance_messages: room.record.governance_messages(),
             ..self.bootstrap.clone()
         };
@@ -469,6 +516,63 @@ impl Rooms {
         .await
     }
 
+    /// Write room grants the governor decided (room settings such as a
+    /// role's Deny on a kind), keyed by their ids.
+    ///
+    /// # Errors
+    ///
+    /// Refuses non-administrators and grants for another room.
+    pub async fn put_room_grants(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        request_id: [u8; 32],
+        grants: Vec<tilo_action_policy::Grant>,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        self.authorize(administrator, now, "room.grants.put")?;
+        let room = self.room(room).await?;
+        let mut room = room.lock().await;
+        let key = self.inner.host.key.clone();
+        self.administer(
+            &mut room,
+            request_id,
+            request_digest(&grants)?,
+            |peer| peer.put_governed_grants(&grants, &key, system_time(now)),
+            now,
+        )
+        .await
+    }
+
+    /// Make `user_public_key` an administrator of `room`: an editor holding
+    /// every governance action, as the room's Owner role.
+    ///
+    /// # Errors
+    ///
+    /// Refuses non-administrators, the structural owner and people the
+    /// room never admitted.
+    pub async fn set_member_administrator(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        request_id: [u8; 32],
+        user_public_key: [u8; 32],
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        self.authorize(administrator, now, "member.administrator.set")?;
+        let room = self.room(room).await?;
+        let mut room = room.lock().await;
+        let key = self.inner.host.key.clone();
+        self.administer(
+            &mut room,
+            request_id,
+            request_digest(&("administrator", user_public_key))?,
+            |peer| peer.set_member_administrator(user_public_key, &key, system_time(now)),
+            now,
+        )
+        .await
+    }
+
     /// Remove the member `request.user_public_key` and every device of theirs
     /// from `room`. The relay stops admitting them before this returns.
     ///
@@ -481,27 +585,239 @@ impl Rooms {
         administrator: &DeviceCert,
         request: RemoveMemberRequest,
     ) -> Result<GovernanceCompletion, CollaborationError> {
+        self.change_membership(room, administrator, request, Membership::Remove)
+            .await
+    }
+
+    /// Remove the members `people` from `room` in one governance change and
+    /// forget how they joined. A public room prunes guests who left this
+    /// way: every join costs time in proportion to the room's members, so a
+    /// room that kept every visitor would slow with each one, and one change
+    /// per guest would hold the room as long again. A pruned guest joins
+    /// again through a new invitation.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the removal was refused or could not commit.
+    pub async fn prune_members(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        request_id: [u8; 32],
+        people: &std::collections::BTreeSet<[u8; 32]>,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
-        self.authorize(administrator, now, "member.remove")?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
+        for person in people {
+            let change = tilo_action_policy::Change::RemoveMember {
+                person: hex::encode(person),
+            };
+            self.authorize_member_change(&room, administrator, &change, now)?;
+        }
         let key = self.inner.host.key.clone();
         let completion = self
             .administer(
                 &mut room,
+                request_id,
+                request_digest(people)?,
+                |peer| {
+                    let mut changed = false;
+                    for person in people {
+                        changed |= peer.remove_member(*person, &key, system_time(now))?;
+                    }
+                    Ok(changed)
+                },
+                now,
+            )
+            .await?;
+        let mut state = room.collaboration().clone();
+        state.forget(people);
+        room.commit_state(state)?;
+        tracing::info!(
+            room = %room.room(),
+            people = people.len(),
+            "idle members pruned"
+        );
+        Ok(completion)
+    }
+
+    /// Remove `request.user_public_key` from `room`, when a member, and keep
+    /// them out until [`Self::unban_member`]: a removal plus their
+    /// `block:<person>` Deny.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the ban was refused or could not commit.
+    pub async fn ban_member(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        request: RemoveMemberRequest,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        self.change_membership(room, administrator, request, Membership::Ban)
+            .await
+    }
+
+    /// Let the banned `request.user_public_key` be admitted to `room` again.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the unban was refused or could not commit.
+    pub async fn unban_member(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        request: RemoveMemberRequest,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        self.change_membership(room, administrator, request, Membership::Unban)
+            .await
+    }
+
+    /// Stop `request.user_public_key` changing anything in `room` until
+    /// `until_ms` (Unix milliseconds): the room's expiring
+    /// `restrict:<person>` Deny, which lapses by itself and leaves reading
+    /// alone. A newer restriction replaces an older one.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the restriction was refused or could not commit.
+    pub async fn restrict_member(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        request: RemoveMemberRequest,
+        until_ms: u64,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        self.change_membership(room, administrator, request, Membership::Restrict(until_ms))
+            .await
+    }
+
+    /// Lift `request.user_public_key`'s restriction in `room` before it
+    /// lapses.
+    ///
+    /// # Errors
+    ///
+    /// Returns why lifting was refused or could not commit.
+    pub async fn unrestrict_member(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        request: RemoveMemberRequest,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        self.change_membership(room, administrator, request, Membership::Unrestrict)
+            .await
+    }
+
+    /// Remove, ban or unban, decided by who asks: a device of the relay's
+    /// user governs its rooms, and any other member by the room's policy (a
+    /// Moderator reaches members ranked below Moderator).
+    async fn change_membership(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        request: RemoveMemberRequest,
+        membership: Membership,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        let room = self.room(room).await?;
+        let mut room = room.lock().await;
+        let person = hex::encode(request.user_public_key);
+        let change = match membership {
+            Membership::Remove => tilo_action_policy::Change::RemoveMember {
+                person: person.clone(),
+            },
+            Membership::Ban => tilo_action_policy::Change::Ban {
+                person: person.clone(),
+            },
+            Membership::Unban => tilo_action_policy::Change::Unban {
+                person: person.clone(),
+            },
+            Membership::Restrict(until_ms) => tilo_action_policy::Change::Restrict {
+                person: person.clone(),
+                until_ms,
+            },
+            Membership::Unrestrict => tilo_action_policy::Change::Unrestrict {
+                person: person.clone(),
+            },
+        };
+        let room_id = room.room().to_owned();
+        let by = self.authorize_member_change(&room, administrator, &change, now)?;
+        let key = self.inner.host.key.clone();
+        let target = request.user_public_key;
+        let completion = self
+            .administer(
+                &mut room,
                 request.request_id,
-                request_digest(&request)?,
-                |peer| peer.remove_member(request.user_public_key, &key, system_time(now)),
+                request_digest(&(membership, &request))?,
+                |peer| match membership {
+                    Membership::Remove => peer.remove_member(target, &key, system_time(now)),
+                    Membership::Ban => peer.ban_member(target, &by, &key, system_time(now)),
+                    Membership::Unban => peer.unban_member(target, &key, system_time(now)),
+                    Membership::Restrict(until_ms) => peer.put_governed_grants(
+                        &[tilo_action_policy::roles::restriction_grant(
+                            &room_id,
+                            &person,
+                            until_ms,
+                            tilo_action_policy::Subject::Person(by.clone()),
+                        )],
+                        &key,
+                        system_time(now),
+                    ),
+                    Membership::Unrestrict => peer.remove_governed_grants(
+                        &[tilo_action_policy::roles::restriction_grant_id(&person)],
+                        &key,
+                        system_time(now),
+                    ),
+                },
                 now,
             )
             .await?;
         tracing::info!(
             room = %room.room(),
-            person = %hex::encode(request.user_public_key),
-            outcome = "removed",
-            "workspace member removal committed"
+            %person,
+            outcome = ?membership,
+            "workspace membership change committed"
         );
         Ok(completion)
+    }
+
+    /// The person deciding `change`, when `device` may make it in `room`:
+    /// the owner for a device of the relay's user, otherwise the member whose
+    /// device it is, held to the room's policy.
+    fn authorize_member_change(
+        &self,
+        room: &GovernedRoom,
+        device: &DeviceCert,
+        change: &tilo_action_policy::Change,
+        now: u64,
+    ) -> Result<String, CollaborationError> {
+        let owner = hex::encode(room.peer().authority().user_public_key);
+        if self.authorize(device, now, change.action()).is_ok() {
+            if let tilo_action_policy::Change::RemoveMember { person }
+            | tilo_action_policy::Change::Ban { person }
+            | tilo_action_policy::Change::Restrict { person, .. } = change
+                && *person == owner
+            {
+                return Err(CollaborationError::new("the owner cannot be removed"));
+            }
+            return Ok(owner);
+        }
+        if self.revocations().is_revoked(&device.device_public_key) {
+            return Err(CollaborationError::new("device revoked"));
+        }
+        let member = room
+            .peer()
+            .permissions(device.device_public_key, system_time(now))
+            .map_err(CollaborationError::new)?;
+        let bound = tilo_action_policy::roles::foreign_device_bound();
+        let authority = member.authority(&bound);
+        let cx = tilo_action_policy::Context::at_time(system_time(now));
+        member
+            .policy
+            .check(&member.person, &authority, change, &cx, false)
+            .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
+        Ok(member.person.clone())
     }
 
     /// Commit application authorship under the current owner's authority.
@@ -557,6 +873,86 @@ impl Rooms {
             now,
         )
         .await
+    }
+
+    /// Install a bot as a governed member of `room`, update its program, or
+    /// renew its delegation ([`WorkspaceMembershipCommand::InstallBot`],
+    /// [`WorkspaceMembershipCommand::RenewBot`]), as the room's
+    /// administrator. Every member reads and enforces the result, so it is
+    /// a governed change rather than this host's own state.
+    ///
+    /// # Errors
+    /// Refuses non-administrators and anything else; the peer refuses an
+    /// install or renewal its rules do not admit.
+    ///
+    /// [`WorkspaceMembershipCommand::InstallBot`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::InstallBot
+    /// [`WorkspaceMembershipCommand::RenewBot`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RenewBot
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room remains locked through the committed and published administration decision"
+    )]
+    pub async fn govern_bot(
+        &self,
+        room: &str,
+        administrator: &DeviceCert,
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+        if !matches!(command, Command::InstallBot(_) | Command::RenewBot(_)) {
+            return Err(CollaborationError::new(
+                "only installing or renewing a bot governs a bot",
+            ));
+        }
+        let now = tilo_clock::unix_now_ns();
+        self.authorize(administrator, now, "bot.govern")?;
+        command.validate()?;
+        // The command names itself: the same install or renewal sent again
+        // is the same administration request.
+        let digest = request_digest(&("bot.govern", &command))?;
+        let room = self.room(room).await?;
+        let mut room = room.lock().await;
+        let key = self.inner.host.key.clone();
+        room.peer().clone().apply_workspace_membership_command(
+            administrator,
+            &command,
+            &key,
+            system_time(now),
+        )?;
+        self.administer(
+            &mut room,
+            digest,
+            digest,
+            |peer| {
+                peer.apply_workspace_membership_command(
+                    administrator,
+                    &command,
+                    &key,
+                    system_time(now),
+                )
+            },
+            now,
+        )
+        .await
+    }
+
+    /// Installation `id` of `room` as its governance records it now: the
+    /// live row, else the last withdrawn one.
+    ///
+    /// # Errors
+    /// The room is not governed here.
+    pub async fn installed_bot(
+        &self,
+        room: &str,
+        id: &str,
+    ) -> Result<Option<tilo_peer_state::InstalledBot>, CollaborationError> {
+        let now = system_time(tilo_clock::unix_now_ns());
+        Ok(self
+            .room(room)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .installation(id, now))
     }
 
     /// Persist and publish an admitted person's own bounded terminal receipt.
@@ -698,12 +1094,7 @@ impl Rooms {
         now: u64,
     ) -> Result<VerifiedJoin, CollaborationError> {
         let invite_id = *blake3::hash(signed_invitation).as_bytes();
-        let record = room
-            .collaboration()
-            .invitations
-            .iter()
-            .find(|record| record.issued.invite_id == invite_id)
-            .ok_or_else(|| CollaborationError::new("invitation was not issued by this host"))?;
+        let record = Self::issued(room, invite_id)?;
         if record.issued.signed_invitation != signed_invitation {
             return Err(CollaborationError::new(
                 "invitation bytes do not match issuance",
@@ -870,14 +1261,28 @@ impl Rooms {
         Ok(redemption)
     }
 
-    fn redeemable(room: &GovernedRoom, invite_id: [u8; 32]) -> Result<(), CollaborationError> {
-        let issued = room
-            .collaboration()
+    /// The record of invitation `invite_id`, which `room` keeps until the
+    /// invitation is redeemed.
+    fn issued(
+        room: &GovernedRoom,
+        invite_id: [u8; 32],
+    ) -> Result<&InvitationRecord, CollaborationError> {
+        let state = room.collaboration();
+        state
             .invitations
             .iter()
             .find(|record| record.issued.invite_id == invite_id)
-            .ok_or_else(|| CollaborationError::new("invitation was not issued by this host"))?;
-        if issued.cancellation.is_some() {
+            .ok_or_else(|| {
+                CollaborationError::new(if room.redeemed(invite_id) {
+                    "invitation was already redeemed"
+                } else {
+                    "invitation was not issued by this host"
+                })
+            })
+    }
+
+    fn redeemable(room: &GovernedRoom, invite_id: [u8; 32]) -> Result<(), CollaborationError> {
+        if Self::issued(room, invite_id)?.cancellation.is_some() {
             return Err(CollaborationError::new("invitation was cancelled"));
         }
         Ok(())
@@ -910,6 +1315,16 @@ impl Rooms {
             return Err(CollaborationError::new(error));
         }
         let mut state = room.collaboration().clone();
+        // The receipt answers for this join from now on. The challenge it
+        // proved and the invitation it spent admit nobody else, and keeping
+        // them made every later write of the room carry each past join.
+        let invite_id = redemption.join().invite_id();
+        state.join_challenges.retain(|record| {
+            record.challenge.request_id != request_id || record.remote_endpoint != remote_endpoint
+        });
+        state
+            .invitations
+            .retain(|record| record.issued.invite_id != invite_id);
         let mut delivered = None;
         room.commit(
             candidate,
@@ -1200,4 +1615,31 @@ fn revocations(room: &GovernedRoom) -> Result<RevocationList, CollaborationError
             .map_err(|error| CollaborationError::new(error.to_string()))?;
     }
     Ok(revocations)
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    #[test]
+    fn a_join_receipt_keeps_none_of_the_rooms_state_and_replays_while_it_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, cert) = crate::rooms::tests::governor();
+        let room = GovernedRoom::create(
+            dir.path(),
+            "Demo",
+            &cert,
+            &key,
+            &std::sync::Arc::default(),
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+        let delivered =
+            current_bootstrap(&room.record, room.peer(), [9; 32], cert, MemberRole::Editor);
+        assert!(!delivered.certified_roster.is_empty());
+        let receipt = JoinCompletionRecord::receipt([1; 32], [2; 32], [3; 32], &delivered).unwrap();
+        assert!(receipt.bootstrap.certified_roster.is_empty());
+        assert!(receipt.bootstrap.records.is_empty());
+        assert_eq!(receipt.replay(&room).unwrap(), delivered);
+    }
 }

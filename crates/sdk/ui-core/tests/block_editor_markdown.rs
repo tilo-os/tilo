@@ -7,16 +7,6 @@
 //! editor can produce will re-parse byte-stably back into the same block
 //! list.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_ui::widget::{BlockEditor, BlockKind};
 
 /// One expected block: its kind and text, each `None` where the case does
@@ -45,10 +35,6 @@ fn assert_blocks(case: &str, editor: &BlockEditor, want: &[Want]) {
 
 /// Every document the editor can produce parses into the expected blocks and
 /// serialises back byte-stably.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the case table lists every block kind the grammar covers"
-)]
 #[test]
 fn markdown_round_trips_every_block_kind_byte_stably() {
     use BlockKind::{Bullet, Checklist, CodeBlock, Divider, Heading, Paragraph};

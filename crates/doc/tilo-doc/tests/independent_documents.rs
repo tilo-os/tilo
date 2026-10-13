@@ -13,16 +13,6 @@
 //! These fail against a schema whose containers are minted per replica, and pass
 //! once the schema comes from one genesis every replica already agrees on.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_doc::Document;
 
 /// A content-bearing document, built the way an import builds one.

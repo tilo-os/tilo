@@ -1,12 +1,7 @@
 //! Outbox: entries a verb queues, settled with a typed result by the device
 //! that owns them, forgotten as housekeeping, and the undo of a queueing
 //! verb queueing its compensation.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use tilo_actions::{Action as _, ActionKind, ChangeKind};
 use tilo_resource::{
@@ -518,6 +513,14 @@ fn a_settlement_reads_back_its_json_form() {
     assert_eq!(
         serde_json::to_string(&Settled::<u8>::Done(3)).unwrap(),
         r#"{"state":"done","result":3}"#
+    );
+    // Whoever settles without knowing `O` leaves out what was done: nothing.
+    assert_eq!(
+        Settled::<Vec<String>>::from_json_value(
+            serde_json::json!({"state": "failed", "result": {"reason": "refused"}})
+        )
+        .unwrap(),
+        Settled::failed("refused")
     );
     for wrong in [
         serde_json::json!({"state": "maybe", "result": 1}),

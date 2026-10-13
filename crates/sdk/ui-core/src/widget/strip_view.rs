@@ -6,7 +6,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::{MouseScrollDelta, WindowEvent};
 
 pub const STRIP_COOLDOWN_MS: u64 = 600;
@@ -105,9 +105,7 @@ impl Widget for StripView {
         };
         taffy.widget_leaf(style, node_map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
     fn draw(
         &mut self,
         _scene: &mut Scene,
@@ -135,8 +133,5 @@ impl Widget for StripView {
     }
     fn name(&self) -> &'static str {
         "StripView"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }

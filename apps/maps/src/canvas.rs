@@ -38,7 +38,6 @@ pub struct MapPalette {
     pub road_res_casing: Color,
     pub road_secondary: Color,
     pub road_primary: Color,
-    pub road_label: Color,
     pub route: Color,
     pub route_casing: Color,
     pub marker_ring: Color,
@@ -106,7 +105,6 @@ impl MapPalette {
             road_res_casing: draw::mix(land, k, 0.16),
             road_secondary: draw::mix(w, sem.warning, 0.28),
             road_primary: draw::mix(w, sem.warning, 0.48),
-            road_label: draw::mix(w, k, 0.62),
             route: c.intent.you,
             route_casing: draw::mix(c.intent.you, w, 0.5),
             marker_ring: w,
@@ -148,7 +146,6 @@ impl MapPalette {
             road_res_casing: draw::mix(land, k, 0.5),
             road_secondary: draw::mix(land, sem.warning, 0.34),
             road_primary: draw::mix(land, sem.warning, 0.52),
-            road_label: draw::mix(land, w, 0.72),
             route: c.intent.you,
             // A darker casing under the route so it reads on dark land.
             route_casing: draw::mix(c.intent.you, k, 0.45),
@@ -276,7 +273,6 @@ fn road_width(class: RoadClass, zoom: f64) -> f64 {
         RoadClass::Primary => 4.2 * k,
         RoadClass::Secondary => 3.0 * k,
         RoadClass::Residential => 1.6 * k,
-        RoadClass::Path => 1.0 * k,
     }
 }
 
@@ -484,7 +480,7 @@ pub fn draw_basemap(
         let color = match r.class {
             RoadClass::Primary => pal.road_primary,
             RoadClass::Secondary => pal.road_secondary,
-            _ => pal.road_res,
+            RoadClass::Residential => pal.road_res,
         };
         draw::polyline(scene, t, &pts, road_width(r.class, proj.zoom()), color);
     }

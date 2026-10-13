@@ -26,7 +26,9 @@
 //! `blake3(b"tilo-registry-entry-v1\0" || postcard(entry_signing_payload))`
 //! where `entry_signing_payload` mirrors every field of
 //! [`RegistryEntry`] except `signature_hex` (the field that
-//! carries the sig would form a fixed-point otherwise).
+//! carries the sig would form a fixed-point otherwise) and `kind`. A bot
+//! entry signs the same payload under `tilo-registry-bot-entry-v1`, so the
+//! kind is bound by the domain and app entries keep their original bytes.
 //!
 //! Registry-owner signatures for federation cover
 //! `blake3(b"tilo-registry-index-v1\0" || postcard(index_manifest))`.
@@ -80,8 +82,10 @@ pub use compact::{
     verify_compact_snapshot, verify_version_index, version_index_bytes,
 };
 pub use entry::{
-    ENTRY_DOMAIN, EntryValidationError, INDEX_DOMAIN, LocalizedImages, LocalizedText,
-    RegistryEntry, RegistryImage, RegistryImageKind, RegistryTarget, RegistryVersion,
+    BOT_ENTRY_DOMAIN, BotArtifact, BotRequirements, DirectoryRef, ENTRY_DOMAIN, EntryKind,
+    EntryValidationError, INDEX_DOMAIN, LocalizedImages, LocalizedText, MAX_BOT_PROGRAM_BYTES,
+    PackageRequirement, RegistryEntry, RegistryImage, RegistryImageKind, RegistryTarget,
+    RegistryVersion, TappArtifact, VersionArtifact, VersionGroup, bot_program_url,
     entry_signing_message, index_signing_message, sign_entry, valid_language_tag,
 };
 pub use handshake::{PROTOCOL_VERSION, RegistryHandshake};

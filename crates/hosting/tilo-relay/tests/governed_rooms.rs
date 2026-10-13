@@ -7,7 +7,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
@@ -1730,6 +1729,90 @@ params = []
         text(&alice_peer, "topic").as_deref(),
         Some("from Alice"),
         "the relay forwarded an ungranted edit"
+    );
+    relay.shutdown().await;
+}
+
+/// A public room prunes the guests who left in one governance change, and
+/// what it kept about how they joined goes with them: their invitations
+/// admit nobody again, and the guest who stayed keeps their seat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_nobody() {
+    let alice = TestUser::fresh("Alice");
+    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let relay = start(state.path(), &alice, &host).await;
+    let address = relay.node_addr();
+    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
+    let room = admin.create(address.clone(), "Demo").await.unwrap();
+    let mut guests = Vec::new();
+    for (seed, name) in [(17, "Ada"), (18, "Bea"), (19, "Cy")] {
+        let guest = TestUser::fresh(name);
+        let phone = guest.enrol("phone", DeviceCapabilities::member());
+        let invitation = admin
+            .invite(
+                address.clone(),
+                &room.room,
+                MemberRole::Editor,
+                Some(guest.user_pk),
+                Duration::from_secs(600),
+            )
+            .await
+            .unwrap();
+        let verified = decode_and_verify_invitation(
+            &invitation.signed_invitation,
+            None,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        )
+        .unwrap();
+        WorkspaceJoinClient::new(device_endpoint(&phone).await)
+            .redeem_hint(
+                &verified.grant().transport[0],
+                invitation.signed_invitation.clone(),
+                phone.cert.clone(),
+                &phone.sk,
+                [seed; 32],
+            )
+            .await
+            .unwrap();
+        guests.push((guest, phone, verified, invitation));
+    }
+    let rooms = relay.rooms().unwrap();
+    let before = rooms.summary(&room.room).await.unwrap().generation;
+    let idle = std::collections::BTreeSet::from([guests[0].0.user_pk, guests[1].0.user_pk]);
+    let pruned = rooms
+        .prune_members(&room.room, &host.cert, [9; 32], &idle)
+        .await
+        .unwrap();
+    assert_eq!(pruned.generation, before + 1, "one change for every guest");
+
+    let members = rooms.summary(&room.room).await.unwrap().members;
+    let seated = |person: [u8; 32]| {
+        members
+            .iter()
+            .any(|member| member.user_public_key == person && !member.removed)
+    };
+    assert!(!seated(guests[0].0.user_pk) && !seated(guests[1].0.user_pk));
+    assert!(
+        seated(guests[2].0.user_pk),
+        "the guest who stayed keeps their seat"
+    );
+
+    let (_, phone, verified, invitation) = &guests[0];
+    assert!(
+        WorkspaceJoinClient::new(device_endpoint(phone).await)
+            .redeem_hint(
+                &verified.grant().transport[0],
+                invitation.signed_invitation.clone(),
+                phone.cert.clone(),
+                &phone.sk,
+                [8; 32],
+            )
+            .await
+            .is_err(),
+        "a pruned guest's invitation admits nobody again"
     );
     relay.shutdown().await;
 }

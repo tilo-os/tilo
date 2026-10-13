@@ -1,7 +1,7 @@
 use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-fn governor() -> (SigningKey, DeviceCert) {
+pub(crate) fn governor() -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[1; 32]);
     let key = SigningKey::from_bytes(&[2; 32]);
     let mut cert = DeviceCert {
@@ -17,8 +17,7 @@ fn governor() -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-#[cfg(feature = "agents")]
-async fn view_read_relay(
+pub(crate) async fn view_read_relay(
     state_root: &Path,
     key: &SigningKey,
     cert: &DeviceCert,
@@ -38,6 +37,96 @@ async fn view_read_relay(
     )
     .await
     .unwrap()
+}
+
+fn signed_pre_admission(room: &str, token: &[u8]) -> tilo_relay_protocol::rooms::PreAdmission {
+    use ed25519_dalek::Signer as _;
+    use sha2::Digest as _;
+    let owner = SigningKey::from_bytes(&[1; 32]);
+    let mut grant = tilo_relay_protocol::rooms::PreAdmission {
+        room: room.to_owned(),
+        role: tilo_relay_protocol::rooms::RoomRole::Editor,
+        token_sha256: sha2::Sha256::digest(token).into(),
+        label: "Ada".into(),
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+        owner_user_public_key: owner.verifying_key().to_bytes(),
+        signature: [0; 64],
+    };
+    grant.signature = owner.sign(&grant.digest().unwrap()).to_bytes();
+    grant
+}
+
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redeem() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().expect("a certified host governs rooms");
+    let created = rooms.create("Demo").await.unwrap();
+    let guest = [7; 32];
+    let request = PreAdmitRequest {
+        request_id: [3; 32],
+        grant: signed_pre_admission(&created.room, b"one-time"),
+        recipient_user_public_key: Some(guest),
+        inviter_name: Some("Plaza".into()),
+    };
+    let issued = rooms.pre_admit(&cert, request.clone()).await.unwrap();
+    // The same request again is a retry, not a second invitation.
+    assert_eq!(rooms.pre_admit(&cert, request).await.unwrap(), issued);
+    let pending = rooms.pending(&created.room, &cert).await.unwrap();
+    let invitation = pending
+        .iter()
+        .find(|pending| pending.invite_id == issued.invite_id)
+        .unwrap();
+    assert_eq!(invitation.recipient_user_public_key, Some(guest));
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn every_settled_decision_is_announced_with_its_room() {
+    use tilo_action_policy::{Answer, Grant, KindSet, Role, Subject};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Demo").await.unwrap();
+    let mut changes = rooms.governance_changes();
+    let deny_outside = Grant::new(
+        "public-guests-no-outside",
+        Subject::Role(Role::Editor),
+        tilo_action_policy::TreePath::room(&created.room),
+        KindSet::OUTSIDE,
+        Answer::Deny,
+        Subject::Person(hex::encode(cert.user_public_key)),
+    );
+    rooms
+        .put_room_grants(&created.room, &cert, [4; 32], vec![deny_outside])
+        .await
+        .unwrap();
+    let announced = tokio::time::timeout(std::time::Duration::from_secs(5), changes.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(announced, created.room);
+    assert_eq!(
+        rooms.summary(&created.room).await.unwrap().room,
+        created.room
+    );
+    relay.shutdown().await;
 }
 
 #[cfg(feature = "agents")]
@@ -202,7 +291,7 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
     let created = rooms.create("Native authoring rollover").await.unwrap();
     let catalogue = tilo_agent_participant::AppCatalogue::native();
     rooms
-        .prepare_application(&created.room, &cert, &catalogue, "so.tilo.chat")
+        .prepare_application(&created.room, &cert, &catalogue, "so.tilo.chat", "")
         .await
         .unwrap();
     let source = tilo_browser_peer::DocumentRoute {
@@ -242,10 +331,17 @@ async fn governor_application_authoring_survives_publication_tail_rollover() {
         "real governance writes reach rollover"
     );
     rooms
-        .author_application(&created.room, &cert, &catalogue, "so.tilo.chat", |doc| {
-            doc.put(ROOT, "rollover_counter", 1_u64)
-                .map_err(|error| error.to_string())
-        })
+        .author_application(
+            &created.room,
+            &cert,
+            &catalogue,
+            "so.tilo.chat",
+            "",
+            |doc| {
+                doc.put(ROOT, "rollover_counter", 1_u64)
+                    .map_err(|error| error.to_string())
+            },
+        )
         .await
         .unwrap();
     let retained = rooms
@@ -563,14 +659,15 @@ async fn app_authorship_grant_uses_current_owner_and_conflict_checked_retries() 
                 &created.room,
                 &changed_certificate,
                 &catalogue,
-                "so.tilo.chat"
+                "so.tilo.chat",
+                ""
             )
             .await
             .is_err()
     );
     assert!(
         rooms
-            .prepare_application(&created.room, &stranger, &catalogue, "so.tilo.chat")
+            .prepare_application(&created.room, &stranger, &catalogue, "so.tilo.chat", "")
             .await
             .is_err()
     );
@@ -586,7 +683,7 @@ async fn assert_canonical_chat_preparation(
 ) {
     assert!(
         rooms
-            .prepare_application(room, cert, catalogue, "so.tilo.chat")
+            .prepare_application(room, cert, catalogue, "so.tilo.chat", "")
             .await
             .unwrap()
     );
@@ -624,7 +721,7 @@ async fn assert_canonical_chat_preparation(
     .await;
     assert!(
         !rooms
-            .prepare_application(room, cert, catalogue, "so.tilo.chat")
+            .prepare_application(room, cert, catalogue, "so.tilo.chat", "")
             .await
             .unwrap()
     );
@@ -663,7 +760,7 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     let catalogue = tilo_agent_participant::AppCatalogue::native();
     assert_unprepared_authoring_refused(rooms, &created.room, &cert, &catalogue).await;
     rooms
-        .prepare_application(&created.room, &cert, &catalogue, "so.tilo.chat")
+        .prepare_application(&created.room, &cert, &catalogue, "so.tilo.chat", "")
         .await
         .unwrap();
     let source = tilo_browser_peer::DocumentRoute {
@@ -679,7 +776,14 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
         .unwrap();
     assert_eq!(
         rooms
-            .author_application(&created.room, &cert, &catalogue, "so.tilo.chat", |_| Ok(42))
+            .author_application(
+                &created.room,
+                &cert,
+                &catalogue,
+                "so.tilo.chat",
+                "",
+                |_| Ok(42)
+            )
             .await
             .unwrap(),
         42
@@ -694,6 +798,7 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
                 &different,
                 &catalogue,
                 "so.tilo.chat",
+                "",
                 |_| { panic!("another certificate must never reach the trusted change") }
             )
             .await
@@ -701,10 +806,17 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
     );
     assert!(
         rooms
-            .author_application(&created.room, &cert, &catalogue, "so.tilo.chat", |doc| {
-                doc.put(ROOT, "rollback_marker", true).unwrap();
-                Err::<(), _>("the authoring callback failed".into())
-            })
+            .author_application(
+                &created.room,
+                &cert,
+                &catalogue,
+                "so.tilo.chat",
+                "",
+                |doc| {
+                    doc.put(ROOT, "rollback_marker", true).unwrap();
+                    Err::<(), _>("the authoring callback failed".into())
+                }
+            )
             .await
             .is_err()
     );
@@ -718,24 +830,31 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
         "a refused or failed authoring callback cannot publish a partial graph"
     );
     let voice = rooms
-        .author_application(&created.room, &cert, &catalogue, "so.tilo.chat", |doc| {
-            chat::demo::apply_as(
-                doc,
-                "author",
-                chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
-                    name: "Fixture call".into(),
-                }),
-            )
-            .map_err(|error| error.to_string())?;
-            doc.put(ROOT, "preserved_native_marker", true)
+        .author_application(
+            &created.room,
+            &cert,
+            &catalogue,
+            "so.tilo.chat",
+            "",
+            |doc| {
+                chat::demo::apply_as(
+                    doc,
+                    "author",
+                    chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+                        name: "Fixture call".into(),
+                    }),
+                )
                 .map_err(|error| error.to_string())?;
-            Ok(chat::projection::read(doc)
-                .channel_rows()
-                .into_iter()
-                .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
-                .unwrap()
-                .id)
-        })
+                doc.put(ROOT, "preserved_native_marker", true)
+                    .map_err(|error| error.to_string())?;
+                Ok(chat::projection::read(doc)
+                    .channel_rows()
+                    .into_iter()
+                    .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
+                    .unwrap()
+                    .id)
+            },
+        )
         .await
         .unwrap();
     let retained = rooms
@@ -773,11 +892,404 @@ async fn assert_unprepared_authoring_refused(
     for app in ["so.tilo.chat", "so.tilo.unregistered"] {
         assert!(
             rooms
-                .author_application::<()>(room, cert, catalogue, app, |_| {
+                .author_application::<()>(room, cert, catalogue, app, "", |_| {
                     panic!("missing or unregistered records must refuse before the callback")
                 })
                 .await
                 .is_err()
         );
     }
+}
+
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_revoked_governor_refuses_queued_channel_notices_and_renames() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Demo").await.unwrap();
+    let channel = collab_types::document_channel_id("so.tilo.chat", &created.room, "");
+    let ack = collab_types::MlsGovernanceAckV1::signed(channel, [0; 32], &key).unwrap();
+    let notice = || {
+        (
+            cert.device_public_key,
+            ChannelNoticeKind::Ack(Box::new(ack.clone())),
+        )
+    };
+    assert!(rooms.queue_channel_notice(&created.room, notice()).unwrap());
+    rooms.steward_notices(&created.room).await.unwrap();
+
+    let mut revoked = tilo_user_identity::RevocationEntry {
+        user_public_key: cert.user_public_key,
+        revoked_device_public_key: cert.device_public_key,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revoked, &SigningKey::from_bytes(&[1; 32]))
+        .unwrap();
+    rooms
+        .inner
+        .host
+        .revocations
+        .write()
+        .unwrap()
+        .insert(revoked)
+        .unwrap();
+    let state = rooms.room(&created.room).await.unwrap();
+    let path = state.lock().await.path.clone();
+    let before = std::fs::read(&path).unwrap();
+    assert!(rooms.queue_channel_notice(&created.room, notice()).unwrap());
+    let error = rooms.steward_notices(&created.room).await.unwrap_err();
+    assert!(error.contains("revoked"), "{error}");
+    for name in ["Demo", "Renamed"] {
+        let error = rooms.rename(&created.room, name).await.unwrap_err();
+        assert!(error.contains("revoked"), "{error}");
+    }
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    drop(state);
+    drop(rooms);
+    relay.shutdown().await;
+}
+
+async fn is_banned(rooms: &Rooms, room: &str, host: &DeviceCert, person: [u8; 32]) -> bool {
+    let state = rooms.room(room).await.unwrap();
+    let permissions = state
+        .lock()
+        .await
+        .peer()
+        .permissions(host.device_public_key, SystemTime::now())
+        .unwrap();
+    permissions.policy.is_banned(&hex::encode(person))
+}
+
+#[tokio::test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the relay stays live until its consuming shutdown"
+)]
+async fn a_renamed_room_shows_its_new_name_to_members_and_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("plaza").await.unwrap();
+    let before = created.generation;
+    let renamed = rooms.rename(&created.room, " Plaza ").await.unwrap();
+    assert_eq!(renamed.name, "Plaza");
+    assert!(
+        renamed.generation > before,
+        "the rename is a governance change"
+    );
+    let again = rooms.rename(&created.room, "Plaza").await.unwrap();
+    assert_eq!(
+        again.generation, renamed.generation,
+        "the same name changes nothing"
+    );
+    assert!(rooms.rename(&created.room, " ").await.is_err());
+    let path = {
+        let state = rooms.room(&created.room).await.unwrap();
+        let governed = state.lock().await;
+        assert_eq!(governed.peer().room_name().as_deref(), Some("Plaza"));
+        governed.path.clone()
+    };
+    drop(rooms);
+    relay.shutdown().await;
+    let restored = GovernedRoom::open(path, &cert, &key, &Arc::default()).unwrap();
+    assert_eq!(restored.summary().name, "Plaza");
+    assert_eq!(restored.peer().room_name().as_deref(), Some("Plaza"));
+}
+
+#[tokio::test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the relay stays live until its consuming shutdown"
+)]
+async fn the_owner_bans_and_unbans_and_a_stranger_cannot() {
+    use tilo_relay_session::rooms::RemoveMemberRequest;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Demo").await.unwrap();
+    let guest = [7; 32];
+    let request = |request_id| RemoveMemberRequest {
+        request_id,
+        user_public_key: guest,
+    };
+    let stranger_root = SigningKey::from_bytes(&[9; 32]);
+    let stranger_key = SigningKey::from_bytes(&[10; 32]);
+    let mut stranger = DeviceCert {
+        user_public_key: stranger_root.verifying_key().to_bytes(),
+        device_public_key: stranger_key.verifying_key().to_bytes(),
+        device_label: "stranger".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut stranger, &stranger_root).unwrap();
+    assert!(
+        rooms
+            .ban_member(&created.room, &stranger, request([1; 32]))
+            .await
+            .is_err(),
+        "someone not in the room bans nobody"
+    );
+    rooms
+        .ban_member(&created.room, &cert, request([2; 32]))
+        .await
+        .unwrap();
+    assert!(is_banned(rooms, &created.room, &cert, guest).await);
+    assert!(
+        rooms
+            .unban_member(&created.room, &cert, request([2; 32]))
+            .await
+            .is_err(),
+        "one request id names one change"
+    );
+    rooms
+        .unban_member(&created.room, &cert, request([3; 32]))
+        .await
+        .unwrap();
+    assert!(!is_banned(rooms, &created.room, &cert, guest).await);
+    relay.shutdown().await;
+}
+
+pub(crate) async fn restricted_until(
+    rooms: &Rooms,
+    room: &str,
+    host: &DeviceCert,
+    person: [u8; 32],
+) -> Option<u64> {
+    let state = rooms.room(room).await.unwrap();
+    let now = SystemTime::now();
+    let permissions = state
+        .lock()
+        .await
+        .peer()
+        .permissions(host.device_public_key, now)
+        .unwrap();
+    permissions.policy.restricted_until(
+        &hex::encode(person),
+        &tilo_action_policy::Context::at_time(now),
+    )
+}
+
+#[tokio::test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the relay stays live until its consuming shutdown"
+)]
+async fn the_owner_restricts_until_a_time_and_lifts_it() {
+    use tilo_relay_session::rooms::RemoveMemberRequest;
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Demo").await.unwrap();
+    let guest = [7; 32];
+    let request = |request_id| RemoveMemberRequest {
+        request_id,
+        user_public_key: guest,
+    };
+    let until = tilo_clock::unix_now_ns() / 1_000_000 + 30 * 60_000;
+    rooms
+        .restrict_member(&created.room, &cert, request([1; 32]), until)
+        .await
+        .unwrap();
+    assert_eq!(
+        restricted_until(rooms, &created.room, &cert, guest).await,
+        Some(until)
+    );
+    assert!(
+        !is_banned(rooms, &created.room, &cert, guest).await,
+        "a restriction is not a ban"
+    );
+    rooms
+        .unrestrict_member(&created.room, &cert, request([2; 32]))
+        .await
+        .unwrap();
+    assert_eq!(
+        restricted_until(rooms, &created.room, &cert, guest).await,
+        None
+    );
+    let owner = RemoveMemberRequest {
+        request_id: [3; 32],
+        user_public_key: cert.user_public_key,
+    };
+    assert!(
+        rooms
+            .restrict_member(&created.room, &cert, owner, until)
+            .await
+            .is_err(),
+        "the owner is never restricted"
+    );
+    relay.shutdown().await;
+}
+
+/// A one-step program posting to chat, as canonical text.
+#[cfg(feature = "agents")]
+fn bridge_program() -> String {
+    let rule = tilo_action_policy::Rule::new(
+        tilo_action_policy::TreePath::root()
+            .any(tilo_action_policy::Level::Room)
+            .app("so.tilo.chat")
+            .kind("chat.workspace")
+            .any(tilo_action_policy::Level::Resource)
+            .action("post"),
+        tilo_action_policy::KindSet::READ_UNDOABLE,
+        tilo_action_policy::Answer::Allow,
+    );
+    let shortcut = tilo_automation::Shortcut {
+        id: "bridge".into(),
+        name: "Bridge".into(),
+        inputs: vec![],
+        steps: vec![tilo_automation::Step::new(
+            "post",
+            tilo_automation::StepKind::Invoke {
+                action: tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
+                resource: tilo_automation::Selector::FirstOfKind("chat.workspace".into()),
+                args: BTreeMap::default(),
+                appearance: None,
+            },
+        )],
+        output: None,
+        grant: vec![rule],
+        triggers: vec![],
+        saved_by: None,
+    };
+    String::from_utf8(tilo_automation::program::canonical_bytes(&shortcut).unwrap()).unwrap()
+}
+
+/// A capability-free bot device of the fixture's root, and its installer's
+/// delegation naming it installation `id` in `room`.
+#[cfg(feature = "agents")]
+fn bot_device(id: &str, room: &str, seed: u8) -> tilo_peer_state::workspace_membership::BotDevice {
+    use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
+    let installer = SigningKey::from_bytes(&[1; 32]);
+    let device = SigningKey::from_bytes(&[seed; 32]);
+    let mut cert = DeviceCert {
+        user_public_key: installer.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "Bot: Bridge".into(),
+        capabilities: DeviceCapabilities {
+            can_own_workspaces: false,
+            can_admit_devices: false,
+            can_act_as_host: false,
+            can_read_all_workspaces: false,
+            foreign: false,
+            can_administer_devices: false,
+        },
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut cert, &installer).unwrap();
+    let now_ns = tilo_clock::unix_now_ns();
+    let delegation = Delegation::sign(
+        &installer,
+        cert.device_public_key,
+        Delegate::Bot {
+            installation: id.into(),
+        },
+        "Bridge",
+        [1, 2, 3],
+        DelegateScope {
+            rooms: vec![room.into()],
+            apps: vec![],
+        },
+        now_ns.saturating_sub(1_000_000_000),
+        now_ns.saturating_add(3_600_000_000_000),
+    )
+    .unwrap();
+    tilo_peer_state::workspace_membership::BotDevice { cert, delegation }
+}
+
+/// Install `program` as bot `id` with `appearance` in `peer`, as the
+/// governor `cert`.
+#[cfg(feature = "agents")]
+fn install_bot(
+    peer: &mut StatePeer,
+    (key, cert): (&SigningKey, &DeviceCert),
+    program: &str,
+    (id, seed): (&str, u8),
+    appearance: tilo_peer_state::AppearancePolicy,
+) {
+    use tilo_peer_state::workspace_membership::{BotInstall, WorkspaceMembershipCommand};
+    let command = WorkspaceMembershipCommand::InstallBot(Box::new(BotInstall {
+        installation: tilo_peer_state::Installation {
+            id: tilo_peer_state::InstallationId::parse(id).unwrap(),
+            program: tilo_automation::program::program_hash(program.as_bytes()),
+            name: "Bridge".into(),
+            icon: None,
+            installed_by: hex::encode(cert.user_public_key),
+            installed_at_ms: 1,
+            appearance,
+            source: None,
+            armed_at: vec![],
+            connector_cursors_from_ms: 1,
+            inputs: BTreeMap::default(),
+            paused: false,
+        },
+        program: program.into(),
+        device: Some(bot_device(id, peer.room(), seed)),
+    }));
+    assert_eq!(
+        peer.apply_workspace_membership_command(cert, &command, key, SystemTime::now()),
+        Ok(true)
+    );
+}
+
+/// A bot installed with personas shows other names; one installed to post
+/// as itself, an unknown installation and a room not governed here do not.
+#[cfg(feature = "agents")]
+#[tokio::test]
+async fn only_a_live_bot_installed_with_personas_shows_other_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Bridged").await.unwrap();
+    let governed = rooms.room(&created.room).await.unwrap();
+    let mut peer = governed.lock().await.peer().clone();
+    let program = bridge_program();
+    let personas = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6";
+    let own = "7f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6";
+    install_bot(
+        &mut peer,
+        (&key, &cert),
+        &program,
+        (personas, 8),
+        tilo_peer_state::AppearancePolicy::Personas,
+    );
+    install_bot(
+        &mut peer,
+        (&key, &cert),
+        &program,
+        (own, 9),
+        tilo_peer_state::AppearancePolicy::Own,
+    );
+    let now = SystemTime::now();
+    assert!(super::views::bot_shows_personas(&peer, personas, now));
+    assert!(!super::views::bot_shows_personas(&peer, own, now));
+    assert!(!super::views::bot_shows_personas(
+        &peer,
+        "8f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6",
+        now
+    ));
+    assert!(
+        !rooms.bot_personas(created.workspace_id, personas).await,
+        "the governed copy has no such installation"
+    );
+    assert!(!rooms.bot_personas(0, personas).await);
+    drop(rooms);
+    drop(relay);
 }

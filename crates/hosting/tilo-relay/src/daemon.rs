@@ -743,6 +743,9 @@ impl Relay {
                 identity.device_signing_key.clone(),
                 identity.device_cert.clone(),
             ),
+            member_limits: cfg
+                .member_limits
+                .map(|limits| Arc::new(crate::member_limits::MemberLimits::new(limits))),
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -814,6 +817,9 @@ impl Relay {
                         cert: identity.device_cert.clone(),
                         key: identity.device_signing_key.clone(),
                         revocations: revocations.clone(),
+                        max_pre_admissions: cfg
+                            .max_room_grants
+                            .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
                         #[cfg(feature = "agents")]
                         trust_policy: handler.trust_policy.clone(),
                         #[cfg(feature = "agents")]
@@ -1067,8 +1073,8 @@ impl Relay {
     /// Returns why the delegation is not usable now.
     pub fn register_agent(
         &self,
-        delegation: tilo_relay_protocol::agents::AgentDelegation,
-    ) -> Result<(), tilo_relay_protocol::agents::DelegationError> {
+        delegation: tilo_relay_protocol::delegation::Delegation,
+    ) -> Result<(), tilo_relay_protocol::delegation::DelegationError> {
         delegation.verify(
             &self.web.relay.identity.user_public_key,
             tilo_clock::unix_now_ns(),
@@ -1078,7 +1084,7 @@ impl Relay {
             .agents
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(delegation.agent_device_public_key, Some(delegation));
+            .insert(delegation.device_public_key, Some(delegation));
         // A replacement may narrow an earlier delegation's rooms.
         crate::authority_epoch::bump();
         Ok(())
@@ -1184,6 +1190,12 @@ impl Relay {
     #[must_use]
     pub const fn rooms(&self) -> Option<&crate::rooms::Rooms> {
         self.rooms.as_ref()
+    }
+
+    /// Where this relay keeps its state.
+    #[cfg(feature = "web")]
+    pub(crate) fn state_root(&self) -> &std::path::Path {
+        &self.state_root
     }
 
     fn ensure_workspace_mutation_scope(&self, workspace_id: u64) -> Result<(), RelayError> {
@@ -2201,6 +2213,7 @@ pub(crate) struct RelayProtocol {
     pub(crate) live_bridge: Arc<std::sync::OnceLock<crate::peer::LiveBridge>>,
     pub(crate) agents: crate::peer::AgentRegistry,
     pub(crate) compactor: crate::compaction::Compactor,
+    pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
 }
 
 impl RelayProtocol {
@@ -2233,6 +2246,7 @@ impl RelayProtocol {
                 &self.identity.signing_key.to_bytes(),
             )),
             compactor: Some(self.compactor.clone()),
+            member_limits: self.member_limits.clone(),
         }
     }
 }

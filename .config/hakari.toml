@@ -94,6 +94,7 @@ workspace-members = [
     "tilo-automation",
     "tilo-automerge",
     "tilo-clock",
+    "tilo-content",
     "tilo-desktop-model",
     # Delegated ownership adds this identity graph to the shared model.
     "tilo-user-identity",

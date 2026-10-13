@@ -1531,7 +1531,6 @@ fn arrange(cx: &ViewCx<Artwork>, ids: &[String]) -> Element {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "test fixtures")]
 
     use super::*;
 

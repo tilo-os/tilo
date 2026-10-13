@@ -10,10 +10,6 @@ use tilo_ui::launch::LaunchError;
 use tilo_ui::record::RecordId;
 use tilo_ui::view::{FocusView, ThawError, View};
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-)]
 #[test]
 fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
     // Case `new_instances_are_distinct_and_catalogue_never_fabricates_apps`.
@@ -1302,9 +1298,6 @@ mod save_status_fixture {
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Named("status".into())
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
         fn record_save_status(&mut self, status: RecordSaveStatus) {
             assert_eq!(self.records.save_status(&self.checkout.id).unwrap(), status);
             DELIVERED.with(|seen| seen.borrow_mut().push(status));
@@ -1657,9 +1650,6 @@ mod paired_local {
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Glyph("")
         }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
         fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
             let mut state = self.0.borrow_mut();
             state.events.push("capture".into());
@@ -1736,10 +1726,6 @@ mod paired_local {
         STATE.with(|slot| *slot.borrow_mut() = state.clone());
         (host, definition(factory), state)
     }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-    )]
     #[test]
     fn paired_local_views_bracket_restore_and_keep_complete_pairs_on_failure() {
         // Case `second_capture_failure_retains_complete_previous_pair_during_owned_close`.

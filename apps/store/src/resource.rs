@@ -226,6 +226,15 @@ pub enum StoreEffect {
         #[param("App identity")]
         app: String,
     },
+    /// Add a directory bot to a room.
+    ///
+    /// Bots run in rooms, not on this device; this stays unavailable until a
+    /// room offers its install-bot action to you.
+    #[effect(job)]
+    AddBot {
+        #[param("Bot identity")]
+        app: String,
+    },
     /// Refresh remotes.
     #[effect(job)]
     RefreshRemotes,
@@ -302,6 +311,7 @@ impl StoreEffect {
             ActionKind::FlatpakOpen => Self::FlatpakOpen { app },
             ActionKind::FlatpakRemove => Self::FlatpakRemove { app },
             ActionKind::NeedsFlatpakHost => Self::FlatpakSetup { app },
+            ActionKind::AddBot => Self::AddBot { app },
         }
     }
 
@@ -319,6 +329,7 @@ impl StoreEffect {
             Self::FlatpakOpen { app } => (app, ActionKind::FlatpakOpen),
             Self::FlatpakRemove { app } => (app, ActionKind::FlatpakRemove),
             Self::FlatpakSetup { app } => (app, ActionKind::NeedsFlatpakHost),
+            Self::AddBot { app } => (app, ActionKind::AddBot),
             _ => return None,
         };
         Some((app.as_str(), action))
@@ -382,14 +393,7 @@ const SCENARIOS: &[&str] = &[
 /// The app the moderation screenshots report.
 const SHOT_REPORTED_APP: &str = "so.tilo.notes";
 
-/// The Store's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[
-    ("en-US", include_str!("../locales/en-US.ftl")),
-    ("de-DE", include_str!("../locales/de-DE.ftl")),
-];
-
-pub(crate) static STORE_CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(pub(crate) static STORE_CATALOG, ["en-US", "de-DE"]);
 
 /// Framework app.
 pub struct StoreShell;

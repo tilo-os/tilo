@@ -35,7 +35,7 @@ fn bounded_governed_import_matches_real_legacy_import_and_retains_fresh_certific
         admission: None,
         admissions: vec![],
         workspace_delegations: vec![],
-        agent: None,
+        delegate: None,
     };
     room.put(
         &identities,
@@ -289,7 +289,7 @@ fn row(cert: DeviceCert) -> GovernedIdentity {
         admission: None,
         admissions: vec![],
         workspace_delegations: vec![],
-        agent: None,
+        delegate: None,
     }
 }
 

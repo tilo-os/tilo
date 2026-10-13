@@ -24,7 +24,6 @@
 use crate::num::f64_of_usize;
 use std::collections::HashMap;
 
-use automerge::ObjId;
 use taffy::style_helpers::{auto, fr, length, min_content, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -502,15 +501,6 @@ impl Widget for Card {
         }
     }
 
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
@@ -789,14 +779,8 @@ impl Widget for Actions {
                 justify_content: Some(taffy::JustifyContent::End),
                 align_items: Some(taffy::AlignItems::End),
                 align_content: Some(taffy::AlignContent::Start),
-                size: Size {
-                    width: auto(),
-                    height: auto(),
-                },
-                min_size: Size {
-                    width: length(0.0_f32),
-                    height: length(0.0_f32),
-                },
+                size: Size::auto(),
+                min_size: Size::from_lengths(0.0_f32, 0.0_f32),
                 flex_shrink: 0.0,
                 gap: Size {
                     width: length(gap),

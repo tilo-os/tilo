@@ -4,13 +4,6 @@
 //! home relay, and once the last collaborator has left the relays rest again
 //! and the desktop sleeps as one that never collaborated.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;

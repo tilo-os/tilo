@@ -1,12 +1,6 @@
 //! Typed paths, field edits at them, invariants and the storage types whose
 //! concurrent edits merge per element.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test assertions"
-)]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use tilo_resource::{
     ActionCx, Bytes, Collection, Counter, Edit, Grid, Id, Invoke, Model, Outbox, Path, Refusal,

@@ -271,10 +271,7 @@ impl Widget for EmbeddedApp {
             self.wants_frame.set(true);
         }
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..taffy::Style::default()
         };
         let Ok(node) = taffy.new_leaf(style) else {
@@ -921,10 +918,7 @@ mod theme_repaint_tests {
         let button = tile.app.root_widget.get_rect();
         // The pointer arrives over the button and its hover is painted.
         let at = button.center();
-        let moved = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-        };
+        let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
         tile.app.surface_input(&tile.region, moved, false);
         tile.wants_frame.set(true);
         let hovered = paint_tracked(&mut tile, &theme);

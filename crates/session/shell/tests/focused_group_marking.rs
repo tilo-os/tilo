@@ -15,16 +15,6 @@
 //!   5. A workspace with a single window lights nothing — with nothing to
 //!      tell apart, the marker would be decoration.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
@@ -124,10 +114,6 @@ fn lit(host: &mut ShellOverlayHost, strips: [StripId; 2]) -> Vec<(StripId, Group
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn the_focus_light_follows_the_pointer_and_only_shows_with_two_windows() {
     // Phase `the_tree_s_active_group_is_the_one_that_reports_focus`.
     {

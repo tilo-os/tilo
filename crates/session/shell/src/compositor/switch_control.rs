@@ -134,7 +134,6 @@ mod tests {
     use settings_store::live::LiveSettings;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use winit::event::DeviceId;
 
     fn key(logical_key: Key, pressed: bool) -> WindowEvent {
         let event = ui::synthetic_input::key_event(
@@ -146,11 +145,7 @@ mod tests {
                 ElementState::Released
             },
         );
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed::<DeviceId>() },
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     /// A settings document that counts its reads, so a test can prove a

@@ -863,6 +863,35 @@ impl PrimaryScrollAction {
         };
         next.is_finite().then(|| next.clamp(0.0, m.max_scroll()))
     }
+
+    /// Apply the action to `target`, whose primary region `region` reads:
+    /// `set` moves it to the clamped offset only when that differs, and the
+    /// result reports the region as it reads afterwards.
+    #[expect(
+        clippy::float_cmp,
+        reason = "the clamped target is compared exactly: identical means the scroll did not move"
+    )]
+    pub fn apply_to<T: ?Sized>(
+        self,
+        target: &mut T,
+        region: impl Fn(&T) -> Option<PrimaryScrollRegion>,
+        set: impl FnOnce(&mut T, &PrimaryScrollRegion, f64),
+    ) -> PrimaryScrollResult {
+        let Some(before) = region(target) else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        let Some(next) = self.offset(before.metrics) else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        if next == before.metrics.offset {
+            return PrimaryScrollResult::Unchanged(before);
+        }
+        set(target, &before, next);
+        region(target).map_or(
+            PrimaryScrollResult::Unsupported,
+            PrimaryScrollResult::Changed,
+        )
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PrimaryScrollResult {

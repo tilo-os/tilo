@@ -41,8 +41,10 @@ const ANNOUNCED_CHILD: &str = "TILO_TEST_IDLE_READS_ANNOUNCED";
 const CHECKS_PER_ANNOUNCEMENT: usize = 4;
 /// Blocking wakeups per second of the broker's thread while its readers
 /// idle with every change announced and nothing announces: 0.2 measured
-/// (focused runs 101274, 101558); 21-24 on the unannounced re-check.
-const ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET: u32 = 1;
+/// (focused runs 101274, 101558), 1.4 in whole-shard runs with no checks and
+/// no captures (main runs 104884, 104917; PR run 104858); 21-24 on the
+/// unannounced re-check. Three a second still fails that re-check by 7x.
+const ANNOUNCED_BROKER_WAKEUPS_PER_S_BUDGET: u32 = 3;
 /// What one announcement may add to them: each waiting reader's check and
 /// the broker's answer to it (about 8 measured, focused run 101557).
 const BROKER_WAKEUPS_PER_ANNOUNCEMENT: u32 = 10;

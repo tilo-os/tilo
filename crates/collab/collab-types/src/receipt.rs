@@ -65,6 +65,15 @@ pub enum Receipt {
 /// Why a received op is refused.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ReceiptRefusal {
+    /// A change shows another name than its author's, and its author is not
+    /// the bot allowed to, or the name is not valid.
+    #[error("{actor} may not show the appearance it carries: {reason}")]
+    Appearance {
+        /// The invoker the change names.
+        actor: String,
+        /// Why the appearance is refused.
+        reason: String,
+    },
     /// A change carries no claim, a claim names no change, or one change is
     /// claimed twice.
     #[error("the claims do not name exactly the op's changes")]
@@ -375,6 +384,48 @@ pub fn decide_op(
     allows: &dyn Fn(&TreePath, ActionKind) -> bool,
 ) -> Result<Receipt, ReceiptRefusal> {
     decide_op_pinned(op, record, kind, held, None, surfaces, allows)
+}
+
+/// Refuse changes whose invoker shows an appearance unless they come from
+/// the one bot actor their author device may show other names as
+/// (`persona_author`, `bot:<installation>` for a bot device whose
+/// installation allows `Personas`), and the appearance is valid as written.
+/// The relay cannot read a sealed change, so devices run this once they hold
+/// the plaintext, like every other replay check.
+///
+/// # Errors
+/// [`ReceiptRefusal::Appearance`] for the first change that breaks the rule.
+pub fn check_appearances(
+    changes: &[automerge::Change],
+    persona_author: Option<&str>,
+) -> Result<(), ReceiptRefusal> {
+    for change in changes {
+        let Some(invoker) = change
+            .message()
+            .and_then(tilo_actions::ActionContext::from_change_message)
+            .and_then(|context| context.invoker)
+        else {
+            continue;
+        };
+        let Some(appearance) = &invoker.appearance else {
+            continue;
+        };
+        if invoker.kind != tilo_actions::ActorKind::Bot
+            || persona_author != Some(invoker.actor.as_str())
+        {
+            return Err(ReceiptRefusal::Appearance {
+                actor: invoker.actor.clone(),
+                reason: "its author is not a bot allowed to post under other names".into(),
+            });
+        }
+        appearance
+            .validate()
+            .map_err(|error| ReceiptRefusal::Appearance {
+                actor: invoker.actor.clone(),
+                reason: error.to_string(),
+            })?;
+    }
+    Ok(())
 }
 
 /// [`decide_op`] for a record whose identity names `pinned`, the surface

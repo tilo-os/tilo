@@ -30,6 +30,10 @@ regex = "1"
 uuid = { version = "1.23.1", features = ["v4", "serde", "js"] }
 thiserror.workspace = true
 blake3.workspace = true
+# Appearance names are compared and stored NFC-normalized.
+unicode-normalization = "0.1.25"
+# An avatar is checked by its sniffed image type.
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["alloc"] }

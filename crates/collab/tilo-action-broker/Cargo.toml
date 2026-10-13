@@ -65,6 +65,7 @@ iroh.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 word-processor = { path = "../../../apps/word-processor" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
 settings = { path = "../../../apps/settings" }
 store = { path = "../../../apps/store" }
 app-framework = { package = "tilo-app", path = "../../sdk/tilo-app" }

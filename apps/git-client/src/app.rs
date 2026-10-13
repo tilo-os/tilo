@@ -1281,11 +1281,12 @@ impl GitClientApp {
         // Under the window's header row (a floating drawer) the column has
         // no header of its own.
         if header_h > 0.0 {
-            let mut x = header.x0 + s3;
-            if let Some(rect) = toggle {
+            let x = if let Some(rect) = toggle {
                 self.paint_toggle(ctx, rect);
-                x = rect.x1 + gap;
-            }
+                rect.x1 + gap
+            } else {
+                header.x0 + s3
+            };
             let heading = theme.text(TextRole::Heading);
             let name = ctx.text.elide_to_width_style(
                 &self.model.name,
@@ -1428,11 +1429,12 @@ impl GitClientApp {
             0.0,
             theme.tokens.colors.surfaces.content,
         );
-        let mut x = header.x0 + s3;
-        if with_toggle {
+        let x = if with_toggle {
             self.paint_toggle(ctx, toggle);
-            x = toggle.x1 + gap;
-        }
+            toggle.x1 + gap
+        } else {
+            header.x0 + s3
+        };
 
         let owned: Vec<String> = Screen::ALL.iter().map(|s| s.label()).collect();
         let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
@@ -2679,10 +2681,7 @@ impl Widget for GitClientApp {
         // The app draws itself; a single full-size leaf node carries it.
         let node = taffy.widget_leaf(
             Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
+                size: taffy::Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             node_map,
@@ -3163,7 +3162,7 @@ impl GitClientApp {
 
         // The confirmation sheet holds the keyboard: Escape cancels it.
         if self.confirm.is_some() {
-            if let Key::Named(NamedKey::Escape) = &ev.logical_key {
+            if matches!(&ev.logical_key, Key::Named(NamedKey::Escape)) {
                 self.confirm = None;
             }
             *handled = true;
@@ -3221,9 +3220,7 @@ impl GitClientApp {
         }
 
         // Escape dismisses an open drawer.
-        if let Key::Named(NamedKey::Escape) = &ev.logical_key
-            && self.drawer_is_modal()
-        {
+        if matches!(&ev.logical_key, Key::Named(NamedKey::Escape)) && self.drawer_is_modal() {
             self.drawer.close();
             *handled = true;
             return;
@@ -3640,11 +3637,8 @@ impl GitClientApp {
         }
         match effect {
             GitClientEffect::RunApprovedCheck { check_id } => {
-                let checked = cx.approved_check(&check_id)?;
-                return Ok(cx.spawn(
-                    |_| checked,
-                    |_app, observed, _cx| observed.map(Effected::value),
-                ));
+                let checked = cx.approved_check_reported(&check_id)?;
+                return Ok(cx.spawn(checked, |_app, observed, _cx| observed.map(Effected::value)));
             }
             effect @ (GitClientEffect::ShowChanges
             | GitClientEffect::ShowHistory

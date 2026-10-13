@@ -37,13 +37,17 @@ impl Chat {
         let workspaces = self.workspaces.iter().map(|(id, workspace)| {
             SearchEntry::new(&workspace.name, "Workspace").anchored(anchor("workspaces", id))
         });
-        let channels = self.channels.iter().map(|(id, channel)| {
-            SearchEntry::new(
-                channel.name.clone(),
-                format!("{} {}", channel.topic, workspace_name(&channel.workspace)),
-            )
-            .anchored(anchor("channels", id))
-        });
+        let channels = self
+            .channels
+            .iter()
+            .filter(|(_, channel)| channel.conversation_with.is_none())
+            .map(|(id, channel)| {
+                SearchEntry::new(
+                    channel.name.clone(),
+                    format!("{} {}", channel.topic, workspace_name(&channel.workspace)),
+                )
+                .anchored(anchor("channels", id))
+            });
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, workspace_name(&category.workspace))
                 .anchored(anchor("categories", id))
@@ -92,7 +96,11 @@ impl Chat {
                     "id": id,
                     "name": workspace.name,
                     "channels": self.channels.iter()
-                        .filter(|(_, channel)| channel.workspace == *id && !channel.archived)
+                        .filter(|(_, channel)| {
+                            channel.workspace == *id
+                                && !channel.archived
+                                && channel.conversation_with.is_none()
+                        })
                         .map(|(id, channel)| serde_json::json!({
                             "id": id,
                             "name": channel.name,
@@ -150,6 +158,11 @@ pub struct ChatShell;
 /// Every named scenario `--shots --scenario NAME` captures.
 pub(crate) const SCENARIOS: &[&str] = &[
     "agent-work",
+    "bridged",
+    "agent-task",
+    "agent-task-compact",
+    "agent-task-queued",
+    "agent-task-queued-compact",
     "narrow",
     "history",
     "compact",
@@ -219,6 +232,13 @@ impl ResourceApp for ChatShell {
         SCENARIOS
     }
 
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        match scenario {
+            Some("agent-task-compact" | "agent-task-queued-compact") => (420, 680),
+            _ => (1280, 800),
+        }
+    }
+
     /// `agent-work` is the demo conversation and an agent's reply, each
     /// change written by whoever made it.
     fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
@@ -246,6 +266,9 @@ impl ResourceApp for ChatShell {
             }
             _ => {
                 let mut invokes = demo_invokes();
+                if name == Some("bridged") {
+                    invokes.extend(Invoke::edit(&bridged_post()));
+                }
                 if name == Some("composer") {
                     // The composer mid-compose: a multi-line draft in the
                     // channel shown.
@@ -295,6 +318,33 @@ fn demo_invokes() -> Vec<Invoke<Chat>> {
         .iter()
         .filter_map(|edit| Invoke::edit(edit).ok())
         .collect()
+}
+
+/// The bridge the `bridged` scenario's post is by.
+pub(crate) const DEMO_BRIDGE: &str = "bot:5d0c7a3e-2b41-4f6a-9e18-c3a7b2d4e6f1";
+
+/// `bridged`: a bridge's post of a line someone wrote on Discord, shown
+/// under their name and picture while it stays the bridge's.
+fn bridged_post() -> ui::tilo_resource::Edit<Chat> {
+    let post = crate::record::Message {
+        channel: Id::from_raw("c_crit"),
+        author: ui::tilo_resource::Atom(DEMO_BRIDGE.to_owned()),
+        ts: crate::demo::NOW - 60,
+        text: "Joining from Discord: the warmer palette reads much better on my phone.".into(),
+        appearance: ui::tilo_resource::Json(Some(tilo_actions::Appearance {
+            name: "Bo".into(),
+            avatar: Some("tilo-demo://avatar-bo".into()),
+            persona: Some(tilo_actions::Persona {
+                service: "discord".into(),
+                account: "80351110224678912".into(),
+            }),
+        })),
+        ..crate::record::Message::default()
+    };
+    let at = crate::demo::demo(crate::model::ME).messages.len();
+    Chat::paths()
+        .messages
+        .insert_as(&Id::from_raw("m_bridged"), at, &post)
 }
 
 /// The agent the `agent-work` scenario summons.
@@ -407,6 +457,22 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
             ChatEffect::CopyResourceLink { .. } | ChatEffect::OpenResourceLink { .. }
         ) {
             return self.begin_resource_navigation(&effect, cx.reply());
+        }
+        if let ChatEffect::ReadWorkspace {
+            workspace,
+            message,
+            channel,
+        } = &effect
+        {
+            let chat = cx.live().get();
+            return Ok(ui::framework::Effected::value(
+                crate::effects::read_workspace(
+                    &chat,
+                    workspace,
+                    message.as_deref(),
+                    channel.as_deref(),
+                ),
+            ));
         }
         if let Some(url) = crate::external::browser_destination(&effect)? {
             return Ok(cx.thread(
