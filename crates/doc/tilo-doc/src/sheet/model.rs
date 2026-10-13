@@ -15,8 +15,8 @@ use crate::sheet::snapshot::{CellType, CellView, SheetView, WorkbookSnapshot};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
-use tilo_automerge::ReadTyped as _;
 use tilo_automerge::read::{map_at, str_at, str_entries};
+use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 
 /// The data written into a cell: its value + type, an optional preserved formula
 /// (source without the leading `=`), and an optional opaque style ref.
@@ -348,7 +348,7 @@ impl Workbook {
     )]
     #[allow(
         clippy::unwrap_used,
-        reason = "`cells` was just resolved-or-created above, so put_object on it cannot fail mid-call"
+        reason = "`cells` and the cell were just resolved-or-created above, so writes to them cannot fail mid-call"
     )]
     pub fn set_cell(&mut self, sheet_id: &str, reference: &str, input: CellInput) -> bool {
         if crate::sheet::a1::parse_ref(reference).is_none() {
@@ -364,20 +364,15 @@ impl Workbook {
                 .put_object(&cells, reference, ObjType::Map)
                 .unwrap(),
         };
-        put_str_if_changed(&mut self.doc, &cell_obj, CELL_VALUE, &input.value);
-        put_str_if_changed(
-            &mut self.doc,
-            &cell_obj,
-            CELL_TYPE,
-            input.cell_type.as_str(),
-        );
-        set_opt_str(
-            &mut self.doc,
-            &cell_obj,
-            CELL_FORMULA,
-            input.formula.as_deref(),
-        );
-        set_opt_str(&mut self.doc, &cell_obj, CELL_STYLE, input.style.as_deref());
+        let doc = &mut self.doc;
+        doc.put_str_if_changed(&cell_obj, CELL_VALUE, &input.value)
+            .unwrap();
+        doc.put_str_if_changed(&cell_obj, CELL_TYPE, input.cell_type.as_str())
+            .unwrap();
+        doc.put_opt_str_if_changed(&cell_obj, CELL_FORMULA, input.formula.as_deref())
+            .unwrap();
+        doc.put_opt_str_if_changed(&cell_obj, CELL_STYLE, input.style.as_deref())
+            .unwrap();
         self.doc.commit();
         true
     }
@@ -551,43 +546,4 @@ fn seeded_sheet_id_gen(
         actor_hex: actor.clone(),
     })?;
     Ok(crate::model::IdGen::with_counter(actor, next))
-}
-
-/// Write a string field only when it differs from the stored value (avoids a
-/// redundant CRDT op — the store-churn guard).
-///
-/// # Panics
-/// Panics if `obj` no longer resolves in `doc`. Both call sites pass a cell object just
-/// resolved-or-created a line above, so it is always live.
-#[allow(
-    clippy::unwrap_used,
-    reason = "obj is always a live object at every call site (see the panics note above)"
-)]
-fn put_str_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str) {
-    let current = str_at(doc, obj, key);
-    if current.as_deref() != Some(value) {
-        doc.put(obj, key, value).unwrap();
-    }
-}
-
-/// Set an optional string field: write it when `Some` and changed, delete it when
-/// `None` and currently present.
-///
-/// # Panics
-/// Panics if `obj` no longer resolves in `doc` — see the note on [`put_str_if_changed`].
-#[allow(
-    clippy::unwrap_used,
-    reason = "obj is always a live object at every call site (see the panics note above)"
-)]
-fn set_opt_str(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: Option<&str>) {
-    let current = str_at(doc, obj, key);
-    if current.as_deref() == value {
-        return; // already matches: no CRDT op needed
-    }
-    match value {
-        Some(v) => doc.put(obj, key, v).unwrap(),
-        None => {
-            let _ = doc.delete(obj, key);
-        }
-    }
 }
