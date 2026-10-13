@@ -94,14 +94,6 @@ impl SourceEditor {
         self.control_mut().set_rect(rect);
     }
 
-    pub fn rect(&self) -> Rect {
-        self.rect
-    }
-
-    pub fn line_height(&self) -> f64 {
-        self.control().line_height()
-    }
-
     /// Show the source at `path`, each edit a splice there once a
     /// dispatcher is attached.
     pub fn follow(&mut self, path: Path<Workspace, String>) {

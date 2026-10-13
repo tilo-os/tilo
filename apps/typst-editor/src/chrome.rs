@@ -64,7 +64,6 @@ pub struct Chrome {
     history: ui::widget::HistoryOpener,
     history_rect: Rect,
     structure_dirty: bool,
-    toolbar_rect: Rect,
     visible: Visible,
 }
 
@@ -186,7 +185,6 @@ impl Chrome {
             history: ui::widget::HistoryOpener::new(),
             history_rect: Rect::ZERO,
             structure_dirty: true,
-            toolbar_rect: Rect::ZERO,
             visible: Visible::default(),
             queue,
         }
@@ -326,7 +324,6 @@ impl Chrome {
 
         self.document.apply_layout_external(picker_rect);
         self.view.apply_layout_external(view_rect);
-        self.toolbar_rect = toolbar_rect;
         self.toolbar.lay_out_in(toolbar_rect, tr, theme);
     }
 
@@ -370,10 +367,6 @@ impl Chrome {
         self.children().iter().any(|child| {
             child.wants_pointer_capture() || child.modal_capture().is_some() || child.traps_focus()
         })
-    }
-
-    pub fn toolbar_rect(&self) -> Rect {
-        self.toolbar_rect
     }
 
     /// Open the picker's list: a screenshot scenario showing it.

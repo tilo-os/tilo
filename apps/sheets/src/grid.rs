@@ -646,9 +646,6 @@ impl Grid {
     pub fn mark_drawn(&mut self) {
         self.dirty = false;
     }
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
 
     pub fn active(&self) -> Addr {
         self.active

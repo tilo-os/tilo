@@ -244,13 +244,12 @@ impl Decorator for StructureView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ColumnInfo, ForeignKey, IndexInfo, RelationKind, TypeClass};
+    use crate::model::{ColumnInfo, ForeignKey, IndexInfo, RelationKind};
 
     fn info(rows: Option<i64>) -> TableInfo {
         let column = |name: &str, primary_key: bool| ColumnInfo {
             name: name.into(),
             decl_type: "INTEGER".into(),
-            class: TypeClass::Integer,
             not_null: false,
             primary_key,
             default: None,

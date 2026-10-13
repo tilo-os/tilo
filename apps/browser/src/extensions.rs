@@ -22,7 +22,6 @@ pub struct ExtensionInfo {
 
 #[derive(Debug)]
 pub enum ExtensionError {
-    Download(String),
     Archive(String),
     Manifest(String),
     Io(std::io::Error),
@@ -50,7 +49,6 @@ const MAX_EXTENSION_PERMISSION_BYTES: usize = 512;
 impl std::fmt::Display for ExtensionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Download(e) => write!(f, "download failed: {e}"),
             Self::Archive(e) => write!(f, "archive invalid: {e}"),
             Self::Manifest(e) => write!(f, "manifest invalid: {e}"),
             Self::Io(e) => write!(f, "io: {e}"),
