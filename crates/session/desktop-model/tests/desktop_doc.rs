@@ -38,6 +38,7 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
         active_tab: tabs[0],
         width: WindowWidth::Wide,
         maximized: true,
+        focus_history: Vec::new(),
     }
 }
 

@@ -776,6 +776,7 @@ pub fn insert_foreign_group(
         active_tab: tab_id,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     };
     let group_id = group.id;
     let strip_id = strip.id;
@@ -1067,6 +1068,7 @@ mod tests {
             active_tab: stub_tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let foreign_tab = Tab {
             id: next_id(),
@@ -1083,6 +1085,7 @@ mod tests {
             active_tab: foreign_tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let foreign_group = foreign.id;
         let strip_id = StripId::from(next_id());
@@ -1548,6 +1551,7 @@ mod tests {
                 tabs,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             };
             let group_id = group.id;
             let strip_id = StripId::from(next_id());

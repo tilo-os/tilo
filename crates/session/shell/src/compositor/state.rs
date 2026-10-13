@@ -476,10 +476,10 @@ use smithay::wayland::xdg_activation::{
 };
 use smithay::{
     delegate_compositor, delegate_content_type, delegate_cursor_shape, delegate_data_control,
-    delegate_data_device, delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale,
+    delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale,
     delegate_idle_inhibit, delegate_keyboard_shortcuts_inhibit,
     delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
-    delegate_primary_selection, delegate_relative_pointer,
+    delegate_relative_pointer,
     delegate_session_lock, delegate_shm,
     delegate_kde_decoration, delegate_viewporter, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
@@ -7779,8 +7779,7 @@ impl IdleInhibitHandler for State {
 }
 
 // Selection: clipboard, primary selection, drag-and-drop. Handler impls live in `compositor::selection`; only dispatch wiring belongs here.
-delegate_data_device!(State);
-delegate_primary_selection!(State);
+// `wl_data_device` and `zwp_primary_selection_device_v1` are wrapped in `compositor::selection` so a refused `set_selection` is logged.
 delegate_data_control!(State);
 delegate_ext_data_control!(State);
 

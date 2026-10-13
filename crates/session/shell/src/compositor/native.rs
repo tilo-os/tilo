@@ -15736,6 +15736,7 @@ mod tests {
             active_tab: 12,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         workspace.strips[0].window_groups.push(WindowGroup {
             id: 13,
@@ -15750,6 +15751,7 @@ mod tests {
             active_tab: 14,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         workspace.shared_surfaces.share(7, 9);
         let none = std::collections::HashSet::new();
@@ -15810,6 +15812,7 @@ mod tests {
                 active_tab: 12,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             });
         tree.desktop.workspaces[0].shared_surfaces.share(7, 9);
         let tree = tree.shared();
@@ -15924,6 +15927,7 @@ mod tests {
                         active_tab: id + 1,
                         width: WindowWidth::Normal,
                         maximized: false,
+                        focus_history: Vec::new(),
                     }
                 })
                 .collect();
@@ -15996,6 +16000,7 @@ mod tests {
             active_tab: 92,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }];
         let room = background.room;
         tree.desktop.workspaces.push(background);
@@ -16086,6 +16091,7 @@ mod tests {
                 active_tab: 62,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             });
         // This device's own window and a Tilo app's tab stream from nowhere.
         let tiles = [
@@ -18352,6 +18358,7 @@ mod tests {
             active_tab: id + 100,
             width: WindowWidth::Fraction(250),
             maximized: false,
+            focus_history: Vec::new(),
         };
         let ws_id = WorkspaceId(7);
         let strip = StripId(77);
@@ -18501,6 +18508,7 @@ mod tests {
             active_tab: id + 100,
             width: WindowWidth::Fraction(600),
             maximized: false,
+            focus_history: Vec::new(),
         };
         let ws_id = WorkspaceId(7);
         let strip = StripId(77);

@@ -40,6 +40,7 @@ fn tree() -> DesktopTree {
             active_tab: 9_007_199_254_741_001,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     }];
     DesktopTree {

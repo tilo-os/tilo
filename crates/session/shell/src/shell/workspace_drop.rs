@@ -96,7 +96,7 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: &DraggedItem) -> Opt
     let strip = ws.strips.first_mut()?;
     if let Some(group) = strip.window_groups.first_mut() {
         group.tabs.push(tab);
-        group.active_tab = tab_id;
+        group.activate_tab(tab_id);
     } else {
         strip.window_groups.push(WindowGroup {
             id: next_id(),
@@ -104,6 +104,7 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: &DraggedItem) -> Opt
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
     }
     // Mirror the cache append into the automerge doc so peers observe the
@@ -138,7 +139,7 @@ pub fn apply_workspace_drop_at(
     let strip = ws.strips.iter_mut().find(|s| s.id == strip_id)?;
     let group = strip.window_groups.iter_mut().find(|g| g.id == group_id)?;
     group.tabs.push(tab);
-    group.active_tab = tab_id;
+    group.activate_tab(tab_id);
 
     // Mirror the cache append into the automerge doc, as above.
     tree.doc_append_tab_to_group_of_active_workspace(group_id, tab_id, doc_title, doc_tile_blob);
@@ -176,7 +177,7 @@ pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -
     let strip = ws.strips.first_mut()?;
     if let Some(group) = strip.window_groups.first_mut() {
         group.tabs.push(tab);
-        group.active_tab = tab_id;
+        group.activate_tab(tab_id);
     } else {
         let group = crate::shell::state::WindowGroup {
             id: crate::shell::state::next_id(),
@@ -184,6 +185,7 @@ pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         strip.window_groups.push(group);
         let Some(group) = strip.window_groups.last_mut() else {
@@ -192,7 +194,7 @@ pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -
             // failure than panicking this panic=abort process.
             return Some(tab_id);
         };
-        group.active_tab = tab_id;
+        group.activate_tab(tab_id);
     }
     Some(tab_id)
 }
@@ -391,6 +393,7 @@ mod tests {
             active_tab: 0,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         workspace.strips = vec![strip];
         RuntimeTree {
@@ -481,6 +484,7 @@ mod tests {
                     active_tab: 0,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 };
                 let second_group_id = second.id;
                 strip.window_groups.push(second);

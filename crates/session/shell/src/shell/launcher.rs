@@ -7691,6 +7691,7 @@ mod tests {
             active_tab: tabs[0].0,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }];
         tree.seed_doc_from_cache();
         tree
@@ -7927,6 +7928,7 @@ mod tests {
                 active_tab: 1_000_u64.saturating_add(i),
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             });
         }
         for (group_id, tab_id, title, app_id, surface) in [
@@ -7946,6 +7948,7 @@ mod tests {
                 active_tab: tab_id,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             });
         }
         let strip = tree.desktop.workspaces[0].strips[0].id;

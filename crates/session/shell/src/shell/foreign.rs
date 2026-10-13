@@ -7640,6 +7640,7 @@ mod tests {
                 tabs: vec![moved],
                 width: crate::shell::state::WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             });
 
             reconcile_foreign_tabs(&source, &mut rendered);

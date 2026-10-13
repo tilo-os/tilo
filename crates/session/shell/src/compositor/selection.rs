@@ -136,6 +136,11 @@ struct Slot {
     values: BTreeMap<String, Vec<u8>>,
     /// MIME types exposed to Wayland clients when Tilo owns the selection.
     mime_types: Vec<String>,
+    /// The formats the client source actually offered and Tilo pulls, without
+    /// the text aliases added to `mime_types`. A take-over waits for each of
+    /// these to finish transferring; an alias resolving to already-arrived
+    /// text must not count as a finished transfer of its own.
+    pulled: Vec<String>,
     /// Bumped whenever the selection changes hands, so an old asynchronous
     /// client transfer cannot overwrite a newer selection.
     generation: u64,
@@ -302,6 +307,39 @@ pub fn selection_snapshot(store: &SharedSelection, target: Target) -> SelectionS
     )
 }
 
+/// Password managers (1Password, KeePassXC) mark a copy with this format. The
+/// copy still has to paste, so it is persisted like any other, but it is kept
+/// out of history, never logged, and wiped when the next selection replaces it.
+pub const PASSWORD_MANAGER_HINT_MIME: &str = "x-kde-passwordManagerHint";
+
+/// Whether an offer carries a marker that forbids retention beyond the live selection.
+fn is_secret_offer(mimes: &[String]) -> bool {
+    mimes
+        .iter()
+        .any(|mime| mime == SECRET_MIME || mime == PASSWORD_MANAGER_HINT_MIME)
+}
+
+/// X11 selection meta targets that Xwayland bridges expose as MIME types. They
+/// describe the selection rather than carry content: a source answers them
+/// with nothing useful, so they are never pulled and never block taking the
+/// clipboard over.
+fn is_x11_meta_target(mime: &str) -> bool {
+    matches!(
+        mime,
+        "TARGETS"
+            | "TIMESTAMP"
+            | "MULTIPLE"
+            | "SAVE_TARGETS"
+            | "DELETE"
+            | "INSERT_SELECTION"
+            | "INSERT_PROPERTY"
+            | "LENGTH"
+            | "HOST_NAME"
+            | "USER"
+            | "CLIENT_WINDOW"
+    )
+}
+
 fn valid_mime(mime: &str) -> bool {
     !mime.is_empty()
         && mime.len() <= MAX_SELECTION_MIME_BYTES
@@ -368,7 +406,7 @@ fn history_id(values: &BTreeMap<String, Vec<u8>>) -> [u8; 32] {
 fn record_clipboard_history(store: &mut SelectionStore) {
     let slot = &store.clipboard;
     if slot.values.is_empty()
-        || slot.mime_types.iter().any(|mime| mime == SECRET_MIME)
+        || is_secret_offer(&slot.mime_types)
         || total_bytes(&slot.values) > MAX_CLIPBOARD_HISTORY_ITEM_BYTES
     {
         return;
@@ -721,6 +759,16 @@ pub fn clear_mirror(store: &SharedSelection, target: Target) {
     slot.clear_pending = true;
 }
 
+/// Overwrite a password-manager copy's bytes before they are dropped.
+fn wipe_if_secret(slot: &mut Slot) {
+    use zeroize::Zeroize as _;
+    if is_secret_offer(&slot.mime_types) {
+        for bytes in slot.values.values_mut() {
+            bytes.zeroize();
+        }
+    }
+}
+
 /// Start mirroring a client-owned selection.  This happens before any pipe
 /// reads, and the returned generation binds those reads to this exact owner.
 pub fn begin_client_selection(
@@ -734,7 +782,15 @@ pub fn begin_client_selection(
     let clipboard = target == Target::Clipboard;
     let watchers = std::sync::Arc::clone(&store.revision_watchers);
     let slot = store.slot_mut(target);
+    wipe_if_secret(slot);
     slot.values.clear();
+    slot.pulled = mimes
+        .iter()
+        .flatten()
+        .filter(|mime| valid_mime(mime) && !is_x11_meta_target(mime))
+        .take(MAX_SELECTION_MIMES)
+        .cloned()
+        .collect();
     slot.mime_types = mimes.map_or_else(Vec::new, normalized_mimes);
     slot.generation = slot.generation.wrapping_add(1).max(1);
     bump_revision(slot, &watchers, clipboard);
@@ -761,9 +817,21 @@ pub fn record_client_bytes(
     let watchers = std::sync::Arc::clone(&store.revision_watchers);
     let accepted = {
         let slot = store.slot_mut(target);
-        if generation == 0 || slot.generation != generation || bytes.len() > MAX_SELECTION_BYTES {
+        if generation == 0 || slot.generation != generation {
             return;
         }
+        if bytes.len() > MAX_SELECTION_BYTES {
+            tracing::info!(
+                target: "shell::selection",
+                ?target, mime, bytes = bytes.len(), limit = MAX_SELECTION_BYTES,
+                "client selection dropped: payload exceeds the mirror limit"
+            );
+            return;
+        }
+        tracing::debug!(
+            target: "shell::selection",
+            ?target, mime, bytes = bytes.len(), "client selection format mirrored"
+        );
         let previous = slot.values.insert(mime.to_owned(), bytes);
         if total_bytes(&slot.values) > MAX_SELECTION_BYTES {
             if let Some(previous) = previous {
@@ -771,6 +839,11 @@ pub fn record_client_bytes(
             } else {
                 slot.values.remove(mime);
             }
+            tracing::info!(
+                target: "shell::selection",
+                ?target, mime, limit = MAX_SELECTION_BYTES,
+                "client selection dropped: formats together exceed the mirror limit"
+            );
             false
         } else {
             bump_revision(slot, &watchers, clipboard);
@@ -802,20 +875,46 @@ pub fn adopt_complete_client_selection(store: &SharedSelection, now_ms: u64) -> 
         return false;
     };
     let slot = &mut store.clipboard;
-    if slot.compositor_owned
-        || slot.generation == 0
-        || slot.mime_types.is_empty()
-        || slot.values.is_empty()
-        || !slot
-            .mime_types
-            .iter()
-            .all(|mime| value_for(slot, mime).is_some_and(|bytes| !bytes.is_empty()))
-    {
-        // An empty payload is a transfer the source aborted (it closed the
-        // pipe without writing), not content: taking over would replace a
-        // working source with nothing.
+    if slot.compositor_owned || slot.generation == 0 {
         return false;
     }
+    // Every pulled format must have finished transferring (an entry exists,
+    // even an empty one), or the source is still the only holder of it. A
+    // take-over while a pull is in flight would make Xwayland's bridge own the
+    // selection it is still reading from, which then answers itself with
+    // nothing.
+    let formats: Vec<String> = slot.pulled.clone();
+    if formats.is_empty()
+        || !formats
+            .iter()
+            .all(|mime| slot.values.contains_key(mime.as_str()))
+    {
+        return false;
+    }
+    let formats: Vec<String> = slot
+        .mime_types
+        .iter()
+        .filter(|mime| !is_x11_meta_target(mime))
+        .cloned()
+        .collect();
+    // Keep the formats that returned bytes. Chromium and Electron also offer
+    // internal formats (a source-frame token, an empty `text/html`) that read
+    // back empty, and X11 sources offer meta targets; none of those may stop
+    // the copy from outliving its source. A copy with no real content at all
+    // is an aborted transfer: taking over would replace a working source with
+    // nothing.
+    let held: Vec<String> = formats
+        .into_iter()
+        .filter(|mime| value_for(slot, mime).is_some_and(|bytes| !bytes.is_empty()))
+        .collect();
+    let has_content = held
+        .iter()
+        .any(|mime| is_text_mime(mime) || mime.starts_with("text/") || mime.starts_with("image/"));
+    if !has_content {
+        return false;
+    }
+    slot.mime_types = held;
+    slot.values.retain(|_, bytes| !bytes.is_empty());
     let id = history_id(&slot.values);
     if slot
         .adopted
@@ -1199,9 +1298,14 @@ fn read_into_mirror(
                     if overflowed {
                         tracing::warn!(
                             target: "shell::selection",
+                            ?target,
+                            mime,
                             limit = MAX_SELECTION_BYTES,
                             "selection source exceeded the mirror size limit; dropping it"
                         );
+                        // Finished, with nothing kept: the format is dropped
+                        // rather than left pending forever.
+                        record_client_bytes(&store, target, generation, &mime, Vec::new());
                     } else {
                         // Keep raw bytes. Text validation happens only where
                         // a UI wants text; binary MIME values must remain exact.
@@ -1238,6 +1342,7 @@ fn read_into_mirror(
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => {
                     tracing::warn!(target: "shell::selection", error = %e, "selection pipe read failed");
+                    record_client_bytes(&store, target, generation, &mime, Vec::new());
                     return Ok(PostAction::Remove);
                 }
             }
@@ -1352,13 +1457,20 @@ impl State {
             // leaves GTK 3's selection queue waiting and stalls later copies.
             for mime in mimes
                 .into_iter()
-                .filter(|mime| valid_mime(mime) && mime != "SAVE_TARGETS")
+                .filter(|mime| valid_mime(mime) && !is_x11_meta_target(mime))
                 .take(MAX_SELECTION_MIMES)
             {
                 let (read_fd, write_fd) = match selection_pipe() {
                     Ok(pair) => pair,
                     Err(e) => {
                         tracing::warn!(target: "shell::selection", error = %e, "could not create selection pipe");
+                        record_client_bytes(
+                            &self.selection.store,
+                            pull.target,
+                            generation,
+                            &mime,
+                            Vec::new(),
+                        );
                         continue;
                     }
                 };
@@ -1396,6 +1508,11 @@ impl State {
     /// Answer a `receive` on a compositor-owned selection out of the mirror.
     fn serve_selection(&self, target: Target, mime_type: &str, fd: OwnedFd) {
         let Some(bytes) = mirror_bytes(&self.selection.store, target, mime_type) else {
+            tracing::info!(
+                target: "shell::selection",
+                ?target, mime = mime_type,
+                "selection request answered with nothing: the mirror holds no bytes for that format"
+            );
             return;
         };
         write_to_pipe(fd, bytes, "selection");
@@ -1507,6 +1624,12 @@ impl SelectionHandler for State {
         _user_data: &(),
     ) {
         let target = Target::from(ty);
+        tracing::debug!(
+            target: "shell::selection",
+            ?target, mime = %mime_type,
+            compositor_owned = compositor_owns(&self.selection.store, target),
+            "a client asked for the selection's bytes"
+        );
         if !compositor_owns(&self.selection.store, target) {
             // Only routes here for compositor-owned selections; a mismatch means the
             // mirror and seat disagree — answer with nothing rather than stale content.
@@ -2555,6 +2678,77 @@ mod tests {
     }
 
     #[test]
+    fn x11_meta_targets_neither_block_nor_ride_along_a_takeover() {
+        let s = store();
+        // What Xwayland's bridge offers for an X11 copy: content formats plus
+        // meta targets that answer with nothing.
+        let generation = begin_client_selection(
+            &s,
+            Target::Clipboard,
+            Some(vec![
+                "TARGETS".into(),
+                "TIMESTAMP".into(),
+                "UTF8_STRING".into(),
+                TEXT_MIME.into(),
+            ]),
+        );
+        record_client_bytes(&s, Target::Clipboard, generation, "TIMESTAMP", Vec::new());
+        record_client_bytes(
+            &s,
+            Target::Clipboard,
+            generation,
+            TEXT_MIME,
+            b"x11".to_vec(),
+        );
+        assert!(adopt_complete_client_selection(&s, 1_000));
+        assert!(
+            !offered(&s)
+                .iter()
+                .any(|m| m == "TIMESTAMP" || m == "TARGETS")
+        );
+        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("x11"));
+    }
+
+    #[test]
+    fn a_password_manager_copy_persists_but_leaves_no_history_and_is_wiped() {
+        let s = store();
+        let generation = begin_client_selection(
+            &s,
+            Target::Clipboard,
+            Some(vec![TEXT_MIME.into(), PASSWORD_MANAGER_HINT_MIME.into()]),
+        );
+        record_client_bytes(
+            &s,
+            Target::Clipboard,
+            generation,
+            TEXT_MIME,
+            b"hunter2".to_vec(),
+        );
+        record_client_bytes(
+            &s,
+            Target::Clipboard,
+            generation,
+            PASSWORD_MANAGER_HINT_MIME,
+            b"secret".to_vec(),
+        );
+        assert!(
+            adopt_complete_client_selection(&s, 1_000),
+            "the paste must outlive the manager"
+        );
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("hunter2")
+        );
+        assert!(
+            clipboard_history(&s).is_empty(),
+            "a password-manager copy must not enter clipboard history"
+        );
+        // The next selection replaces and clears it.
+        client_copy(&s, Target::Clipboard, &[TEXT_MIME], "next");
+        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("next"));
+    }
+
+    #[test]
     fn an_aborted_transfer_is_never_adopted() {
         let s = store();
         client_copy(&s, Target::Clipboard, &[TEXT_MIME], "");
@@ -2632,5 +2826,149 @@ mod tests {
         ));
         client_copy(&s, Target::Clipboard, &[TEXT_MIME], "different");
         assert!(adopt_complete_client_selection(&s, 5_200));
+    }
+}
+
+// Refused selections.
+//
+// smithay answers a `set_selection` from a client without keyboard focus by
+// silently dropping it (a `debug!` inside smithay), which made "copy does
+// nothing" invisible in the session log. The device dispatch is wrapped here:
+// the request is checked against the same rule, logged with its reason, and
+// then handed to smithay unchanged.
+
+/// Why the compositor refused or dropped a client's selection.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionRefusal {
+    /// The client's device belongs to a client that does not hold the seat's keyboard focus.
+    ClientLacksKeyboardFocus,
+    /// The seat has no keyboard at all.
+    NoKeyboard,
+}
+
+#[cfg(target_os = "linux")]
+impl SelectionRefusal {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::ClientLacksKeyboardFocus => "client does not hold keyboard focus",
+            Self::NoKeyboard => "seat has no keyboard",
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl State {
+    /// The refusal smithay will apply to a `set_selection` made on `device`, if any.
+    fn selection_refusal(
+        &self,
+        device: &smithay::reexports::wayland_server::backend::ObjectId,
+    ) -> Option<SelectionRefusal> {
+        match self.seat.get_keyboard() {
+            None => Some(SelectionRefusal::NoKeyboard),
+            Some(keyboard) if keyboard.client_of_object_has_focus(device) => None,
+            Some(_) => Some(SelectionRefusal::ClientLacksKeyboardFocus),
+        }
+    }
+
+    fn log_selection_refusal(
+        &self,
+        protocol: &'static str,
+        client: &Client,
+        refusal: SelectionRefusal,
+        clears: bool,
+    ) {
+        let pid = client.get_data::<ClientState>().and_then(|state| state.pid);
+        tracing::info!(
+            target: "shell::selection",
+            protocol,
+            reason = refusal.reason(),
+            clears_selection = clears,
+            client_pid = ?pid,
+            client_app_ids = ?self.client_app_ids(client),
+            keyboard_focus = %self.keyboard_focus_holder(),
+            "selection refused"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod logged_dispatch {
+    use smithay::reexports::wayland_protocols::wp::primary_selection::zv1::server::{
+        zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+        zwp_primary_selection_device_v1::{self, ZwpPrimarySelectionDeviceV1},
+        zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
+    };
+    use smithay::reexports::wayland_server::protocol::wl_data_device::{self, WlDataDevice};
+    use smithay::reexports::wayland_server::protocol::wl_data_device_manager::WlDataDeviceManager;
+    use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
+    use smithay::reexports::wayland_server::{
+        Client, DataInit, Dispatch, DisplayHandle, Resource, delegate_dispatch,
+        delegate_global_dispatch,
+    };
+    use smithay::wayland::selection::data_device::{
+        DataDeviceState, DataDeviceUserData, DataSourceUserData,
+    };
+    use smithay::wayland::selection::primary_selection::{
+        PrimaryDeviceManagerGlobalData, PrimaryDeviceUserData, PrimarySelectionState,
+        PrimarySourceUserData,
+    };
+
+    use crate::compositor::state::State;
+
+    delegate_global_dispatch!(State: [WlDataDeviceManager: ()] => DataDeviceState);
+    delegate_dispatch!(State: [WlDataDeviceManager: ()] => DataDeviceState);
+    delegate_dispatch!(State: [WlDataSource: DataSourceUserData] => DataDeviceState);
+    delegate_global_dispatch!(State: [ZwpPrimarySelectionDeviceManagerV1: PrimaryDeviceManagerGlobalData] => PrimarySelectionState);
+    delegate_dispatch!(State: [ZwpPrimarySelectionDeviceManagerV1: ()] => PrimarySelectionState);
+    delegate_dispatch!(State: [ZwpPrimarySelectionSourceV1: PrimarySourceUserData] => PrimarySelectionState);
+
+    impl Dispatch<WlDataDevice, DataDeviceUserData> for State {
+        fn request(
+            state: &mut Self,
+            client: &Client,
+            resource: &WlDataDevice,
+            request: wl_data_device::Request,
+            data: &DataDeviceUserData,
+            dh: &DisplayHandle,
+            data_init: &mut DataInit<'_, Self>,
+        ) {
+            if let wl_data_device::Request::SetSelection { source, .. } = &request
+                && let Some(refusal) = state.selection_refusal(&resource.id())
+            {
+                state.log_selection_refusal("wl_data_device", client, refusal, source.is_none());
+            }
+            <DataDeviceState as Dispatch<WlDataDevice, DataDeviceUserData, Self>>::request(
+                state, client, resource, request, data, dh, data_init,
+            );
+        }
+    }
+
+    impl Dispatch<ZwpPrimarySelectionDeviceV1, PrimaryDeviceUserData> for State {
+        fn request(
+            state: &mut Self,
+            client: &Client,
+            resource: &ZwpPrimarySelectionDeviceV1,
+            request: zwp_primary_selection_device_v1::Request,
+            data: &PrimaryDeviceUserData,
+            dh: &DisplayHandle,
+            data_init: &mut DataInit<'_, Self>,
+        ) {
+            if let zwp_primary_selection_device_v1::Request::SetSelection { source, .. } = &request
+                && let Some(refusal) = state.selection_refusal(&resource.id())
+            {
+                state.log_selection_refusal(
+                    "zwp_primary_selection_device_v1",
+                    client,
+                    refusal,
+                    source.is_none(),
+                );
+            }
+            <PrimarySelectionState as Dispatch<
+                ZwpPrimarySelectionDeviceV1,
+                PrimaryDeviceUserData,
+                Self,
+            >>::request(state, client, resource, request, data, dh, data_init);
+        }
     }
 }

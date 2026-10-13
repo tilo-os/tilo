@@ -196,6 +196,7 @@ mod tests {
                 active_tab: active,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             };
             ids.push(group.id);
             strip.window_groups.push(group);
