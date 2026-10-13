@@ -15,7 +15,7 @@ use channel_crypto::{ChannelContentKeys, ChannelSteward, VaultKey};
 use collab_types::{ChannelId, Ed25519PublicKey, MlsAccessRequestV1, document_channel_id};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_relay::{CoeditError, Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use tilo_relay::daemon::Relay;
@@ -24,13 +24,16 @@ use crate::support::{Device, ROOM, enrol, route, workspace};
 
 /// Publish `message` through the host the way a shell does.
 pub fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
+    publish_result(session, message).unwrap();
+}
+
+fn publish_result(session: &RelayCoeditSession, message: &NeighbourMsg) -> Result<(), CoeditError> {
     let (channel, retention) = neighbour_wire::retention(message, false).unwrap();
     let body = postcard::to_allocvec(message).unwrap();
     match retention {
         neighbour_wire::Retention::Checkpoint => session.publish_checkpoint(channel, body),
         neighbour_wire::Retention::Delta => session.publish_retained_delta(channel, body),
     }
-    .unwrap();
 }
 
 struct Channels {
@@ -137,6 +140,7 @@ impl Steward {
     /// Steward on through a restarted `host`, which kept the room.
     pub async fn reconnect(&mut self, host: &Relay, root: &SigningKey) {
         self.task.abort();
+        let _ = (&mut self.task).await;
         let session = join(host, root, &self.device).await;
         let own = self.device.key.verifying_key().to_bytes();
         self.task = tokio::spawn(admit(
@@ -289,37 +293,48 @@ async fn admit(
                 _ => {}
             }
         }
-        let mut channels = channels.lock().unwrap();
-        for channel in asked {
-            let pending = requests.entry(channel).or_default();
-            let already = channels.steward(channel).members();
-            let allowed: BTreeSet<Ed25519PublicKey> = pending
-                .keys()
-                .copied()
-                .chain(already)
-                .chain([Ed25519PublicKey::from_bytes(own)])
-                .collect();
-            let steward = channels.steward(channel);
-            steward.reconcile(&allowed, pending, &vault()).unwrap();
-            for outgoing in steward.outbox() {
-                for frame in outgoing
-                    .frames
-                    .into_iter()
-                    .flat_map(|frame| frame.into_deliveries().unwrap())
-                {
-                    delivery = delivery.checked_add(1).unwrap();
-                    publish(
-                        &session,
-                        &NeighbourMsg::MlsGovernance {
-                            room: ROOM.into(),
-                            frame: Box::new(frame),
-                            delivery,
-                        },
-                    );
-                }
+        // A host may disconnect while a request is in flight. Never publish
+        // through that session while holding the steward's persistent channel
+        // state: a failed send must not poison the mutex used after reconnect.
+        let outgoing = {
+            let mut channels = channels.lock().unwrap();
+            let mut outgoing = Vec::new();
+            for channel in asked {
+                let pending = requests.entry(channel).or_default();
+                let already = channels.steward(channel).members();
+                let allowed: BTreeSet<Ed25519PublicKey> = pending
+                    .keys()
+                    .copied()
+                    .chain(already)
+                    .chain([Ed25519PublicKey::from_bytes(own)])
+                    .collect();
+                let steward = channels.steward(channel);
+                steward.reconcile(&allowed, pending, &vault()).unwrap();
+                outgoing.extend(
+                    steward
+                        .outbox()
+                        .into_iter()
+                        .flat_map(|outgoing| outgoing.frames)
+                        .flat_map(|frame| frame.into_deliveries().unwrap()),
+                );
             }
+            outgoing
+        };
+        for frame in outgoing {
+            delivery = delivery.checked_add(1).unwrap();
+            let message = NeighbourMsg::MlsGovernance {
+                room: ROOM.into(),
+                frame: Box::new(frame),
+                delivery,
+            };
+            let sent = publish_result(&session, &message);
+            // The successor session replays the outbox when its member asks
+            // for keys. The old host can no longer deliver them.
+            if matches!(&sent, Err(CoeditError::Disconnected)) {
+                return;
+            }
+            sent.unwrap();
         }
-        drop(channels);
     }
 }
 
