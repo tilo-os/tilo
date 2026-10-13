@@ -40,8 +40,9 @@ file set to just the binary/ASAR. No network request is needed by the admission
 helper.
 
 Generate an operator manifest from the checked-in subject ledger. `$ASSETS` is
-your chosen absolute builder-local directory, for example a private directory
-under `/var/lib` or `/tmp`, not an inherited worktree path:
+your chosen absolute builder-local directory on durable host storage, for example
+`/srv/rcargo/tasks/installer-public-source/target/capture-public-assets`, not a
+container layer, `/tmp` or `/dev/shm`:
 
 ```sh
 python3 apps/imager/packaging/service-source-assets.py \
@@ -65,6 +66,43 @@ binds use the manifest's actual local locators; the qualifier protects runtime,
 interpreter and candidate namespaces. Its mount policy accepts inputs below
 `/tmp`, `/var` or `/home`, not `/dev/shm`. Store the manifest and public inputs in
 one of those admitted namespaces for a real qualification run.
+
+## Repeatable recovery after a builder refresh
+
+The generator source is already checked in at
+`os/scripts/service-session-source-fixture/app/main.cjs`. Its 7,730 bytes have
+SHA-256 `c138828e660c41f53bad6bc3eff0c372b8950588b209ff2cbce583916dbb62e3`;
+`package.json` has 151 bytes and SHA-256
+`c460efc2fcb42a233ed251afc8846c94f59c5d6c63ce150975ee2eac2962f886`.
+Both are mode 0644 and match the unchanged frozen ledger. This is our synthetic
+**test app**, not upstream Electron or the official Slack app. It runs through
+upstream Electron APIs only during the later protected qualification; recovery
+never runs it or copies live app data.
+
+On the builder **host**, with `curl`, Python 3 and `unsquashfs` (the
+`squashfs-tools` package) installed, run from a current source copy:
+
+```sh
+ASSETS=/srv/rcargo/tasks/installer-public-source/target/capture-public-assets
+python3 apps/imager/packaging/service-source-assets.py --recover "$ASSETS" \
+  > "$ASSETS/source-assets.pending.json" &&
+  mv "$ASSETS/source-assets.pending.json" "$ASSETS/source-assets.json"
+export TILO_CAPTURE_SOURCE_ASSETS="$ASSETS/source-assets.json"
+```
+
+Create `$ASSETS` before shell redirection (`mkdir -p "$ASSETS"`). Recovery
+verifies the actual checkout fixture, downloads only the two canonical archive
+URLs above if absent, checks their frozen size/mode/hash before extraction, and
+measures every extracted file and complete inventory before emitting a manifest.
+It copies the verified fixture into `$ASSETS/app`, so all manifest locators stay
+on durable host storage. Existing inputs are remeasured, never silently repaired
+or repinned. Download failures name the specific URL and leave unadmitted
+`.partial` files for inspection; remove those files before retrying a download.
+No execution or authentication receipt is produced.
+
+The qualifier's input mount namespace must admit the durable host prefix before
+using a `/srv` manifest; recovery alone neither changes that policy nor qualifies
+these inputs. Do not relocate them into erased temporary storage to bypass it.
 
 ## Audit basis
 

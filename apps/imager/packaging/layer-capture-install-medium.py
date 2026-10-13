@@ -25,7 +25,7 @@ def layer(settings, base, output, env):
                  'TILO_CAPTURE_BROWSER_RELEASE'):
         if not env.get(name):
             raise ValueError('missing medium capture input: ' + name)
-    developer = env.get('TILO_CAPTURE_SIGNING_PURPOSE') == 'developer-qualification'
+    developer = env.get('TILO_CAPTURE_SIGNING_PURPOSE') in ('developer-qualification', 'developer-isolated')
     disposable = env.get('TILO_CAPTURE_DISPOSABLE_MEDIUM') == '1'
     if developer and not disposable:
         raise ValueError('developer keys are confined to an explicitly disposable qualification medium')

@@ -465,7 +465,9 @@ def fixed_module(path, name):
 def source_assets(path):
     assets = document(path)
     helper = fixed_module(ROOT / 'apps/imager/packaging/service-source-assets.py', 'public_assets')
-    return helper.validate(assets)
+    # Bind the actual archives and every inventory leaf before admitting mount
+    # coordinates. Native staging repeats verification across the copy boundary.
+    return helper.verify(assets)
 
 
 def asset_mounts(assets):
@@ -475,7 +477,10 @@ def asset_mounts(assets):
     for path in sorted(paths):
         # Never overlay the candidate, runtime, interpreter or protected image.
         require(path.is_absolute() and '..' not in path.parts and ':' not in str(path)
-                and len(path.parts) > 2 and path.parts[1] in ('tmp', 'var', 'home')
+                and len(path.parts) > 2
+                and (path.parts[1] in ('tmp', 'var', 'home')
+                     or (path.is_relative_to('/srv/rcargo/tasks')
+                         and len(path.parts) > 4))
                 and not path.is_symlink(), 'public asset mount escapes input namespace')
         result.extend(['--volume', str(path) + ':' + str(path) + ':ro'])
     return result
@@ -668,7 +673,8 @@ def main():
                'owned_resources_retired': True,
                'signing_purpose': os.environ.get('TILO_CAPTURE_SIGNING_PURPOSE', 'operator-provided'),
                'publication_qualified': not args.source_backend_only
-                   and os.environ.get('TILO_CAPTURE_SIGNING_PURPOSE') != 'developer-qualification'}
+                   and os.environ.get('TILO_CAPTURE_SIGNING_PURPOSE') not in
+                       ('developer-qualification', 'developer-isolated')}
     (output / 'receipt.json').write_text(json.dumps(receipt, sort_keys=True, indent=2) + '\n')
     (output / 'receipt.json').chmod(0o600)
     print(json.dumps({'schema': 1, 'scope': receipt['scope'],

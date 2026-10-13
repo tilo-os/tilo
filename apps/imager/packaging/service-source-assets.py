@@ -17,6 +17,11 @@ ARCHIVE_SHA256 = {
     'electron_archive': '04586a0ec46c3283fbdaef85530f561f71f0b5e136ad0cb9ef63683615609780',
     'slack_archive': '2f52f41d38d20df48fe060978cdb3c7dad662df1099705d389f0d0c3444b194f',
 }
+ARCHIVE_URLS = {
+    'electron_archive': 'https://github.com/electron/electron/releases/download/v44.4.5/electron-v44.4.5-linux-x64.zip',
+    'slack_archive': 'https://api.snapcraft.io/api/v1/snaps/download/JUJH91Ved74jd4ZgJCpzMBtYbPOzTlsD_263.snap',
+}
+FIXTURE_ROOT = Path(__file__).resolve().parents[3] / 'os/scripts/service-session-source-fixture/app'
 MAXIMUM = 512 * 1024 * 1024
 TOTAL = 1024 * 1024 * 1024
 # Canonical identity includes archives, every extracted file fact and fixed endpoints;
@@ -148,8 +153,20 @@ def open_leaf(root, relative):
 
 
 def enumerate_files(root, prefix='', result=None):
+    # scandir(fd) may share the caller's directory stream offset. Reopen the
+    # held directory, rather than dup it, so each inventory starts at the first
+    # entry and repeated mutation checks do not depend on Python/libc behavior.
+    fd = os.open('.', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                 dir_fd=root)
+    try:
+        return _enumerate_files(root, fd, prefix, result)
+    finally:
+        os.close(fd)
+
+
+def _enumerate_files(root, scan, prefix, result):
     result = set() if result is None else result
-    with os.scandir(root) as entries:
+    with os.scandir(scan) as entries:
         count = 0
         for entry in entries:
             count += 1
@@ -363,19 +380,134 @@ def verify(assets):
     return assets
 
 
+def verify_tree(path, files):
+    fd = directory(path)
+    try:
+        require(enumerate_files(fd) == set(files), 'public tree contains missing or extra files')
+        for relative, expected in files.items():
+            measured_file(fd, relative, expected)
+    finally:
+        os.close(fd)
+
+
+def recover(root):
+    """Recover public inputs on durable storage, never execute the test app.
+
+    Existing bytes are verified, not overwritten or used to update any pin.
+    The app is a checkout-owned synthetic fixture, NOT an upstream Slack app.
+    """
+    import shutil
+    import subprocess
+    import zipfile
+
+    root = locator(str(root))
+    require(root.parts[1] in ('srv', 'var', 'home') and root.name == 'capture-public-assets',
+            'recovery requires durable capture-public-assets storage, not temporary memory')
+    root.mkdir(mode=0o755, parents=True, exist_ok=True)
+    fd = directory(root)
+    os.close(fd)
+    assets = json.loads(Path(__file__).with_name('service-source-subjects.json').read_text())
+    validate(assets, locators=False)
+    # Measure the actual checkout fixture before any download or copy.
+    verify_tree(FIXTURE_ROOT, assets['assets']['app']['files'])
+    for key, filename in (('electron_archive', 'electron-v44.4.5-linux-x64.zip'),
+                          ('slack_archive', 'slack-263.snap')):
+        path = root / filename
+        if not os.path.lexists(path):
+            partial = path.with_suffix(path.suffix + '.partial')
+            try:
+                with partial.open('xb') as output:
+                    subprocess.run(['curl', '--fail', '--location', '--silent', '--show-error',
+                                    '--proto', '=https', '--proto-redir', '=https',
+                                    '--connect-timeout', '30', '--max-time', '900',
+                                    ARCHIVE_URLS[key]], stdout=output, check=True)
+                partial.chmod(0o644)
+                held = directory(root)
+                try:
+                    measured_file(held, partial.name, assets['archives'][key])
+                finally:
+                    os.close(held)
+                require(not os.path.lexists(path), 'archive destination appeared during recovery')
+                partial.rename(path)
+            except BaseException as error:
+                # Retain partial bytes for inspection; never admit them.
+                raise ValueError('public archive recovery failed for ' + ARCHIVE_URLS[key]
+                                 + ': ' + str(error)) from error
+        held = directory(root)
+        try:
+            measured_file(held, path.name, assets['archives'][key])
+        finally:
+            os.close(held)
+        assets['archives'][key]['source_path'] = str(path)
+
+    electron = root / 'electron'
+    if not os.path.lexists(electron):
+        electron.mkdir(mode=0o755)
+        try:
+            with zipfile.ZipFile(assets['archives']['electron_archive']['source_path']) as archive:
+                files = assets['assets']['electron']['files']
+                entries = [entry for entry in archive.infolist() if not entry.is_dir()]
+                require(len(entries) == len(files) and {entry.filename for entry in entries} == set(files),
+                        'official Electron ZIP inventory differs')
+                for entry in archive.infolist():
+                    name(entry.filename.rstrip('/'))
+                    require(not stat.S_ISLNK(entry.external_attr >> 16), 'Electron ZIP alias refused')
+                for entry in entries:
+                    destination = electron.joinpath(*name(entry.filename))
+                    destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                    with archive.open(entry) as source, destination.open('xb') as target:
+                        shutil.copyfileobj(source, target)
+                    # ZIP extraction mode policy is frozen by the measured ledger.
+                    destination.chmod(files[entry.filename]['mode'])
+            verify_tree(electron, files)
+        except BaseException:
+            shutil.rmtree(electron)
+            raise
+    slack = root / 'slack'
+    if not os.path.lexists(slack):
+        require(shutil.which('unsquashfs') is not None,
+                'Slack archive extraction requires host squashfs-tools (unsquashfs)')
+        try:
+            subprocess.run(['unsquashfs', '-no-progress', '-processors', '1', '-d', str(slack),
+                            assets['archives']['slack_archive']['source_path'], 'usr/lib/slack'],
+                           check=True, stdout=subprocess.DEVNULL)
+            verify_tree(slack / 'usr/lib/slack', assets['assets']['slack']['files'])
+        except BaseException:
+            if slack.exists():
+                shutil.rmtree(slack)
+            raise
+    app = root / 'app'
+    if not os.path.lexists(app):
+        shutil.copytree(FIXTURE_ROOT, app, symlinks=True)
+    for group, path in (('electron', electron), ('slack', slack / 'usr/lib/slack'), ('app', app)):
+        assets['assets'][group]['source_root'] = str(path)
+    return verify(assets)
+
+
 def main():
     """Create portable operator inputs using only pinned, locally measured public bytes."""
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--subjects', type=Path,
                         default=Path(__file__).with_name('service-source-subjects.json'))
-    parser.add_argument('--electron-root', required=True)
-    parser.add_argument('--electron-archive', required=True)
-    parser.add_argument('--slack-root', required=True)
-    parser.add_argument('--slack-archive', required=True)
-    parser.add_argument('--app-root', default=str(Path(__file__).resolve().parents[3] /
-                        'os/scripts/service-session-source-fixture/app'))
+    parser.add_argument('--recover', type=Path,
+                        help='durable absolute .../target/capture-public-assets directory')
+    parser.add_argument('--electron-root')
+    parser.add_argument('--electron-archive')
+    parser.add_argument('--slack-root')
+    parser.add_argument('--slack-archive')
+    parser.add_argument('--app-root', default=str(FIXTURE_ROOT))
     args = parser.parse_args()
+    if args.recover:
+        require(args.subjects == Path(__file__).with_name('service-source-subjects.json')
+                and not any((args.electron_root, args.electron_archive,
+                             args.slack_root, args.slack_archive))
+                and args.app_root == str(FIXTURE_ROOT),
+                'recovery uses only frozen subjects and the actual checkout fixture')
+        print(json.dumps(recover(args.recover), sort_keys=True, indent=2))
+        return
+    require(all((args.electron_root, args.electron_archive, args.slack_root, args.slack_archive)),
+            'all archive and tree locators required unless --recover is supplied')
     assets = json.loads(args.subjects.read_text())
     validate(assets, locators=False)
     for group in GROUPS:

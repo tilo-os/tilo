@@ -39,9 +39,13 @@ class SubjectIdentity(unittest.TestCase):
             document = located(root)
             self.assertEqual(assets.subject_digest(document), expected)
             with tempfile.TemporaryDirectory() as temporary:
-                manifest = Path(temporary) / 'operator.json'
+                manifest = Path(temporary).resolve() / 'operator.json'
                 manifest.write_text(json.dumps(document))
-                self.assertEqual(qualifier.source_assets(manifest), document)
+                self.assertEqual(assets.validate(document), document)
+                # A locator-independent subject pin is not proof that the
+                # supplied archives and complete trees actually exist.
+                with self.assertRaises(FileNotFoundError):
+                    qualifier.source_assets(manifest)
         legacy = located(Path('/tmp/legacy'))
         del legacy['distribution']
         self.assertEqual(assets.subject_digest(legacy), expected)
@@ -102,10 +106,37 @@ class SubjectIdentity(unittest.TestCase):
             assets.validate(changed)
 
 
+class CheckoutRecovery(unittest.TestCase):
+    def test_actual_checkout_fixture_matches_unchanged_frozen_ledger(self):
+        assets.verify_tree(assets.FIXTURE_ROOT, ledger()['assets']['app']['files'])
+        self.assertEqual(assets.subject_digest(ledger()), assets.ASSET_MANIFEST_SHA256)
+
+    def test_recovery_refuses_volatile_storage_before_creating_anything(self):
+        for root in ('/tmp/capture-public-assets', '/dev/shm/capture-public-assets',
+                     '/var/lib/not-the-asset-directory'):
+            with self.subTest(root=root):
+                with self.assertRaisesRegex(ValueError, 'durable'):
+                    assets.recover(Path(root))
+
+    def test_fixture_corruption_or_addition_is_not_repaired_or_rebound(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            import shutil
+            shutil.copytree(assets.FIXTURE_ROOT, root / 'app')
+            files = ledger()['assets']['app']['files']
+            assets.verify_tree(root / 'app', files)
+            (root / 'app/main.cjs').write_bytes(b'not the admitted fixture')
+            with self.assertRaises(ValueError):
+                assets.verify_tree(root / 'app', files)
+            (root / 'app/extra').write_bytes(b'not admitted')
+            with self.assertRaisesRegex(ValueError, 'missing or extra'):
+                assets.verify_tree(root / 'app', files)
+
+
 class MeasuredPublicFiles(unittest.TestCase):
     def test_complete_measurement_copy_modes_and_actual_corruption(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             document = located(root)
             # Small test subjects exercise the actual held-file production path;
             # patching admission does not claim these bytes are official distributions.
@@ -167,7 +198,7 @@ class MeasuredPublicFiles(unittest.TestCase):
 
     def test_destination_copy_is_measured_and_executable(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             (root / 'source').mkdir()
             (root / 'destination').mkdir()
             leaf = root / 'source' / 'binary'

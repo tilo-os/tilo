@@ -61,9 +61,29 @@ class StagedSourceClosure(unittest.TestCase):
             manifest.write_text('{"schema":1,"assets":{}}')
             with self.assertRaisesRegex(ValueError, 'official public asset manifest'):
                 qualifier.source_assets(manifest)
-        for path in ('/usr/bin', '/owned/candidate', '/run/assets', '/var/../etc'):
+        for path in ('/usr/bin', '/owned/candidate', '/run/assets', '/var/../etc',
+                     '/srv/rcargo', '/srv/rcargo/tasks', '/srv/rcargo/tasks-other/assets',
+                     '/srv/rcargo/p/source'):
             with self.assertRaisesRegex(ValueError, 'mount escapes'):
                 qualifier.asset_mounts({'assets': {'app': {'source_root': path}}, 'archives': {}})
+
+    def test_asset_admission_measures_bytes_before_mount_coordinates(self):
+        from unittest.mock import Mock, patch
+        assets = {'assets': {}, 'archives': {}}
+        helper = Mock()
+        helper.verify.side_effect = ValueError('public file digest differs')
+        with patch.object(qualifier, 'document', return_value=assets), \
+                patch.object(qualifier, 'fixed_module', return_value=helper):
+            with self.assertRaisesRegex(ValueError, 'public file digest differs'):
+                qualifier.source_assets(Path('/unused/manifest'))
+        helper.verify.assert_called_once_with(assets)
+        helper.validate.assert_not_called()
+
+    def test_durable_public_task_asset_coordinates_are_admitted(self):
+        path = '/srv/rcargo/tasks/installer-public-source/target/capture-public-assets/app'
+        self.assertEqual(qualifier.asset_mounts({
+            'assets': {'app': {'source_root': path}}, 'archives': {}}),
+            ['--volume', path + ':' + path + ':ro'])
 
     def test_actual_source_accepts_receivers_keyword_mode_without_changing_default_context(self):
         import ast
