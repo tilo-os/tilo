@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! A surface's own presentation reopens with its window: the framework root
 //! saves and restores what the surface keeps across restarts.

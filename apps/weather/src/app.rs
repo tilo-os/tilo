@@ -837,10 +837,6 @@ mod interaction_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
     fn layout_reflows_and_scrolls() {
         // Case `resize_reflows_between_side_by_side_and_push`.
         {
@@ -1100,10 +1096,6 @@ mod interaction_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
     fn live_weather_starts_empty_and_fetches_only_restored_or_selected_places() {
         // Case `onboarding_scenario_matches_the_live_empty_state`.
         {
@@ -1628,10 +1620,6 @@ mod interaction_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
     fn provider_cache_is_device_local_across_remote_and_local_changes() {
         // Case `remote_location_change_preserves_device_local_provider_cache`.
         {

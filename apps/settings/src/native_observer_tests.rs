@@ -5,16 +5,6 @@
 //! committing the document's pending changes: the observer is a witness, not
 //! a writer.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use crate::SettingsApp;
 use crate::categories::Category;
 use automerge::{AutoCommit, ChangeHash};

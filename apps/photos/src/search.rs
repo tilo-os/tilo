@@ -1036,7 +1036,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn stale_or_colliding_targets_fail_closed_and_rebuilds_publish_atomically() {
         let before = open_doc("before.png");

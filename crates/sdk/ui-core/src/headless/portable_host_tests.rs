@@ -105,10 +105,7 @@ impl Widget for Blocker {
         map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::style_helpers::length(240.0_f32),
-                height: taffy::style_helpers::length(80.0_f32),
-            },
+            size: taffy::Size::from_lengths(240.0_f32, 80.0_f32),
             ..Default::default()
         };
         taffy.widget_leaf(style, map, self)
@@ -155,10 +152,7 @@ impl Widget for OverlayProbe {
     ) -> NodeId {
         let node = taffy
             .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(100.0),
-                    height: Dimension::length(40.0),
-                },
+                size: Size::from_lengths(100.0, 40.0),
                 ..Default::default()
             })
             .unwrap();

@@ -16,7 +16,6 @@
 
 use crate::widget::ModelPath;
 use std::collections::HashMap;
-use taffy::style_helpers::length;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -430,10 +429,7 @@ impl Widget for ColorSwatchPicker {
         let (w, h) = self.grid_size();
         let style = Style {
             flex_shrink: 0.0,
-            size: taffy::Size {
-                width: length(w),
-                height: length(h),
-            },
+            size: taffy::Size::from_lengths(w, h),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

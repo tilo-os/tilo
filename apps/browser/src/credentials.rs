@@ -746,10 +746,6 @@ mod tests {
 
     /// Account selection, deletion confirmation and capture lifetime.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn credential_selection_and_capture_require_explicit_fresh_choices() {
         // Phase `multiple_accounts_require_selection_and_delete_confirmation`.
         {

@@ -435,10 +435,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn discovery_records_share_the_broker_contract_and_stay_bounded() {
         // Phase `fcast_discovery_record_preserves_endpoint_and_identity`.
         {

@@ -1048,10 +1048,6 @@ fn seed_demo_events(
 }
 
 /// Today's events: standup through quarterly planning.
-#[allow(
-    clippy::too_many_lines,
-    reason = "declarative demo fixture is intentionally grouped by visible calendar period"
-)]
 fn seed_demo_events_early(
     today: NaiveDate,
     pid_work: Id,
@@ -1142,10 +1138,6 @@ fn seed_demo_events_early(
 }
 
 /// The rest of the week's events: dentist through payday rent.
-#[allow(
-    clippy::too_many_lines,
-    reason = "declarative demo fixture is intentionally grouped by visible calendar period"
-)]
 fn seed_demo_events_later(today: NaiveDate, pid_work: Id, pid_personal: Id) -> Vec<Event> {
     let d = |delta: i64| today + Duration::days(delta);
     vec![

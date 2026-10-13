@@ -259,10 +259,6 @@ fn in_order<T>(mut moves: Vec<Held<T>>) -> Vec<T> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "the assertions add fixed durations to a fixed instant"
-)]
 pub(crate) mod tests {
     use super::*;
     use std::time::Duration;
