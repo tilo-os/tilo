@@ -116,7 +116,7 @@ impl Rooms {
         let channel =
             collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
         let keys = match room.stewardship.clone() {
-            Some(steward) => steward.lock().await.existing_keys(channel).ok(),
+            Some(steward) => steward.channels.lock().await.existing_keys(channel).ok(),
             None => None,
         };
         let primary_governor = (source.record.is_empty()

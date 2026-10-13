@@ -104,7 +104,7 @@ impl Rooms {
             .stewardship
             .clone()
             .ok_or("this relay does not steward the room's channels")?;
-        let mut stewardship = steward.lock().await;
+        let mut stewardship = steward.channels.lock().await;
         if create {
             let messages = stewardship.open_channel(channel, &allowed)?;
             self.publish_channel_governance(workspace_id, messages)
