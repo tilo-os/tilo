@@ -190,19 +190,12 @@ fn a_note_without_metadata_keeps_its_body_gap_under_the_title() {
 /// invoked. The events go to the panel directly so the invocation is left
 /// for this test to read instead of being dispatched by the harness.
 fn press(m: &mut Mounted, id: &str) -> Option<(String, String)> {
-    use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+    use winit::event::{ElementState, MouseButton};
     let at = rect_of(Framed::split(&mut m.panel).0, id).center();
     let harness = Framed::harness_mut(&mut m.panel);
-    harness.dispatch_to_root(&WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-    });
+    harness.dispatch_to_root(&ui::synthetic_input::cursor_moved(at.x, at.y));
     for state in [ElementState::Pressed, ElementState::Released] {
-        harness.dispatch_to_root(&WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        });
+        harness.dispatch_to_root(&ui::synthetic_input::mouse_input(state, MouseButton::Left));
     }
     let panel: &mut dyn ui::widget::Widget = Framed::split(&mut m.panel).0;
     ui::widget::controls::take_control_invocation(panel)

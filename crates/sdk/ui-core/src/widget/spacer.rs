@@ -5,7 +5,6 @@ use crate::theme::Theme;
 use crate::tokens::SpacingStep;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use taffy::style_helpers::length;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -130,10 +129,7 @@ impl Widget for Spacer {
             Some(px) => Style {
                 flex_grow: 0.0,
                 flex_shrink: 0.0,
-                size: taffy::Size {
-                    width: length(px),
-                    height: length(px),
-                },
+                size: taffy::Size::from_lengths(px, px),
                 ..Default::default()
             },
         };
@@ -197,6 +193,7 @@ impl crate::permissions::capability::PermissionGated for Spacer {
 mod tests {
     use super::*;
     use crate::widget::{Column, Row, Text};
+    use taffy::style_helpers::length;
     use taffy::{AvailableSpace, Size};
 
     /// Same five-pass layout the `Column` tests use, with the real text

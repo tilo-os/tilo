@@ -16,7 +16,7 @@ use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -51,8 +51,6 @@ use crate::map_info_sheet::{MapInfo, MapInfoSheet};
 use crate::model::{LatLon, MapModel, Panel, Place, TransitMode, TransitTimeMode, TravelMode};
 use crate::net::{self, NetMsg};
 use crate::offline_panel::{OFFLINE_AREAS_REFUSED, OfflineAction, OfflineFrame, OfflinePanel};
-#[cfg(test)]
-use crate::place_search::LocalPlaces;
 use crate::place_search::PlaceSearch;
 use crate::sample::{self, Basemap};
 use crate::tiles::{GeoBounds, TileFault, TileId, TileLayer, TileStyle};
@@ -201,8 +199,8 @@ pub struct MapsApp {
     /// Floating zoom/location/traffic stack. Owns geometry, drawing,
     /// hit-testing, traffic UI state, and shared tooltip timing.
     map_controls: MapControls,
-    /// The platform search's view of the map: the provider it asks, and the
-    /// geocoder queries it is waiting on.
+    /// The geocoder lookups behind the platform search: the query to send,
+    /// the ones on their way, and the places that came back.
     place_search: PlaceSearch,
     /// Opens the platform search from the painted search buttons.
     search_opener: ui::search::SearchOpener,
@@ -529,8 +527,6 @@ impl MapsApp {
         };
         let cache_bytes = tiles.cache_bytes();
         let nav_card_size = navigation_card_size(&Theme::dark());
-        let place_search = PlaceSearch::default();
-        place_search.set_reachable(online);
         Self {
             model,
             basemap,
@@ -541,7 +537,7 @@ impl MapsApp {
             last_mouse: Point::ZERO,
             segmented_touch: SegmentedTouch::default(),
             map_controls: MapControls::default(),
-            place_search,
+            place_search: PlaceSearch::default(),
             search_opener: ui::search::SearchOpener::new(),
             history: ui::widget::HistoryOpener::new(),
             results_anchor: None,
@@ -1196,22 +1192,8 @@ impl MapsApp {
         matches!(self.model.panel, Panel::Directions) && self.endpoints.overlay_active()
     }
 
-    /// Send the newest query the platform search is waiting on to the
-    /// geocoder, once. The reply answers the palette's pending page.
-    #[cfg(test)]
-    fn local_places(&self) -> LocalPlaces {
-        LocalPlaces {
-            places: self.model.places.clone(),
-            pois: self
-                .pois
-                .iter()
-                .map(|poi| Place::new(&poi.id, &poi.name, poi.category, &poi.address, poi.pos))
-                .collect(),
-            recents: self.model.recents.clone(),
-            anchor: self.search_anchor(),
-        }
-    }
-
+    /// Send the query the platform search is waiting on to the geocoder,
+    /// once. The reply lists its places among the window's search entries.
     fn pump_place_search(&mut self) {
         let Some(query) = self.place_search.take_query() else {
             return;
@@ -1236,6 +1218,7 @@ impl MapsApp {
             let place = self
                 .place_search
                 .geocoded(id)
+                .cloned()
                 .ok_or("Map place is no longer available")?;
             let query = place.name.clone();
             self.accept_places(vec![place]);
@@ -3185,8 +3168,7 @@ impl MapsApp {
                 header.center().y + side / 2.0,
             )
         };
-        let mut title_x = header.x0 + f64::from(sp.s3);
-        if directions {
+        let title_x = if directions {
             let back = button_at(header.x0 + s1);
             self.icon_button(
                 &mut PaintCtx::new(scene, t, tr, &ink),
@@ -3196,8 +3178,10 @@ impl MapsApp {
                 false,
                 Hit::PanelBack,
             );
-            title_x = back.x1 + s1;
-        }
+            back.x1 + s1
+        } else {
+            header.x0 + f64::from(sp.s3)
+        };
         let mut trailing = header.x1 - s1;
         if docked {
             let toggle = button_at(trailing - side);
@@ -3835,10 +3819,6 @@ impl MapsApp {
     /// The departure time: a quiet Leave/Arrive choice and a stepper that
     /// moves the time in quarter hours, with "Now" to go back. Defaults to
     /// leaving now. Returns the y below it.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one row of related controls laid out against each other"
-    )]
     fn draw_time_picker(
         &mut self,
         scene: &mut Scene,
@@ -4536,6 +4516,7 @@ impl FloatingSurfaceProvider for MapsApp {
             return Vec::new();
         }
         vec![ui::floating_surface::FloatingSurfacePresentation {
+            input_rect: Some(self.navigation_rect()),
             id,
             content_rect: self.navigation_rect(),
             window_rect: self.navigation_rect().inflate(8.0, 8.0),
@@ -4677,10 +4658,7 @@ impl Widget for MapsApp {
             .set_preferred_size(self.nav_card_size);
         let node = taffy.widget_leaf(
             Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             node_map,
@@ -4786,7 +4764,7 @@ impl Widget for MapsApp {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_mouse = p;
                 if self.navigation_placement.is_dragging() {
                     let source_region = self.navigation_rect().inflate(8.0, 8.0);
@@ -4949,14 +4927,11 @@ impl Widget for MapsApp {
                     // above, but above the actual map surface.
                     if let Some(action) = self.map_controls.hit_test(p) {
                         self.dispatch_map_control(action);
-                        *ctx.handled = true;
                     } else if let Some(id) = self.marker_at(p) {
                         // Map interaction: marker select, POI select, or begin pan.
                         self.select_place(&id);
-                        *ctx.handled = true;
                     } else if let Some(pid) = self.poi_at(p) {
                         self.select_poi(&pid);
-                        *ctx.handled = true;
                     } else {
                         // Empty map: close any open POI card and begin a pan.
                         // Claim the press so the compositor/ui App treats the map
@@ -4964,8 +4939,8 @@ impl Widget for MapsApp {
                         self.selected_poi.take();
                         self.dragging = true;
                         self.drag_last = p;
-                        *ctx.handled = true;
                     }
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {

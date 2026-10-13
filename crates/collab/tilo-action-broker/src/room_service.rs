@@ -8,8 +8,6 @@ use super::{Arc, CapnpBrokerState, InvocationEnvelope, PublishedSurface};
 pub(super) enum ServiceOutcome {
     Succeeded(serde_json::Value),
     Failed(tilo_actions::ActionFailure),
-    /// The owner commit may or may not have landed; the service stops.
-    Uncertain(String),
 }
 
 /// A refusal carrying only a code and the message shown to the caller.
@@ -24,8 +22,8 @@ pub(super) fn refused(code: &str, message: String) -> ServiceOutcome {
 
 impl CapnpBrokerState {
     /// Publish `surface` for its service peer and answer every invocation
-    /// addressed to it with `serve`. An uncertain outcome or an update that
-    /// cannot be recorded stops the service; it then unpublishes the surface
+    /// addressed to it with `serve`. An update that cannot be recorded stops
+    /// the service; it then unpublishes the surface
     /// and runs `stopped` with whether the surface was still published.
     pub(super) fn serve_room<S, F>(
         self: &Arc<Self>,
@@ -65,10 +63,6 @@ impl CapnpBrokerState {
                     },
                     ServiceOutcome::Failed(error) => {
                         tilo_actions::InvocationUpdate::Failed { invocation, error }
-                    }
-                    ServiceOutcome::Uncertain(reason) => {
-                        state.record_owner_commit_failure(reason);
-                        break;
                     }
                 };
                 if let Err(error) = state

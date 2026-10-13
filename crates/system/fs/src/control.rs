@@ -421,7 +421,7 @@ impl Client {
     /// Returns an error if the connection is lost or a malformed frame is read.
     pub async fn wait_changed(&mut self) -> std::io::Result<()> {
         loop {
-            if let Resp::Changed = read_msg(&mut self.stream).await? {
+            if matches!(read_msg(&mut self.stream).await?, Resp::Changed) {
                 return Ok(());
             }
         }

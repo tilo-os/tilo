@@ -49,10 +49,6 @@ pub fn read_bounded(reader: impl Read, max_bytes: usize) -> Option<Vec<u8>> {
     (bytes.len() <= max_bytes).then_some(bytes)
 }
 
-/// A preview cache entry must stay small even if a caller supplies huge
-/// requested bounds. This keeps the public helper safe outside Photos too.
-pub const MAX_THUMBNAIL_PIXELS: u64 = 320 * 180;
-
 /// A decoded image: RGBA8, tightly packed, `w * h * 4` bytes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Rgba {
@@ -193,89 +189,6 @@ pub fn encode_png(img: &Rgba) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Make a bounded, aspect-preserving nearest-neighbour preview.
-///
-/// The library cache must never hold a second full-resolution copy of every
-/// visible photograph. The preview is for recognition, not export quality;
-/// the original remains the only source used by the editor and Save.
-#[must_use]
-pub fn thumbnail(src: &Rgba, max_w: u32, max_h: u32) -> Rgba {
-    let max_w = max_w.max(1);
-    let max_h = max_h.max(1);
-    if src.w <= max_w
-        && src.h <= max_h
-        && u64::from(src.w).saturating_mul(u64::from(src.h)) <= MAX_THUMBNAIL_PIXELS
-    {
-        return src.clone();
-    }
-    let (mut w, mut h) =
-        if u64::from(src.w) * u64::from(max_h) >= u64::from(src.h) * u64::from(max_w) {
-            (
-                max_w,
-                ((u64::from(src.h) * u64::from(max_w) / u64::from(src.w)).max(1)) as u32,
-            )
-        } else {
-            (
-                ((u64::from(src.w) * u64::from(max_h) / u64::from(src.h)).max(1)) as u32,
-                max_h,
-            )
-        };
-    // Find the largest dimension along the source aspect ratio that fits the
-    // global pixel budget. Binary search uses saturated arithmetic so callers
-    // may pass arbitrary `u32` bounds without overflowing capacity math.
-    if u64::from(w).saturating_mul(u64::from(h)) > MAX_THUMBNAIL_PIXELS {
-        if w >= h {
-            let mut low = 1_u32;
-            let mut high = w;
-            while low < high {
-                let mid = low + (high - low).div_ceil(2);
-                let candidate_h =
-                    ((u64::from(src.h) * u64::from(mid) / u64::from(src.w)).max(1)) as u32;
-                if u64::from(mid).saturating_mul(u64::from(candidate_h)) <= MAX_THUMBNAIL_PIXELS {
-                    low = mid;
-                } else {
-                    high = mid - 1;
-                }
-            }
-            w = low;
-            h = ((u64::from(src.h) * u64::from(w) / u64::from(src.w)).max(1)) as u32;
-        } else {
-            let mut low = 1_u32;
-            let mut high = h;
-            while low < high {
-                let mid = low + (high - low).div_ceil(2);
-                let candidate_w =
-                    ((u64::from(src.w) * u64::from(mid) / u64::from(src.h)).max(1)) as u32;
-                if u64::from(mid).saturating_mul(u64::from(candidate_w)) <= MAX_THUMBNAIL_PIXELS {
-                    low = mid;
-                } else {
-                    high = mid - 1;
-                }
-            }
-            h = low;
-            w = ((u64::from(src.w) * u64::from(h) / u64::from(src.h)).max(1)) as u32;
-        }
-    }
-    let capacity = u64::from(w)
-        .saturating_mul(u64::from(h))
-        .saturating_mul(4)
-        .try_into()
-        .unwrap_or(0);
-    let mut bytes = Vec::with_capacity(capacity);
-    for y in 0..h {
-        let sy = (u64::from(y) * u64::from(src.h) / u64::from(h)) as u32;
-        for x in 0..w {
-            let sx = (u64::from(x) * u64::from(src.w) / u64::from(w)) as u32;
-            if let Some(pixel) = src.pixel(sx, sy) {
-                bytes.extend_from_slice(&pixel);
-            }
-        }
-    }
-    // `w` and `h` are nonzero and exactly one four-byte pixel is appended per
-    // loop iteration, so this is a well-formed tight RGBA image.
-    Rgba { w, h, bytes }
-}
-
 /// Crop to `rect`, expressed in normalized `0..1` coordinates of `src`.
 ///
 /// The rect is clamped into the unit square and the resulting pixel rect is
@@ -371,14 +284,7 @@ pub fn unrotate_rect(rect: Rect01, quarters: u8) -> Rect01 {
 
 /// Wrap prepared pixels for the shared live/history painters.
 pub fn to_peniko(img: &Rgba) -> vello::peniko::ImageData {
-    use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
-    ImageData {
-        data: Blob::new(std::sync::Arc::new(img.bytes.clone())),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: img.w,
-        height: img.h,
-    }
+    ui::raster::rgba8(img.bytes.clone(), img.w, img.h)
 }
 
 #[cfg(test)]
@@ -576,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn crops_and_thumbnails_take_exactly_their_bounded_region() {
+    fn crops_take_exactly_their_bounded_region() {
         let src = ramp(4, 4);
         // The bottom-right quadrant: columns 2..4, rows 2..4.
         let out = crop(&src, rect(0.5, 0.5, 0.5, 0.5));
@@ -591,16 +497,6 @@ mod tests {
         let out = crop(&src, rect(0.5, 0.5, 0.0, 0.0));
         assert_eq!((out.w, out.h), (1, 1), "a zero-area crop must not vanish");
         assert_eq!(out.bytes.len(), 4);
-
-        // A thumbnail is bounded and preserves the source orientation.
-        let preview = thumbnail(&ramp(8, 4), 2, 2);
-        assert_eq!((preview.w, preview.h), (2, 1));
-        assert_eq!(preview.pixel(0, 0).unwrap()[0..2], [0, 0]);
-        assert_eq!(preview.pixel(1, 0).unwrap()[0..2], [4, 0]);
-        // Arbitrary requested bounds are capped without overflowing.
-        let preview = thumbnail(&ramp(800, 400), u32::MAX, u32::MAX);
-        assert!(u64::from(preview.w).saturating_mul(u64::from(preview.h)) <= MAX_THUMBNAIL_PIXELS);
-        assert_eq!(preview.pixel(0, 0).unwrap()[0..2], [0, 0]);
     }
 
     #[test]

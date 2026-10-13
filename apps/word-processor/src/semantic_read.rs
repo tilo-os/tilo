@@ -133,23 +133,6 @@ pub fn read_text(
         .ok_or(ReadError::Malformed)?;
     read_source(&source, &body, cursor, limits)
 }
-/// One order scan retains only the next requested number of blocks plus one lookahead.
-/// Invalid order rows are skipped exactly as `tilo_doc::model::blocks_in_order` does; valid oversized
-/// metadata or exhausted scan work refuses the page rather than silently dropping content.
-///
-/// # Errors
-///
-/// Returns a [`ReadError`] when the document has pending operations, the cursor
-/// is stale or invalid for this basis, or the page exceeds its limits.
-pub fn read_text_at(
-    doc: &AutoCommit,
-    owner_heads: &[automerge::ChangeHash],
-    root: &ObjId,
-    cursor: Option<&Cursor>,
-    limits: Limits,
-) -> Result<Page, ReadError> {
-    read_source(&Source::new(doc, owner_heads), root, cursor, limits)
-}
 #[expect(
     clippy::too_many_lines,
     reason = "one bounded page scan; cursor, lookahead and limit accounting share its state"

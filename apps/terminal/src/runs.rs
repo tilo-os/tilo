@@ -271,12 +271,6 @@ impl Runs {
             }
         }
     }
-
-    /// Whether a run is going on.
-    #[must_use]
-    pub fn running(&self) -> bool {
-        self.open.is_some()
-    }
 }
 
 #[cfg(test)]

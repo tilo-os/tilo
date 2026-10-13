@@ -34,10 +34,6 @@ pub struct Lyrics {
 }
 
 impl Lyrics {
-    pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-    }
-
     /// The index of the line that should be highlighted at `position_ms` for
     /// synced lyrics: the last line whose timestamp is `<= position_ms`.
     /// Returns `None` for plain lyrics or before the first timestamped line.
@@ -644,7 +640,7 @@ mod tests {
         {
             let lr = bundled::for_track("tk_u1").expect("bundled lyrics for tk_u1");
             assert!(!lr.synced);
-            assert!(!lr.is_empty());
+            assert!(!lr.lines.is_empty());
         }
 
         // Phase `unknown_track_has_no_bundled_lyrics`.

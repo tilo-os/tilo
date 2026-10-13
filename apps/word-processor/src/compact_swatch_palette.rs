@@ -137,11 +137,11 @@ impl CompactSwatchPalette {
                             .with_name(self.clear_label.clone())
                             .with_bounds(self.clear_rect)
                             .with_action_target("compact-swatch:clear")
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: self.clear_focused,
-                                ..Default::default()
-                            }),
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.clear_focused),
+                            ),
                     ])
             })
     }

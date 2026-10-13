@@ -19,12 +19,19 @@ use tilo_peer_state::workspace_task::{
     WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskSnapshot,
 };
 
+#[path = "native_task_launch_tests.rs"]
+mod closed_app;
+#[path = "native_task_cross_app_tests.rs"]
+mod cross_app;
+
 struct Native {
     owner: tilo_joined_room::NativeWorkspaceOwner,
     key: SigningKey,
     certificate: tilo_user_identity::DeviceCert,
     origin: PolicyOrigin,
     cached_projection: Mutex<Option<tilo_desktop_model::DesktopTree>>,
+    capped_connection: std::sync::atomic::AtomicBool,
+    spent_grants: Mutex<Vec<tilo_action_policy::GrantId>>,
 }
 fn room() -> tilo_desktop_model::RoomId {
     tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap()
@@ -56,6 +63,10 @@ impl WorkspaceAuthority for Native {
             workspace.room = room();
             workspace.policy =
                 tilo_desktop_model::projection::room_policy_of(doc, &room().to_string());
+            workspace
+                .policy
+                .grants
+                .retain(|grant| !self.spent_grants.lock().unwrap().contains(&grant.id));
             workspace.tasks = tilo_peer_state::workspace_task::snapshot(doc)?.tasks;
             let mut tree = tilo_desktop_model::DesktopTree {
                 active: workspace.id,
@@ -92,6 +103,10 @@ impl CertificateAuthority for Native {
     }
     fn governs(&self, requested: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
         requested.to_string() == room().to_string()
+            && !(self
+                .capped_connection
+                .load(std::sync::atomic::Ordering::SeqCst)
+                && device.is_some())
             && device.is_none_or(|key| *key == self.certificate.device_public_key)
     }
 }
@@ -120,6 +135,29 @@ impl OwnerCommitService for Native {
         })
     }
 }
+impl crate::services::AppActionGrants for Native {
+    fn may_grant(&self, _room: &str, _person: &str) -> bool {
+        false
+    }
+    fn record(
+        &self,
+        _request: &crate::app_actions::AppActionConsentRequest,
+        _grant: tilo_action_policy::Grant,
+        _answer: crate::app_actions::AppActionConsent,
+    ) -> Option<String> {
+        None
+    }
+    fn revoke(&self, requested: &str, grant: &str) {
+        assert_eq!(requested, room().to_string());
+        // Like the shell's grant service, update the broker's live policy
+        // projection synchronously without re-entering the task mutation turn.
+        self.spent_grants
+            .lock()
+            .unwrap()
+            .push(tilo_action_policy::GrantId::new(grant));
+    }
+}
+
 impl WorkspaceMemberships for Native {
     fn requires_room(&self, requested: &str) -> bool {
         OwnerCommitService::requires_room(self, requested)
@@ -205,6 +243,29 @@ impl WorkspaceTaskExecution for Native {
         })
     }
 
+    fn admit_host_launch(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+        requirement: &NativeTaskActionRequirement,
+        launch: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign task room".into());
+        }
+        self.owner.with_task_action_admission(
+            room(),
+            &binding.task_id,
+            &binding.agent_id,
+            binding.epoch,
+            binding.revision,
+            || {
+                self.authorize_action(requested, &binding.agent_id, requirement)?;
+                launch()
+            },
+        )
+    }
+
     fn admit(
         &self,
         requested: &str,
@@ -238,14 +299,22 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_launcher(None)
+    }
+    fn with_launcher(launcher: Option<Arc<dyn crate::services::LauncherServices>>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let owner = tilo_joined_room::open_file(&directory.path().join("native.json")).unwrap();
         let key = SigningKey::from_bytes(&[92; 32]);
-        let certificate = tilo_joined_room::testing::certificate(
+        let mut certificate = tilo_joined_room::testing::certificate(
             &SigningKey::from_bytes(&[91; 32]),
             &key,
             "Governor",
         );
+        // The signed device is initially governed here, so its foreign-device
+        // ceiling only applies after the live connection loses that authority.
+        certificate.capabilities.foreign = true;
+        tilo_user_identity::sign_device_cert(&mut certificate, &SigningKey::from_bytes(&[91; 32]))
+            .unwrap();
         tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
         let native = Arc::new(Native {
             owner,
@@ -253,6 +322,8 @@ impl Fixture {
             certificate,
             origin: OwnerPolicyClock::new().unwrap().new_origin(),
             cached_projection: Mutex::new(None),
+            capped_connection: std::sync::atomic::AtomicBool::new(false),
+            spent_grants: Mutex::new(Vec::new()),
         });
         let membership = OwnerCommitRequest {
             room: room().to_string(),
@@ -287,11 +358,11 @@ impl Fixture {
                         authority: WorkspaceTaskAuthority::Person {
                             caller: native.certificate.clone(),
                         },
-                        command: WorkspaceTaskCommand::Queue {
+                        command: WorkspaceTaskCommand::QueueInstruction {
                             title: "Prepare release notes".into(),
+                            instruction: "Inspect every release-note section, preserve all cross references, and report every blocking inconsistency. ".repeat(4),
                             assigned_agent: "scribe".into(),
                             route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-                            resource: None,
                         },
                     },
                 },
@@ -314,6 +385,8 @@ impl Fixture {
             None,
             Some(&config),
             HostServices {
+                launcher,
+                app_action_grants: Some(native.clone()),
                 task_execution: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
                 ..Default::default()
@@ -327,6 +400,23 @@ impl Fixture {
             directories: Rc::new(LocalActionDirectoryRegistry::new(rx)),
             task,
         }
+    }
+    /// Attenuate the live connection without changing its signed identity or
+    /// the owner's canonical authority over the delegated agent.
+    fn cap_connection(&self) {
+        self.native
+            .capped_connection
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let current = self
+            .state
+            .verify_action_caller(&room().to_string(), &self.signed_presentation())
+            .unwrap();
+        assert!(current.admitted.verified.capped);
+        assert!(self.native.certificate.capabilities.foreign);
+        assert!(
+            self.native
+                .governs(uuid::Uuid::parse_str(&room().to_string()).unwrap(), None)
+        );
     }
     fn person_command(&self, command: WorkspaceTaskCommand) -> Result<(), String> {
         self.native
@@ -377,8 +467,19 @@ impl Fixture {
         .unwrap();
     }
     fn channel(&self, peer: u64, agent: bool) -> channel_handle::Client {
+        self.app_channel(
+            peer,
+            if agent {
+                "so.tilo.agent"
+            } else {
+                "so.tilo.notes"
+            },
+            agent,
+        )
+    }
+    fn signed_presentation(&self) -> Vec<u8> {
         let room = room().to_string();
-        let proof = runtime_collab::CertifiedJoinIdentity {
+        runtime_collab::CertifiedJoinIdentity {
             workspace_id: room.clone(),
             device_certificate: serde_json::to_vec(&self.native.certificate).unwrap(),
             proof: self
@@ -389,21 +490,16 @@ impl Fixture {
                 .to_vec(),
         }
         .encode()
-        .unwrap();
+        .unwrap()
+    }
+    fn app_channel(&self, peer: u64, app: &str, agent: bool) -> channel_handle::Client {
+        let room = room().to_string();
         let mut admitted = self
             .state
-            .verify_action_caller(&room, &proof)
+            .verify_action_caller(&room, &self.signed_presentation())
             .unwrap()
             .admitted;
-        let route = CrdtRoute::record(
-            if agent {
-                "so.tilo.agent"
-            } else {
-                "so.tilo.notes"
-            },
-            room,
-            "main",
-        );
+        let route = CrdtRoute::record(app, room, "main");
         if agent {
             admit_agent_delegation(
                 &WorkspaceAuthority::snapshot(self.native.as_ref()).unwrap(),
@@ -536,6 +632,11 @@ fn set_notes_permission(f: &Fixture, may_write: bool) {
     put_grant(f, grant);
 }
 fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
+    f.native
+        .spent_grants
+        .lock()
+        .unwrap()
+        .retain(|id| id != &grant.id);
     let now = std::time::SystemTime::now();
     let messages = f
         .native
@@ -587,6 +688,195 @@ async fn invoke(
     ))
 }
 
+async fn ordinary_invoke(channel: &channel_handle::Client) -> Result<(), capnp::Error> {
+    let mut request = channel.invoke_published_action_request();
+    let mut p = request.get();
+    p.set_peer_id(200);
+    p.set_resource("notes:release");
+    p.set_action("append");
+    request.send().promise.await.map(|_| ())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (_target, stream) = notes_target(&f).await;
+            grant_notes(&f);
+            f.person_command(WorkspaceTaskCommand::QueueInstruction {
+                title: "Other work".into(),
+                instruction: "Inspect unrelated work".into(),
+                assigned_agent: "scribe".into(),
+                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+            })
+            .unwrap();
+            let other = f
+                .native
+                .owner
+                .workspace_task_snapshot(room())
+                .unwrap()
+                .tasks
+                .into_iter()
+                .find(|task| task.id != f.task)
+                .unwrap()
+                .id;
+            f.person_command(WorkspaceTaskCommand::ApproveRun {
+                task_id: other.clone(),
+                agent_id: "scribe".into(),
+                expected_run_epoch: 0,
+                after_revision: 0,
+            })
+            .unwrap();
+            put_grant(
+                &f,
+                Grant::new(
+                    "other-task-denies-append",
+                    Subject::Task(other.clone()),
+                    TreePath::room(room().to_string()).app("so.tilo.notes"),
+                    KindSet::UNDOABLE,
+                    Answer::Deny,
+                    Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                ),
+            );
+            assert_eq!(
+                f.native
+                    .owner
+                    .workspace_task_snapshot(room())
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == other)
+                    .unwrap()
+                    .status,
+                WorkspaceTaskStatus::InProgress,
+            );
+            let invocation = uuid::Uuid::new_v4();
+            let first = invoke(&agent, &run, invocation).await.unwrap();
+            assert!(matches!(
+                first.1,
+                tilo_actions::InvocationUpdate::Accepted { .. }
+            ));
+            let reply = stream.read_request().send().promise.await.unwrap();
+            assert_eq!(
+                reply.get().unwrap().get_invocation_uuid().unwrap(),
+                invocation.as_bytes()
+            );
+            assert_eq!(invoke(&agent, &run, invocation).await.unwrap(), first);
+            let unbound_refused = ordinary_invoke(&agent).await.is_err();
+            drop(f);
+            assert!(unbound_refused);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
+    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (_target, stream) = notes_target(&f).await;
+            grant_notes(&f);
+            put_grant(
+                &f,
+                Grant::new(
+                    "task-other-resource-only",
+                    Subject::Task(f.task.clone()),
+                    tilo_actions::action_node(
+                        &TreePath::room(room().to_string()),
+                        "so.tilo.notes",
+                        "document",
+                        "notes:other",
+                        None,
+                        "append",
+                    ),
+                    KindSet::UNDOABLE,
+                    Answer::Allow,
+                    Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                )
+                .with_lifetime(Lifetime::Task(f.task.clone())),
+            );
+            assert!(invoke(&agent, &run, uuid::Uuid::new_v4()).await.is_err());
+            assert!(
+                ordinary_invoke(&agent)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("authenticated task action admission")
+            );
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(30),
+                    stream.read_request().send().promise
+                )
+                .await
+                .is_err(),
+                "neither route may dispatch outside the task resource scope"
+            );
+            drop(f);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ordinary_native_agent_invocation_remains_fenced_after_stop() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.approve();
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let (target, stream) = notes_target(&f).await;
+            grant_notes(&f);
+            let invocation = uuid::Uuid::new_v4();
+            let (id, _) = invoke(&agent, &run, invocation).await.unwrap();
+            stream.read_request().send().promise.await.unwrap();
+            let mut update = target.update_invocation_request();
+            update.get().set_id(id);
+            update.get().set_update_json(
+                serde_json::to_string(&tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: tilo_actions::InvocationId(invocation),
+                    output: tilo_actions::ActionOutput::default(),
+                })
+                .unwrap(),
+            );
+            update.send().promise.await.unwrap();
+            f.person_command(WorkspaceTaskCommand::CancelForRun {
+                task_id: f.task.clone(),
+                run_epoch: 1,
+                after_revision: 0,
+            })
+            .unwrap();
+            assert!(invoke(&agent, &run, uuid::Uuid::new_v4()).await.is_err());
+            assert!(
+                ordinary_invoke(&agent)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("authenticated task action admission")
+            );
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(30),
+                    stream.read_request().send().promise
+                )
+                .await
+                .is_err(),
+                "ordinary invocation cannot dispatch after Stop"
+            );
+            drop(f);
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale_projection() {
     tokio::task::LocalSet::new()
@@ -595,6 +885,9 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
+            assert_eq!(run.title, "Prepare release notes");
+            assert!(run.instruction().chars().count() > 240);
+            assert!(run.instruction().contains("blocking inconsistency"));
             let (_target, stream) = notes_target(&f).await;
             grant_notes(&f);
             let projected = WorkspaceAuthority::snapshot(&*f.native).unwrap();

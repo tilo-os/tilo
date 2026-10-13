@@ -4,14 +4,6 @@
 //! room-sync path actually runs, rather than against a helper written
 //! to agree with it.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "test fixtures: a failed lookup is the assertion"
-)]
-
 use tilo_desktop_model::projection::{ReplicatedGroup, ReplicatedTab, merge_group};
 use tilo_desktop_model::{AppKind, Tab, TileContent, WindowGroup, WindowWidth};
 

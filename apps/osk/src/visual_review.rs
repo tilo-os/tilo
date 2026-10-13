@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -68,10 +68,7 @@ pub(super) fn lay_out(osk: &mut OskWidget, theme: &Theme, w: f32) -> f32 {
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(w),
-                    height: Dimension::length(h),
-                },
+                size: Size::from_lengths(w, h),
                 ..Default::default()
             },
             &[child],

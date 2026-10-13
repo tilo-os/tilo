@@ -26,6 +26,8 @@
 pub mod heap;
 pub mod read;
 
+pub use read::ReadTyped;
+
 use automerge::sync::{self, SyncDoc};
 use automerge::{AutoCommit, AutomergeError, Change, ChangeHash};
 

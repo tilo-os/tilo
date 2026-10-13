@@ -274,10 +274,6 @@ fn reserved_chords_are_owned_by_rename_and_quick_settings_with_help_and_escape_p
 
 #[test]
 #[serial_test::serial(process_env)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn status_editor_and_presence_publish_live_manual_status_without_leaking_keys() {
     fn inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps() {
         let settings = tempfile::tempdir().expect("isolated settings directory");
@@ -762,10 +758,6 @@ fn configured_shortcuts_match_exactly_capture_safely_and_are_claimed_before_clie
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn session_power_actions_respect_inhibitors_and_report_failure() {
     fn logout_and_switch_user_respect_their_portal_inhibitors() {
         let (mut host, chrome) = host_with_chrome();
@@ -1358,11 +1350,7 @@ fn shortcut_guide_opens_from_every_help_route_and_is_keyboard_editable() {
         host.shortcut_binding_rects
             .push((action, Rect::new(20.0, 20.0, 80.0, 50.0)));
         host.last_cursor = Some(Point::new(40.0, 35.0));
-        let click = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        };
+        let click = ui::synthetic_input::mouse_press();
         let mut handled = false;
         assert!(host.handle_shell_mouse_click_event(&click, &mut handled));
         assert!(handled);
@@ -1497,7 +1485,7 @@ fn quick_settings_settings_opens_the_personal_app_or_reports_its_absence() {
 
 #[test]
 fn dictation_model_setup_uses_semantic_normal_launcher_and_never_grants_capture() {
-    use crate::compositor::dictation::{DictationStatus, runtime::RuntimeError};
+    use crate::compositor::dictation_status::{DictationStatus, RuntimeError};
     let (mut host, _) = host_with_chrome();
     let launches = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let recorded = std::rc::Rc::clone(&launches);
@@ -1718,10 +1706,6 @@ const SAMPLE_TOKEN: &str = "eyJ3b3Jrc3BhY2VfaWQiOjEsInJvb21faWQiOiJhYmMifQ";
 
 #[test]
 #[serial_test::serial(clipboard)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn invite_tokens_travel_through_the_clipboard_exactly() {
     fn ctrl_c_puts_the_minted_invite_token_on_the_clipboard() {
         let (mut h, _) = host_with_chrome();

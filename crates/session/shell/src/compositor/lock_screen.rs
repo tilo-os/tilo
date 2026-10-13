@@ -828,11 +828,9 @@ pub fn draw_lock_scene_at_time(
     let (ext_w, ext_h) = combined_extent(outputs);
     if ext_w > 0.0 && ext_h > 0.0 {
         let backdrop = Rect::new(0.0, 0.0, ext_w, ext_h);
-        let mut wallpaper_layer = false;
-        if let Some(image) = wallpaper
-            && image.width > 0
-            && image.height > 0
-        {
+        let visible_wallpaper = wallpaper.filter(|image| image.width > 0 && image.height > 0);
+        let wallpaper_layer = visible_wallpaper.is_some();
+        if let Some(image) = visible_wallpaper {
             let scale = (ext_w / f64::from(image.width)).max(ext_h / f64::from(image.height));
             let width = f64::from(image.width) * scale;
             let height = f64::from(image.height) * scale;
@@ -856,7 +854,6 @@ pub fn draw_lock_scene_at_time(
                 Affine::IDENTITY,
                 &backdrop,
             );
-            wallpaper_layer = true;
         }
         scene.fill(
             Fill::NonZero,
@@ -1048,12 +1045,12 @@ fn draw_lock_media(
         None,
         &card,
     );
-    let image = player.artwork.as_ref().map(|art| ImageData {
-        data: vello::peniko::Blob::new(art.rgba.clone()),
-        format: vello::peniko::ImageFormat::Rgba8,
-        alpha_type: vello::peniko::ImageAlphaType::Alpha,
-        width: art.width,
-        height: art.height,
+    let image = player.artwork.as_ref().map(|art| {
+        ui::raster::rgba8(
+            vello::peniko::Blob::new(art.rgba.clone()),
+            art.width,
+            art.height,
+        )
     });
     paint_artwork(
         scene,

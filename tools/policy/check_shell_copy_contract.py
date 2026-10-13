@@ -14,6 +14,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import line_number, production_source  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -37,21 +40,6 @@ FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 STRING_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
-
-
-def production_source(text: str) -> str:
-    """Discard the conventional trailing Rust test module, when present."""
-    markers = ("\n#[cfg(test)]", "\n#[cfg(all(test")
-    ends = [text.find(marker) for marker in markers if text.find(marker) >= 0]
-    source = text[: min(ends)] if ends else text
-    # Full-line comments often quote the legacy words while explaining an
-    # internal type. Blank them rather than deleting them so diagnostics keep
-    # their original line numbers.
-    return re.sub(r"(?m)^\s*//.*$", "", source)
-
-
-def line_number(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1
 
 
 def audit() -> list[str]:

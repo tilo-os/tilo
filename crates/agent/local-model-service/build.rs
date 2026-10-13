@@ -94,18 +94,19 @@ fn show_tail(log: &Path) {
 /// until `exec` stay open until then.
 fn close_inherited_descriptors() {
     // SAFETY: plain syscalls on this process's own descriptor table.
-    let marked = unsafe {
+    #[cfg(target_os = "linux")]
+    if unsafe {
         libc::syscall(
             libc::SYS_close_range,
             3_u32,
             u32::MAX,
             libc::CLOSE_RANGE_CLOEXEC,
         )
-    };
-    if marked == 0 {
+    } == 0
+    {
         return;
     }
-    // Kernels before 5.11 lack the flag: mark them one by one.
+    // Other hosts, and kernels before 5.11, lack the flag: mark them one by one.
     // SAFETY: as above.
     let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
     let limit = libc::c_int::try_from(limit).unwrap_or(4096).clamp(3, 65536);

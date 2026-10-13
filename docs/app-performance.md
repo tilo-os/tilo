@@ -1,8 +1,6 @@
 # Application performance coverage
 
-The [app suite inventory](../scripts/perf/app-suite.json) records 47 GUI applications with native Rust entrypoints under `apps/`, plus the excluded headless `tilo-agent` CLI. Every GUI app is **unqualified**. This is a source inventory, not evidence that every app builds or runs on macOS. Package and binary names come from each Cargo manifest, including `windows-app` / `windows` and the implicit `tilo-scratchpad` binary.
-
-Implementation follows the [application performance plan](superpowers/plans/2026-09-16-app-performance.md). Improve measured shared-framework bottlenecks first; move to app-specific optimization when controlled measurements show the remaining dominant work is app-specific or shared experiments no longer yield repeatable gains.
+Improve measured shared-framework bottlenecks first; move to app-specific optimization when controlled measurements show the remaining dominant work is app-specific or shared experiments no longer yield repeatable gains.
 
 ## Qualification contract
 
@@ -17,7 +15,7 @@ Implementation follows the [application performance plan](superpowers/plans/2026
 
 | Existing facility | Reuse and limitation |
 | --- | --- |
-| [`ui::launch`](../ui/src/launch.rs) | Common app lifecycle and `--headless-drive`. The inventory marks enabled paths unverified. `osk` and `scratchpad` explicitly disable generic headless driving. |
+| [`ui::launch`](../ui/src/launch.rs) | Common app lifecycle and `--headless-drive`. `osk` and `scratchpad` explicitly disable generic headless driving. |
 | [`ui::headless`](../ui/src/headless.rs) | Real widget event dispatch, named targets, bounded waits, semantic assertions, and component hosts. It does not establish native presentation cadence. |
 | [`ui::profiling`](../ui/src/profiling.rs) | `PerfScenario`, scroll/type/key/click/frame steps, warmup exclusion, and CPU frame capture. Reuse this instead of duplicating app benchmark loops. |
 | [`ui::ux_bench`](../ui/src/ux_bench.rs) | Structured input, wheel phases, checkpoints, and semantic/visual checks. Existing [`scripts/ux-bench`](../scripts/ux-bench) scenarios cover desktop journeys, not all app workloads. |
@@ -27,7 +25,7 @@ Implementation follows the [application performance plan](superpowers/plans/2026
 | [`frame-loop-bench.py`](../scripts/perf/frame-loop-bench.py) | Compositor frame-loop instrumentation; Linux compositor backends do not establish macOS app presentation. |
 | [`benchmark-host.py`](../scripts/browser/benchmark-host.py) | Browser-specific host measurements; preserve engine coverage separately from native widget chrome. |
 
-Calculator, Monitor, Music, and Tube already have app-specific benchmark flags, recorded verbatim in the inventory. Many apps register named screenshot scenarios. Those are starting points for fixture construction, not performance passes; the inventory deliberately does not invent scenario IDs or assume screenshot roots match live roots.
+Calculator, Monitor, Music, and Tube already have app-specific benchmark flags. Many apps register named screenshot scenarios. Those are starting points for fixture construction, not performance passes.
 
 ## Remaining coverage work
 
@@ -36,8 +34,6 @@ Calculator, Monitor, Music, and Tube already have app-specific benchmark flags, 
 3. Require observable input effects. `PerfStep::ClickNamed` now fails on a missing or empty target instead of discarding that failure; a regression test also verifies delivery to a real control. Per-app state/pixel assertions remain necessary. Headless `Frames(n)` runs without a real-time schedule, so it cannot stand in for timed animation.
 4. Correlate active inputs, frame identities, worker outcomes, and presentation evidence. Preserve skipped/acquire-failed frames and distinguish occlusion/background behavior from foreground qualification.
 5. Add explicit OSK and Scratchpad adapters. OSK requires an input-method client; generic simulated typing is not equivalent to that integration. Browser, media, camera, and terminal fixtures likewise need their actual engines/providers where applicable.
-
-The inventory's `existing_hooks` are source-backed facilities. `proposed_workloads` are work still to implement and validate, not executable fixture identifiers. Empty `qualification_evidence` arrays are intentional until the full contract has supporting run artifacts.
 
 ## Initial optimized diagnosis
 
@@ -136,7 +132,7 @@ shared allocation experiment had no measurable benefit. Shared-layer stall is
 still unproven: next measure other widget families using the existing list and
 gallery diagnostic workloads before selecting app-specific changes.
 
-### Pointer motion keeps the published tree (TIL-628)
+### Pointer motion keeps the published tree
 
 Every input event used to drop the resource cache, and for a framework app
 every mutable record loan (each event dispatch takes one) advanced the bound
@@ -150,7 +146,7 @@ when hover opens or closes a nested menu). The bound snapshot is carried to the
 owner's new generation. Hover also skips the pre-dispatch availability
 projection, since hover activates nothing and every frame refreshes
 availability again before it paints. Every other event republishes as before
-(key releases and modifiers keep the tree too since TIL-751, below).
+(key releases and modifiers keep the tree too since #4148, below).
 
 `cargo run --release -p tilo-app --features test-support --example
 framework-scaling` mounts a checklist of N tasks (title and checkbox per row) in
@@ -174,7 +170,7 @@ rows. Each frame still runs the full availability refresh in
 discovery still walks the bound owners and projection still visits every
 control.
 
-### A keystroke publishes twice (TIL-751)
+### A keystroke publishes twice
 
 Traced through the hosted path (`App::surface_input` for the key's press and
 release, each followed by the host's frame, `App::surface_frame`, and its
@@ -219,7 +215,7 @@ the real save-status frame to publish while preserving the typed draft. The
 clock override is test-support only, thread-local, and restored on unwind;
 production save sampling and clock readings keep their existing behaviour.
 
-### A frame that changes nothing no longer walks the published tree (TIL-761)
+### A frame that changes nothing no longer walks the published tree
 
 `sample` on the keystroke loop at 10,000 tasks
 (`TILO_SCALING_KEYSTROKES=400`) put layout and draw at 0.4 % of the samples.
@@ -248,14 +244,14 @@ release to the end of the frame after it. Same machine and method as above:
 `publication_per_keystroke::a_hosted_frame_that_changes_nothing_costs_the_same_whatever_the_list`
 holds the release frame at 1,000 tasks within 2× of 100 (it measured 4.2×
 before). The frame that shows a key still grows with the list: the edit
-changes the snapshot, so it publishes twice (TIL-751), rebuilds the
+changes the snapshot, so it publishes twice, rebuilds the
 accessibility tree's resource nodes and the controls' allowed addresses once,
 and `ResourceRoot::nested_views` builds every child once more. Making that
 flat needs publication that shares unchanged children between snapshots.
 
-### The frame that shows a key stays flat: a shared published tree (TIL-766)
+### The frame that shows a key stays flat: a shared published tree
 
-After TIL-761 the frame that shows a typed key still grew with the list,
+After #4176 the frame that shows a typed key still grew with the list,
 although the key edits the draft, which no item depends on. `sample` at
 10,000 tasks: 58 % rebuilding and diffing a semantic node per item, 25 %
 rebuilding, copying and permission-filtering every item resource on the
@@ -309,7 +305,7 @@ a small constant: each of the two publications per keystroke still reads every
 item's id and label from the state (`Fields::item_collections`) to compare the
 collections, 0.54 ms of publishing per keystroke in all.
 
-### Opening a long list (TIL-758)
+### Opening a long list
 
 `framework-scaling -- 5000,50000 open` reopens the checklist over a record
 already holding N tasks, five times, to its first laid-out frame. Each size
@@ -627,12 +623,6 @@ all three verified-scroll example tests passed. Independent correlation review
 found no blocker; invalid CPU IDs and unmatched-worker checks were added after
 its parser-hardening suggestions.
 
-## Coverage validator
-
-Run `python3 scripts/perf/check-app-coverage.py` from the repository. This checks exact entrypoint coverage, duplicate/stale records, Cargo package and binary identifiers, exclusion reasons, qualification status, and evidence file references. It exits nonzero while any GUI app is unqualified or lacks evidence. The initial expected result is **47 unqualified apps**, not a passing gate.
-
-`qualification_evidence` entries are paths to existing files, relative to the repository root or absolute. The checker validates their existence only. It does not validate their contents, review exclusion decisions, or certify 60 fps; the actual performance gate remains pending. Focused CLI tests run with `python3 scripts/perf/check_app_coverage_test.py`.
-
 ### Shared render admission (2026-09-16)
 
 Primary frame construction now defers before consuming state when the fixed
@@ -643,8 +633,7 @@ Native scrolling input-dispatch p99 improved from 9.000/10.649 ms to
 4.165/4.168 ms over repeated 1200-input samples with verified movement and
 matching worker outcomes. CPU samples now exclude deferred GPU backpressure;
 these samples cannot establish displayed 60 fps. Worker completion-gap p99
-varied from 8.980 to 16.494 ms, and its repeat maximum was 20.601 ms. All 47 apps
-remain unqualified. See `docs/native-input-workloads.md` for hashes, failed
+varied from 8.980 to 16.494 ms, and its repeat maximum was 20.601 ms. See `docs/native-input-workloads.md` for hashes, failed
 experiments, idle validation, and inconclusive occlusion checks.
 
 ### Actual Metal presentation evidence
@@ -685,7 +674,7 @@ of five or six saves after a warm-up:
 | first frame + present | | 12 ms |
 | **save → first frame** | **4322 ms** | **2138 ms** |
 
-`apps/hot-reload-demo`, inside the workspace, same container:
+A small app inside the workspace, same container:
 
 | Path | Before | After |
 |---|---:|---:|

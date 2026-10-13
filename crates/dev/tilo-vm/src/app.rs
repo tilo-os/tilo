@@ -51,8 +51,10 @@ mod device;
 #[cfg(test)]
 mod forwarded_port_tests;
 mod kernel;
+mod local_layer;
 mod reach;
 mod scenario;
+mod userspace;
 
 #[derive(Debug, Clone, Copy)]
 struct ForeignRect {
@@ -882,6 +884,7 @@ impl App {
             Some(Command::Slot(SlotCommand::Apps(SlotAppsCommand::List))) => Ok(apps_list()),
             Some(Command::Slot(command)) => self.slot(command),
             Some(Command::SwapArtifact(request)) => self.swap_artifact(&request),
+            Some(Command::ImportLayer(request)) => self.import_local_layer(&request),
             Some(Command::Swap {
                 component,
                 slot,
@@ -2815,15 +2818,16 @@ impl App {
         std::fs::write(&facts_file, &facts_text)
             .map_err(CliError::io(format!("write {}", facts_file.display())))?;
         let mut next = vec![format!("tilo-vm vm upgrade --image {}", layout.display())];
-        let mut disk_path = None;
-        if disk {
+        let disk_path = if disk {
             let dest = move_built_disk(&scratch, &out)?;
             next.insert(
                 0,
                 format!("tilo-vm vm create <name> --image {}", dest.display()),
             );
-            disk_path = Some(dest.display().to_string());
-        }
+            Some(dest.display().to_string())
+        } else {
+            None
+        };
         let data = json!({
             "image": image,
             "digest": digest,
@@ -4088,10 +4092,10 @@ impl App {
         let slot = self.slot_name(slot)?;
         self.receipt.set("slot", &slot);
         self.receipt.set("component", &component);
-        if let Some(profile) = profile {
-            check_profile(profile, &component, from)?;
-            self.receipt.set("profile", profile);
+        if component == "userspace" {
+            return self.swap_userspace(&slot, from, builder, profile);
         }
+        self.record_swap_profile(profile, &component, from)?;
         if let Some(app) = component.strip_prefix("app:") {
             return self.swap_app(&slot, app, from, builder);
         }
@@ -4174,6 +4178,19 @@ impl App {
             "tilo-vm logs",
             "tilo-vm rollback",
         ]))
+    }
+
+    fn record_swap_profile(
+        &mut self,
+        profile: Option<&str>,
+        component: &str,
+        from: &str,
+    ) -> Result<(), CliError> {
+        if let Some(profile) = profile {
+            check_profile(profile, component, from)?;
+            self.receipt.set("profile", profile);
+        }
+        Ok(())
     }
 
     fn cohort_inputs(
@@ -8131,6 +8148,7 @@ mod tests {
             seat: None,
             outputs: Vec::new(),
             parity: None,
+            session_identity: None,
         }
     }
 

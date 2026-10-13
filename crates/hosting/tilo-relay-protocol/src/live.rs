@@ -288,7 +288,7 @@ pub enum ParticipantKind {
 ///
 /// Self-asserted and cosmetic. Who a publisher is comes from the host-stamped
 /// device; that a device is an agent, and on whose behalf, comes from its
-/// root-signed [`AgentDelegation`](crate::agents::AgentDelegation).
+/// root-signed [`Delegation`](crate::delegation::Delegation).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LiveParticipant {

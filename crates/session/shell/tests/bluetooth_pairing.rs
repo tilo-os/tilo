@@ -241,16 +241,9 @@ impl Rig {
             .get(test_id)
             .unwrap_or_else(|| panic!("{test_id} is on screen"));
         let at: Point = rect.center();
-        self.send(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-        });
+        self.send(&ui::synthetic_input::cursor_moved(at.x, at.y));
         for state in [ElementState::Pressed, ElementState::Released] {
-            self.send(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button: MouseButton::Left,
-            });
+            self.send(&ui::synthetic_input::mouse_input(state, MouseButton::Left));
         }
     }
 
@@ -262,11 +255,7 @@ impl Rig {
                     .map(SmolStr::new),
                 state,
             );
-            self.send(&WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event,
-                is_synthetic: false,
-            });
+            self.send(&ui::synthetic_input::keyboard_input(event));
             self.frame();
         }
     }

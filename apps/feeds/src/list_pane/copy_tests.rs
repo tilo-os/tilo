@@ -157,10 +157,7 @@ impl Host {
         // The pointer rests over the rows: the row under it lifts.
         host.app.surface_input(
             &host.window,
-            WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(200.0 * scale, 210.0 * scale),
-            },
+            ui::synthetic_input::cursor_moved(200.0 * scale, 210.0 * scale),
             false,
         );
         for _ in 0..3 {

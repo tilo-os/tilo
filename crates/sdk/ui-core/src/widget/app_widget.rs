@@ -5,6 +5,8 @@
 //! `AppKind` is the tile-host enum re-exported from `tile_host`: one enum,
 //! `Terminal, Files, Editor, Browser, Settings`.
 
+// Optional floating capabilities remain available through `dyn AppWidget`.
+// Re-export the extension at the app contract for hosts that import this module.
 use crate::widget::{AppKind, Widget};
 use std::cell::RefCell;
 use std::fmt;
@@ -272,8 +274,10 @@ pub trait AppWidget: Widget {
     fn app_kind(&self) -> AppKind;
     fn app_title(&self) -> &str;
     fn app_icon(&self) -> IconDescriptor;
-    /// Which role permission governs this app. `None` means "ungated".
-    fn permission_hint(&self) -> Option<AppKind>;
+    /// Which role permission governs this app. Default `None`: ungated.
+    fn permission_hint(&self) -> Option<AppKind> {
+        None
+    }
     /// Command-palette contributions. Default is none.
     fn commands(&self) -> Vec<AppCommand> {
         vec![]
@@ -320,10 +324,10 @@ mod component_adapter {
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
         AudiencePresentationWidgetExt, AutoCommit, CaptureMode, CompleteContentProvider,
-        CompleteContentWidgetExt, Continuable, ControlBindingMetadata, DragPayload,
-        FloatingSurfaceProvider, FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt,
-        HashMap, HashSet, Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey,
-        ResourceOperationStart, Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
+        CompleteContentWidgetExt, Continuable, ControlBindingMetadata, FloatingSurfaceProvider,
+        FloatingSurfaceWidgetExt, FullscreenProvider, FullscreenWidgetExt, HashMap, HashSet,
+        Instant, NodeId, ObjId, PermissionScope, PresenceCtx, PresenceKey, ResourceOperationStart,
+        Scene, TaffyTree, TaffyTreeExt, TextRenderer, Theme, WindowEvent,
     };
 
     pub(crate) struct BoundAppWidget {
@@ -439,6 +443,25 @@ mod component_adapter {
     }
 
     impl FloatingSurfaceProvider for BoundAppWidget {
+        fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+            self.in_root_mut(|root| root.on_floating_surface_ime_source_changed(id));
+        }
+
+        fn draw_floating_surface(
+            &mut self,
+            id: &str,
+            scene: &mut vello::Scene,
+            transform: vello::kurbo::Affine,
+            text_renderer: &mut crate::text_render::TextRenderer,
+            theme: &crate::theme::Theme,
+            presence: &crate::presence::PresenceCtx,
+        ) -> bool {
+            self.in_root_mut(|root| {
+                root.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
+            })
+            .unwrap_or_default()
+        }
+
         fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
             self.in_root_mut(|root| root.on_floating_surface_focus_changed(id, focused));
         }
@@ -882,10 +905,7 @@ mod component_adapter {
                 return taffy.leaf_node(taffy::Style::default());
             };
             let style = taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
+                size: taffy::Size::from_percent(1.0, 1.0),
                 ..Default::default()
             };
             taffy.widget_node(style, &[child], node_map, self)
@@ -1228,26 +1248,9 @@ mod component_adapter {
             }
             update
         }
-        fn accepts_drop(&self, payload: &DragPayload) -> bool {
-            self.in_root(|root| root.accepts_drop(payload))
-                .unwrap_or_default()
-        }
-        fn on_drop(
-            &mut self,
-            payload: DragPayload,
-            state: &mut crate::widget::Edits<'_>,
-            _path: &crate::widget::ModelPath,
-        ) {
-            self.with_root_edits(state, |root, edits, record_root| {
-                root.on_drop(payload, edits, record_root);
-            });
-        }
         fn wants_pointer_capture(&self) -> bool {
             self.in_root(|root| root.wants_pointer_capture())
                 .unwrap_or_default()
-        }
-        fn is_floating(&self) -> bool {
-            self.in_root(|root| root.is_floating()).unwrap_or_default()
         }
         fn needs_animation_frame(&self) -> bool {
             self.in_root(|root| root.needs_animation_frame())

@@ -17,10 +17,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -368,10 +364,6 @@ fn required_attestors_gate_installs_with_optional_self_signed_fallback() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "each phase keeps one former test's body verbatim"
-)]
 fn publisher_trust_refuses_revoked_warns_on_self_signed_and_binds_registry_keys() {
     // Phase `install_refuses_revoked_publisher`.
     {

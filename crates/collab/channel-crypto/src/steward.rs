@@ -12,8 +12,13 @@
 //! then allowed devices with a pending access request are admitted.
 //!
 //! Every change is one frame in the governance journal, with targeted
-//! deliveries for the devices that must process it. Deliveries are drained
-//! by redelivering [`ChannelSteward::outbox`] until each device's cumulative
+//! deliveries for the devices that must process it. Every device asking
+//! since the last change is admitted by one commit, so a channel many
+//! people join at once moves one epoch per batch, not per person. The
+//! journal keeps only its head frame ([`GovernanceJournal::compact`]): a
+//! joiner needs only the Welcome that admits it, and a member that missed a
+//! commit asks again. Deliveries are drained by redelivering
+//! [`ChannelSteward::outbox`] until each device's cumulative
 //! acknowledgement covers it. The sequence per change is:
 //!
 //! 1. stage the MLS commit and write the group with it;
@@ -36,8 +41,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use collab_types::{
-    ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
-    MlsGovernanceContext, MlsGovernanceFrameV1,
+    ChannelId, Ed25519PublicKey, JoinMaterial, Joining, MlsAccessRequestV1, MlsGovernanceAckV1,
+    MlsGovernanceAction, MlsGovernanceContext, MlsGovernanceFrameV1,
 };
 use ed25519_dalek::SigningKey;
 use openmls::prelude::BasicCredential;
@@ -367,6 +372,7 @@ impl<S: StewardStore> ChannelSteward<S> {
                 outcome.removed.push(member);
             }
         }
+        let mut admissions = Vec::new();
         for (device, request) in requests {
             if *device == steward || request.device != *device || !allowed.contains(device) {
                 continue;
@@ -387,27 +393,37 @@ impl<S: StewardStore> ChannelSteward<S> {
                 self.remove(*device, vault).await?;
                 outcome.removed.push(*device);
             }
-            self.admit(*device, package, request, vault).await?;
-            outcome.admitted.push(*device);
+            admissions.push((*device, package, request));
+        }
+        if !admissions.is_empty() {
+            self.admit(&admissions, vault).await?;
+            outcome
+                .admitted
+                .extend(admissions.iter().map(|(device, _, _)| *device));
         }
         Ok(outcome)
     }
 
+    /// Admit every device in `admissions` with one commit.
     async fn admit(
         &mut self,
-        device: Ed25519PublicKey,
-        package: KeyPackage,
-        request: &MlsAccessRequestV1,
+        admissions: &[(Ed25519PublicKey, KeyPackage, &MlsAccessRequestV1)],
         vault: &VaultKey,
     ) -> Result<()> {
         let current = self.members();
+        let recipients: Vec<Ed25519PublicKey> =
+            admissions.iter().map(|(device, _, _)| *device).collect();
         let mut desired = current.clone();
-        desired.insert(device);
+        desired.extend(recipients.iter().copied());
         let governors = BTreeSet::from([self.device()]);
         let revision = self.next_revision();
         let transaction = self.transaction_id(revision);
         let head = self.journal.head_digest();
-        let addition = self.group.stage_add(package)?;
+        let packages: Vec<KeyPackage> = admissions
+            .iter()
+            .map(|(_, package, _)| package.clone())
+            .collect();
+        let addition = self.group.stage_add(&packages)?;
         let recorded = async {
             self.save_group(vault)?;
             let frame = self
@@ -418,21 +434,25 @@ impl<S: StewardStore> ChannelSteward<S> {
                     head,
                     addition.epoch,
                     MlsGovernanceAction::AddWithKeyHistory {
-                        recipient: device,
-                        welcome: addition.welcome.clone(),
+                        recipients,
                         existing_member_commit: addition.commit.clone(),
-                        key_history: addition.key_history.clone(),
+                        joining: Joining::Material(JoinMaterial {
+                            welcome: addition.welcome.clone(),
+                            key_history: addition.key_history.clone(),
+                        }),
                     },
                     self.device(),
                 ))
                 .await?;
-            self.ledger.admitted.insert(device, request.issued_at);
-            self.ledger
-                .packages
-                .entry(device)
-                .or_default()
-                .insert(package_digest(request));
-            self.ledger.acknowledged.remove(&device);
+            for (device, _, request) in admissions {
+                self.ledger.admitted.insert(*device, request.issued_at);
+                self.ledger
+                    .packages
+                    .entry(*device)
+                    .or_default()
+                    .insert(package_digest(request));
+                self.ledger.acknowledged.remove(device);
+            }
             self.save_ledger()?;
             self.append(
                 frame,
@@ -561,9 +581,95 @@ impl<S: StewardStore> ChannelSteward<S> {
         Ok(completed)
     }
 
+    /// [`Self::acknowledge`] for many acknowledgements at once, each record
+    /// written once: a channel many people joined at once is acknowledged by
+    /// all of them for every change. One that is not this channel's or not
+    /// validly signed is skipped. Returns how many deliveries they
+    /// completed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a durable write fails.
+    pub fn acknowledge_all(&mut self, acks: &[MlsGovernanceAckV1]) -> Result<usize> {
+        let valid: Vec<(Ed25519PublicKey, [u8; 32])> = acks
+            .iter()
+            .filter(|ack| ack.channel == self.channel && ack.verify().is_ok())
+            .map(|ack| (ack.device, ack.through_digest))
+            .collect();
+        if valid.is_empty() {
+            return Ok(0);
+        }
+        let previous = self.journal.clone();
+        let completed = self.journal.acknowledge_all(&valid)?;
+        if completed > 0 {
+            let written = self
+                .journal
+                .to_bytes()
+                .and_then(|bytes| self.store.write(StewardRecord::Journal, &bytes));
+            if let Err(error) = written {
+                self.journal = previous;
+                return Err(error);
+            }
+        }
+        drop(previous);
+        let positions: Vec<Option<[u8; 32]>> = self
+            .journal
+            .frames()
+            .iter()
+            .map(|frame| frame.digest().ok())
+            .collect();
+        let position =
+            |digest: &[u8; 32]| positions.iter().position(|known| *known == Some(*digest));
+        let mut moved = false;
+        for (device, through) in valid {
+            let Some(at) = position(&through) else {
+                continue;
+            };
+            let newer = self
+                .ledger
+                .acknowledged
+                .get(&device)
+                .is_none_or(|known| position(known).is_none_or(|known| known < at));
+            if newer {
+                self.ledger.acknowledged.insert(device, through);
+                moved = true;
+            }
+        }
+        if moved {
+            self.save_ledger()?;
+        }
+        Ok(completed)
+    }
+
+    /// Every frame some device with an unacknowledged delivery still lacks,
+    /// each once, oldest first: what a transport reaching every device at
+    /// once (a host retaining the channel) publishes, instead of
+    /// [`Self::outbox`]'s copy per device.
+    pub fn outbox_frames(&self) -> Vec<MlsGovernanceFrameV1> {
+        let frames = self.journal.frames();
+        let digests: Vec<Option<[u8; 32]>> =
+            frames.iter().map(|frame| frame.digest().ok()).collect();
+        let start = self
+            .journal
+            .pending_recipients()
+            .iter()
+            .map(|recipient| {
+                self.ledger
+                    .acknowledged
+                    .get(recipient)
+                    .and_then(|after| digests.iter().position(|digest| *digest == Some(*after)))
+                    .map_or(0, |position| position.saturating_add(1))
+            })
+            .min();
+        start
+            .and_then(|start| frames.get(start..))
+            .map(<[MlsGovernanceFrameV1]>::to_vec)
+            .unwrap_or_default()
+    }
+
     /// For every device with an unacknowledged delivery, the frames after
-    /// the last one it acknowledged, oldest first. A device that never
-    /// acknowledged gets the whole chain, so it can verify it from genesis.
+    /// the last one it acknowledged, oldest first: the head frame, as the
+    /// journal keeps no other.
     pub fn outbox(&self) -> Vec<Outgoing> {
         self.journal
             .pending_recipients()
@@ -585,10 +691,13 @@ impl<S: StewardStore> ChannelSteward<S> {
             .collect()
     }
 
+    /// One more than the head frame's: the journal is compacted, so its
+    /// length no longer counts the changes made.
     fn next_revision(&self) -> u64 {
-        u64::try_from(self.journal.frames().len())
-            .unwrap_or(u64::MAX)
-            .saturating_add(1)
+        self.journal
+            .frames()
+            .last()
+            .map_or(1, |frame| frame.membership_revision.saturating_add(1))
     }
 
     fn transaction_id(&self, revision: u64) -> [u8; 32] {
@@ -618,6 +727,7 @@ impl<S: StewardStore> ChannelSteward<S> {
     ) -> Result<()> {
         let mut journal = self.journal.clone();
         journal.enqueue(frame, context)?;
+        journal.compact()?;
         self.store
             .write(StewardRecord::Journal, &journal.to_bytes()?)?;
         self.journal = journal;

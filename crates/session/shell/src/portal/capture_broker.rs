@@ -10,8 +10,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use thiserror::Error;
 
 use crate::shell::realtime_session::VerifiedAppRegistration;
@@ -236,7 +234,7 @@ impl CaptureBroker {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            instance: random_nonzero(),
+            instance: crate::random::nonzero::<16>(),
             sources: BTreeMap::new(),
             authorizations: BTreeMap::new(),
             leases: BTreeMap::new(),
@@ -735,7 +733,7 @@ impl CaptureBroker {
 
     fn new_nonce(&self) -> [u8; 16] {
         loop {
-            let nonce = random_nonzero();
+            let nonce = crate::random::nonzero::<16>();
             if !self.authorizations.keys().any(|id| id.nonce == nonce)
                 && !self.leases.keys().any(|id| id.nonce == nonce)
             {
@@ -766,14 +764,6 @@ fn stopped_event(
         kind: lease.kind,
         reason,
     }
-}
-
-fn random_nonzero() -> [u8; 16] {
-    let mut value = [0; 16];
-    while value == [0; 16] {
-        UnwrapErr(SysRng).fill_bytes(&mut value);
-    }
-    value
 }
 
 fn valid_identifier(value: &str, max: usize) -> bool {

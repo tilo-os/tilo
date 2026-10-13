@@ -1,7 +1,7 @@
 //! Original invocation custody, minted only by dispatch and an actual private worker.
 use super::{
     AdmittedJoinIdentity, Arc, CapnpBrokerState, CrdtRoute, PrivateWorkerRegistration,
-    PublishedAction, PublishedInput, VerifiedActionCaller, Weak,
+    PublishedAction, VerifiedActionCaller, Weak,
 };
 use tilo_action_policy::roles;
 use ui::invocation_scope::{
@@ -360,22 +360,7 @@ impl OriginalInvocationData {
             kind: offered.operation_kind,
             contract: offered.contract.clone(),
             params: offered.params.clone(),
-            input: match &offered.input {
-                PublishedInput::None => tilo_actions::InputSpec::None,
-                PublishedInput::Text {
-                    prompt,
-                    placeholder,
-                    wants_content,
-                } => tilo_actions::InputSpec::Text {
-                    prompt: prompt.clone(),
-                    placeholder: placeholder.clone(),
-                    collects: if *wants_content {
-                        tilo_actions::Collects::Content
-                    } else {
-                        tilo_actions::Collects::Words
-                    },
-                },
-            },
+            input: (&offered.input).into(),
             directory_revision: revision.map(str::to_owned),
         };
         Some(Arc::new(Self {

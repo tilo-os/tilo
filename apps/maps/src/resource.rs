@@ -8,7 +8,7 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode,
     SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{self, Effect, Invoke};
+use ui::tilo_resource::{self, Effect, Invoke, SearchEntry};
 use ui::widget::Element;
 
 use crate::app::MapsApp;
@@ -162,6 +162,19 @@ impl ResourceSurface<Workspace, MapsEffect> for MapsApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.published_row(id)
+    }
+
+    /// The geocoder looks up what the platform search asks for, in the
+    /// background.
+    fn search_query(&mut self, query: &ui::search::SearchQuery) {
+        self.queue_place_search(query);
+    }
+
+    /// The places, saved first, the points of interest around the view, the
+    /// recent searches and the geocoder's places for the latest query, each
+    /// opening its row.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.place_search_entries()
     }
 }
 

@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! A framework app's kind publishes, for a host with no window, the document
 //! operations the running app publishes, under the same addresses and the
 //! name the app gives the open resource.

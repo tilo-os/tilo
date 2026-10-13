@@ -285,10 +285,6 @@ impl ModerationApiService {
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "keeping all four wire mutations in one exhaustive authorization match makes role and package-owner checks auditable together"
-    )]
     fn authorize_and_prepare(
         &self,
         request: &SignedModerationMutation,
@@ -570,6 +566,7 @@ mod tests {
         let reviewer = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut entry = RegistryEntry {
             package_id: "so.tilo.notes".into(),
+            kind: registry_types::EntryKind::App,
             name: "Notes".into(),
             description: "Native notes app".into(),
             tagline: "Write together".into(),
@@ -584,18 +581,20 @@ mod tests {
             publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
             versions: vec![RegistryVersion {
                 version: "1.0.0".into(),
-                tapp_url: "https://apps.tilo.so/artifacts/notes/notes.tapp".into(),
-                tapp_root_hash_hex: "ab".repeat(32),
-                tapp_size_bytes: 1,
                 released_at_unix: 1,
-                tapp_blake3_hex: "cd".repeat(32),
-                target: RegistryTarget {
-                    platform: TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: "https://apps.tilo.so/artifacts/notes/notes.tapp".into(),
+                    tapp_root_hash_hex: "ab".repeat(32),
+                    tapp_size_bytes: 1,
+                    tapp_blake3_hex: "cd".repeat(32),
+                    target: RegistryTarget {
+                        platform: TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),

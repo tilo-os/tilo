@@ -14,7 +14,6 @@ crates/sdk/ui-core/src/widget/empty_state.rs legacy_size_api 4
 crates/sdk/ui-core/src/widget/floating_window.rs legacy_size_api 1
 crates/sdk/ui-core/src/widget/form_composition.rs legacy_size_api 1
 crates/sdk/ui-core/src/widget/layout.rs legacy_size_api 1
-crates/sdk/ui-core/src/widget/page_palette.rs legacy_size_api 7
 crates/sdk/ui-core/src/widget/rich_text_editor.rs legacy_size_api 1
 crates/sdk/ui-core/src/widget/rich_text_line.rs legacy_size_api 3
 crates/sdk/ui-core/src/widget/spinner.rs font_size_const 1

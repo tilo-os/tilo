@@ -3,16 +3,3 @@
 // tilo-app:locale=en-US
 
 ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
-
-/// One constant per message of locales/en-US.ftl, for labels and placeholders.
-pub mod keys {
-    use ui::i18n::LabelKey;
-    pub const WEATHER_MOVE_TO_TOP: LabelKey = LabelKey::new("weather-move-to-top");
-    pub const WEATHER_PLACE_NAME: LabelKey = LabelKey::new("weather-place-name");
-    pub const WEATHER_REMOVE: LabelKey = LabelKey::new("weather-remove");
-    pub const WEATHER_SAVE_LOCATION: LabelKey = LabelKey::new("weather-save-location");
-    pub const WEATHER_USE_AS_DEFAULT: LabelKey = LabelKey::new("weather-use-as-default");
-    pub const WEATHER_WEATHER_DEFAULT_PLACE: LabelKey =
-        LabelKey::new("weather-weather-default-place");
-    pub const WEATHER_WEATHER_PLACES: LabelKey = LabelKey::new("weather-weather-places");
-}
