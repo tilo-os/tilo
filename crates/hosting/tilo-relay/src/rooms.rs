@@ -114,9 +114,9 @@ fn stewardship(
     room: &str,
     authority: &DeviceCert,
     key: &SigningKey,
-) -> Option<Arc<AsyncMutex<stewardship::Stewardship>>> {
+) -> Option<Arc<stewardship::Steward>> {
     authority.capabilities.can_own_workspaces.then(|| {
-        Arc::new(AsyncMutex::new(stewardship::Stewardship::new(
+        Arc::new(stewardship::Steward::new(stewardship::Stewardship::new(
             room,
             dir.join(format!("{room}.channels")),
             key,
@@ -134,7 +134,7 @@ struct GovernedRoom {
     /// a crowd's devices to the channels held the room for an MLS change
     /// and its writes per batch, and every join queued behind them. Taken
     /// after the room by whoever holds both.
-    stewardship: Option<Arc<AsyncMutex<stewardship::Stewardship>>>,
+    stewardship: Option<Arc<stewardship::Steward>>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
 }
@@ -1087,12 +1087,14 @@ impl Rooms {
 
     /// Hand `room`'s steward every queued notice: record the
     /// acknowledgements, then admit every device asking in one change per
-    /// channel, queued in the host's order before the room is let go; wait
-    /// for the change to be durable only after that.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the room stays locked until its channel change holds its place in the host's order"
-    )]
+    /// channel, and hold the channels until that change is durable.
+    ///
+    /// Each change is an epoch every member applies before it reads what
+    /// was written after it, and a member that joined from an admission
+    /// the host replaced before it arrived asks again only after seconds.
+    /// While one change is written, the requests that arrive wait for the
+    /// next one, which admits all of them: a crowd joins in a few changes,
+    /// not one per pass.
     async fn steward_notices(&self, room: &str) -> Result<(), String> {
         let governed = self.room(room).await.map_err(|error| error.to_string())?;
         let (workspace_id, generation, readers, steward) = {
@@ -1112,8 +1114,8 @@ impl Rooms {
                 steward,
             )
         };
-        let admissions = {
-            let mut stewardship = steward.lock().await;
+        {
+            let mut stewardship = steward.channels.lock().await;
             // Taken under the steward: notices that queue while it works
             // start the next pass, which takes all of them at once.
             let waiting = self
@@ -1123,7 +1125,7 @@ impl Rooms {
                 .map_err(|_| "channel notices poisoned")?
                 .remove(room)
                 .unwrap_or_default();
-            let readers = stewardship.readers(generation, readers);
+            let readers = steward.readers(generation, readers);
             let mut asked = false;
             let mut acks = Vec::new();
             for (author, notice) in waiting {
@@ -1142,11 +1144,13 @@ impl Rooms {
                 return Ok(());
             }
             let messages = stewardship.admit_pending(&readers)?;
-            self.enqueue_channel_governance(workspace_id, messages)
-                .await?
-        };
-        for admission in admissions {
-            admission.durable().await?;
+            let admissions = self
+                .enqueue_channel_governance(workspace_id, messages)
+                .await?;
+            for admission in admissions {
+                admission.durable().await?;
+            }
+            drop(stewardship);
         }
         Ok(())
     }
@@ -1262,15 +1266,22 @@ impl Rooms {
             );
             room.record.published = room.record.published.saturating_add(1);
         }
-        if let Some(stewardship) = room.stewardship.clone() {
-            let mut stewardship = stewardship.lock().await;
-            let messages = stewardship.reconcile_all(room.record.generation, &readers)?;
-            // Queued under the steward, which orders its channels' changes.
-            let queued = self
-                .enqueue_channel_governance(room.workspace_id(), messages)
-                .await?;
-            drop(stewardship);
-            admissions.extend(queued);
+        if let Some(steward) = room.stewardship.clone() {
+            // A join only lets a device in, which moves no channel: the
+            // room does not wait for an admission in progress.
+            if steward.moves_channels(&readers) {
+                let mut channels = steward.channels.lock().await;
+                let messages = channels.reconcile_all(&readers)?;
+                steward.hand_over(room.record.generation, &readers);
+                // Queued under the steward, which orders its channels' changes.
+                let queued = self
+                    .enqueue_channel_governance(room.workspace_id(), messages)
+                    .await?;
+                drop(channels);
+                admissions.extend(queued);
+            } else {
+                steward.hand_over(room.record.generation, &readers);
+            }
         }
         if !admissions.is_empty() {
             let name = room.room().to_owned();

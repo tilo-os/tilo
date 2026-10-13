@@ -38,9 +38,68 @@ pub(super) struct Stewardship {
     /// whoever is live, so each is published once.
     published: HashMap<ChannelId, BTreeSet<[u8; 32]>>,
     delivery: u64,
-    /// The readers the room's newest governance generation let in, as the
-    /// room last reconciled its channels to them.
-    reconciled: Option<(u64, BTreeSet<Ed25519PublicKey>)>,
+}
+
+/// A governed room's channel stewards, and the readers its governance lets
+/// in as the room last handed them over.
+pub(super) struct Steward {
+    /// The newest governance generation handed over and its readers. Apart
+    /// from the channels: governance that only lets devices in moves no
+    /// channel, so the room hands its readers over without waiting for an
+    /// admission in progress.
+    readers: std::sync::Mutex<Option<(u64, BTreeSet<Ed25519PublicKey>)>>,
+    pub(super) channels: tokio::sync::Mutex<Stewardship>,
+}
+
+impl Steward {
+    pub(super) fn new(channels: Stewardship) -> Self {
+        Self {
+            readers: std::sync::Mutex::new(None),
+            channels: tokio::sync::Mutex::new(channels),
+        }
+    }
+
+    fn handed_over(&self) -> std::sync::MutexGuard<'_, Option<(u64, BTreeSet<Ed25519PublicKey>)>> {
+        self.readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether governance whose readers are `readers` must move the
+    /// channels: it removed a reader handed over before, or none were yet
+    /// (the channels' published state is then unknown). A device let in is
+    /// admitted to a channel when it asks.
+    pub(super) fn moves_channels(&self, readers: &BTreeSet<Ed25519PublicKey>) -> bool {
+        self.handed_over()
+            .as_ref()
+            .is_none_or(|(_, before)| !before.is_subset(readers))
+    }
+
+    /// Hand over `readers`, those of governance `generation`.
+    pub(super) fn hand_over(&self, generation: u64, readers: &BTreeSet<Ed25519PublicKey>) {
+        let mut handed = self.handed_over();
+        if handed
+            .as_ref()
+            .is_none_or(|(known, _)| *known <= generation)
+        {
+            *handed = Some((generation, readers.clone()));
+        }
+    }
+
+    /// The readers of the newer of governance `generation`, whose readers
+    /// are `taken`, and the generation handed over last. An admission reads
+    /// the room before it waits for the channels; a governance change
+    /// handed over meanwhile let in devices whose requests it now takes.
+    pub(super) fn readers(
+        &self,
+        generation: u64,
+        taken: BTreeSet<Ed25519PublicKey>,
+    ) -> BTreeSet<Ed25519PublicKey> {
+        match &*self.handed_over() {
+            Some((handed, readers)) if *handed > generation => readers.clone(),
+            _ => taken,
+        }
+    }
 }
 
 impl Stewardship {
@@ -61,7 +120,6 @@ impl Stewardship {
             requests: HashMap::new(),
             published: HashMap::new(),
             delivery: 0,
-            reconciled: None,
         }
     }
 
@@ -183,30 +241,12 @@ impl Stewardship {
         }
     }
 
-    /// The readers of the newer of governance `generation`, whose readers
-    /// are `taken`, and the generation the channels were last reconciled
-    /// to. A pass reads the room before it waits for the steward; a
-    /// governance change reconciled meanwhile admitted devices whose
-    /// requests the pass now takes.
-    pub(super) fn readers(
-        &self,
-        generation: u64,
-        taken: BTreeSet<Ed25519PublicKey>,
-    ) -> BTreeSet<Ed25519PublicKey> {
-        match &self.reconciled {
-            Some((reconciled, readers)) if *reconciled > generation => readers.clone(),
-            _ => taken,
-        }
-    }
-
-    /// Move every open channel to `allowed`, the readers of governance
-    /// `generation`, after governance changed.
+    /// Move every open channel to `allowed`, after governance removed a
+    /// reader.
     pub(super) fn reconcile_all(
         &mut self,
-        generation: u64,
         allowed: &BTreeSet<Ed25519PublicKey>,
     ) -> Result<Vec<NeighbourMsg>, String> {
-        self.reconciled = Some((generation, allowed.clone()));
         let channels: Vec<ChannelId> = self.stewards.keys().copied().collect();
         let mut messages = Vec::new();
         for channel in channels {
