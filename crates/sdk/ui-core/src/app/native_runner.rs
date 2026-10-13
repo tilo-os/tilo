@@ -3397,9 +3397,6 @@ impl AppHandler {
 }
 
 impl ApplicationHandler<UserEvent> for AppHandler {
-    // SAFETY: the zeroed-DeviceId transmutes below are safe because winit's
-    // DeviceId is opaque and the dispatch chain never inspects it (same
-    // trick `shell::compositor::native` uses headless).
     #[allow(
         clippy::too_many_lines,
         reason = "winit requires the complete synthetic event dispatch at this callback boundary"

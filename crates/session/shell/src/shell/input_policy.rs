@@ -1018,7 +1018,6 @@ mod tests {
     use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};
     use std::time::{Duration, Instant};
     use ui::widget::{WheelJumpAccum, wheel_jump_detents};
-    use winit::event::DeviceId;
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
     fn key_event(logical: Key, pressed: bool) -> WindowEvent {
         let ev = ui::synthetic_input::key_event(
@@ -1030,11 +1029,7 @@ mod tests {
                 ElementState::Released
             },
         );
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed::<DeviceId>() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ev)
     }
     fn mods(state: ModifiersState) -> Modifiers {
         Modifiers::from(state)

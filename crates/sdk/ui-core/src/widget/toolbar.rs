@@ -3061,7 +3061,7 @@ mod lifecycle_tests {
         dispatch(
             tb,
             WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed::<DeviceId>() },
+                device_id: DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             },
         );
@@ -3070,7 +3070,7 @@ mod lifecycle_tests {
         dispatch(
             tb,
             WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed::<DeviceId>() },
+                device_id: DeviceId::dummy(),
                 state,
                 button: MouseButton::Left,
             },
@@ -3617,7 +3617,7 @@ mod command_state_tests {
     }
 
     fn click(tb: &mut Toolbar, p: Point) {
-        let device = unsafe { std::mem::zeroed::<DeviceId>() };
+        let device = DeviceId::dummy();
         dispatch(
             tb,
             &WindowEvent::CursorMoved {
