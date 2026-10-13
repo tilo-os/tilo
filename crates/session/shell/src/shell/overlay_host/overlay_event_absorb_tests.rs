@@ -121,6 +121,7 @@ impl crate::shell::search::SearchProvider for DirectoryPaletteFixtureProvider {
             return Vec::new();
         }
         vec![crate::shell::search::SearchResult {
+            shortcut: None,
             kind: crate::shell::search::ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::View,
             provider_id: "directory-fixture".into(),

@@ -122,6 +122,7 @@ impl SearchProvider for PermissionPromptsProvider {
         ]
         .into_iter()
         .map(|(decision, choice)| SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),

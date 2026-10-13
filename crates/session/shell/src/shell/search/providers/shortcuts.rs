@@ -153,6 +153,7 @@ impl ShortcutsProvider {
             None => (descriptor.description.clone(), descriptor.params.clone()),
         };
         Some(SearchResult {
+            shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: descriptor.kind,
             provider_id: PROVIDER_ID.into(),

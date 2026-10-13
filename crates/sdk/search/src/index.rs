@@ -19,7 +19,7 @@ use tantivy::{
 
 use crate::query::{FIELD_BASE, Matching, Used, compile};
 use crate::tokenizer::{GramTokenizer, WordTokenizer};
-use crate::weight::{FieldWeight, INDEXED_WEIGHTS, MatchTier, Ranks};
+use crate::weight::{FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MatchTier, Ranks};
 
 const KEY_FIELD: &str = "key";
 const SEGMENT_FIELD: &str = "segment";
@@ -194,6 +194,8 @@ pub(crate) struct Fields {
     pub grams: [Field; INDEXED_WEIGHTS.len()],
     /// Words of title fields, for typo matching.
     pub title_words: Field,
+    /// Words of keyword fields, matched by typo below the titles' words.
+    pub keyword_words: Field,
     pub body_grams: Field,
     pub body_words: Field,
 }
@@ -217,6 +219,7 @@ fn schema() -> (Schema, Fields) {
     let gram_fields =
         std::array::from_fn(|slot| builder.add_text_field(&format!("grams{slot}"), grams.clone()));
     let title_words = builder.add_text_field("title_words", words.clone());
+    let keyword_words = builder.add_text_field("keyword_words", words.clone());
     let body_grams = builder.add_text_field("body_grams", grams);
     let body_words = builder.add_text_field("body_words", words);
     (
@@ -228,6 +231,7 @@ fn schema() -> (Schema, Fields) {
             length,
             grams: gram_fields,
             title_words,
+            keyword_words,
             body_grams,
             body_words,
         },
@@ -521,9 +525,13 @@ impl SearchIndex {
             if let Some(grams) = fields.grams.get(slot) {
                 record.add_text(*grams, text);
             }
-            // Only title words are matched by typo.
-            if slot == 0 && self.matching.typos {
-                record.add_text(fields.title_words, text);
+            // Only title and keyword words are matched by typo.
+            if self.matching.typos {
+                if slot == 0 {
+                    record.add_text(fields.title_words, text);
+                } else if slot == KEYWORD_SLOT {
+                    record.add_text(fields.keyword_words, text);
+                }
             }
         }
         if let Some(body) = &document.body {
