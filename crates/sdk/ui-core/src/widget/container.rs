@@ -5,7 +5,6 @@ use crate::theme::Theme;
 use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use automerge::ObjId;
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -398,16 +397,6 @@ impl Widget for Container {
         dyn crate::permissions::capability::PermissionGated,
         dyn crate::presence::capability::PublishesPresence
     );
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        // This container owns no operation handler: offer each child once.
-        crate::widget::start_in_children(self, op, doc, path)
-    }
 
     fn build_layout(
         &mut self,

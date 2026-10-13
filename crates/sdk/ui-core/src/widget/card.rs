@@ -24,7 +24,6 @@
 use crate::num::f64_of_usize;
 use std::collections::HashMap;
 
-use automerge::ObjId;
 use taffy::style_helpers::{auto, fr, length, min_content, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -500,15 +499,6 @@ impl Widget for Card {
         if before != self.parts.rect {
             self.dirty = true;
         }
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        crate::widget::start_in_children(self, op, doc, path)
     }
 
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
