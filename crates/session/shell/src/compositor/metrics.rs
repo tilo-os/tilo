@@ -11,7 +11,7 @@
 //! private trace path so the final second before an abrupt reset remains measurable. [`summarize`]
 //! is pure — the same function the live binary and unit tests call, so they can't drift.
 
-mod cpu_trace;
+pub(crate) mod cpu_trace;
 pub(crate) use cpu_trace::{CpuPhase, CpuSnapshot};
 
 use std::io::Write;
@@ -720,6 +720,15 @@ impl FrameRecorder {
         }
     }
 
+    /// Close the pending input measurement without a frame: the loop is
+    /// going idle having handled it, with nothing on screen to change (a key
+    /// release, a press nothing reacts to). Its latency ends here; left
+    /// pending, it would be charged to the next painted frame, however much
+    /// later and whichever input that frame answers.
+    pub fn settle_unpainted_input(&mut self) {
+        self.pending_input = None;
+    }
+
     /// Age of the oldest input that has not yet reached a submitted frame.
     /// The async presenter attaches this clock to the exact frame serial it
     /// accepts, rather than mistaking queue hand-off for physical retirement.
@@ -981,6 +990,23 @@ impl Drop for FrameRecorder {
     fn drop(&mut self) {
         self.finish();
     }
+}
+
+/// `CLOCK_MONOTONIC` now, in nanoseconds: the clock input events and boot
+/// measurements are stamped with, so the session log can place a frame on it.
+pub(crate) fn monotonic_time_ns() -> Option<u128> {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the out pointer refers to a live timespec for the entire call.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) } != 0 {
+        return None;
+    }
+    u128::try_from(now.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u128::try_from(now.tv_nsec).ok()?)
 }
 
 /// CPU time the calling thread has consumed.
@@ -1366,6 +1392,36 @@ mod tests {
             assert!(
                 s[2].present_async,
                 "a queued (threaded) submit must be flagged so readers don't mistake it for photons"
+            );
+        }
+        // Phase `an_input_settled_without_a_frame_is_not_charged_to_the_next_one`.
+        {
+            // A key release paints nothing and the loop parks; seconds later
+            // another key paints. That frame answers the later key only.
+            let mut r = FrameRecorder::disabled();
+            r.enabled = true;
+            let base = Instant::now();
+            r.begin_tick(base);
+            r.note_input(base);
+            r.settle_unpainted_input();
+            r.end_tick();
+            assert_eq!(r.pending_input_age(base + Duration::from_secs(7)), None);
+            let later = base + Duration::from_millis(7_500);
+            r.begin_tick(later);
+            r.note_input(later);
+            r.mark_submit(
+                Duration::from_millis(1),
+                false,
+                later + Duration::from_micros(2_400),
+                None,
+            );
+            r.end_tick();
+            let s = r.samples();
+            assert_eq!(s[0].input_latency_us, None);
+            assert_eq!(
+                s[1].input_latency_us,
+                Some(2_400),
+                "the frame's latency must run from its own input, not from one settled before it"
             );
         }
         // Phase `pending_input_age_exposes_the_oldest_unpresented_input`.

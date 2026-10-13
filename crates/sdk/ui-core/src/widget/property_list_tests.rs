@@ -1,6 +1,133 @@
 use super::*;
 use crate::headless::{FrameHarness, InspectionNode};
 
+#[test]
+fn published_property_controls_invoke_real_clipboard_and_custom_actions() {
+    use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+    let clipboard = std::sync::Arc::new(InProcessClipboard::default());
+    let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
+    crate::host::scoped(&services, || {
+        let activated = Rc::new(Cell::new(0));
+        let signal = activated.clone();
+        let mut driver = FrameHarness::new(
+            crate::State::new(),
+            Box::new(
+                PropertyList::new(vec![
+                    Property::new("Commit", "123456789abcdef").copyable(),
+                    Property::new("Website", "https://example.org").action(
+                        Icon::ExternalLink,
+                        "Open",
+                        move || signal.set(signal.get() + 1),
+                    ),
+                ])
+                .with_id("evidence-properties"),
+            ),
+            (640, 240),
+        );
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        for label in ["Copy Commit", "Open Website"] {
+            let resource = driver
+                .resources()
+                .into_iter()
+                .find(|resource| {
+                    resource
+                        .id
+                        .as_str()
+                        .starts_with(crate::headless::CONTROL_RESOURCE_PREFIX)
+                        && resource.label == label
+                })
+                .expect("the actual property action is published through the resource door");
+            driver
+                .invoke_action(
+                    &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
+                    &serde_json::Map::new(),
+                    false,
+                    None,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("123456789abcdef")
+        );
+        assert_eq!(activated.get(), 1);
+        assert!(
+            driver
+                .perform_semantic_named(
+                    "evidence-properties",
+                    Some("tilo.key-action:evidence-properties:0/9"),
+                    &crate::a11y::Action::Activate
+                )
+                .is_err()
+        );
+        assert_eq!(activated.get(), 1);
+
+        let mut value = FrameHarness::new(
+            crate::State::new(),
+            Box::new(
+                PropertyValue::new("acct_123")
+                    .with_id("account-value")
+                    .copyable()
+                    .with_accessible_name("Account"),
+            ),
+            (320, 120),
+        );
+        let audit = value.native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        let resource = value
+            .resources()
+            .into_iter()
+            .find(|resource| {
+                resource
+                    .id
+                    .as_str()
+                    .starts_with(crate::headless::CONTROL_RESOURCE_PREFIX)
+                    && resource.label == "Copy"
+            })
+            .expect("read-only property's Copy is an ordinary published action");
+        value
+            .invoke_action(
+                &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
+                &serde_json::Map::new(),
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+            Some("acct_123")
+        );
+    });
+}
+
+#[test]
+fn editable_text_still_requires_an_action_binding() {
+    struct UnboundEditable;
+    impl Widget for UnboundEditable {
+        crate::testing::inert_widget_methods!(leaf_layout);
+        fn name(&self) -> &'static str {
+            "UnboundEditable"
+        }
+        fn test_id(&self) -> Option<&str> {
+            Some("editable-unbound")
+        }
+        fn accessibility(&self) -> Option<AccessNode> {
+            Some(AccessNode::new(Role::TextInput).with_name("Editable field"))
+        }
+    }
+    let driver = FrameHarness::new(crate::State::new(), Box::new(UnboundEditable), (320, 120));
+    let audit = driver.native_app_audit();
+    assert!(
+        audit
+            .issues
+            .iter()
+            .any(|issue| issue.control == "editable-unbound"
+                && issue.code == "missing-action-binding"),
+        "editable fields still need actual action provenance: {audit:?}"
+    );
+}
+
 fn rows() -> Vec<PropertyRow<'static>> {
     vec![
         PropertyRow::new("Email", "ada.lovelace@example.org"),

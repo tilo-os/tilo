@@ -35,5 +35,31 @@ bypass permission checks or confirmation. Headless peer tests prove resource
 merging; real device transport and authenticated membership need separate
 integration journeys.
 
+## Verify an installed resource
+
+Use the authorized session's `tilo-control` socket. Run `actions list` for
+permission-filtered descriptors, then invoke the returned provider and id.
+Keep the caller, workspace and record fixed.
+
+- **Completion:** `accepted` only means admitted. Save `broker_invocation_id`;
+  follow it with `tilo-control actions status ID --wait`. If unavailable,
+  outcome is unknown; do not replay a mutation to replace a lost reply.
+- **Result:** observe the changed resource through its action surface and
+  production view. Wait boundedly for cold publication; the first empty
+  listing is inconclusive. Use the returned resource id, not its title.
+- **Missing actions:** if an opted-in `native_admission` checkpoint exists,
+  inspect `manager_connected`, `custody_reconciled`, `action_history_ready`,
+  `directory_enqueued` and directory RPC counters to distinguish connection,
+  applied history and publication. A painted window proves no action readiness.
+  A missing snapshot is inconclusive; ordinary dev slots need not serve the
+  device-owner socket. Use existing authorized diagnostics and retain
+  publication checks. These observations do not prove durable-owner ACK.
+- **Reopen:** close the view; restart the owned session if under test; reopen
+  normally with the same caller and workspace. Verify the original record and
+  edit without replay. A closed-tab undo stack is no reopen API.
+- **Durability and sync:** saved bytes and a repainted view prove only those
+  facts. Observe required owner ACK or remote delivery separately with the
+  real authorized owner or peer. In-memory replica tests do not prove transport.
+
 More: [Build an app](../../app-development.md),
 [Headless testing](../../headless-testing.md).

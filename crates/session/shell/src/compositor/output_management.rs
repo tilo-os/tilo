@@ -1099,10 +1099,6 @@ fn log_refusal(error: &ArrangementError) {
 }
 
 impl Dispatch<ZwlrOutputConfigurationHeadV1, ConfigurationHeadData> for State {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one arm per protocol request, each a short validate-then-record step"
-    )]
     fn request(
         _state: &mut Self,
         _client: &Client,

@@ -544,6 +544,8 @@ mod tests {
                             .unwrap();
                         assert_eq!(peer.generation.get(), 8);
                         tokio::time::sleep(Duration::from_millis(2050)).await;
+                        // A timer can wake this test before the ready RPC task.
+                        tokio::task::yield_now().await;
                         assert_eq!(
                             replacement.cached_error(),
                             None,
@@ -551,6 +553,8 @@ mod tests {
                         );
                     } else {
                         tokio::time::sleep(Duration::from_millis(2050)).await;
+                        // A timer can wake this test before the ready RPC task.
+                        tokio::task::yield_now().await;
                         assert!(
                             first.cached_error().is_some(),
                             "current-generation progress failure must remain observable"

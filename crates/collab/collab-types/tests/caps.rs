@@ -11,11 +11,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -433,7 +428,7 @@ fn role_presets_decide_each_kind_of_change() {
             let signed = build_op(artifact, author_pub, &author_sk, att, change, 1);
             let allowed = !not_granted(validate_inbound_op(&signed, &mut state.clone()));
             let expected = match role {
-                Role::Owner | Role::Editor => true,
+                Role::Owner | Role::Moderator | Role::Editor => true,
                 Role::Commenter => change == Change::Comment,
                 Role::Viewer => false,
             };

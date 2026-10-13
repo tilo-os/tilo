@@ -64,7 +64,7 @@ use std::fmt::Write as _;
 use serde_json::{Value, json};
 
 use crate::plan;
-use crate::surface::{self, APPLICATION_KIND, CONTRACTS, Catalogue, Offer};
+use crate::surface::{self, APPLICATION_KIND, Catalogue, Offer};
 
 pub const LIST_APPLICATIONS: &str = "list_applications";
 pub const LIST_OPERATIONS: &str = "list_operations";
@@ -74,7 +74,19 @@ pub const INVOKE: &str = "invoke";
 pub const INVOKE_PARAMETERS: &str = "parameters";
 /// The optional [`INVOKE`] property carrying the task's final reply.
 pub const INVOKE_REPLY: &str = "reply";
+/// The optional [`INVOKE`] property by which the model says a step stands
+/// alone: it neither needs nor reports what the steps before it in the turn
+/// do, so it may run alongside them. Named to sort after `operation`, which
+/// stays the first property on the wire.
+pub const INVOKE_STANDALONE: &str = "standalone";
 pub const PLAN: &str = "plan";
+
+/// Whether an [`INVOKE`] call declared itself independent of the steps
+/// before it ([`INVOKE_STANDALONE`]). Anything but an explicit `true` keeps
+/// it in order.
+pub fn invoke_independent(input: &Value) -> bool {
+    input.get(INVOKE_STANDALONE).and_then(Value::as_bool) == Some(true)
+}
 
 /// How many operations one listing returns.
 ///
@@ -483,8 +495,9 @@ fn invoke_definition() -> Value {
             "Perform one listed operation now, as a person using the application would. \
              Returns the result, how your own view changed and which operations became \
              available. Several invokes in one turn run in order as soon as each is \
-             written; after a failure the rest of the turn is skipped. Put your reply \
-             on the last invoke of the task to finish in the same turn.",
+             written; after a failure the rest of the turn is skipped, except invokes \
+             marked `standalone`, which may also run alongside the ones before them. \
+             Put your reply on the last invoke of the task to finish in the same turn.",
         "input_schema": {
             "type": "object",
             // Sorted maps on the wire: `operation` precedes `parameters` (its
@@ -505,6 +518,14 @@ fn invoke_definition() -> Value {
                         "Only on the last invoke of the task: your short reply to the person \
                          (shown in your agent panel only). The task finishes when this invoke \
                          succeeds and every part is done; no plan call is needed."
+                },
+                INVOKE_STANDALONE: {
+                    "type": "boolean",
+                    "description":
+                        "true only when this step stands alone: it neither needs nor reports \
+                         the result of the steps before it in this turn (for example two \
+                         unrelated messages in different applications); it may then run \
+                         alongside them."
                 },
                 UNABLE: unable_schema()
             },
@@ -955,13 +976,8 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
         .iter()
         .map(|offer| offer.app.as_str())
         .chain(catalogue.held.iter().copied())
-        .chain(CONTRACTS.iter().map(|contract| contract.namespace))
         .collect::<BTreeSet<_>>();
     for application in applications {
-        let contract = CONTRACTS
-            .iter()
-            .find(|contract| contract.namespace == application);
-        let title = contract.map_or(application, |contract| contract.title);
         let open = catalogue.held.contains(&application)
             || catalogue.offers.iter().any(|offer| {
                 offer.app == application && offer.descriptor.resource_kind != APPLICATION_KIND
@@ -979,7 +995,7 @@ fn applications(catalogue: &Catalogue, revealed: &mut Revealed) -> String {
             .iter()
             .find(|o| o.app == application && surface::opens(o.address()).is_some());
 
-        let _ = write!(s, "{title} ({application})");
+        let _ = write!(s, "{application}");
         s.push_str(if open { " — open" } else { " — not open" });
         let _ = write!(
             s,
@@ -1031,11 +1047,7 @@ fn names_application(asked: &str, o: &Offer) -> bool {
     let names = |app: &str| {
         let asked = asked.to_lowercase();
         let app_lower = app.to_lowercase();
-        app_lower == asked
-            || app_lower.ends_with(&format!(".{asked}"))
-            || CONTRACTS
-                .iter()
-                .any(|c| c.namespace == app && c.title.eq_ignore_ascii_case(&asked))
+        app_lower == asked || app_lower.ends_with(&format!(".{asked}"))
     };
     names(&o.app) || o.address().resource == asked || opened_app(o).is_some_and(names)
 }
@@ -1393,6 +1405,7 @@ mod tests {
         Offer {
             app: app.to_string(),
             broker_peer_id: None,
+            broker_provider: None,
             descriptor: ActionDescriptor {
                 semantic_identity: None,
                 address: ActionAddress::new(resource, action),
@@ -1583,10 +1596,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each case keeps its original fixture and assertions"
-    )]
     fn discovery_answers_list_and_describe_only_what_the_room_offers() {
         // Case `a_kind_is_asked_about_across_the_room_and_not_within_one_app`.
         {
@@ -1690,10 +1699,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each case keeps its original fixture and assertions"
-    )]
     fn a_plan_is_read_only_from_revealed_operations_within_the_step_cap() {
         // Case `only_what_a_listing_returned_can_be_planned`.
         {
@@ -1992,7 +1997,14 @@ mod tests {
         let keys: Vec<&String> = invoke["properties"].as_object().unwrap().keys().collect();
         assert_eq!(
             keys,
-            ["operation", INVOKE_PARAMETERS, PARTS, INVOKE_REPLY, UNABLE]
+            [
+                "operation",
+                INVOKE_PARAMETERS,
+                PARTS,
+                INVOKE_REPLY,
+                INVOKE_STANDALONE,
+                UNABLE
+            ]
         );
         let wire = serde_json::to_string(invoke).unwrap();
         assert!(wire.find("\"operation\"") < wire.find(&format!("\"{INVOKE_PARAMETERS}\"")));

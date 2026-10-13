@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use ui::collaboration::{
     CertifiedEndpointIdentity, CollabEvent, CollabRequest, CollaborationManager,
-    DocumentPublicationError, DocumentPublicationReceipt, RouteSpec,
+    DocumentPublicationError, RouteSpec,
 };
 
 /// One connection to the broker.
@@ -22,8 +22,6 @@ pub struct Link {
     last_publication: LastPublication,
     /// Correlated requests sent without waiting in line, by request id.
     detached: HashMap<u64, Slot>,
-    /// Refusals of detached reports, oldest first, until the session reads them.
-    refused: Vec<String>,
     /// Wakes from the transport when an event arrives, so a receive blocks
     /// instead of polling. `None` for a transport that cannot wake.
     wake: Option<Wake>,
@@ -31,22 +29,20 @@ pub struct Link {
 
 enum LastPublication {
     None,
-    Pending(DocumentPublicationReceipt),
+    Pending,
     Failed(DocumentPublicationError),
 }
 
 /// The reply to a request sent with [`Link::send_detached`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Detached {
-    /// An enrolled task report; `Err` is the host's refusal.
-    Report(Result<(), String>),
     /// A task cancellation poll; `Ok(true)` is cancelled.
     Cancellation(Result<bool, String>),
 }
 
 enum Slot {
     /// Not answered yet. `keep` holds the answer for [`Link::take_detached`];
-    /// otherwise an accepted report is dropped and a refused one recorded.
+    /// otherwise it is dropped when it arrives.
     Awaiting {
         keep: bool,
     },
@@ -100,7 +96,6 @@ impl Link {
             pending: VecDeque::new(),
             last_publication: LastPublication::None,
             detached: HashMap::new(),
-            refused: Vec::new(),
             wake,
         }
     }
@@ -201,37 +196,10 @@ impl Link {
         self.record_enqueue(req, queued)
     }
 
-    /// Wait until every document mutation sent so far has been handed to the
-    /// broker. [`Self::send`] only queues: dropping the link with a mutation
-    /// still queued discards it, so a session that is about to end calls this
-    /// first.
-    ///
-    /// # Errors
-    ///
-    /// When one of those mutations was not published, or the transport
-    /// stopped before answering.
-    pub fn flush_documents(&mut self) -> Result<()> {
-        self.manager
-            .begin_document_publication_barrier()?
-            .wait(None)?;
-        Ok(())
-    }
-
     /// Subscribe to another typed route. This is used for cluster-wide
-    /// discovery; mutations still require [`Self::send_to_route`].
+    /// discovery; mutations go through [`Self::send`] on the primary route.
     pub fn join_route(&mut self, route: RouteSpec) {
         self.manager.join_route(route);
-    }
-
-    /// Publish on one explicit non-primary route. Naming the route at every
-    /// call keeps a discovery subscription from becoming a mutation target.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the request or its document completion marker cannot enqueue.
-    pub fn send_to_route(&mut self, route: RouteSpec, req: &CollabRequest) -> Result<()> {
-        let queued = self.manager.try_send_to_route(route, req.clone()).is_ok();
-        self.record_enqueue(req, queued)
     }
 
     fn record_enqueue(&mut self, req: &CollabRequest, queued: bool) -> Result<()> {
@@ -256,37 +224,13 @@ impl Link {
                 return Err(error.clone().into());
             }
             match self.manager.begin_document_publication_barrier() {
-                Ok(receipt) => self.last_publication = LastPublication::Pending(receipt),
+                Ok(_) => self.last_publication = LastPublication::Pending,
                 Err(error) => {
                     // Invalidate the older prefix even if the caller ignores this error.
                     self.last_publication = LastPublication::Failed(error.clone());
                     return Err(error.into());
                 }
             }
-        }
-        Ok(())
-    }
-
-    /// Complete the latest document prefix while retaining the inbound receiver.
-    /// Events polled around the wait remain available to the normal session loop.
-    ///
-    /// # Errors
-    /// Returns a publication/transport error or exhaustion of the supplied deadline.
-    pub fn complete_publications(&mut self, deadline: Option<ui::time::Instant>) -> Result<()> {
-        let publication = std::mem::replace(&mut self.last_publication, LastPublication::None);
-        let result = match publication {
-            LastPublication::None => return Ok(()),
-            LastPublication::Failed(error) => Err(error),
-            LastPublication::Pending(receipt) => {
-                self.pump();
-                let result = receipt.wait(deadline);
-                self.pump();
-                result
-            }
-        };
-        if let Err(error) = result {
-            self.last_publication = LastPublication::Failed(error.clone());
-            return Err(error.into());
         }
         Ok(())
     }
@@ -324,8 +268,8 @@ impl Link {
     }
 
     /// Block until the transport has news or `most` passes. A transport that
-    /// cannot wake is polled: a correlated step reply is on the critical path
-    /// of every streamed chunk, so it is noticed within ~1 ms, not 5.
+    /// cannot wake is polled: a correlated reply is on the critical path of
+    /// every step, so it is noticed within ~1 ms, not 5.
     fn wait_for_wake(&self, most: Duration) {
         match &self.wake {
             Some(wake) => {
@@ -356,11 +300,6 @@ impl Link {
     /// Take `event` if it answers a detached request; otherwise hand it back.
     fn intercept(&mut self, event: CollabEvent) -> Option<CollabEvent> {
         let (request_id, reply) = match event {
-            CollabEvent::EnrolledTaskReply { request_id, result }
-                if self.detached.contains_key(&request_id) =>
-            {
-                (request_id, Detached::Report(result))
-            }
             CollabEvent::TaskRunCancellation { request_id, result }
                 if self.detached.contains_key(&request_id) =>
             {
@@ -372,16 +311,11 @@ impl Link {
             Some(Slot::Awaiting { keep: true }) => {
                 self.detached.insert(request_id, Slot::Arrived(reply));
             }
-            Some(Slot::Awaiting { keep: false }) => {
-                if let Detached::Report(Err(error)) = reply {
-                    self.refused.push(error);
-                }
-            }
+            Some(Slot::Awaiting { keep: false }) | None => {}
             // A second answer to one request id: the first one stands.
             Some(arrived @ Slot::Arrived(_)) => {
                 self.detached.insert(request_id, arrived);
             }
-            None => {}
         }
         None
     }
@@ -391,31 +325,23 @@ impl Link {
     /// know about it. The transport dispatches requests in the order they are
     /// sent, so a later request still reaches the broker after this one.
     ///
-    /// An enrolled report's acceptance is dropped and its refusal kept for
-    /// [`Self::take_refusals`]; a cancellation poll's answer is kept for
-    /// [`Self::take_detached`].
+    /// A cancellation poll's answer is kept for [`Self::take_detached`].
     ///
     /// # Errors
     ///
     /// When `request` has no correlated answer to detach, or cannot enqueue.
     pub fn send_detached(&mut self, request: &CollabRequest) -> Result<()> {
-        let (request_id, keep) = match request {
-            CollabRequest::ReportEnrolledTask { request_id, .. } => (*request_id, false),
-            CollabRequest::TaskRunCancellation { request_id, .. } => (*request_id, true),
-            _ => anyhow::bail!("only enrolled reports and cancellation polls are detached"),
+        let CollabRequest::TaskRunCancellation { request_id, .. } = request else {
+            anyhow::bail!("only cancellation polls are detached");
         };
-        self.detached.insert(request_id, Slot::Awaiting { keep });
+        let request_id = *request_id;
+        self.detached
+            .insert(request_id, Slot::Awaiting { keep: true });
         if let Err(error) = self.send(request) {
             self.detached.remove(&request_id);
             return Err(error);
         }
         Ok(())
-    }
-
-    /// Whether the detached request `request_id` is still unanswered.
-    pub fn awaiting(&mut self, request_id: u64) -> bool {
-        self.pump();
-        matches!(self.detached.get(&request_id), Some(Slot::Awaiting { .. }))
     }
 
     /// The answer to the detached request `request_id`, once it has arrived.
@@ -465,12 +391,6 @@ impl Link {
         }
     }
 
-    /// The refusals of detached reports that arrived since the last call.
-    pub fn take_refusals(&mut self) -> Vec<String> {
-        self.pump();
-        std::mem::take(&mut self.refused)
-    }
-
     /// Take every queued event `wanted` picks out, without waiting; the rest
     /// keep their order.
     pub fn take_queued(&mut self, wanted: impl Fn(&CollabEvent) -> bool) -> Vec<CollabEvent> {
@@ -488,42 +408,6 @@ impl Link {
         for event in events.into_iter().rev() {
             self.pending.push_front(event);
         }
-    }
-}
-
-impl Link {
-    /// Queueing is not acceptance. Wait for the actual correlated RPC result.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the broker refuses the request, the link fails,
-    /// or no correlated reply arrives before the deadline.
-    pub fn wait_enrolled_reply(&mut self, request_id: u64) -> Result<()> {
-        let deadline = ui::time::now() + Duration::from_secs(10);
-        let mut deferred = Vec::new();
-        let result = loop {
-            if ui::time::now() >= deadline {
-                break Err(anyhow::anyhow!("enrolled RPC acknowledgement uncertain"));
-            }
-            match self.recv(Duration::from_millis(20))? {
-                Some(CollabEvent::EnrolledTaskReply {
-                    request_id: received,
-                    result,
-                }) if received == request_id => break result.map_err(anyhow::Error::msg),
-                Some(CollabEvent::EnrolledTaskDisconnected { detail }) => {
-                    break Err(anyhow::anyhow!(detail));
-                }
-                Some(event) => {
-                    if deferred.len() >= 128 {
-                        break Err(anyhow::anyhow!("enrolled reply queue exhausted"));
-                    }
-                    deferred.push(event);
-                }
-                None => {}
-            }
-        };
-        self.defer(deferred);
-        result
     }
 }
 
@@ -558,20 +442,16 @@ mod tests {
     }
 
     #[test]
-    fn idle_link_needs_no_completion_protocol_or_extra_deadline() {
-        let mut link = peer_link();
-        link.complete_publications(Some(ui::time::now())).unwrap();
-    }
-
-    #[test]
     fn accepted_document_without_completion_support_is_sticky_failure() {
         let mut link = peer_link();
         assert!(
             link.send(&CollabRequest::document_incremental(vec![1]))
                 .is_err()
         );
-        assert!(link.complete_publications(None).is_err());
-        assert!(link.complete_publications(None).is_err());
+        assert!(
+            link.send(&CollabRequest::document_incremental(vec![2]))
+                .is_err()
+        );
     }
 
     #[test]
@@ -613,7 +493,7 @@ mod tests {
         assert!(take_next_polled(&mut pending, Vec::new()).is_none());
     }
 
-    /// Answers every report and cancellation poll at once, each followed by
+    /// Answers every cancellation poll at once, each followed by
     /// an ordinary room event, so detached answers arrive interleaved with
     /// the traffic the session loop reads.
     struct AnsweringHost {
@@ -625,30 +505,12 @@ mod tests {
             true
         }
         fn send(&mut self, request: CollabRequest) -> std::result::Result<(), String> {
-            let (request_id, reply) = match request {
-                CollabRequest::ReportEnrolledTask {
-                    request_id,
-                    sequence,
-                    ..
-                } => (
-                    request_id,
-                    CollabEvent::EnrolledTaskReply {
-                        request_id,
-                        result: if sequence == 2 {
-                            Err("sequence 2 refused".into())
-                        } else {
-                            Ok(())
-                        },
-                    },
-                ),
-                CollabRequest::TaskRunCancellation { request_id, .. } => (
-                    request_id,
-                    CollabEvent::TaskRunCancellation {
-                        request_id,
-                        result: Ok(true),
-                    },
-                ),
-                _ => return Ok(()),
+            let CollabRequest::TaskRunCancellation { request_id, .. } = request else {
+                return Ok(());
+            };
+            let reply = CollabEvent::TaskRunCancellation {
+                request_id,
+                result: Ok(request_id != 2),
             };
             self.events.push(reply);
             self.events.push(CollabEvent::RemoteCursorMoved {
@@ -663,44 +525,24 @@ mod tests {
         }
     }
 
-    fn report(request_id: u64, sequence: u64) -> CollabRequest {
-        CollabRequest::ReportEnrolledTask {
+    fn poll(request_id: u64) -> CollabRequest {
+        CollabRequest::TaskRunCancellation {
             request_id,
-            acceptance: runtime_collab::EnrolledTaskAcceptance {
-                version: 1,
-                message_id: "message-1".into(),
-                task_id: "task-1".into(),
-                run_id: "run-1".into(),
-                launch_id: "launch-1".into(),
-                runtime_epoch: "epoch-1".into(),
-                recipient_agent: "agent-1".into(),
-                channel_lease: "channel-1".into(),
-                acceptance_sequence: 1,
-            },
-            sequence,
-            update: runtime_collab::TaskRunUpdate::Progress {
-                message: format!("update {sequence}"),
-            },
+            run_id: 7,
+            lease: "lease".into(),
         }
     }
 
-    /// Detached answers never reach the session loop: an accepted report is
-    /// dropped, a refused one is kept for the session, a cancellation answer
-    /// waits for its owner — and every other event keeps its order, including
-    /// an answer nobody detached (an in-line wait still sees it).
+    /// Detached answers never reach the session loop: each waits for its
+    /// owner — and every other event keeps its order, including an answer
+    /// nobody detached (an in-line wait still sees it).
     #[test]
     fn detached_answers_leave_the_event_stream_without_reordering_it() {
         let mut link = test_link(AnsweringHost { events: Vec::new() });
-        link.send_detached(&report(1, 1)).unwrap();
-        link.send_detached(&report(2, 2)).unwrap();
-        link.send_detached(&CollabRequest::TaskRunCancellation {
-            request_id: 3,
-            run_id: 7,
-            lease: "lease".into(),
-        })
-        .unwrap();
+        link.send_detached(&poll(1)).unwrap();
+        link.send_detached(&poll(2)).unwrap();
         // Sent in line: its answer is the caller's to read.
-        link.send(&report(4, 3)).unwrap();
+        link.send(&poll(3)).unwrap();
         assert!(
             link.send_detached(&CollabRequest::RequestDocumentSnapshot)
                 .is_err(),
@@ -711,23 +553,26 @@ mod tests {
         while let Some(event) = link.recv(Duration::ZERO).unwrap() {
             seen.push(match event {
                 CollabEvent::RemoteCursorMoved { user_id, .. } => user_id,
-                CollabEvent::EnrolledTaskReply { request_id, .. } => format!("reply-{request_id}"),
+                CollabEvent::TaskRunCancellation { request_id, .. } => {
+                    format!("reply-{request_id}")
+                }
                 other => panic!("unexpected event {other:?}"),
             });
         }
         assert_eq!(
             seen,
-            ["after-1", "after-2", "after-3", "reply-4", "after-4"],
+            ["after-1", "after-2", "reply-3", "after-3"],
             "detached answers are taken out; the rest keep their order"
         );
-        assert!(!link.awaiting(1) && !link.awaiting(2) && !link.awaiting(3));
-        assert_eq!(link.take_refusals(), ["sequence 2 refused".to_string()]);
-        assert!(link.take_refusals().is_empty(), "a refusal is read once");
         assert_eq!(
-            link.take_detached(3),
+            link.take_detached(1),
             Some(Detached::Cancellation(Ok(true)))
         );
-        assert_eq!(link.take_detached(3), None, "an answer is taken once");
+        assert_eq!(
+            link.take_detached(2),
+            Some(Detached::Cancellation(Ok(false)))
+        );
+        assert_eq!(link.take_detached(1), None, "an answer is taken once");
     }
 
     /// A forgotten poll's answer is dropped when it arrives, and waiting for
@@ -735,17 +580,12 @@ mod tests {
     #[test]
     fn a_forgotten_poll_is_dropped_and_an_arrived_one_needs_no_wait() {
         let mut link = test_link(AnsweringHost { events: Vec::new() });
-        let poll = |request_id| CollabRequest::TaskRunCancellation {
-            request_id,
-            run_id: 7,
-            lease: "lease".into(),
-        };
         link.send_detached(&poll(1)).unwrap();
         link.forget(1);
-        link.send_detached(&poll(2)).unwrap();
+        link.send_detached(&poll(3)).unwrap();
         let began = ui::time::now();
         assert_eq!(
-            link.wait_detached(2, began + Duration::from_secs(5)),
+            link.wait_detached(3, began + Duration::from_secs(5)),
             Some(Detached::Cancellation(Ok(true)))
         );
         assert!(began.elapsed() < Duration::from_secs(1));

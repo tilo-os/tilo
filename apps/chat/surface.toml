@@ -1,1272 +1,311 @@
-# The app's public surface, written by `tilo-app surface`: its resources' verbs
-# and stored fields. Review changes to it like an API change; `tilo-app check`
-# fails when the code and this file disagree.
+# Written by `tilo-app surface`; review changes like an API change.
 
 [[resources]]
 kind = "chat.workspace"
 label = "Chat"
 version = 1
-
-[[resources.fields]]
-owner = "chat"
-path = "workspaces"
-stored = "collection"
-title = "The workspaces, in the order the rail shows them"
-type = "Collection<Workspace>"
-
-[[resources.fields]]
-label = true
-owner = "workspace"
-path = "workspaces.*.name"
-stored = "value"
-title = "The workspace's name"
-type = "String"
-
-[[resources.fields]]
-owner = "workspace"
-path = "workspaces.*.glyph"
-stored = "value"
-title = "The monogram the rail shows"
-type = "String"
-
-[[resources.fields]]
-owner = "workspace"
-path = "workspaces.*.color"
-stored = "value"
-title = "Its colour in the rail"
-type = "u32"
-
-[[resources.fields]]
-owner = "chat"
-path = "categories"
-stored = "collection"
-title = "The channel categories of every workspace, in sidebar order"
-type = "Collection<Category>"
-
-[[resources.fields]]
-owner = "category"
-path = "categories.*.workspace"
-readonly = true
-stored = "value"
-title = "The workspace it belongs to"
-type = "Id"
-
-[[resources.fields]]
-label = true
-owner = "category"
-path = "categories.*.name"
-stored = "value"
-title = "The category's name"
-type = "String"
-
-[[resources.fields]]
-owner = "chat"
-path = "channels"
-stored = "collection"
-title = "The channels of every workspace, in sidebar order within their"
-type = "Collection<Channel>"
-
-[[resources.fields]]
-owner = "channel"
-path = "channels.*.workspace"
-readonly = true
-stored = "value"
-title = "The workspace it belongs to"
-type = "Id"
-
-[[resources.fields]]
-owner = "channel"
-path = "channels.*.category"
-stored = "value"
-title = "The category it is listed under; none for uncategorised"
-type = "Option<Id>"
-
-[[resources.fields]]
-label = true
-owner = "channel"
-path = "channels.*.name"
-stored = "value"
-title = "The channel's name"
-type = "String"
-
-[[resources.fields]]
-owner = "channel"
-path = "channels.*.topic"
-stored = "value"
-title = "What the channel is about"
-type = "String"
-
-[[resources.fields]]
-owner = "channel"
-path = "channels.*.kind"
-readonly = true
-stored = "value"
-title = "A text channel has a conversation; a voice channel has a call"
-type = "ChannelKind"
-
-[[resources.fields]]
-owner = "channel"
-path = "channels.*.archived"
-stored = "value"
-title = "Archived channels leave the sidebar and stay in the record"
-type = "bool"
-
-[[resources.fields]]
-owner = "chat"
-path = "messages"
-stored = "collection"
-title = "Every message of every channel, oldest first"
-type = "Collection<Message>"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.channel"
-readonly = true
-stored = "value"
-title = "The channel it was posted in"
-type = "Id"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.author"
-readonly = true
-stored = "value"
-title = "Who wrote it: their participant id"
-type = "Atom"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.ts"
-readonly = true
-stored = "value"
-title = "When, in seconds since the epoch"
-type = "i64"
-
-[[resources.fields]]
-label = true
-owner = "message"
-path = "messages.*.text"
-readonly = true
-stored = "value"
-title = "Its plain text: what search, agents and notifications read"
-type = "String"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.body"
-readonly = true
-stored = "value"
-title = "Its paragraphs as written, with their formatting; empty for plain text"
-type = "Json<Vec<ClipBlock>>"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.edited"
-readonly = true
-stored = "value"
-title = "Whether it was changed after it was posted"
-type = "bool"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.history"
-readonly = true
-stored = "value"
-title = "Its earlier texts, oldest first"
-type = "Json<Vec<Revision>>"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.parent"
-readonly = true
-stored = "value"
-title = "The message it answers in a thread"
-type = "Option<Id>"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.reactions"
-readonly = true
-stored = "value"
-title = "Who reacted with which emoji: one element per person and emoji, so"
-type = "ui::tilo_resource::Set<Reacted>"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.mentions"
-readonly = true
-stored = "value"
-title = "Who the text refers to, resolved when it was written"
-type = "Json<Vec<crate::mention::Mention>>"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.reference"
-readonly = true
-stored = "value"
-title = "The thing it is about, when it was written by sharing something"
-type = "Json<Option<tilo_reference::ResourceRef>>"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.source_provider"
-readonly = true
-stored = "value"
-title = "The record the reference lives in, when the host resolved one"
-type = "Option<Atom>"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.attachment"
-readonly = true
-stored = "value"
-title = "A file, an image or a video, by its content address"
-type = "Json<Option<crate::model::Attachment>>"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.pinned"
-stored = "value"
-title = "Pinned messages are listed for everyone"
-type = "bool"
-
-[[resources.fields]]
-owner = "message"
-path = "messages.*.work"
-readonly = true
-stored = "record"
-title = "An agent's record of what it is doing with the message this one"
-type = "Option<Work>"
-
-[[resources.fields]]
-owner = "work"
-path = "messages.*.work.state"
-stored = "value"
-title = "Where it is, and since when: one authored claim, never mixed with"
-type = "Json<Option<Transition>>"
-
-[[resources.fields]]
-owner = "work"
-path = "messages.*.work.reasoning"
-stored = "value"
-title = "How it decided, in the decider's words"
-type = "Json<Option<crate::model::AgentReasoning>>"
-
-[[resources.fields]]
-owner = "work"
-path = "messages.*.work.trace"
-stored = "keyed"
-title = "One row per operation it dispatched, rewritten when the app answers"
-type = "Keyed<Step>"
-
-[[resources.fields]]
-owner = "step"
-path = "messages.*.work.trace.*.id"
-stored = "value"
-title = "Id"
-type = "Atom"
-
-[[resources.fields]]
-owner = "step"
-path = "messages.*.work.trace.*.sequence"
-stored = "value"
-title = "Sequence"
-type = "u64"
-
-[[resources.fields]]
-owner = "step"
-path = "messages.*.work.trace.*.resource"
-stored = "value"
-title = "Resource"
-type = "Atom"
-
-[[resources.fields]]
-label = true
-owner = "step"
-path = "messages.*.work.trace.*.label"
-stored = "value"
-title = "Label"
-type = "String"
-
-[[resources.fields]]
-owner = "step"
-path = "messages.*.work.trace.*.outcome"
-stored = "value"
-title = "Outcome"
-type = "Json<Option<crate::model::AgentStepOutcome>>"
-
-[[resources.fields]]
-owner = "chat"
-path = "people"
-stored = "keyed"
-title = "The people and agents in the room, by their participant id"
-type = "Keyed<Person>"
-
-[[resources.fields]]
-owner = "person"
-path = "people.*.id"
-readonly = true
-stored = "value"
-title = "Their participant id: what messages, reactions and read marks name"
-type = "Atom"
-
-[[resources.fields]]
-label = true
-owner = "person"
-path = "people.*.name"
-stored = "value"
-title = "The name they show"
-type = "String"
-
-[[resources.fields]]
-owner = "person"
-path = "people.*.initials"
-stored = "value"
-title = "Their monogram"
-type = "String"
-
-[[resources.fields]]
-owner = "person"
-path = "people.*.color"
-stored = "value"
-title = "Their colour"
-type = "u32"
-
-[[resources.fields]]
-owner = "person"
-path = "people.*.status"
-stored = "value"
-title = "Whether they are around"
-type = "Presence"
-
-[[resources.fields]]
-owner = "person"
-path = "people.*.agent"
-readonly = true
-stored = "value"
-title = "An automated agent rather than a person"
-type = "bool"
-
-[[resources.fields]]
-owner = "chat"
-path = "agent_names"
-stored = "value"
-title = "The name every member shows for an agent task, as the person hosting"
-type = "BTreeMap<String, String>"
-
-[[resources.fields]]
-owner = "chat"
-path = "read"
-stored = "value"
-title = "Each person's read mark per channel: how many of its top-level"
-type = "BTreeMap<String, BTreeMap<String, i64>>"
-
-[[resources.fields]]
-owner = "chat"
-path = "drafts"
-stored = "value"
-title = "The composers' drafts, by channel or thread"
-type = "BTreeMap<String, RichText>"
-
-[[resources.fields]]
-owner = "chat"
-path = "feedback"
-stored = "collection"
-title = "Reviewed feedback filed in a channel, under its submission's id"
-type = "Collection<FeedbackReport>"
-
-[[resources.fields]]
-owner = "feedback-report"
-path = "feedback.*.submission"
-readonly = true
-stored = "value"
-title = "What was submitted, as the person reviewed it"
-type = "Json<Option<ui::feedback::Submission>>"
-
-[[resources.fields]]
-owner = "feedback-report"
-path = "feedback.*.author"
-readonly = true
-stored = "value"
-title = "Who filed it"
-type = "Atom"
-
-[[resources.fields]]
-owner = "feedback-report"
-path = "feedback.*.ts"
-readonly = true
-stored = "value"
-title = "When, in seconds since the epoch"
-type = "i64"
-
-[[resources.fields]]
-owner = "feedback-report"
-path = "feedback.*.triage"
-readonly = true
-stored = "collection"
-title = "What happened to it since"
-type = "Collection<Triage>"
-
-[[resources.fields]]
-owner = "triage"
-path = "feedback.*.triage.*.author"
-readonly = true
-stored = "value"
-title = "Author"
-type = "Atom"
-
-[[resources.fields]]
-owner = "triage"
-path = "feedback.*.triage.*.ts"
-readonly = true
-stored = "value"
-title = "Ts"
-type = "i64"
-
-[[resources.fields]]
-owner = "triage"
-path = "feedback.*.triage.*.update"
-readonly = true
-stored = "value"
-title = "Update"
-type = "Json<Option<crate::feedback::TriageUpdate>>"
+fields = [
+  { path = "workspaces", type = "Collection<Workspace>", stored = "collection" },
+  { path = "workspaces.*.name", type = "String", label = true },
+  { path = "workspaces.*.glyph", type = "String" },
+  { path = "workspaces.*.color", type = "u32" },
+  { path = "categories", type = "Collection<Category>", stored = "collection" },
+  { path = "categories.*.workspace", type = "Id", readonly = true },
+  { path = "categories.*.name", type = "String", label = true },
+  { path = "channels", type = "Collection<Channel>", stored = "collection" },
+  { path = "channels.*.workspace", type = "Id", readonly = true },
+  { path = "channels.*.category", type = "Option<Id>" },
+  { path = "channels.*.name", type = "String", label = true },
+  { path = "channels.*.topic", type = "String" },
+  { path = "channels.*.kind", type = "ChannelKind", readonly = true },
+  { path = "channels.*.archived", type = "bool" },
+  { path = "channels.*.conversation_with", type = "Option<Atom>", readonly = true },
+  { path = "messages", type = "Collection<Message>", stored = "collection" },
+  { path = "messages.*.channel", type = "Id", readonly = true },
+  { path = "messages.*.author", type = "Atom", readonly = true },
+  { path = "messages.*.ts", type = "i64", readonly = true },
+  { path = "messages.*.text", type = "String", label = true, readonly = true },
+  { path = "messages.*.body", type = "Json<Vec<ClipBlock>>", readonly = true },
+  { path = "messages.*.edited", type = "bool", readonly = true },
+  { path = "messages.*.history", type = "Json<Vec<Revision>>", readonly = true },
+  { path = "messages.*.parent", type = "Option<Id>", readonly = true },
+  { path = "messages.*.reactions", type = "ui::tilo_resource::Set<Reacted>", readonly = true },
+  { path = "messages.*.mentions", type = "Json<Vec<crate::mention::Mention>>", readonly = true },
+  { path = "messages.*.reference", type = "Json<Option<tilo_reference::ResourceRef>>", readonly = true },
+  { path = "messages.*.source_provider", type = "Option<Atom>", readonly = true },
+  { path = "messages.*.attachment", type = "Json<Option<crate::model::Attachment>>", readonly = true },
+  { path = "messages.*.pinned", type = "bool" },
+  { path = "messages.*.work", type = "Option<Work>", readonly = true, stored = "record" },
+  { path = "messages.*.work.state", type = "Json<Option<Transition>>" },
+  { path = "messages.*.work.reasoning", type = "Json<Option<crate::model::AgentReasoning>>" },
+  { path = "messages.*.work.trace", type = "Keyed<Step>", stored = "keyed" },
+  { path = "messages.*.work.trace.*.id", type = "Atom" },
+  { path = "messages.*.work.trace.*.sequence", type = "u64" },
+  { path = "messages.*.work.trace.*.resource", type = "Atom" },
+  { path = "messages.*.work.trace.*.label", type = "String", label = true },
+  { path = "messages.*.work.trace.*.outcome", type = "Json<Option<crate::model::AgentStepOutcome>>" },
+  { path = "messages.*.appearance", type = "Json<Option<tilo_actions::Appearance>>", readonly = true },
+  { path = "people", type = "Keyed<Person>", stored = "keyed" },
+  { path = "people.*.id", type = "Atom", readonly = true },
+  { path = "people.*.name", type = "String", label = true },
+  { path = "people.*.initials", type = "String" },
+  { path = "people.*.color", type = "u32" },
+  { path = "people.*.status", type = "Presence" },
+  { path = "people.*.agent", type = "bool", readonly = true },
+  { path = "agent_names", type = "BTreeMap<String, String>" },
+  { path = "read", type = "BTreeMap<String, BTreeMap<String, i64>>" },
+  { path = "drafts", type = "BTreeMap<String, RichText>" },
+  { path = "feedback", type = "Collection<FeedbackReport>", stored = "collection" },
+  { path = "feedback.*.submission", type = "Json<Option<ui::feedback::Submission>>", readonly = true },
+  { path = "feedback.*.author", type = "Atom", readonly = true },
+  { path = "feedback.*.ts", type = "i64", readonly = true },
+  { path = "feedback.*.triage", type = "Collection<Triage>", readonly = true, stored = "collection" },
+  { path = "feedback.*.triage.*.author", type = "Atom", readonly = true },
+  { path = "feedback.*.triage.*.ts", type = "i64", readonly = true },
+  { path = "feedback.*.triage.*.update", type = "Json<Option<crate::feedback::TriageUpdate>>", readonly = true },
+  { path = "moderation", type = "moderation_model::Moderation", stored = "record" },
+  { path = "moderation.reports", type = "Keyed<Report>", stored = "keyed" },
+  { path = "moderation.reports.*.id", type = "String", readonly = true },
+  { path = "moderation.reports.*.reporter", type = "String" },
+  { path = "moderation.reports.*.person", type = "String" },
+  { path = "moderation.reports.*.app", type = "Option<String>" },
+  { path = "moderation.reports.*.record", type = "Option<String>" },
+  { path = "moderation.reports.*.item", type = "Option<String>" },
+  { path = "moderation.reports.*.reason", type = "String" },
+  { path = "moderation.reports.*.at_ms", type = "i64" },
+  { path = "moderation.reports.*.decision", type = "Option<String>" },
+  { path = "moderation.decisions", type = "Keyed<Decision>", stored = "keyed" },
+  { path = "moderation.decisions.*.id", type = "String", readonly = true },
+  { path = "moderation.decisions.*.person", type = "String" },
+  { path = "moderation.decisions.*.reports", type = "Json<Vec<String>>" },
+  { path = "moderation.decisions.*.outcome", type = "Outcome" },
+  { path = "moderation.decisions.*.until_ms", type = "Option<i64>" },
+  { path = "moderation.decisions.*.reasoning", type = "String" },
+  { path = "moderation.decisions.*.model", type = "String" },
+  { path = "moderation.decisions.*.reverted", type = "Json<Vec<Reverted>>" },
+  { path = "moderation.decisions.*.by", type = "String" },
+  { path = "moderation.decisions.*.at_ms", type = "i64" },
+  { path = "moderation.decisions.*.overturned_by", type = "Option<String>" },
+  { path = "moderation.decisions.*.overturn_note", type = "Option<String>" },
+  { path = "moderation.decisions.*.overturned_at_ms", type = "Option<i64>" },
+]
 
 [[resources.verbs]]
-description = "Its creator and their first workspace: the one the host names, or a starter workspace with `#general` and a voice lounge."
 id = "begin-chat"
 kind = "undoable"
-label = "Start the chat"
-
-[[resources.verbs.params]]
-name = "workspace"
-required = false
-
-[resources.verbs.params.schema]
-type = [
-    "string",
-    "null",
+params = [
+  { name = "workspace", required = false, schema = { type = ["string", "null"] } },
+  { name = "workspace_name", required = false, schema = { type = ["string", "null"] } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "initials", required = true, schema = { type = "string" } },
+  { name = "color", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
 ]
-
-[[resources.verbs.params]]
-name = "workspace_name"
-required = false
-
-[resources.verbs.params.schema]
-type = [
-    "string",
-    "null",
-]
-
-[[resources.verbs.params]]
-name = "name"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "initials"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "color"
-required = true
-
-[resources.verbs.params.schema]
-maximum = 4294967295
-minimum = 0
-type = "integer"
 
 [[resources.verbs]]
-description = "How you show in the room: your name, initials and colour, and that you are here."
 id = "introduce"
 kind = "undoable"
-label = "Introduce yourself"
-
-[[resources.verbs.params]]
-name = "name"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "initials"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "color"
-required = true
-
-[resources.verbs.params.schema]
-maximum = 4294967295
-minimum = 0
-type = "integer"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "initials", required = true, schema = { type = "string" } },
+  { name = "color", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+]
 
 [[resources.verbs]]
-description = "The name every member shows for an agent task."
 id = "name-agent"
 kind = "undoable"
-label = "Name an agent"
-
-[[resources.verbs.params]]
-name = "participant"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "name"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "participant", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
-description = "With `#general` to talk in and `Lounge` to call in."
 id = "create-workspace"
 kind = "undoable"
-label = "Create a workspace"
-
-[[resources.verbs.params]]
-name = "name"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
 id = "create-category"
 kind = "undoable"
-label = "New category"
-
-[[resources.verbs.params]]
-name = "workspace"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "name"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "workspace", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
 id = "create-channel"
 kind = "undoable"
-label = "New channel"
-
-[[resources.verbs.params]]
-name = "workspace"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "name"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "category"
-required = false
-
-[resources.verbs.params.schema]
-type = [
-    "string",
-    "null",
+params = [
+  { name = "workspace", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "category", required = false, schema = { type = ["string", "null"] } },
+  { name = "kind", required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
 ]
-
-[[resources.verbs.params]]
-name = "kind"
-required = false
-
-[resources.verbs.params.schema]
-description = "A text channel holds a conversation; a voice channel holds a call."
-
-[[resources.verbs.params.schema.oneOf]]
-type = "null"
-
-[[resources.verbs.params.schema.oneOf]]
-enum = [
-    "text",
-    "voice",
-]
-type = "string"
 
 [[resources.verbs]]
-description = "Its channels stay, uncategorised."
-destructive = true
 id = "delete-category"
+destructive = true
 kind = "undoable"
-label = "Delete category"
-
-[[resources.verbs.params]]
-name = "category"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "category", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
-description = "One place up or down among the channels of its category."
 id = "move-channel"
 kind = "undoable"
-label = "Move a channel"
-
-[[resources.verbs.params]]
-name = "channel"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "up"
-required = true
-
-[resources.verbs.params.schema]
-type = "boolean"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "up", required = true, schema = { type = "boolean" } },
+]
 
 [[resources.verbs]]
-description = "With its messages and drafts."
-destructive = true
 id = "delete-channel"
+destructive = true
 kind = "undoable"
-label = "Delete channel"
-
-[[resources.verbs.params]]
-name = "channel"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
-description = "The empty draft a composer writes in, made once: a thread's the first time someone answers in it."
 id = "start-draft"
 kind = "undoable"
-label = "Start a draft"
-
-[[resources.verbs.params]]
-name = "key"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "key", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
-description = "`@Name` of a member becomes a mention of them."
 id = "post"
+incoming_message = true
 kind = "undoable"
-label = "Post a message"
-
-[[resources.verbs.params]]
-name = "channel"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "text"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "parent"
-required = false
-
-[resources.verbs.params.schema]
-type = [
-    "string",
-    "null",
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+  { name = "parent", required = false, schema = { type = ["string", "null"] } },
+  { name = "body", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
+  { name = "attachment", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob"] } },
 ]
-
-[[resources.verbs.params]]
-name = "body"
-required = false
-
-[resources.verbs.params.schema]
-type = [
-    "array",
-    "null",
-]
-
-[resources.verbs.params.schema.items]
-additionalProperties = false
-description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
-required = [
-    "kind",
-    "text",
-    "marks",
-]
-type = "object"
-
-[resources.verbs.params.schema.items.properties.align]
-type = [
-    "string",
-    "null",
-]
-
-[resources.verbs.params.schema.items.properties.attrs]
-description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
-type = "object"
-
-[resources.verbs.params.schema.items.properties.kind]
-type = "string"
-
-[resources.verbs.params.schema.items.properties.level]
-type = [
-    "integer",
-    "null",
-]
-
-[resources.verbs.params.schema.items.properties.marks]
-type = "array"
-
-[resources.verbs.params.schema.items.properties.marks.items]
-additionalProperties = false
-description = "One inline formatting span as seen from the read side."
-required = [
-    "start",
-    "end",
-    "name",
-    "value",
-]
-type = "object"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.end]
-minimum = 0
-type = "integer"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.name]
-type = "string"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.start]
-minimum = 0
-type = "integer"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.value]
-description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
-
-[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
-additionalProperties = false
-required = ["Bool"]
-type = "object"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Bool]
-type = "boolean"
-
-[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
-additionalProperties = false
-required = ["Int"]
-type = "object"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Int]
-type = "integer"
-
-[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
-additionalProperties = false
-required = ["Str"]
-type = "object"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Str]
-type = "string"
-
-[resources.verbs.params.schema.items.properties.ordered]
-type = [
-    "boolean",
-    "null",
-]
-
-[resources.verbs.params.schema.items.properties.text]
-type = "string"
-
-[[resources.verbs.params]]
-name = "attachment"
-required = false
-
-[resources.verbs.params.schema]
-additionalProperties = false
-description = "An attachment, as `post` takes it: content another action put in the store, by its hash."
-required = [
-    "kind",
-    "name",
-    "blob",
-]
-type = [
-    "object",
-    "null",
-]
-
-[resources.verbs.params.schema.properties.blob]
-description = "The content hash."
-type = "string"
-
-[resources.verbs.params.schema.properties.height]
-maximum = 4294967295
-minimum = 0
-type = "integer"
-
-[resources.verbs.params.schema.properties.kind]
-description = "`image`, `video` or `file`."
-type = "string"
-
-[resources.verbs.params.schema.properties.name]
-type = "string"
-
-[resources.verbs.params.schema.properties.size]
-minimum = 0
-type = "integer"
-
-[resources.verbs.params.schema.properties.width]
-maximum = 4294967295
-minimum = 0
-type = "integer"
 
 [[resources.verbs]]
-description = "Post the address of something, with words about it; whoever opens it still needs their own access to it."
 id = "share-resource"
+incoming_message = true
 kind = "undoable"
-label = "Share live resource"
-
-[[resources.verbs.params]]
-name = "channel"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "reference"
-required = true
-
-[resources.verbs.params.schema]
-additionalProperties = false
-description = "A shared thing's address, as `share-resource` takes it."
-required = [
-    "kind",
-    "id",
-    "label",
-]
-type = "object"
-
-[resources.verbs.params.schema.properties.id]
-description = "Its resource id."
-type = "string"
-
-[resources.verbs.params.schema.properties.kind]
-description = "The publishing app's kind tag (`word_processor.block`)."
-type = "string"
-
-[resources.verbs.params.schema.properties.label]
-description = "What the chip says."
-type = "string"
-
-[resources.verbs.params.schema.properties.span]
-additionalProperties = false
-description = "The part of it, when not the whole."
-required = [
-    "start",
-    "end",
-    "unit",
-]
-type = [
-    "object",
-    "null",
-]
-
-[resources.verbs.params.schema.properties.span.properties.end]
-minimum = 0
-type = "integer"
-
-[resources.verbs.params.schema.properties.span.properties.start]
-minimum = 0
-type = "integer"
-
-[resources.verbs.params.schema.properties.span.properties.unit]
-description = "`Chars` or `Bytes`."
-type = "string"
-
-[[resources.verbs.params]]
-name = "text"
-required = false
-
-[resources.verbs.params.schema]
-type = [
-    "string",
-    "null",
-]
-
-[[resources.verbs.params]]
-name = "source_provider"
-required = false
-
-[resources.verbs.params.schema]
-type = [
-    "string",
-    "null",
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "reference", required = true, schema = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, span = { type = ["object", "null"], additionalProperties = false, properties = { end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, unit = { type = "string" } }, required = ["start", "end", "unit"] } }, required = ["kind", "id", "label"] } },
+  { name = "text", required = false, schema = { type = ["string", "null"] } },
+  { name = "source_provider", required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
-description = "Its earlier text is kept in its history."
 id = "edit-message"
 kind = "undoable"
-label = "Edit message"
-
-[[resources.verbs.params]]
-name = "message"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "text"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "body"
-required = false
-
-[resources.verbs.params.schema]
-type = [
-    "array",
-    "null",
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+  { name = "body", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
 ]
-
-[resources.verbs.params.schema.items]
-additionalProperties = false
-description = "One block of a copied rich fragment — text plus its formatting (marks and paragraph attributes), with mark offsets relative to the block's own text."
-required = [
-    "kind",
-    "text",
-    "marks",
-]
-type = "object"
-
-[resources.verbs.params.schema.items.properties.align]
-type = [
-    "string",
-    "null",
-]
-
-[resources.verbs.params.schema.items.properties.attrs]
-description = "The block's other attributes (a checklist item's `checked`, a code line's `lang`), set as they are."
-type = "object"
-
-[resources.verbs.params.schema.items.properties.kind]
-type = "string"
-
-[resources.verbs.params.schema.items.properties.level]
-type = [
-    "integer",
-    "null",
-]
-
-[resources.verbs.params.schema.items.properties.marks]
-type = "array"
-
-[resources.verbs.params.schema.items.properties.marks.items]
-additionalProperties = false
-description = "One inline formatting span as seen from the read side."
-required = [
-    "start",
-    "end",
-    "name",
-    "value",
-]
-type = "object"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.end]
-minimum = 0
-type = "integer"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.name]
-type = "string"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.start]
-minimum = 0
-type = "integer"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.value]
-description = "The value carried by a mark. Boolean marks (`strong`/`em`/`underline`) carry `Bool(true)`; valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so materialization can canonicalise mark order *including the value*, so replicas that merged concurrent valued marks in different internal orders converge to a byte-identical span list."
-
-[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
-additionalProperties = false
-required = ["Bool"]
-type = "object"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Bool]
-type = "boolean"
-
-[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
-additionalProperties = false
-required = ["Int"]
-type = "object"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Int]
-type = "integer"
-
-[[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf]]
-additionalProperties = false
-required = ["Str"]
-type = "object"
-
-[resources.verbs.params.schema.items.properties.marks.items.properties.value.oneOf.properties.Str]
-type = "string"
-
-[resources.verbs.params.schema.items.properties.ordered]
-type = [
-    "boolean",
-    "null",
-]
-
-[resources.verbs.params.schema.items.properties.text]
-type = "string"
 
 [[resources.verbs]]
-destructive = true
 id = "delete-message"
+destructive = true
 kind = "undoable"
-label = "Delete message"
-
-[[resources.verbs.params]]
-name = "message"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
-description = "Your reaction with an emoji."
+id = "remove-message"
+destructive = true
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "report-message"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "reason", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "report-person"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "reason", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "decide-reports"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "reports", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "ruling", required = true, schema = { type = "object", additionalProperties = false, properties = { model = { type = "string" }, outcome = { oneOf = [{ type = "string", const = "no-action" }, { type = "string", const = "restrict" }, { type = "string", const = "ban" }] }, reasoning = { type = "string" }, reverted = { type = "array", items = { type = "object", additionalProperties = false, properties = { app = { type = "string" }, changes = { type = "integer", maximum = 4294967295, minimum = 0 }, record = { type = "string" }, run = { type = "string" } }, required = ["app", "record", "run", "changes"] } }, until_ms = { type = ["integer", "null"] } }, required = ["outcome", "reasoning"] } },
+]
+
+[[resources.verbs]]
+id = "overturn-decision"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "decision", required = true, schema = { type = "string" } },
+  { name = "note", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "react"
 kind = "undoable"
-label = "React"
-
-[[resources.verbs.params]]
-name = "message"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "emoji"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "emoji", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
 id = "unreact"
 kind = "undoable"
-label = "Take back a reaction"
-
-[[resources.verbs.params]]
-name = "message"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "emoji"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "emoji", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
-description = "Everything in the channel so far, for you."
 id = "mark-read"
 kind = "undoable"
-label = "Mark as read"
-
-[[resources.verbs.params]]
-name = "channel"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "seen"
-required = false
-
-[resources.verbs.params.schema]
-maximum = 4294967295
-minimum = 0
-type = [
-    "integer",
-    "null",
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "seen", required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
 ]
 
 [[resources.verbs]]
-description = "An agent's account of what it is doing with the message that summoned it, kept on its reply to that message: the reply is made the first time, and `say` gives it its words once, while it has none."
 id = "record-work"
 kind = "undoable"
-label = "Record agent work"
-
-[[resources.verbs.params]]
-name = "message"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "work"
-required = true
-
-[resources.verbs.params.schema]
-additionalProperties = false
-description = "What an agent records of its work, as a verb takes it."
-required = ["state"]
-type = "object"
-
-[resources.verbs.params.schema.properties.about]
-description = "What it is about (`doing`)."
-type = [
-    "string",
-    "null",
-]
-
-[resources.verbs.params.schema.properties.app]
-description = "The app waited on (`waiting`)."
-type = [
-    "string",
-    "null",
-]
-
-[resources.verbs.params.schema.properties.did]
-description = "The operation in the app's words (`doing`, `done`)."
-type = [
-    "string",
-    "null",
-]
-
-[resources.verbs.params.schema.properties.route]
-description = "Which path decided: `model` or `floor`."
-type = [
-    "string",
-    "null",
-]
-
-[resources.verbs.params.schema.properties.state]
-description = "`taken`, `waiting`, `doing`, `done` or `refused`."
-type = "string"
-
-[resources.verbs.params.schema.properties.trace]
-description = "The operations dispatched so far, each by the id minted when it was."
-type = "array"
-
-[resources.verbs.params.schema.properties.trace.items]
-additionalProperties = false
-description = "One dispatched operation, as an agent reports it."
-required = [
-    "id",
-    "resource",
-    "label",
-    "outcome",
-]
-type = "object"
-
-[resources.verbs.params.schema.properties.trace.items.properties.id]
-type = "string"
-
-[resources.verbs.params.schema.properties.trace.items.properties.label]
-type = "string"
-
-[resources.verbs.params.schema.properties.trace.items.properties.outcome]
-description = "`asked`, `applied`, `no_change` or `refused`."
-type = "string"
-
-[resources.verbs.params.schema.properties.trace.items.properties.resource]
-type = "string"
-
-[resources.verbs.params.schema.properties.trace.items.properties.sequence]
-minimum = 0
-type = "integer"
-
-[resources.verbs.params.schema.properties.trace.items.properties.why]
-description = "Why it was refused."
-type = [
-    "string",
-    "null",
-]
-
-[resources.verbs.params.schema.properties.why]
-description = "The decider's account of why."
-type = [
-    "string",
-    "null",
-]
-
-[[resources.verbs.params]]
-name = "say"
-required = false
-
-[resources.verbs.params.schema]
-type = [
-    "string",
-    "null",
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "work", required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, did = { type = ["string", "null"] }, route = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } }, why = { type = ["string", "null"] } }, required = ["state"] } },
+  { name = "say", required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
-description = "A reviewed report, posted in the channel and kept with its triage."
-field = "comments"
 id = "submit-feedback"
+field = "comments"
 kind = "undoable"
-label = "Submit feedback"
-
-[[resources.verbs.params]]
-name = "channel"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "submission"
-required = true
-
-[resources.verbs.params.schema]
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "submission", required = true, schema = {} },
+]
 
 [[resources.verbs]]
-description = "Investigating, resolved, reopened, a duplicate of another report or tracked by a task."
 id = "triage"
 kind = "undoable"
-label = "Triage feedback"
+params = [
+  { name = "report", required = true, schema = { type = "string" } },
+  { name = "update", required = true, schema = {} },
+]
 
-[[resources.verbs.params]]
-name = "report"
-required = true
-
-[resources.verbs.params.schema]
-type = "string"
-
-[[resources.verbs.params]]
-name = "update"
-required = true
-
-[resources.verbs.params.schema]

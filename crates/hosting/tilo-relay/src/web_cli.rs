@@ -70,6 +70,23 @@ pub struct WebArgs {
     /// uses the HTTPS stream fallback).
     #[arg(long = "web-plain", value_name = "ADDR")]
     pub web_plain: Option<SocketAddr>,
+    /// The `https://` origin a TLS-terminating proxy publishes
+    /// `--web-plain` at (a public room behind an ingress); it lets
+    /// `--web-plain` bind a non-loopback address.
+    #[arg(long = "public-origin", value_name = "ORIGIN", requires = "web_plain")]
+    pub public_origin: Option<String>,
+    /// The web entry (ending in `/`, e.g. `https://app.example/`) where the
+    /// Tilo app opens this host's links: announced in catalogue locators,
+    /// so `share-link` and bots mint links under it. Overrides the config's
+    /// `web_entry`.
+    #[arg(long = "web-entry", value_name = "URL")]
+    pub web_entry: Option<String>,
+    /// The `https://` origin browsers dial WebTransport at, when the page
+    /// origin is behind a proxy that passes HTTP only: `--web` is reached
+    /// directly under this name (its certificate from `--tls files:…`),
+    /// and the HTTPS stream on the page origin stays the fallback.
+    #[arg(long = "live-origin", value_name = "ORIGIN", requires = "web")]
+    pub live_origin: Option<String>,
     /// Without a device certificate yet, create the device key, print its
     /// public half and serve only `/peer/v1/install` on `--web` until a
     /// root-signed host certificate for it arrives with the token in this
@@ -177,6 +194,13 @@ impl HostedRelay {
     }
 }
 
+/// `--web-entry`, when given, is the entry the relay's catalogue announces.
+fn announce_web_entry(cfg: &mut tilo_relay::RelayConfig, args: &WebArgs) {
+    if let Some(entry) = &args.web_entry {
+        cfg.web_entry = Some(entry.clone());
+    }
+}
+
 /// Start the relay; with `--agents`, with its agent supervisor as the
 /// app-serving plane and the agents kept under `state_root/agents`.
 ///
@@ -187,11 +211,15 @@ impl HostedRelay {
     allow(unused_variables, reason = "agents only")
 )]
 pub async fn start_relay(
-    cfg: tilo_relay::RelayConfig,
+    mut cfg: tilo_relay::RelayConfig,
     identity: RelayIdentity,
     args: &WebArgs,
     state_root: &Path,
 ) -> anyhow::Result<HostedRelay> {
+    if let Some(max) = env_count("TILO_RELAY_MAX_ROOM_GRANTS") {
+        cfg.max_room_grants = Some(max);
+    }
+    announce_web_entry(&mut cfg, args);
     #[cfg(feature = "agents")]
     let options = args.agents.options(state_root.join("agents"))?;
     #[cfg(feature = "agents")]
@@ -214,7 +242,7 @@ pub async fn start_relay(
     })
 }
 
-fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfig {
+pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfig {
     let tls = match &args.tls {
         TlsArg::Dev => TlsSource::Development {
             hosts: vec!["localhost".into(), listen.ip().to_string()],
@@ -231,6 +259,25 @@ fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfi
         tls,
         allowed_origins: args.allowed_origins.clone(),
         plain_listen: args.web_plain,
+        public_origin: args.public_origin.clone(),
+        live_origin: args.live_origin.clone(),
+        limits: web_limits(),
+    }
+}
+
+/// A count from the environment, for an operator raising a public host's
+/// caps without a config file.
+fn env_count(name: &str) -> Option<usize> {
+    std::env::var(name).ok()?.trim().parse().ok()
+}
+
+fn web_limits() -> tilo_relay::web::WebLimits {
+    let defaults = tilo_relay::web::WebLimits::default();
+    tilo_relay::web::WebLimits {
+        max_sessions: env_count("TILO_RELAY_MAX_WEB_SESSIONS").unwrap_or(defaults.max_sessions),
+        max_handshakes: env_count("TILO_RELAY_MAX_HANDSHAKES").unwrap_or(defaults.max_handshakes),
+        max_live_grants: env_count("TILO_RELAY_MAX_LIVE_GRANTS")
+            .unwrap_or(defaults.max_live_grants),
     }
 }
 
@@ -312,7 +359,8 @@ pub async fn serve(
     let Some(listen) = args.web else {
         return Ok(None);
     };
-    if let Some(device) = session_device(args)? {
+    let device = session_device(args)?;
+    if let Some(device) = device {
         relay.set_node_session(device);
     }
     let web = relay
@@ -356,7 +404,7 @@ fn dev_identity(state: &Path) -> anyhow::Result<[SigningKey; 3]> {
         .map_err(|_| anyhow::anyhow!("{} is not a dev identity; delete it", path.display()))
 }
 
-fn enrol(
+pub(crate) fn enrol(
     root: &SigningKey,
     device: &SigningKey,
     label: &str,
@@ -475,7 +523,7 @@ async fn approve_every_browser(
                 )
                 .map_or(
                     tilo_relay::certify::ApproverDecision::Deny,
-                    |(cert, delegation)| tilo_relay::certify::ApproverDecision::IssueAgent {
+                    |(cert, delegation)| tilo_relay::certify::ApproverDecision::IssueDelegate {
                         cert,
                         delegation,
                     },
@@ -665,6 +713,9 @@ pub struct RoomArgs {
     /// operator removes it when the room ends.
     #[arg(long, value_name = "DIR")]
     pub state: PathBuf,
+    #[cfg(feature = "agents")]
+    #[command(flatten)]
+    pub persistent: crate::persistent_room_cli::PersistentArgs,
 }
 
 /// One operator line from stdin, or why it could not be read.
@@ -672,7 +723,7 @@ type OperatorLine = Result<OperatorCommand, String>;
 
 /// Operator lines from stdin, read on their own thread: a blocking read
 /// must never hold up the host.
-fn operator_lines() -> anyhow::Result<tokio::sync::mpsc::Receiver<OperatorLine>> {
+pub(crate) fn operator_lines() -> anyhow::Result<tokio::sync::mpsc::Receiver<OperatorLine>> {
     operator_lines_from(std::io::stdin())
 }
 
@@ -841,6 +892,11 @@ async fn approve_admitted(
                     admissions.admit(pairing_code, tokio::time::Instant::now());
                 }
                 Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
+                Some(Ok(
+                    command @ (OperatorCommand::PreAdmit { .. } | OperatorCommand::Spectate { .. }),
+                )) => {
+                    anyhow::bail!("a short-lived room takes no {command:?}");
+                }
                 Some(Err(error)) => {
                     tracing::error!(%error, "unreadable room operator line");
                     anyhow::bail!("unreadable room operator line: {error}");
@@ -904,6 +960,17 @@ pub async fn room(
     args: RoomArgs,
     shutdown: impl std::future::Future<Output = anyhow::Result<()>>,
 ) -> anyhow::Result<()> {
+    // Every change the room receives is decided against its app's surface,
+    // a bot's included: the room's own apps carry theirs, others come from
+    // the registry.
+    tilo_relay::surfaces::decide_receipt_from_registry(
+        &std::env::var("TILO_REGISTRY")
+            .unwrap_or_else(|_| tilo_relay::surfaces::DEFAULT_REGISTRY.to_owned()),
+    );
+    #[cfg(feature = "agents")]
+    if args.persistent.persistent.is_some() {
+        return crate::persistent_room_cli::run(args, shutdown).await;
+    }
     let state = args.state;
     std::fs::create_dir_all(&state).with_context(|| format!("create {}", state.display()))?;
     let listen = args.web.web.context("a room needs --web")?;
@@ -918,7 +985,7 @@ pub async fn room(
         DeviceCapabilities::primary(),
     )?;
     let config = tilo_relay::RelayConfig {
-        state_root: state.join("relay"),
+        state_root: tilo_relay_protocol::metrics::room_relay_root(&state),
         identity_root: state.join("identity"),
         ..Default::default()
     };
@@ -948,6 +1015,7 @@ pub async fn room(
             user_public_key: hex::encode(user),
             certificate_sha256: web.certificate_sha256.clone(),
             allowed_origins: args.web.allowed_origins.clone(),
+            room: None,
         }
         .to_line()
     );
@@ -988,6 +1056,33 @@ mod tests {
 
     fn key() -> SigningKey {
         SigningKey::from_bytes(&rand::random())
+    }
+
+    #[test]
+    fn a_web_entry_flag_is_what_the_catalogue_announces() {
+        #[derive(clap::Parser)]
+        struct Command {
+            #[command(flatten)]
+            web: WebArgs,
+        }
+        let parse = |args: &[&str]| {
+            <Command as clap::Parser>::try_parse_from(
+                std::iter::once("room").chain(args.iter().copied()),
+            )
+            .unwrap()
+            .web
+        };
+        let mut cfg = tilo_relay::RelayConfig {
+            web_entry: Some("https://configured.example/".into()),
+            ..Default::default()
+        };
+        announce_web_entry(&mut cfg, &parse(&[]));
+        assert_eq!(
+            cfg.web_entry.as_deref(),
+            Some("https://configured.example/")
+        );
+        announce_web_entry(&mut cfg, &parse(&["--web-entry", "https://app.example/"]));
+        assert_eq!(cfg.web_entry.as_deref(), Some("https://app.example/"));
     }
 
     async fn endpoint() -> iroh::endpoint::Endpoint {
@@ -1222,7 +1317,7 @@ mod tests {
         .unwrap();
         let relay = Relay::start(
             tilo_relay::RelayConfig {
-                state_root: state.join("relay"),
+                state_root: tilo_relay_protocol::metrics::room_relay_root(state),
                 identity_root: state.join("identity"),
                 ..Default::default()
             },

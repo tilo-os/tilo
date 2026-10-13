@@ -607,11 +607,14 @@ impl CompositionFocus {
         bindings: &BoundNodeMap,
         allowed: Option<&[NodeId]>,
     ) -> Option<NodeId> {
+        // Asked of every node: look the order up, do not scan it each time.
+        let allowed: Option<std::collections::HashSet<NodeId>> =
+            allowed.map(|order| order.iter().copied().collect());
         let focused: Vec<_> = nodes
             .keys()
             .copied()
             .filter(|&node| {
-                allowed.is_none_or(|order| order.contains(&node))
+                allowed.as_ref().is_none_or(|order| order.contains(&node))
                     && unsafe {
                         crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
                             widget.is_focusable() && widget.is_enabled() && widget.is_focused()
@@ -1528,10 +1531,7 @@ pub(crate) fn lay_out_detached(
     let child = widget.build_layout(&mut taffy, theme, &mut nodes);
     let root = taffy.new_with_children(
         taffy::Style {
-            size: Size {
-                width: taffy::Dimension::length(w),
-                height: taffy::Dimension::length(h),
-            },
+            size: Size::from_lengths(w, h),
             ..Default::default()
         },
         &[child],

@@ -19,7 +19,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use tilo_wet_media::{LayerPainter, Painted};
 use ui::vello::peniko::ImageData;
 
-use crate::detail::rgba;
+use crate::picture::image_of;
 
 /// What a painted layer is asked to show.
 #[derive(Clone)]
@@ -204,17 +204,17 @@ impl Settle {
 /// Whether painting can be handed to another thread here: a browser page
 /// has one thread, and waiting there for a job would wait forever.
 fn threads() -> bool {
-    ui::rt::availability(ui::rt::Feature::Threads) == ui::rt::Availability::Available
+    ui::rt::available(ui::rt::Feature::Threads)
 }
 
 /// Paint `ask` with `painter`: the layer's picture when it is not the one
 /// under `have`, and the stroke being painted over it.
 fn paint(painter: &mut LayerPainter, ask: &Ask, have: Option<blake3::Hash>) -> Done {
     let (width, height) = ask.size;
-    let image =
-        (have != Some(ask.key)).then(|| rgba(painter.paint(&ask.marks).to_vec(), width, height));
+    let image = (have != Some(ask.key))
+        .then(|| image_of(painter.paint(&ask.marks).to_vec(), width, height));
     let preview = ask.wet.as_ref().map(|(stroke, wet)| Preview {
-        image: rgba(painter.preview(&ask.marks, wet), width, height),
+        image: image_of(painter.preview(&ask.marks, wet), width, height),
         over: ask.key,
         stroke: *stroke,
     });

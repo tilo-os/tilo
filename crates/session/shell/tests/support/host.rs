@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{FreshId as _, WorkspaceId, WorkspaceTree};
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
@@ -24,17 +24,23 @@ pub struct Layout {
 /// `build_layout -> compute_layout -> apply_layout` inside a `width` x
 /// `height` root, so every rect lands in screen-space coords.
 pub fn lay_out<W: Widget + ?Sized>(host: &mut W, width: f32, height: f32) -> Layout {
-    let theme = Theme::dark();
+    lay_out_with_theme(host, width, height, &Theme::dark())
+}
+
+/// The same measured layout pass with an explicit theme for scale qualification.
+pub fn lay_out_with_theme<W: Widget + ?Sized>(
+    host: &mut W,
+    width: f32,
+    height: f32,
+    theme: &Theme,
+) -> Layout {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
+    let child = host.build_layout(&mut taffy, theme, &mut node_map);
     let root_node = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(width),
-                    height: Dimension::length(height),
-                },
+                size: Size::from_lengths(width, height),
                 ..Default::default()
             },
             &[child],

@@ -12,6 +12,7 @@
 mod application_record;
 mod bootstrap;
 mod certified;
+mod checkpoint;
 mod document_read;
 mod effect_history;
 mod effect_receipt;
@@ -35,12 +36,16 @@ tilo_automerge_isolate::test_worker!();
 pub use application_record::{ApplicationInitialization, ApplicationRecord};
 pub use bootstrap::NativeBootstrap;
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
+pub use checkpoint::{
+    CheckpointAcknowledgement, CheckpointCapture, CheckpointEntry, CheckpointRoute,
+    CheckpointSchema, MaterializedCheckpoint, NativeCheckpoint,
+};
 pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
 pub use file_store::open_file;
 pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use publication::{
-    NativeOutgoing, NativeOutgoingEntry, preflight_storage, reserved_file_bytes,
+    NativeOutgoing, NativeOutgoingEntry, authority_limit, preflight_storage, reserved_file_bytes,
     validate_file_layout,
 };
 pub use record::{
@@ -310,6 +315,7 @@ impl NativeWorkspaceOwner {
         for (room, record) in &authority.rooms {
             let view = enrollment::restore(*room, record, now)?;
             effect_receipt::validate_history(&view, store.as_ref())?;
+            checkpoint::validate_restore(&view, store.as_ref())?;
             current.rooms.insert(*room, Arc::new(view));
         }
         Ok(Self(Arc::new(SharedOwner {

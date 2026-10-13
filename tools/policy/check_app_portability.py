@@ -39,6 +39,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import is_test_file, line_number  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RULES = Path("tools/policy/app_portability_rules.toml")
@@ -310,10 +313,6 @@ def strip_tests(text: str, code: str) -> Pruned:
     return Pruned("".join(out), removed, modules, False)
 
 
-def line_number(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1
-
-
 def path_regex(path: str, suffix: str = "") -> re.Pattern[str]:
     """``a::b`` with any whitespace; callers check what precedes a match."""
     segments = [re.escape(segment) for segment in path.split("::")]
@@ -567,11 +566,6 @@ def discover(root: Path, table: dict) -> list[Package]:
     return packages
 
 
-def is_test_file(relative: Path) -> bool:
-    name = relative.name
-    return "tests" in relative.parts or name == "tests.rs" or name.endswith("_tests.rs")
-
-
 def module_children(file: Path) -> Path:
     if file.name in ("lib.rs", "main.rs", "mod.rs") or file.parent.name == "bin":
         return file.parent
@@ -673,9 +667,12 @@ def manifest_findings(
                 continue
             named = {
                 alias
-                for kind in ("dependencies", "dev-dependencies", "build-dependencies")
+                for kind in ("dependencies", "build-dependencies")
                 for alias in (tables or {}).get(kind, {})
             }
+            # Target-specific dev-dependencies only reach tests, which are exempt.
+            if not named and (tables or {}).get("dev-dependencies"):
+                continue
             if named and named <= build_only:
                 continue
             hits.append(("R1", header_line(text, target), f"`[target.{target}]` section"))

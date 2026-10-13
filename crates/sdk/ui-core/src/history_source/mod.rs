@@ -1,12 +1,11 @@
 //! Turning a live CRDT document into the rows the history widgets render.
 //!
-//! [`ActivityTimeline`](crate::widget::ActivityTimeline) and
-//! [`HistoryScrubber`](crate::widget::HistoryScrubber) both consume
-//! `Vec<HistoryEntry>` and are source-agnostic; this module is the producer,
+//! [`ActivityTimeline`](crate::widget::ActivityTimeline) consumes
+//! `Vec<HistoryEntry>` and is source-agnostic; this module is the producer,
 //! walking the change graph via [`tilo_resource::history::versions`] to emit one
 //! [`HistoryEntry`] per change with author, timestamp, op class, and a
 //! summary of what changed. It lives in `ui` (not a leaf crate) because
-//! both an app's scrubber and the compositor's room-level timeline need it.
+//! both an app's history and the compositor's room-level timeline need it.
 //!
 //! Two summary strategies, in order of preference: **structural**, which
 //! materialises the window with [`tilo_doc::snapshot::series`] and
@@ -47,10 +46,11 @@ pub mod schema_ops;
 pub mod seen;
 pub mod sentence;
 pub mod steps;
+pub(crate) use authors::room_agents_revision;
 pub use authors::{
-    AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, agent_display_label, agent_principal_name,
-    author_coloured, author_for_identity, local_identity_author, participant_display_label,
-    short_id, stable_hue,
+    AuthorDirectory, HistoryAgent, RosterAgent, UNKNOWN_AUTHOR_NAME, actor_handle,
+    agent_display_label, agent_principal_name, author_coloured, author_for_identity,
+    local_identity_author, participant_display_label, set_room_agents, short_id, stable_hue,
 };
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{HistoryResourceTarget, HistorySelectionDetail};

@@ -339,7 +339,7 @@ impl<R, T: Settable> Path<R, T> {
     )]
     pub fn set(&self, value: T) -> Edit<R> {
         self.edit(EditOp::Set {
-            value: value.to_json(),
+            value: crate::shape::without_absent::<T>(value.to_json()),
         })
     }
 }
@@ -578,7 +578,7 @@ impl<R, T: Model> Path<R, crate::Collection<T>> {
         self.edit(EditOp::InsertItem {
             id: None,
             at,
-            value: value.to_json(),
+            value: crate::shape::without_absent::<T>(value.to_json()),
         })
     }
 
@@ -588,7 +588,7 @@ impl<R, T: Model> Path<R, crate::Collection<T>> {
         self.edit(EditOp::InsertItem {
             id: Some(id.clone()),
             at,
-            value: value.to_json(),
+            value: crate::shape::without_absent::<T>(value.to_json()),
         })
     }
 
@@ -635,7 +635,7 @@ impl<R, T: Model> Path<R, crate::Grid<T>> {
         self.edit(EditOp::SetCell {
             row: row.clone(),
             column: column.clone(),
-            value: value.map(Model::to_json),
+            value: value.map(|value| crate::shape::without_absent::<T>(value.to_json())),
         })
     }
 
@@ -665,7 +665,7 @@ impl<R, T: Model> Path<R, crate::Grid<T>> {
     }
 }
 
-impl<R, T: Model, O: Serialize + serde::de::DeserializeOwned + 'static>
+impl<R, T: Model, O: Serialize + serde::de::DeserializeOwned + Default + 'static>
     Path<R, crate::Outbox<T, O>>
 {
     /// Record how the owning device settled the entry `id`: content from
@@ -1098,50 +1098,6 @@ impl<R> Edit<R> {
         self.apply(doc, &mut cx)
     }
 
-    /// Apply to a value held as JSON, field by field: a form's local
-    /// parameter struct. Only `set`, `replace` and `splice` apply.
-    ///
-    /// # Errors
-    /// Returns why the path or operation does not fit.
-    pub fn apply_json(&self, value: &mut serde_json::Value) -> Result<(), crate::ModelError> {
-        let mut target = value;
-        for segment in &self.path {
-            let (Segment::Field(key) | Segment::Key(key)) = segment else {
-                return Err(crate::ModelError::invalid("a form holds fields only"));
-            };
-            if !target.is_object() {
-                *target = serde_json::Value::Object(serde_json::Map::new());
-            }
-            let serde_json::Value::Object(fields) = target else {
-                return Err(crate::ModelError::shape("an object"));
-            };
-            target = fields.entry(key.clone()).or_insert(serde_json::Value::Null);
-        }
-        match &self.op {
-            EditOp::Set { value } => *target = value.clone(),
-            EditOp::Replace { text } => *target = serde_json::Value::String(text.clone()),
-            EditOp::Splice { at, delete, insert } => {
-                let current: Vec<char> = target.as_str().unwrap_or_default().chars().collect();
-                if *at > current.len() || *delete > current.len().saturating_sub(*at) {
-                    return Err(crate::ModelError::invalid(
-                        "the splice reaches past the text",
-                    ));
-                }
-                let end = at.saturating_add(*delete);
-                let text: String = current
-                    .get(..*at)
-                    .unwrap_or_default()
-                    .iter()
-                    .chain(insert.chars().collect::<Vec<_>>().iter())
-                    .chain(current.get(end..).unwrap_or_default())
-                    .collect();
-                *target = serde_json::Value::String(text);
-            }
-            other => return Err(crate::ModelError::unsupported(other)),
-        }
-        Ok(())
-    }
-
     /// Apply at its path in `doc`, then run the invariants of every value
     /// the edit touched.
     ///
@@ -1189,6 +1145,25 @@ impl<R> Serialize for Edit<R> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         edit_to_json(&self.path, &self.op).serialize(serializer)
     }
+}
+
+/// The arguments of [`FIELD_EDIT`](crate::FIELD_EDIT) that settle entry
+/// `id` of the outbox stored at field `field` with `outcome` (a
+/// [`Settled`](crate::Settled) in JSON form): [`Path::settle`] for a host
+/// that holds the record without its app's types, such as a room's host
+/// settling what a bot's connector performed.
+#[must_use]
+pub fn outbox_settle_arguments(
+    field: &str,
+    id: &str,
+    outcome: &serde_json::Value,
+) -> serde_json::Map<String, serde_json::Value> {
+    let op = EditOp::Settle {
+        id: Id::from_raw(id),
+        outcome: outcome.clone(),
+    };
+    let edit = edit_to_json(&[Segment::Field(field.to_owned())], &op);
+    serde_json::Map::from_iter([(crate::EDIT_PARAM.to_owned(), edit)])
 }
 
 #[inline(never)]

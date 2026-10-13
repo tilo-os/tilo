@@ -431,64 +431,73 @@ fn undo_targets(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Vec<Versio
 /// per change, not the whole entry.
 struct Step {
     hash: ChangeHash,
-    /// Shared by every change of the same author.
-    actor: std::rc::Rc<str>,
+    /// Its author, in [`StepIndex::actors`].
+    actor: u32,
     time_ms: i64,
-    /// Of its entry, when it has one.
-    entry: Option<Box<StepEntry>>,
-    /// The raw message of a change without an entry.
-    message: Option<Box<str>>,
-}
-
-struct StepEntry {
-    group: Option<tilo_actions::ActionGroup>,
-    invoker: Option<tilo_actions::ActionInvoker>,
+    /// The step its entry recorded it belongs to.
     gesture: Option<tilo_actions::ActionId>,
+    /// Its entry's run and invoker; shared with the change before when they
+    /// are the same, as they are for every change of one run or one person.
+    shared: Option<std::rc::Rc<Shared>>,
     kind: Option<tilo_actions::ActionKind>,
     change: tilo_actions::ChangeKind,
+    /// Whether the change has an entry.
+    entry: bool,
+}
+
+/// What consecutive changes usually have in common: who ran them and in
+/// which run.
+#[derive(PartialEq)]
+struct Shared {
+    group: Option<tilo_actions::ActionGroup>,
+    invoker: Option<tilo_actions::ActionInvoker>,
 }
 
 impl Step {
-    fn of(version: Version, actor: std::rc::Rc<str>) -> Self {
-        let entry = version.context.map(|context| {
-            Box::new(StepEntry {
+    fn of(version: &mut Version, actor: u32, last: Option<&std::rc::Rc<Shared>>) -> Self {
+        let entry = version.context.is_some();
+        let context = version.context.take().unwrap_or_default();
+        let shared = (context.group.is_some() || context.invoker.is_some()).then(|| {
+            let shared = Shared {
                 group: context.group,
                 invoker: context.invoker,
-                gesture: context.gesture,
-                kind: context.kind,
-                change: context.change,
-            })
+            };
+            match last {
+                Some(last) if **last == shared => std::rc::Rc::clone(last),
+                _ => std::rc::Rc::new(shared),
+            }
         });
         Self {
             hash: version.hash,
             actor,
             time_ms: version.time_ms,
-            message: version
-                .message
-                .filter(|_| entry.is_none())
-                .map(String::into_boxed_str),
+            gesture: context.gesture,
+            shared,
+            kind: context.kind,
+            change: context.change,
             entry,
         }
     }
 
-    /// The change as a version holding what the index keeps of it.
-    fn version(&self) -> Version {
+    /// The change as a version holding what the index keeps of it: its
+    /// author `actor`, and `message` when it has no entry.
+    fn version(&self, actor: &str, message: Option<&str>) -> Version {
         Version {
             hash: self.hash,
-            actor: self.actor.to_string(),
+            actor: actor.to_owned(),
             time_ms: self.time_ms,
-            context: self
-                .entry
-                .as_deref()
-                .map(|entry| tilo_actions::ActionContext {
-                    group: entry.group.clone(),
-                    invoker: entry.invoker.clone(),
-                    gesture: entry.gesture,
-                    kind: entry.kind,
-                    change: entry.change,
+            context: self.entry.then(|| {
+                let shared = self.shared.as_deref();
+                tilo_actions::ActionContext {
+                    group: shared.and_then(|shared| shared.group.clone()),
+                    invoker: shared.and_then(|shared| shared.invoker.clone()),
+                    gesture: self.gesture,
+                    kind: self.kind,
+                    change: self.change,
                     ..tilo_actions::ActionContext::default()
-                }),
-            message: self.message.as_deref().map(str::to_owned),
+                }
+            }),
+            message: message.map(str::to_owned),
         }
     }
 }
@@ -500,14 +509,33 @@ impl Step {
 #[derive(Default)]
 pub struct StepIndex {
     steps: Vec<Step>,
-    actors: HashSet<std::rc::Rc<str>>,
-    positions: std::collections::HashMap<ChangeHash, usize>,
-    kinds: std::collections::HashMap<ChangeHash, Kind>,
+    /// The authors of the changes, each once.
+    actors: Vec<std::rc::Rc<str>>,
+    actor_ids: std::collections::HashMap<std::rc::Rc<str>, u32>,
+    /// The raw messages of the changes without an entry, by position.
+    messages: std::collections::HashMap<u32, Box<str>>,
+    /// Each change's position, by the first eight bytes of its hash (a
+    /// change hash is uniformly random); a change whose prefix another
+    /// change already has is in `colliding`.
+    positions: std::collections::HashMap<u64, u32>,
+    colliding: std::collections::HashMap<ChangeHash, u32>,
+    /// Where each gesture's first entry sits, by its author and gesture:
+    /// what a continuation of it reads as.
+    firsts: std::collections::HashMap<(u32, tilo_actions::ActionId), u32>,
+    /// The kinds read so far, by position.
+    kinds: std::collections::HashMap<u32, Kind>,
     heads: Vec<ChangeHash>,
     /// The changes last read whole, newest last: an undo or redo asks for
     /// the same few again (its targets, their labels, what they brought
     /// back). Bounded, so the index stays small however long the history.
     read_whole: std::cell::RefCell<std::collections::VecDeque<Version>>,
+}
+
+/// The first eight bytes of a change hash: as random as the whole hash.
+fn prefix(hash: &ChangeHash) -> u64 {
+    let mut bytes = [0; 8];
+    bytes.copy_from_slice(&hash.0[..8]);
+    u64::from_le_bytes(bytes)
 }
 
 /// How many changes [`StepIndex::full`] keeps read whole.
@@ -523,21 +551,81 @@ impl StepIndex {
         let document = doc.committed_document();
         let fresh = document.get_changes_meta(&self.heads);
         for meta in &fresh {
-            if self.positions.contains_key(&meta.hash) {
+            if self.position(&meta.hash).is_some() {
                 continue;
             }
-            let version = tilo_resource::history::version_of(document, meta);
-            let actor = if let Some(actor) = self.actors.get(version.actor.as_str()) {
-                std::rc::Rc::clone(actor)
-            } else {
-                let actor: std::rc::Rc<str> = version.actor.as_str().into();
-                self.actors.insert(std::rc::Rc::clone(&actor));
+            let hex = meta.actor.to_hex_string();
+            let actor = if let Some(&actor) = self.actor_ids.get(hex.as_str()) {
                 actor
+            } else {
+                let id = u32::try_from(self.actors.len()).unwrap_or(u32::MAX);
+                let actor: std::rc::Rc<str> = hex.as_str().into();
+                self.actors.push(std::rc::Rc::clone(&actor));
+                self.actor_ids.insert(actor, id);
+                id
             };
-            self.positions.insert(version.hash, self.steps.len());
-            self.steps.push(Step::of(version, actor));
+            let position = u32::try_from(self.steps.len()).unwrap_or(u32::MAX);
+            // Only what a step keeps of its entry is read; a continuation is
+            // its gesture's first entry again, read before it in causal order.
+            let message = meta.message.as_deref();
+            let context = match message {
+                Some(text) if text.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
+                    ActionContext::continued_gesture(text)
+                        .and_then(|gesture| self.firsts.get(&(actor, gesture)))
+                        .and_then(|&first| self.version_at(first as usize))
+                        .and_then(|first| first.context)
+                }
+                text => text.and_then(ActionContext::head_of_change_message),
+            };
+            if let Some(gesture) =
+                context
+                    .as_ref()
+                    .and_then(|context| context.gesture)
+                    .filter(|_| {
+                        !message
+                            .is_some_and(|text| text.starts_with(tilo_actions::CONTINUATION_PREFIX))
+                    })
+            {
+                self.firsts.insert((actor, gesture), position);
+            }
+            let mut version = Version {
+                hash: meta.hash,
+                actor: String::new(),
+                time_ms: meta.timestamp.saturating_mul(1000),
+                context,
+                message: message.map(str::to_owned),
+            };
+            match self.positions.entry(prefix(&version.hash)) {
+                std::collections::hash_map::Entry::Vacant(vacant) => {
+                    vacant.insert(position);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    self.colliding.insert(version.hash, position);
+                }
+            }
+            let last = self.steps.last().and_then(|step| step.shared.as_ref());
+            let step = Step::of(&mut version, actor, last);
+            if let Some(message) = version.message.filter(|_| !step.entry) {
+                self.messages.insert(position, message.into_boxed_str());
+            }
+            self.steps.push(step);
         }
         self.heads = heads;
+    }
+
+    /// The change at `position` as a version holding what the index keeps
+    /// of it.
+    fn version_at(&self, position: usize) -> Option<Version> {
+        let step = self.steps.get(position)?;
+        let actor = self
+            .actors
+            .get(step.actor as usize)
+            .map_or("", |actor| actor);
+        let message = u32::try_from(position)
+            .ok()
+            .and_then(|at| self.messages.get(&at))
+            .map(|message| &**message);
+        Some(step.version(actor, message))
     }
 
     /// How many changes the index holds.
@@ -586,15 +674,26 @@ impl StepIndex {
 
     /// Where a change sits in causal order.
     pub fn position(&self, hash: &ChangeHash) -> Option<usize> {
-        self.positions.get(hash).copied()
+        let at = self.positions.get(&prefix(hash)).copied()?;
+        if self
+            .steps
+            .get(at as usize)
+            .is_some_and(|step| step.hash == *hash)
+        {
+            return Some(at as usize);
+        }
+        self.colliding.get(hash).map(|&at| at as usize)
     }
 
     fn kind(&mut self, doc: &AutoCommit, version: &Version) -> Kind {
-        if let Some(kind) = self.kinds.get(&version.hash) {
+        let position = self.position(&version.hash).map(|at| at as u32);
+        if let Some(kind) = position.and_then(|at| self.kinds.get(&at)) {
             return kind.clone();
         }
         let kind = kind_in(doc.committed_document(), version);
-        self.kinds.insert(version.hash, kind.clone());
+        if let Some(at) = position {
+            self.kinds.insert(at, kind.clone());
+        }
         kind
     }
 
@@ -616,7 +715,7 @@ impl StepIndex {
         let mut steps: Vec<Vec<Version>> = Vec::new();
         let mut gesture = None;
         for index in (0..self.steps.len()).rev() {
-            let Some(version) = self.steps.get(index).map(Step::version) else {
+            let Some(version) = self.version_at(index) else {
                 continue;
             };
             if !owns(&version) {
@@ -678,7 +777,7 @@ impl StepIndex {
             if targets.len() >= limit {
                 break;
             }
-            let Some(version) = self.steps.get(index).map(Step::version) else {
+            let Some(version) = self.version_at(index) else {
                 continue;
             };
             if !owns(&version) {
@@ -1064,6 +1163,50 @@ pub fn checkpoints(doc: &AutoCommit) -> Vec<Checkpoint> {
 /// Names what a version can be, and the checkpoints there are.
 pub fn resolve(doc: &AutoCommit, version: &str) -> Result<Vec<ChangeHash>, String> {
     let version = version.trim();
+    // Full hashes are immutable identities, even if a mutable checkpoint has
+    // the same name. Abbreviated hashes retain the legacy name-first behavior.
+    if version.len() == 64 && version.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        let hash = version
+            .parse::<ChangeHash>()
+            .map_err(|error| error.to_string())?;
+        return doc
+            .get_change_by_hash(&hash)
+            .map(|_| vec![hash])
+            .ok_or_else(|| "The exact version contains an unknown change.".into());
+    }
+    // Exact frontiers returned by historical reads can have concurrent heads.
+    // Only full hashes are accepted here: abbreviated compound frontiers would
+    // otherwise require ambiguous prefix resolution for every component.
+    if version.contains('+') {
+        let parts: Vec<&str> = version.split('+').collect();
+        if parts.len() > 64 {
+            return Err("A causal frontier has at most 64 heads.".into());
+        }
+        let mut heads = Vec::with_capacity(parts.len());
+        for part in parts {
+            if part.len() != 64 || !part.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err("A causal frontier needs full change hashes separated by +.".into());
+            }
+            let hash = part
+                .parse::<ChangeHash>()
+                .map_err(|error| error.to_string())?;
+            if heads.contains(&hash) || doc.get_change_by_hash(&hash).is_none() {
+                return Err("A causal frontier contains a duplicate or unknown head.".into());
+            }
+            heads.push(hash);
+        }
+        heads.sort_unstable();
+        let frozen = doc
+            .clone()
+            .fork_at(&heads)
+            .map_err(|error| error.to_string())?;
+        let mut canonical = frozen.base_heads();
+        canonical.sort_unstable();
+        if canonical != heads {
+            return Err("A causal frontier must not include an ancestor of another head.".into());
+        }
+        return Ok(heads);
+    }
     if let Some(found) = checkpoints(doc)
         .into_iter()
         .find(|checkpoint| checkpoint.name == version)
@@ -1186,6 +1329,147 @@ pub fn restore(
             format!("{ids:?} already match that version, or no item has those ids.")
         });
     }
+    Ok(written)
+}
+
+/// Maximum number of exact paths accepted by [`restore_paths`].
+pub const MAX_RESTORE_PATHS: usize = 256;
+/// Maximum byte length of one exact restore path.
+pub const MAX_RESTORE_PATH_BYTES: usize = 1024;
+
+/// Restore only the exact paths listed by [`changed_items`], writing forward
+/// through the same patch machinery as [`restore`]. A root path selects its
+/// entire value (including every descendant); `map/id` selects only that entry.
+/// Unlike `restore`, an empty selection never means the whole document.
+///
+/// Legacy history paths are not escaped. This API therefore refuses components
+/// containing `/` or `~`, and refuses ambiguous legacy paths rather than guessing.
+/// Bookkeeping cannot be selected. All paths must name differing items in this
+/// comparison; invalid selections are rejected together before any patch writes.
+/// Duplicate paths are harmless. Returns the number of patches written, not items.
+/// The caller owns the open transaction and its attribution/commit, as for `restore`.
+///
+/// # Errors
+/// Refuses empty/oversized selections, unknown heads, invalid, ambiguous or
+/// unchanged paths, entries whose collection was replaced (select the listed
+/// whole root instead), and comparisons with no applicable patches.
+pub fn restore_paths(
+    doc: &mut AutoCommit,
+    target_heads: &[ChangeHash],
+    paths: &[String],
+) -> Result<usize, String> {
+    if doc.pending_ops() != 0 {
+        return Err("Finish pending edits before restoring exact history paths.".into());
+    }
+    if paths.is_empty() || paths.len() > MAX_RESTORE_PATHS {
+        return Err(format!(
+            "Select 1 to {MAX_RESTORE_PATHS} exact history paths."
+        ));
+    }
+    let mut selected = HashSet::new();
+    for path in paths {
+        let parts: Vec<&str> = path.split('/').collect();
+        if path.len() > MAX_RESTORE_PATH_BYTES
+            || parts.len() > 2
+            || parts
+                .iter()
+                .any(|part| part.is_empty() || part.contains('~'))
+            || parts[0].starts_with(BOOKKEEPING_PREFIX)
+        {
+            return Err(format!("Invalid exact history path {path:?}."));
+        }
+        selected.insert((
+            parts[0].to_owned(),
+            parts.get(1).map(|part| (*part).to_owned()),
+        ));
+    }
+    if target_heads
+        .iter()
+        .any(|head| doc.get_change_by_hash(head).is_none())
+    {
+        return Err("The target version contains an unknown change.".into());
+    }
+    let current = doc.get_heads();
+    let patches = doc.diff(&current, target_heads);
+    let available = changed_items(doc, &current, target_heads);
+    for (root, entry) in &selected {
+        if entry.is_none() || selected.contains(&(root.clone(), None)) {
+            continue;
+        }
+        // Restoring an entry must not recreate or replace its collection: that
+        // would either hide the entry's writes or overwrite unselected siblings.
+        let live = doc
+            .get_at(automerge::ROOT, root.as_str(), &current)
+            .ok()
+            .flatten();
+        let past = doc
+            .get_at(automerge::ROOT, root.as_str(), target_heads)
+            .ok()
+            .flatten();
+        if !matches!((live, past),
+            (Some((automerge::Value::Object(ObjType::Map), live)),
+             Some((automerge::Value::Object(ObjType::Map), past))) if live == past)
+        {
+            return Err(format!(
+                "Select the whole root {root:?} to restore a replaced collection."
+            ));
+        }
+    }
+    for path in paths {
+        if !available.iter().any(|item| item.path == *path) {
+            return Err(format!(
+                "No differing item has exact history path {path:?}."
+            ));
+        }
+        // A root key containing a slash can collide with a collection entry in
+        // the legacy display. Never let that display choose between the two.
+        if patches.iter().filter_map(item_of).any(|(root, entry)| {
+            let legacy = entry
+                .as_ref()
+                .map_or_else(|| root.clone(), |key| format!("{root}/{key}"));
+            legacy == *path
+                && (root.contains(['/', '~']) || entry.is_some_and(|key| key.contains(['/', '~'])))
+        }) {
+            return Err(format!("Ambiguous legacy history path {path:?}."));
+        }
+    }
+    let keep = |patch: &Patch| {
+        if is_bookkeeping(patch) {
+            return false;
+        }
+        let Some(root) = root_key(patch) else {
+            return false;
+        };
+        if selected.contains(&(root.to_owned(), None)) {
+            return true;
+        }
+        // Use the actual second path component, not a bare key anywhere
+        // below the root (or a map key found inside a root sequence).
+        let entry = match patch.path.get(1) {
+            Some((_, Prop::Map(key))) => Some(key),
+            None if patch.path.len() == 1 => match &patch.action {
+                PatchAction::PutMap { key, .. } | PatchAction::DeleteMap { key } => Some(key),
+                _ => None,
+            },
+            Some(_) | None => None,
+        };
+        entry.is_some_and(|key| selected.contains(&(root.to_owned(), Some(key.clone()))))
+    };
+    // Keep the complete logical stream for sequence index translation. Do not
+    // suppress equal scalars in deleted objects: their parents are recreated
+    // under fresh ids, and those children must be populated again.
+    let patches: Vec<(Patch, bool)> = patches
+        .into_iter()
+        .map(|patch| {
+            let apply = keep(&patch);
+            (patch, apply)
+        })
+        .collect();
+    let written = patches.iter().filter(|(_, apply)| *apply).count();
+    if written == 0 {
+        return Err("The selected paths have no applicable restore patches.".into());
+    }
+    crate::state::write_selected_patches(doc, patches, target_heads, &current);
     Ok(written)
 }
 

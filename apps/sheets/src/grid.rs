@@ -646,9 +646,6 @@ impl Grid {
     pub fn mark_drawn(&mut self) {
         self.dirty = false;
     }
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
 
     pub fn active(&self) -> Addr {
         self.active
@@ -922,18 +919,6 @@ impl Grid {
             r1 = r1.max(d);
         }
         ((c0, r0), (c1, r1))
-    }
-
-    /// Every selected range as `(top_left, bottom_right)`, inclusive and
-    /// normalized: what a style applies to, one rectangle at a time.
-    pub fn selection_ranges(&self) -> Vec<(Addr, Addr)> {
-        self.all_ranges()
-            .into_iter()
-            .map(|range| {
-                let (c0, r0, c1, r1) = range.bounds();
-                ((c0, r0), (c1, r1))
-            })
-            .collect()
     }
 
     /// Whether a cell's text is bold.
@@ -1715,15 +1700,13 @@ impl Grid {
                 // cell; a subsequent drag grows it into a new rectangle.
                 self.extra_ranges.push(self.current_range());
                 self.anchor = addr;
-                self.active = addr;
-            } else if shift {
-                // Extend the live range; keep its anchor and any other ranges.
-                self.active = addr;
-            } else {
+            } else if !shift {
                 self.extra_ranges.clear();
                 self.anchor = addr;
-                self.active = addr;
             }
+            // Shift extends the live range: it keeps its anchor and any other
+            // ranges, and only the active cell moves.
+            self.active = addr;
             self.selecting = true;
             self.dirty = true;
             return true;

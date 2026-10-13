@@ -181,7 +181,7 @@ pub enum PresetMutationError {
 }
 
 /// The app id the workspace's own resources are published under.
-pub const WORKSPACE_GOVERNANCE_APP_ID: &str = "tilo.workspace";
+pub const WORKSPACE_GOVERNANCE_APP_ID: &str = tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER;
 /// Granting, published on the room: a grant of the room's tree to someone.
 pub const GRANT_ACTION_ID: &str = "grant";
 /// Revoking one grant.
@@ -215,7 +215,7 @@ pub fn governance_of(action: &str) -> Option<&'static str> {
 /// room `room`: the room itself (resource kind [`roles::ROOM_KIND`]).
 #[must_use]
 pub fn governance_resource_id(room: &RoomId) -> String {
-    format!("workspace.permissions:{room}")
+    tilo_actions::remote::room_governance_resource(&room.to_string())
 }
 
 /// A role's stable name, as a collaborator row records it
@@ -224,6 +224,7 @@ pub fn governance_resource_id(room: &RoomId) -> String {
 pub fn role_id(role: Role) -> &'static str {
     match role {
         Role::Owner => "owner",
+        Role::Moderator => "moderator",
         Role::Editor => "editor",
         Role::Commenter => "commenter",
         Role::Viewer => "viewer",
@@ -254,12 +255,9 @@ pub fn context_at(now: u64) -> Context<'static> {
     Context::at_secs(now).in_session(session_id())
 }
 
-/// The answer the grant sets of the tasks an invocation works in give for an
-/// action of `kind` at `node`, among `tasks` under `policy`: the task the
-/// invocation names (`named`), and every task `agent` (an agent's id, without
-/// its `agent:` prefix) is running — so a run is held to its task whether or
-/// not its calls say so. The least of them; `None` when none of those tasks
-/// carries a grant set.
+/// The named task's answer, never an intersection of unrelated agent tasks.
+/// Native execution additionally requires its owner-minted exact run ceiling.
+/// `None` means no named task grant set; it is not execution authorization.
 #[must_use]
 pub fn task_bound(
     policy: &RoomPolicy,
@@ -268,17 +266,15 @@ pub fn task_bound(
     (node, kind): (&TreePath, ActionKind),
     cx: &Context<'_>,
 ) -> Option<Answer> {
-    let running = tasks.iter().filter(|task| {
-        matches!(
-            task.status,
-            crate::WorkspaceTaskStatus::InProgress | crate::WorkspaceTaskStatus::Waiting
-        ) && agent.is_some_and(|agent| task.assigned_agent.as_deref() == Some(agent))
-    });
-    named
-        .into_iter()
-        .chain(running.map(|task| task.id.as_str()))
-        .filter_map(|task| policy.task_answer(task, node, kind, cx))
-        .min()
+    let task = named?;
+    if let Some(agent) = agent
+        && !tasks
+            .iter()
+            .any(|value| value.id == task && value.assigned_agent.as_deref() == Some(agent))
+    {
+        return Some(Answer::Deny);
+    }
+    policy.task_answer(task, node, kind, cx)
 }
 
 /// This process's session, which a grant given "until log out" names.
@@ -588,24 +584,6 @@ impl Workspace {
             .apply(actor, &authority, change, &context_at(now), false)
     }
 
-    /// Apply a governance change made through `authority` (a person, or a
-    /// delegation acting for `actor`). `approved` says the host witnessed
-    /// the person's approval where the answer asks first.
-    ///
-    /// # Errors
-    /// See [`RoomPolicy::apply`].
-    pub fn govern_with_at(
-        &mut self,
-        actor: &str,
-        authority: &Authority<'_>,
-        change: Change,
-        now: u64,
-        approved: bool,
-    ) -> Result<(), Refusal> {
-        self.policy
-            .apply(actor, authority, change, &context_at(now), approved)
-    }
-
     /// Admit `agent` to the room with `preset`'s grants, given by
     /// `granted_by`, without a governance check, for a host installing the
     /// room's own state. The ids recorded.
@@ -846,20 +824,6 @@ impl Workspace {
         agents
     }
 
-    /// The answer task `task`'s grant set gives for an action of `kind` at
-    /// `node`; `None` when the task carries no grant set. Work done in the
-    /// task is bounded by it, as an agent is bounded by its delegation.
-    #[must_use]
-    pub fn task_answer_at(
-        &self,
-        task: &str,
-        node: &TreePath,
-        kind: ActionKind,
-        now: u64,
-    ) -> Option<Answer> {
-        self.policy.task_answer(task, node, kind, &context_at(now))
-    }
-
     /// What a launch into this room hands its apps at `now`: the apps the
     /// room's grants make authors, and the room's sandbox.
     #[must_use]
@@ -887,30 +851,6 @@ impl Workspace {
     #[must_use]
     pub fn app_is_author_at(&self, app: &str, now: u64) -> bool {
         self.policy.app_authors(app, &context_at(now))
-    }
-
-    /// The answer the grant sets of the tasks an invocation works in give
-    /// for an action of `kind` at `node`: the task the invocation names, and
-    /// every task `agent` (an agent's id, without its `agent:` prefix) is
-    /// running here — so a run is held to its task whether or not its calls
-    /// say so. The least of them; `None` when none of those tasks carries a
-    /// grant set.
-    #[must_use]
-    pub fn task_bound_at(
-        &self,
-        agent: Option<&str>,
-        named: Option<&str>,
-        node: &TreePath,
-        kind: ActionKind,
-        now: u64,
-    ) -> Option<Answer> {
-        task_bound(
-            &self.policy,
-            &self.tasks,
-            (agent, named),
-            (node, kind),
-            &context_at(now),
-        )
     }
 
     /// The role a person with `agent`'s reach in the room would hold: what

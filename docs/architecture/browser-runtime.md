@@ -129,8 +129,8 @@ time, so they are not compile blockers; they are listed under run-time gaps.
 | 3 | tokio `net` | `runtime-portal` | Moved to `[target.'cfg(unix)']`; only the Unix socket path used it, non-Unix already returned `NotAvailable` | fixed |
 | 4 | tokio `rt-multi-thread` | `tilo-rt` | `daemon()` runtimes are not built on wasm; `app()`, `cpu()` and `io` remain. Positioned I/O gains an `Unsupported` arm | fixed |
 | 5 | OpenMLS refuses wasm without `js` | `channel-crypto` | wasm target dep `openmls/js`; required `getrandom` 0.4.1 → 0.4.3 in `Cargo.lock` | fixed |
-| 6 | `ring`/`rustls` (pairing TLS in `tilo-identity-ceremony`) | `tilo-ui` | As in PR 541: `rustls` and `private-fs` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
-| 7 | No private-file platform | `private-fs` | Third `platform` arm refusing with `Unsupported` | fixed |
+| 6 | `ring`/`rustls` (pairing TLS in `tilo-identity-ceremony`) | `tilo-ui` | As in PR 541: `rustls` and `tilo_files::native::private` are native-only dependencies; `remote_call` answers `None` in the browser. The bundle no longer contains `ring` or C code | fixed |
+| 7 | No private-file platform | `tilo_files::native::private` | Third `platform` arm refusing with `Unsupported` | fixed |
 | 8 | `libc::clock_gettime`; `Url::from_file_path` | `media` | Non-Unix `monotonic_now_ns` reports unreadable (0), as a failed `clock_gettime` did; `path_to_file_uri` returns `Unsupported` | fixed |
 | 9 | `Url::to_file_path` | `tilo-host::portal::to_local_path` | Non-Unix/Windows hosts have no local paths: `None` | fixed |
 | 10 | `web_time::SystemTime` ≠ `std::time::SystemTime` on wasm | `tilo-ui` (settings stamps, signed ops, identity flow) | `ui::time::{to_std, from_std}` — identity on native, epoch arithmetic on the web — at the six crossings | fixed |
@@ -456,6 +456,29 @@ proof of possession) to `POST /peer/v1/certify`, then long-polls
 - The host never holds the root. Revocation is enforced at request, at
   issuance and at every later handshake.
 
+The same pending set pairs any member's devices, not only the host owner's.
+A request for another person's root is queued when that root is a member of
+a room on the host. The approver is then the person's own browser, which
+holds their root: it sends a root-signed `MemberApproval` (`tilo member
+approval v1\0`, the root, the time and the command, fresh within five
+minutes) to `POST /peer/v1/certify/approve`. With it the person can list
+only their own pending requests and answer only those. The host checks the
+issued certificate as above and hands it to the new device. It relays and
+nothing more: the root signs the certificate, and the two devices share no
+other server.
+
+In the desktop this is **Pair a new device** (`identity-actions.mjs`). It
+copies a link that opens the current workspace with a `pair` link secret
+naming the person (`web-routing.md` §6.2). The new device asks for a
+certificate and shows its pairing code. The person's device then offers a
+banner that names the code, and choosing the banner approves the device.
+In a governed room the certificate alone admits no device. So where the
+host has an admission door, the new device then joins as that person:
+`<admission>join` pre-admits the root and the device redeems the invitation
+with its paired certificate (`askToJoinAs`). The membership kept for the
+host is marked `paired`, so later visits reconnect as that person. A paired
+device holds no root, so it offers no identity actions.
+
 ### A browser-held root
 
 A person with only a browser holds their user root in the page
@@ -475,6 +498,51 @@ the root public key and the credential. `tilo_user_identity::root_envelope`
 reads and writes the same format natively. Unlocking unwraps straight into a
 non-extractable `CryptoKey`; the root never exists in the clear outside the
 page's memory.
+
+The first visit to the Tilo app makes such a person at once, with no
+passkey and nothing to type (`browserIdentity()`; `browserPerson()` is what
+every join asks for). Its root is held in IndexedDB wrapped under a
+non-extractable AES-GCM key stored as the `CryptoKey` itself, so it never
+leaves the browser; the page also calls `navigator.storage.persist()`. It is
+a real identity from the start: it joins and owns
+workspaces like any other, and a host that prunes it lets the same person
+join again. Keeping it only adds wraps to its envelope, through the
+desktop's host actions (`identity-actions.mjs`: desktop search, and a banner
+when the person first posts or creates something, sets their name, or when
+`navigator.storage.persisted()` is false):
+
+- **Keep this identity**: one passkey whose user handle is the root public
+  key and whose PRF input is fixed (SHA-256 of `tilo-seal/v1/user-root-prf`).
+- **Save a recovery key**: to the password manager (`PasswordCredential`)
+  where the browser has one, else as a file.
+- **Sign in with a passkey**: one discoverable assertion names the root and
+  yields the PRF output; the envelope comes from a host that keeps it; the
+  root is then kept in this browser instead.
+- **Set your name**: the name others see in history and presence, applied
+  live through `peer.setDisplayName` and kept as the person's profile on
+  every host they joined (below), so each of their devices comes up with it.
+  A name is at most 128 bytes of UTF-8, as hosts keep it; a host's refusal
+  is said in the form, which stays open.
+  Choosing one also offers to keep the person it names.
+- **Pair a new device**: see "Device certification" above.
+
+Every host the person is a member of keeps the envelope (ciphertext only):
+`POST /peer/v1/envelope` `{envelope, issued_at_ms, signature}` (the root
+signs `tilo root envelope v1\0`, the time as u64 LE, the envelope's JSON;
+members only, newer statements only) and `POST /peer/v1/envelope/fetch`
+with the root key as hex, answering `{"envelope": …}`, or `{"envelope":
+null}` when none is kept (a new person, the usual case).
+
+The person's profile travels the same way: `POST /peer/v1/profile`
+`{profile, issued_at_ms, signature}`, where `profile` is the JSON text of
+`{version: 1, user_public_key, display_name}` and the root signs
+`tilo person profile v1\0`, the time and that text; `POST
+/peer/v1/profile/fetch` answers `{"profile": …}`, or `{"profile": null}`. A page that joined asks the hosts it
+knows for the profile (`syncProfile` in `identity-actions.mjs`): a kept one
+wins and becomes this browser's name for the person, so a paired device or a
+passkey sign-in on a new browser shows the name chosen elsewhere; without
+one, a page holding the root publishes the name it chose. Choosing a name
+publishes it to every host the person joined.
 
 Everything below is exported by `root-identity.mjs` and re-exported by
 `peer.mjs`. The identity created or unlocked last is the page's current one
@@ -1102,7 +1170,7 @@ browser runtime. Parts that work on `main`'s APIs were ported, renamed
 | `scripts/build.sh` | `scripts/build.sh` | MoQ bundle dropped; optional `--wasm-opt`; fonts from the manifest's `browser_startup` flags |
 | `tilo-ui` `ime.rs`, `headless.rs` frame API, `image_store.rs` host factory | same files | Ported onto `main`'s `FrameHarness`; 541-only system-search and caller-palette branches left out |
 | `tilo-ui` browser fonts (`font_catalog.rs`, `text_render.rs`, `query_text.rs`, `name_field.rs`, `rich_text_editor.rs`, manifest, `tilo-font-catalog`) | same files | Patch applied; `richtext.rs` browser-emoji entry points hand-ported without 541's paragraph chunking and layout reuse |
-| `tilo-ui` rustls/`private-fs` exclusion, `tilo-user-identity` `persist` exclusion, `channel-crypto` `openmls/js`, wasm entropy deps | same | Ported; `tilo-ui` gating otherwise stays feature-based (`native`/`broker-transport` add `tokio/full`) |
+| `tilo-ui` rustls/`tilo_files::native::private` exclusion, `tilo-user-identity` `persist` exclusion, `channel-crypto` `openmls/js`, wasm entropy deps | same | Ported; `tilo-ui` gating otherwise stays feature-based (`native`/`broker-transport` add `tokio/full`) |
 
 ## Deliberately not taken
 
@@ -1150,6 +1218,11 @@ export function openProfileStorage(profile: string, device: string, options?: {s
   release(): Promise<void>;   // the last release flushes, then frees the lock; keeps custody on failure
 }>;
 ```
+
+How a page's URL selects `app`, `room` and the resource it opens, desktop or
+full-tab app mode, Back and Forward, and how links are shared is
+[web-routing.md](web-routing.md); the page translates a link into these
+options and the navigation `open` command, never the other way round.
 
 Rust state kept in the profile (the relay peer's) writes, inside
 `tilo-browser-runtime`, to `crate::storage::store(profile, device)` under a

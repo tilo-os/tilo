@@ -19,6 +19,42 @@ fn native_focus_order_enumerates_history_once() {
 }
 
 #[test]
+fn native_focus_order_walks_history_ownership_once() {
+    use crate::history_mode::host::OWNERSHIP_WALKS;
+    let walks = || OWNERSHIP_WALKS.with(std::cell::Cell::get);
+    let ids: Vec<String> = (0..2_000).map(|row| format!("row-{row}")).collect();
+    let root = ids.iter().fold(crate::widget::Column::new(), |column, id| {
+        column.push(Box::new(crate::widget::Button::new(id, "Row")))
+    });
+    let mut app = app_with_root(State::new(), Box::new(root));
+    layout(&mut app);
+    // History closed: the live rows, then History's own controls last.
+    OWNERSHIP_WALKS.with(|count| count.set(0));
+    app.update_focusable_order();
+    assert!(
+        app.focusable_order.len() > 2_000,
+        "every live row and History's toggle take focus"
+    );
+    assert_eq!(walks(), 1, "one ownership walk per recomputation");
+    // History open: it captures input, so only its own controls take focus.
+    let history = named(&mut app, "History");
+    app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
+    layout(&mut app);
+    assert!(app.history.as_ref().unwrap().captures_input());
+    OWNERSHIP_WALKS.with(|count| count.set(0));
+    app.update_focusable_order();
+    assert_eq!(walks(), 1, "one ownership walk per recomputation");
+    let history = app.history.as_ref().unwrap();
+    assert!(!app.focusable_order.is_empty());
+    assert!(
+        app.focusable_order
+            .iter()
+            .all(|&node| history.owns_node(node, &app.layout.taffy)),
+        "only History's controls take focus while it captures input"
+    );
+}
+
+#[test]
 fn native_focus_order_keeps_live_rows_before_history_controls() {
     let root = crate::widget::Column::new()
         .push(Box::new(crate::widget::Button::new("first-row", "First")))
@@ -3549,6 +3585,161 @@ fn native_owned_remote_merge_is_not_republished_as_an_echo() {
         "unsent local changes survive the merge into the next publication"
     );
 }
+/// A committed read hands the owner history the native owner already holds:
+/// merging it must not make the replica publish it back, which cost the
+/// owner one more commit and record write per remote edit.
+#[cfg(feature = "broker-transport")]
+#[test]
+fn native_owned_committed_read_is_not_republished_as_an_echo() {
+    let mut fixture = RoutedOwners::new();
+    let id = fixture.bindings[0].checkout.id.clone();
+    let route = fixture.bindings[0].broker_route().unwrap();
+    let sent = |fixture: &RoutedOwners| {
+        fixture
+            .app
+            .document_routes
+            .sent
+            .iter()
+            .filter(|(sent, _)| *sent == route)
+            .map(|(_, request)| request.clone())
+            .collect::<Vec<_>>()
+    };
+    let heads = |fixture: &RoutedOwners| {
+        fixture
+            .records
+            .read_checked(&id, |doc| doc.base_heads())
+            .unwrap()
+    };
+    let commit_local = |fixture: &RoutedOwners, value: &str| {
+        fixture
+            .records
+            .with_history(&id, |doc, history| {
+                doc.put(ROOT, "local", value).unwrap();
+                history.commit_action_authored(
+                    doc,
+                    None,
+                    None,
+                    Some(fixture.bindings[0].author.clone()),
+                );
+            })
+            .unwrap();
+    };
+    // A remote change as a committed read: only the changes since this
+    // replica's heads.
+    let committed = |fixture: &RoutedOwners, name: &str| {
+        let mut doc = fixture.records.read_checked(&id, Clone::clone).unwrap();
+        let base = doc.base_heads();
+        doc.set_actor(automerge::ActorId::from(b"committed-peer".as_slice()));
+        doc.put(ROOT, name, "remote").unwrap();
+        doc.commit();
+        crate::collaboration::CommittedDocument::for_test(doc.save_after(&base), Some(base))
+    };
+
+    commit_local(&fixture, "initial");
+    let deadline = tilo_test_env::hang_deadline();
+    while sent(&fixture).is_empty() {
+        fixture.app.publish_owned_documents();
+        assert!(
+            crate::time::now() < deadline,
+            "route never became publishable"
+        );
+        std::thread::sleep(crate::time::Duration::from_millis(5));
+    }
+    fixture.app.document_routes.sent.clear();
+    // The same record is also the app's primary document, published on its
+    // own frontier.
+    fixture.app.actions.bound_broker_route_for_test =
+        Some(crate::collaboration::PrimaryRouteWitness {
+            route: route.clone(),
+            epoch: uuid::Uuid::new_v4(),
+        });
+    let primary =
+        |fixture: &mut RoutedOwners| fixture.app.pending_primary_document_delta().unwrap();
+    let (_, published) = primary(&mut fixture);
+    fixture.app.advance_primary_document(published);
+    assert!(primary(&mut fixture).0.is_empty());
+    // Binding the primary document has the route republish its record
+    // whole once; after that nothing is pending on either.
+    fixture.app.publish_owned_documents();
+    fixture.app.document_routes.sent.clear();
+    fixture.app.publish_owned_documents();
+    assert!(sent(&fixture).is_empty(), "fully published before any read");
+
+    for edit in 0..3 {
+        let name = format!("committed-{edit}");
+        let read = committed(&fixture, &name);
+        fixture
+            .app
+            .queue_committed_document(route.clone(), read.clone());
+        assert!(read.was_applied(), "the owner merged the committed read");
+        assert_eq!(fixture.value(0, &name).as_deref(), Some("remote"));
+        fixture.app.publish_owned_documents();
+        assert!(
+            sent(&fixture).is_empty(),
+            "a committed remote change must not be republished, got {:?}",
+            sent(&fixture)
+        );
+        assert!(
+            primary(&mut fixture).0.is_empty(),
+            "nor as the primary document"
+        );
+    }
+
+    // A later local edit publishes exactly its own change.
+    let before = heads(&fixture);
+    commit_local(&fixture, "after committed reads");
+    fixture.app.publish_owned_documents();
+    let expected = fixture
+        .records
+        .read_checked(&id, |doc| doc.clone().save_after(&before))
+        .unwrap();
+    match &sent(&fixture)[..] {
+        [
+            CollabRequest::Document {
+                mutation: collab_types::DocumentMutation::Incremental(bytes),
+                ..
+            },
+        ] => assert_eq!(bytes, &expected),
+        other => panic!("expected exactly the local incremental, got {other:?}"),
+    }
+    fixture.app.document_routes.sent.clear();
+    let (delta, published) = primary(&mut fixture);
+    assert_eq!(delta, expected, "the primary document publishes it too");
+    fixture.app.advance_primary_document(published);
+
+    // Unsent local history interleaved with a committed read is still
+    // published, together with what the read merged.
+    let before = heads(&fixture);
+    commit_local(&fixture, "unsent before committed read");
+    let read = committed(&fixture, "interleaved-committed");
+    fixture
+        .app
+        .queue_committed_document(route.clone(), read.clone());
+    assert!(read.was_applied());
+    fixture.app.publish_owned_documents();
+    let expected = fixture
+        .records
+        .read_checked(&id, |doc| doc.clone().save_after(&before))
+        .unwrap();
+    match &sent(&fixture)[..] {
+        [
+            CollabRequest::Document {
+                mutation: collab_types::DocumentMutation::Incremental(bytes),
+                ..
+            },
+        ] => assert_eq!(
+            bytes, &expected,
+            "unsent local changes survive the committed merge into the next publication"
+        ),
+        other => panic!("expected one incremental with the unsent local change, got {other:?}"),
+    }
+    assert_eq!(
+        primary(&mut fixture).0,
+        expected,
+        "and the primary document keeps them too"
+    );
+}
+
 #[test]
 fn native_history_entry_pointer_captures_before_discard() {
     let probe =
@@ -4475,9 +4666,6 @@ impl crate::widget::AppWidget for ComponentControlOwner {
     }
     fn app_icon(&self) -> crate::widget::IconDescriptor {
         crate::widget::IconDescriptor::Glyph("C")
-    }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
     }
 }
 
@@ -6816,9 +7004,6 @@ impl crate::widget::AppWidget for CustodyControlsRoot {
     }
     fn app_icon(&self) -> crate::widget::IconDescriptor {
         crate::widget::IconDescriptor::Glyph("C")
-    }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
     }
 }
 

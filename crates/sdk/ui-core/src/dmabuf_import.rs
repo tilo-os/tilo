@@ -621,10 +621,6 @@ impl<'a> VulkanImporter<'a> {
     /// Import one plane as a `wgpu::Texture`.
     // Keeping acquisition and cleanup together makes the ownership transfer to
     // Vulkan auditable; splitting this sequence would obscure its early returns.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "keeping acquisition and cleanup together makes every imported-fd early return auditable"
-    )]
     unsafe fn import_plane(
         &self,
         plane: &PlaneRef<'_>,

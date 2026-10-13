@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Per-app size budgets for the shipped tapps, and the fleet gate over them.
 
-"Apps are ~2 MB" is a marketed claim. The KPI behind it ("Performance and cost
-KPIs", Linear af384e878293, "App package size") is the bytes of the signed
+"Apps are ~2 MB" is a marketed claim. The KPI behind it ("App package size")
+is the bytes of the signed
 `.tapp` a person downloads, per architecture: median <= 2 MB, p90 <= 4 MB and
 max <= 6 MB, ratcheted per app. Three gates hold it:
 
@@ -33,7 +33,7 @@ pull request.
 measurement plus `headroom`, rounded up to 64 KiB. `raises/<change>.toml`
 adds bytes to apps or fleet ceilings, one file per change, so concurrent
 changes never edit the same line. When an app shrinks, `measure` and `fleet`
-print the lower budget to commit. DEVELOPMENT.md ("App package size") says how
+print the lower budget to commit. docs/measurements/app-package-size.md says how
 to raise a budget.
 
 The population is the default collection's apps: what Release / apps builds
@@ -201,7 +201,7 @@ def run_label() -> str:
 
 def raise_hint(over: dict[str, int], arch: str) -> str:
     lines = [f"A deliberate growth adds one raise file for the change, {DIRECTORY}/raises/<change>.toml",
-             "(the other architecture's job prints its own lines; DEVELOPMENT.md, \"App package size\"):",
+             "(the other architecture's job prints its own lines; docs/measurements/app-package-size.md):",
              '    reason = "<why these apps grew, at least 20 characters>"',
              f"    run = {run_label()}"]
     for app, added in sorted(over.items()):
@@ -433,7 +433,7 @@ def increases(before: Budget, after: Budget, new_raises: set[str]) -> list[str]:
         problems.append("headroom raised")
     for stat, value in after.targets.items():
         if value > before.targets.get(stat, value):
-            problems.append(f"KPI target {stat} raised; the KPI document sets it")
+            problems.append(f"KPI target {stat} raised; the KPI sets it")
     for kind, old, new in (("apps", before.app_totals(), after.app_totals()),
                            ("fleet", before.fleet_ceilings(), after.fleet_ceilings())):
         allowance = after.added(kind, new_raises)

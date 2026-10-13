@@ -16,6 +16,7 @@ import adapters  # noqa: E402
 import compare  # noqa: E402
 
 GATE = ROOT / "crates/system/fs/tests/performance_gate.rs"
+FOOTPRINT = ROOT / "crates/system/fs/tests/document_media_footprint.rs"
 ENV = {"commit": "a" * 40, "profile": "dev", "renderer": "none", "virtualization": "kvm",
        "runner": "runner", "hardware": "test cpu", "started_at": "2026-10-09T01:15:00Z"}
 
@@ -45,6 +46,17 @@ class FsGate(unittest.TestCase):
         self.assertEqual((cold.n, cold.unit, cold.p50, cold.max), (3, "ms", 128.85, 171.8))
         self.assertEqual(cold.meta, {"runs": "3"})
 
+    def test_footprint_lines_keep_their_unit(self):
+        heap = "PERF document-media-upload-64m-peak-heap: {:.3} MiB (SLO <= 16.000 MiB)"
+        logs = [gate_log(1.0) + "\n" + heap.format(9.5), gate_log(1.0) + "\n" + heap.format(10.5)]
+        by_kpi = {item.kpi: item for item in adapters.fs_gate(logs, ENV)}
+        upload = by_kpi["fs.document-media-upload-64m-peak-heap"]
+        self.assertEqual((upload.n, upload.unit, upload.max), (2, "MiB", 10.5))
+        self.assertEqual(by_kpi["fs.metadata-warm-8x-1000-list"].unit, "ms")
+        mixed = gate_log(1.0) + "\nPERF metadata-warm-8x-1000-list: 1.000 MiB (SLO <= 2.000 MiB)"
+        with self.assertRaises(ValueError):
+            adapters.fs_gate([mixed], ENV)
+
     def test_a_log_without_gate_lines_fails(self):
         with self.assertRaisesRegex(ValueError, "TILO_FS_PERF_GATE"):
             adapters.fs_gate(["collaborative FS performance gate disabled"], ENV)
@@ -62,11 +74,29 @@ class FsGate(unittest.TestCase):
             name, unit, value = match.groups()
             slos[name] = float(value) * (1000.0 if unit == "secs" else 1.0)
         reports = dict(re.findall(r'report\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*(\w+_SLO),?\s*\)', source))
-        self.assertEqual(len(reports), 11, reports)
+        self.assertEqual(len(reports), 12, reports)
+        # Gated against a baseline of the same run: compared night to night,
+        # its ceiling a reported target the gate does not assert.
+        relative = dict(re.findall(
+            r'report_relative\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*\([^)]*\),\s*(\w+),?\s*\)', source))
+        self.assertEqual(relative, {"document-media-cold-64m-tail-4m-read": "MEDIA_TAIL_READ_SHARE_OF_WHOLE_LOAD"})
+        # The daemon heap KPIs of the footprint test, in MiB.
+        footprint = FOOTPRINT.read_text()
+        for match in re.finditer(r"const (\w+_HEAP_SLO): usize = (\d+)((?: \* 1024)+);", footprint):
+            name, value, factors = match.groups()
+            slos[name] = float(value) * 1024 ** factors.count("1024") / (1024 * 1024)
+        heap = dict(re.findall(r'report_heap\(\s*"([a-z0-9-]+)",\s*[^,]+,\s*(\w+_HEAP_SLO),?\s*\)', footprint))
+        self.assertEqual(len(heap), 3, heap)
+        reports.update(heap)
         budgets = compare.load_budgets(compare.BUDGETS)
         expected = {f"fs.{name}": slos[constant] for name, constant in reports.items()}
-        got = {kpi: entry["max"] for kpi, entry in budgets.kpis.items() if kpi.startswith("fs.")}
+        got = {kpi: entry["max"] for kpi, entry in budgets.kpis.items()
+               if kpi.startswith("fs.") and entry.get("enforce")}
         self.assertEqual(got, expected)
+        for name, constant in relative.items():
+            entry = budgets.kpis[f"fs.{name}"]
+            self.assertFalse(entry.get("enforce", False), name)
+            self.assertEqual(entry["source"], constant, name)
         for kpi, constant in ((f"fs.{name}", constant) for name, constant in reports.items()):
             self.assertTrue(budgets.kpis[kpi]["enforce"], kpi)
             self.assertEqual(budgets.kpis[kpi]["source"], constant, kpi)
@@ -233,6 +263,56 @@ class IdleWakeups(unittest.TestCase):
         self.assertEqual(nightly, set(adapters.IDLE_WAKEUPS_KPIS.values()))
 
 
+NAME_INDEX_TEST = ROOT / "crates/session/shell/src/shell/search/providers/files.rs"
+
+
+def name_index_log(scale: float, names: int = 50_000) -> str:
+    # The shape of a --nocapture run: libtest's prefix shares the line.
+    return "\n".join([
+        "running 1 test",
+        "test shell::search::providers::files::tests::a_watched_change_costs_one_record_not_a_rebuild ... "
+        f"FILES-NAME-INDEX names={names} rebuild_ms={1500 * scale:.3f} "
+        f"change_ms={2.1 * scale:.3f},{2.4 * scale:.3f},{3.0 * scale:.3f} unchanged_ms=0.050,0.060 "
+        f"rename_ms={3.2 * scale:.3f} burst64_ms={9.5 * scale:.3f}",
+        "ok",
+    ])
+
+
+class FilesNameIndex(unittest.TestCase):
+    def test_every_listed_value_is_a_sample(self):
+        records = {item.kpi: item for item in adapters.files_name_index(
+            [name_index_log(1.0), name_index_log(2.0)], ENV)}
+        change = records["search.files_name_index.change_cpu_ms.50k"]
+        self.assertEqual((change.unit, change.n, change.max), ("ms", 6, 6.0))
+        self.assertEqual(records["search.files_name_index.unchanged_cpu_ms.50k"].n, 4)
+        rebuild = records["search.files_name_index.rebuild_cpu_ms.50k"]
+        self.assertEqual((rebuild.n, rebuild.max), (2, 3000.0))
+        self.assertEqual(records["search.files_name_index.burst64_cpu_ms.50k"].max, 19.0)
+        self.assertEqual(records["search.files_name_index.rename_cpu_ms.50k"].n, 2)
+        self.assertEqual(change.meta, {"runs": "2"})
+
+    def test_a_run_without_its_line_fails(self):
+        with self.assertRaisesRegex(ValueError, "FILES-NAME-INDEX"):
+            adapters.files_name_index([name_index_log(1.0), "running 1 test\ntest ... FAILED"], ENV)
+
+    def test_runs_of_different_sizes_are_refused(self):
+        with self.assertRaisesRegex(ValueError, "different index sizes"):
+            adapters.files_name_index([name_index_log(1.0), name_index_log(1.0, names=20_000)], ENV)
+
+    def test_the_fields_are_the_tests(self):
+        """The test prints every field the adapter reads."""
+        source = NAME_INDEX_TEST.read_text()
+        printed = source[source.index('"FILES-NAME-INDEX'):]
+        for field in (*adapters.FILES_NAME_INDEX_KPIS, "names"):
+            self.assertIn(f"{field}=", printed)
+
+    def test_every_name_index_kpi_has_a_budget(self):
+        budgets = compare.load_budgets(compare.BUDGETS)
+        nightly = {kpi for kpi in budgets.kpis if kpi.startswith("search.")}
+        produced = {item.kpi for item in adapters.files_name_index([name_index_log(1.0)], ENV)}
+        self.assertEqual(nightly, produced)
+
+
 SCALING = ROOT / "crates/sdk/tilo-app/examples/framework-scaling.rs"
 
 
@@ -346,6 +426,51 @@ class FrameworkScroll(unittest.TestCase):
         self.assertEqual(budgeted, produced)
 
 
+def focus_log(scale: float) -> str:
+    """framework-scaling's `focus` output: the table, then one line per size."""
+    return "\n".join([
+        "tasks  add one task p50  focus order in it p50  live window focus order p50",
+        f"  500  {20 * scale:>13.3} ms  {0.2 * scale:>18.4} ms  {0.15 * scale:>24.4} ms",
+        "",
+        f"FRAMEWORK-FOCUS tasks=500 add_ms={20 * scale:.4f},{22 * scale:.4f} "
+        f"recompute_ms={0.2 * scale:.4f},{0.25 * scale:.4f} native_ms={0.15 * scale:.4f},{0.16 * scale:.4f}",
+        f"FRAMEWORK-FOCUS tasks=1000 add_ms={60 * scale:.4f} recompute_ms={0.4 * scale:.4f} "
+        f"native_ms={0.3 * scale:.4f}",
+    ])
+
+
+class FrameworkFocus(unittest.TestCase):
+    def test_every_timing_is_a_sample(self):
+        records = {item.kpi: item for item in adapters.framework_focus([focus_log(1.0), focus_log(2.0)], ENV)}
+        adding = records["render.framework_focus.add_item_ms.500"]
+        self.assertEqual((adding.unit, adding.n, adding.max), ("ms", 4, 44.0))
+        self.assertEqual(records["render.framework_focus.recompute_ms.1k"].n, 2)
+        self.assertEqual(records["render.framework_focus.native_recompute_ms.500"].unit, "ms")
+        self.assertEqual(records["render.framework_focus.add_item_ms.1k"].meta, {"runs": "2"})
+
+    def test_a_run_without_its_lines_fails(self):
+        with self.assertRaisesRegex(ValueError, "FRAMEWORK-FOCUS"):
+            adapters.framework_focus([focus_log(1.0), "tasks  add one task p50"], ENV)
+
+    def test_the_fields_are_the_examples(self):
+        """The example prints the line the adapter reads."""
+        source = SCALING.read_text()
+        printed = source[source.index('"FRAMEWORK-FOCUS'):]
+        for field in ("tasks", "add_ms", "recompute_ms", "native_ms"):
+            self.assertIn(f"{field}={{", printed)
+
+    def test_every_nightly_size_has_a_budget(self):
+        """The scheduled lane runs the focus mode at the sizes the budgets name."""
+        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
+        [sizes] = re.findall(r"framework-scaling ([0-9,]+) focus", workflow)
+        log = "\n".join(f"FRAMEWORK-FOCUS tasks={tasks} add_ms=1 recompute_ms=1 native_ms=1"
+                        for tasks in sizes.split(","))
+        budgets = compare.load_budgets(compare.BUDGETS)
+        budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("render.framework_focus.")}
+        produced = {item.kpi for item in adapters.framework_focus([log], ENV)}
+        self.assertEqual(budgeted, produced)
+
+
 LOAD_BENCH = ROOT / "crates/hosting/tilo-relay/examples/relay_load/main.rs"
 
 
@@ -418,7 +543,7 @@ class HostingLoad(unittest.TestCase):
             adapters.hosting_load(report, self.prices, ENV)
 
     def test_an_older_bench_is_read_when_not_all_kpis_are_required(self):
-        """The A/B lane reads a bench from before a KPI existed (TIL-732's parent)."""
+        """The A/B lane reads a bench from before a KPI existed (#4047's parent)."""
         report = load_report()
         del report["kpis"]["hosting.relay.store_fsyncs_per_edit"]
         report["kpis"]["hosting.relay.future_metric"] = {"unit": "count", "samples": [1.0]}

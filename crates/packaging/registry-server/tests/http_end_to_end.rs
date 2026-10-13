@@ -8,10 +8,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -287,6 +283,7 @@ fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &S
         entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
+        bots_signature_hex: String::new(),
     };
     registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
     storage.save_snapshot(&snapshot).unwrap();
@@ -295,6 +292,7 @@ fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &S
 fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
     RegistryEntry {
         package_id: "so.tilo.editor".into(),
+        kind: registry_types::EntryKind::App,
         name: "Editor".into(),
         description: "CRDT-native text editor".into(),
         tagline: "Edit together".into(),
@@ -309,18 +307,20 @@ fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
         publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
         versions: vec![RegistryVersion {
             version: "2026.06".into(),
-            tapp_url: "https://apps.tilo.so/artifacts/editor/2026.06.tapp".into(),
-            tapp_root_hash_hex: "cd".repeat(32),
-            tapp_size_bytes: 1024,
             released_at_unix: 1_800_000_000,
-            tapp_blake3_hex: "ef".repeat(32),
-            target: registry_types::RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-                interfaces: Vec::new(),
-            },
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: "https://apps.tilo.so/artifacts/editor/2026.06.tapp".into(),
+                tapp_root_hash_hex: "cd".repeat(32),
+                tapp_size_bytes: 1024,
+                tapp_blake3_hex: "ef".repeat(32),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                    interfaces: Vec::new(),
+                },
+            }),
         }],
         updated_at_unix: updated_at,
         signature_hex: String::new(),
@@ -1082,10 +1082,10 @@ async fn publishers_upload_their_own_packages_for_review() {
     let package = app_registry::tapp::load(&bytes).unwrap();
     let mut entry = sample_entry(&h.publisher, 100);
     entry.versions[0].version = "1.0.0".into();
-    entry.versions[0].tapp_url = artifact_url;
-    entry.versions[0].tapp_root_hash_hex = package.package_id.to_hex();
-    entry.versions[0].tapp_size_bytes = bytes.len() as u64;
-    entry.versions[0].tapp_blake3_hex = digest.clone();
+    entry.versions[0].tapp_mut().unwrap().tapp_url = artifact_url;
+    entry.versions[0].tapp_mut().unwrap().tapp_root_hash_hex = package.package_id.to_hex();
+    entry.versions[0].tapp_mut().unwrap().tapp_size_bytes = bytes.len() as u64;
+    entry.versions[0].tapp_mut().unwrap().tapp_blake3_hex = digest.clone();
     let storage = h.storage.clone();
     let reviewed = tokio::task::spawn_blocking(move || {
         registry_server::review_entry_bytes(

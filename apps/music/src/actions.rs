@@ -514,8 +514,6 @@ pub struct PlaylistResource {
 pub struct CatalogTrackResource {
     pub id: String,
     pub label: String,
-    /// Who performs the song: the row's secondary line in search.
-    pub artist: String,
     /// Canonical parent targets retained on the track resource, so an agent
     /// can navigate from a song to its exact album or artist without parsing a
     /// display label or guessing an id.
@@ -529,7 +527,6 @@ pub struct CatalogTrackResource {
 pub struct CatalogAlbumResource {
     pub id: String,
     pub label: String,
-    pub saved: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -577,88 +574,7 @@ pub struct MusicResourceCtx {
     pub playback: crate::model::Playback,
 }
 
-impl MusicResourceCtx {
-    /// Project a shared library into the contextual page the resource door
-    /// publishes. Playback, queue and local-file stay on the widget: they are
-    /// device-local and are not in the Automerge library.
-    pub fn from_library(lib: &crate::model::Library) -> Self {
-        let track_title = |track_id: &str| -> String {
-            lib.track(track_id)
-                .map_or_else(|| track_id.to_string(), |track| track.title.clone())
-        };
-        let track_artist = |track_id: &str| -> String {
-            lib.track(track_id)
-                .map(|track| lib.artist_name(&track.artist_id).to_string())
-                .unwrap_or_default()
-        };
-        let mut playlists = lib.playlists().collect::<Vec<_>>();
-        playlists.sort_by(|a, b| a.id.cmp(&b.id));
-        let playlists = playlists
-            .into_iter()
-            .take(OPEN_RESOURCE_CATEGORY_LIMIT)
-            .map(|playlist| PlaylistResource {
-                id: playlist.id.clone(),
-                name: playlist.name.clone(),
-                tracks: playlist
-                    .tracks
-                    .values()
-                    .take(OPEN_PLAYLIST_TRACK_LIMIT)
-                    .map(|tid| TrackRef {
-                        id: tid.clone(),
-                        label: track_title(tid),
-                        artist: track_artist(tid),
-                        liked: lib.is_liked(tid),
-                    })
-                    .collect(),
-            })
-            .collect();
-        let mut tracks = lib.tracks.values().collect::<Vec<_>>();
-        tracks.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut albums = lib.albums.values().collect::<Vec<_>>();
-        albums.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut artists = lib.artists.values().collect::<Vec<_>>();
-        artists.sort_by(|a, b| a.id.cmp(&b.id));
-        Self {
-            playlists,
-            tracks: tracks
-                .into_iter()
-                .take(OPEN_RESOURCE_CATEGORY_LIMIT)
-                .map(|track| CatalogTrackResource {
-                    id: track.id.clone(),
-                    label: track_title(&track.id),
-                    artist: track_artist(&track.id),
-                    album_id: track.album_id.clone(),
-                    artist_id: track.artist_id.clone(),
-                    // What this device keeps offline is not library state.
-                    offline: false,
-                    liked: lib.is_liked(&track.id),
-                })
-                .collect(),
-            albums: albums
-                .into_iter()
-                .take(OPEN_RESOURCE_CATEGORY_LIMIT)
-                .map(|album| CatalogAlbumResource {
-                    id: album.id.clone(),
-                    label: album.title.clone(),
-                    saved: lib.is_album_saved(&album.id),
-                })
-                .collect(),
-            artists: artists
-                .into_iter()
-                .take(OPEN_RESOURCE_CATEGORY_LIMIT)
-                .map(|artist| CatalogArtistResource {
-                    id: artist.id.clone(),
-                    label: artist.name.clone(),
-                    followed: lib.is_artist_followed(&artist.id),
-                })
-                .collect(),
-            membership: None,
-            local_file: None,
-            queue: Vec::new(),
-            playback: crate::model::Playback::default(),
-        }
-    }
-}
+impl MusicResourceCtx {}
 
 impl MusicResourceCtx {
     /// Just what resolving the library row `id` needs, against the whole
@@ -676,7 +592,6 @@ impl MusicResourceCtx {
         let catalog_track = |track: &crate::model::Track| CatalogTrackResource {
             id: track.id.clone(),
             label: track_label(track),
-            artist: lib.artist_name(&track.artist_id).to_owned(),
             album_id: track.album_id.clone(),
             artist_id: track.artist_id.clone(),
             offline: false,
@@ -695,7 +610,6 @@ impl MusicResourceCtx {
             ctx.albums.push(CatalogAlbumResource {
                 id: album.id.clone(),
                 label: album.title.clone(),
-                saved: lib.is_album_saved(&album.id),
             });
             return Some(ctx);
         }
@@ -1546,7 +1460,6 @@ mod tests {
                 let id = format!("track-{number:03}");
                 ctx.tracks.push(CatalogTrackResource {
                     label: format!("Track {number}"),
-                    artist: String::new(),
                     id,
                     album_id: String::new(),
                     artist_id: String::new(),
@@ -1587,7 +1500,6 @@ mod tests {
             let track = CatalogTrackResource {
                 id: "track-1".into(),
                 label: "Song".into(),
-                artist: String::new(),
                 album_id: "album-9".into(),
                 artist_id: "artist-2".into(),
                 offline: false,
@@ -1857,7 +1769,6 @@ mod tests {
             let track = CatalogTrackResource {
                 id: "track-2".into(),
                 label: "Track 2".into(),
-                artist: String::new(),
                 album_id: String::new(),
                 artist_id: String::new(),
                 offline: false,

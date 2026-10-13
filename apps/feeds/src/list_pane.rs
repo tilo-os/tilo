@@ -667,10 +667,7 @@ impl Widget for ListPane {
             .as_mut()
             .map(|(_, empty)| empty.build_layout(taffy, theme, node_map));
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         let node = match self.empty_node {
@@ -730,8 +727,7 @@ impl Widget for ListPane {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.core.borrow_mut().pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.core.borrow_mut().pointer = ctx.logical(position);
         }
         if let (Some((_, empty)), Some(node)) = (self.empty.as_mut(), self.empty_node) {
             empty.handle_event(event, &mut ctx.reborrow(ctx.path, node));

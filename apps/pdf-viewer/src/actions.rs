@@ -18,7 +18,7 @@ use ui::framework::LiveRow;
 use ui::tilo_resource;
 use ui::tilo_resource::{Edit, Effect, Id, Invoke};
 
-use crate::markup::{ImportedPage, PagePlanEntry, PdfMarkup};
+use crate::markup::{PagePlanEntry, PdfMarkup};
 use crate::model::{Annotation, FormEntry, GeomSpace, PtRect, Signature, Swatch};
 use crate::resource::{NewAnnotation, NewComment, NewNote, NewSignature, pdf_markup};
 
@@ -347,25 +347,6 @@ pub fn create_note_on_action(
     })
 }
 
-/// A note on page occurrence `page_id` at page-point `(x, y)`.
-pub fn create_note_action(
-    note: &NoteDraft<'_>,
-    page_id: &str,
-    x: f64,
-    y: f64,
-) -> Invoke<PdfMarkup> {
-    PdfMarkup::CREATE_NOTE.with(NewNote {
-        annotation: note.anno_id.to_owned(),
-        comment: note.comment_id.to_owned(),
-        page_id: page_id.to_owned(),
-        x,
-        y,
-        color: note.color,
-        text: note.body.to_owned(),
-        space: GeomSpace::Page,
-    })
-}
-
 /// A comment free on page occurrence `page_id`, or on annotation `anno`.
 pub fn add_comment_action(
     id: &str,
@@ -501,26 +482,12 @@ pub struct PdfResourceCtx {
     /// Stable identity for the open document's markup record.
     pub doc_id: String,
     pub title: String,
-    /// The page a palette-authored note anchors to.
-    pub page: usize,
-    pub page_count: usize,
     /// Durable CRDT occurrence ids parallel to the current shared page order.
     /// They move with a page, so an old resource address never starts
     /// addressing whichever page later occupies its ordinal.
     pub page_ids: Vec<String>,
     /// Immutable source-page identities parallel to `page_ids`.
     pub page_sources: Vec<usize>,
-    /// Imported content descriptors parallel to `page_ids`; absent for pages
-    /// from the originally opened PDF.
-    pub page_imports: Vec<Option<ImportedPage>>,
-    /// Recorded rotation (degrees) parallel to `page_ids`.
-    pub page_rotations: Vec<i32>,
-    pub author: String,
-    /// Date captured when the resource snapshot is published. Action payloads
-    /// carry this value so a palette invocation replays identically on peers.
-    pub signature_date: String,
-    /// Base ordinal for a palette-authored comment's stable sort.
-    pub created_seed: i64,
     /// Current bounded find projection. Search itself stays local view state;
     /// each materialized hit is still navigable by agents and history.
     pub search_query: String,

@@ -10,7 +10,10 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
+mod agent_actions;
+mod agent_markers;
 mod axis_navigation;
+pub(crate) use agent_markers::AccessibleAgentMarker;
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
@@ -45,6 +48,7 @@ mod emoji_layer;
 mod history;
 pub(crate) mod layers;
 mod now_playing;
+mod parked_workspaces;
 mod sheet_accessibility;
 mod shortcut_steps;
 mod shortcut_triggers;
@@ -451,6 +455,16 @@ struct PendingLaunchpadAction {
     >,
 }
 
+/// The one local source a Quick Settings device click routes to another device.
+#[derive(Clone, Debug, PartialEq)]
+enum QsDeviceSource {
+    Media(String),
+    Realtime(String),
+    Gamepad(u64),
+    RemoteAudio(u64),
+    RemoteCapture(crate::shell::remote_capture::device::RemoteCaptureKind),
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -494,6 +508,9 @@ pub struct ShellOverlayHost {
     /// rebuild replaced `content`; handed on by
     /// [`Widget::take_component_close_reports`] so a rebuild cannot lose them.
     desktop_close_reports: Vec<ui::application::ComponentCloseReport>,
+    /// The content of workspaces shown recently, kept while another one is
+    /// `content` so a switch back puts it back instead of building it again.
+    parked_workspaces: parked_workspaces::ParkedWorkspaces,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
     /// stay unreachable until a real identity has been provisioned and the
@@ -655,13 +672,9 @@ pub struct ShellOverlayHost {
     /// compact implementation, no enrolled device disappears after row seven.
     qs_device_fabric_start: usize,
     qs_device_fabric_wheel_remainder: f64,
-    /// The local session selected as the source for a certified-device route.
-    /// This is private view state, never convergent fabric state.
-    qs_selected_media: Option<String>,
-    qs_selected_realtime: Option<String>,
-    qs_selected_gamepad: Option<u64>,
-    qs_selected_remote_audio: Option<u64>,
-    qs_selected_remote_capture: Option<crate::shell::remote_capture::device::RemoteCaptureKind>,
+    /// The local source the next device click routes to. This is private
+    /// view state, never convergent fabric state.
+    qs_selected_source: Option<QsDeviceSource>,
     /// The overlays that are self-contained [`layers::ShellLayer`]s, and the
     /// ordering, dismissal and release bookkeeping they share. The tab menu
     /// is opened by `harvest_pending_tab_context_menus` from the tab bar's
@@ -807,6 +820,8 @@ pub struct ShellOverlayHost {
     peer_stream_tabs: std::collections::HashMap<(u64, u64), u64>,
     /// Quick-settings root-page presentation, geometry and input state.
     qs_root: QuickSettingsRoot,
+    // Navigation can shrink the panel before the matching release arrives.
+    qs_navigation_release_pending: bool,
     /// Where the now-playing card beside the root page reads players and
     /// sends transport commands.
     now_playing_source: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
@@ -890,6 +905,11 @@ pub struct ShellOverlayHost {
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
+    agent_markers: agent_markers::AgentMarkers,
+    agent_actions:
+        HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
+    agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,
+    agent_quick_composer_node: Option<NodeId>,
     /// The tiles shown and the pointer, kept current for a presence pump
     /// that runs outside this tree (the hosted shell's). `None` unless
     /// [`Self::share_desk`] asked; the native frame loop reads them directly.
@@ -2289,7 +2309,13 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "one shared initialization body for the host interaction surfaces"
     )]
-    fn from_inputs(content: Box<dyn Widget>, inputs: OverlayInputs) -> Self {
+    fn from_inputs(content: Box<dyn Widget>, mut inputs: OverlayInputs) -> Self {
+        let file_picker_overlay = FilePickerOverlay::default();
+        inputs.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::file_picker::FilePickerProvider::new(
+                file_picker_overlay.actions(),
+            ),
+        ));
         // Palette entries come from the search registry on every
         // keystroke. New providers slot in via `SearchRegistry::register`;
         // the palette picks up their resource-kind chips automatically.
@@ -2316,6 +2342,7 @@ impl ShellOverlayHost {
             shortcut_help_drawn_rect: Rect::ZERO,
             content,
             desktop_close_reports: Vec::new(),
+            parked_workspaces: parked_workspaces::ParkedWorkspaces::default(),
             onboarding: None,
             onboarding_node: None,
             onboarding_released: false,
@@ -2373,11 +2400,7 @@ impl ShellOverlayHost {
             qs_clipboard_query: String::new(),
             qs_device_fabric_start: 0,
             qs_device_fabric_wheel_remainder: 0.0,
-            qs_selected_media: None,
-            qs_selected_realtime: None,
-            qs_selected_gamepad: None,
-            qs_selected_remote_audio: None,
-            qs_selected_remote_capture: None,
+            qs_selected_source: None,
             layers: OverlayStack::default(),
             session_action_channel: std::sync::mpsc::channel(),
             power_bridge: None,
@@ -2403,7 +2426,7 @@ impl ShellOverlayHost {
             portal_prompts: None,
             host_shell_allows: Vec::new(),
             terminal_device_shell: None,
-            file_picker_overlay: FilePickerOverlay::default(),
+            file_picker_overlay,
             portal_dialogs: inputs.portal_dialogs,
             peer_sync_enabled: false,
             peer_sync_bridge: None,
@@ -2430,6 +2453,7 @@ impl ShellOverlayHost {
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
             qs_root: inputs.qs_root,
+            qs_navigation_release_pending: false,
             now_playing_source: inputs.now_playing,
             now_playing_card: crate::shell::quick_settings::now_playing::NowPlayingCard::new(),
             now_playing_preferred: None,
@@ -2467,6 +2491,10 @@ impl ShellOverlayHost {
             follow_chip_rect: Rect::ZERO,
             follow_stop_rect: Rect::ZERO,
             follow_cursor_targets: Vec::new(),
+            agent_markers: agent_markers::AgentMarkers::default(),
+            agent_actions: HashMap::new(),
+            agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
+            agent_quick_composer_node: None,
             shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),
             instant_captures: Vec::new(),
@@ -2691,6 +2719,7 @@ impl ShellOverlayHost {
         self.layers.power_menu.is_open()
             || self.screenshot_markup.is_some()
             || self.capture_studio.modal_capture().is_some()
+            || self.agent_quick_composer.modal_capture().is_some()
     }
 
     /// Whether the pointer is over the shell-owned controls painted above a
@@ -3939,6 +3968,15 @@ impl ShellOverlayHost {
         started
     }
 
+    /// Keep OS identification labels in the current shared display order.
+    pub(crate) fn number_identified_displays(
+        &mut self,
+        layout: &settings_store::person_displays::Layout,
+    ) {
+        self.display_identify
+            .number_by_shared_order(&self.outputs, layout);
+    }
+
     /// Ask the person to keep or revert display transaction `transaction`,
     /// which a layout tool applied. Settings and the Super+P sheet ask in
     /// their own UI; this is for changes from anywhere else.
@@ -4121,7 +4159,10 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let (desktop, failures) = {
+        let closing_visual = self
+            .desktop_surface_mut()
+            .is_some_and(|surface| surface.close_animation_in_flight());
+        let (rebuild, stale) = {
             let st = chrome.borrow();
             let tree = st.tree();
             let active_raw = tree.desktop.active.raw();
@@ -4131,23 +4172,35 @@ impl ShellOverlayHost {
                     .iter()
                     .all(|strip| strip.window_groups.is_empty())
             });
-            match self.content_built_for_ws {
+            // A kept workspace that was removed (or became another room)
+            // lets go of its apps now, not at the next switch; so does one a
+            // tab moved out of, before the reconcile that follows mounts the
+            // tab where it went. Tabs move only with the chrome's revision.
+            let moved_tabs = st.revision != self.last_chrome_revision;
+            let stale = self.parked_workspaces.stale(&tree.desktop, moved_tabs);
+            let rebuild = match self.content_built_for_ws {
                 // Hand-made test content: latch, never rebuild over it.
                 None => {
-                    drop(tree);
                     self.content_built_for_ws = Some(active_raw);
-                    return false;
+                    None
                 }
                 Some(cur)
                     if cur == active_raw
-                        && self.content_built_empty == Some(active_empty)
+                        && (self.content_built_empty == Some(active_empty) || closing_visual)
                         && self.rows_cover_active_strips(&tree) =>
                 {
-                    return false;
+                    None
                 }
-                Some(_) => {}
-            }
-            (tree.desktop.clone(), st.record_creation_errors(&tree))
+                Some(_) => Some((tree.desktop.clone(), st.record_creation_errors(&tree))),
+            };
+            (rebuild, stale)
+        };
+        if !stale.is_empty() {
+            self.desktop_close_reports
+                .extend(parked_workspaces::close(stale));
+        }
+        let Some((desktop, failures)) = rebuild else {
+            return false;
         };
         let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
         if swapped {
@@ -4159,9 +4212,11 @@ impl ShellOverlayHost {
     /// Rebuilds the desktop surface for `desktop` and replaces the row
     /// pointer map with it. Tabs whose tile is unchanged in the same room
     /// keep their live hosts, so a strip added or removed beside them costs
-    /// no app state; a different workspace gets fresh content. Takes the
-    /// desktop alone, with `failures` read beside it under the same tree
-    /// lock, so a workspace switch never copies the replication documents.
+    /// no app state. A different workspace puts back the content kept for it
+    /// ([`parked_workspaces`]) or gets fresh content, and the content it
+    /// replaces is kept. Takes the desktop alone, with `failures` read
+    /// beside it under the same tree lock, so a workspace switch never
+    /// copies the replication documents.
     fn rebuild_workspace_content(
         &mut self,
         chrome: &Chrome,
@@ -4169,18 +4224,26 @@ impl ShellOverlayHost {
         failures: &std::collections::BTreeMap<u64, String>,
     ) -> bool {
         let records = chrome.borrow().records().clone();
+        let switching = self
+            .content_built_for_ws
+            .is_some_and(|shown| shown != desktop.active.raw());
+        if switching && self.desktop_surface_mut().is_some() {
+            self.switch_workspace_content(chrome, desktop, failures, &records);
+        }
         if let Some(surface) = self.desktop_surface_mut() {
-            let surface_chrome = crate::shell::workspace_surface_chrome(desktop, chrome);
-            let state = chrome.borrow();
-            surface.rebuild_retaining(
-                desktop,
-                &records,
-                &mut crate::shell::NativeTileResolver {
-                    inputs: &state.hosted_inputs,
-                    failures,
-                },
-                surface_chrome,
-            );
+            if !switching {
+                let surface_chrome = crate::shell::workspace_surface_chrome(desktop, chrome);
+                let state = chrome.borrow();
+                surface.rebuild_retaining(
+                    desktop,
+                    &records,
+                    &mut crate::shell::NativeTileResolver {
+                        inputs: &state.hosted_inputs,
+                        failures,
+                    },
+                    surface_chrome,
+                );
+            }
             for id in surface.strip_ids() {
                 if let Some(row) = surface.row_mut(id) {
                     for group in &mut row.groups {
@@ -4217,6 +4280,87 @@ impl ShellOverlayHost {
         });
         self.workspace_content_layout_dirty = true;
         true
+    }
+
+    /// Show `desktop`'s active workspace in place of the one shown until
+    /// now, which is kept: its content as it was left when it was kept, with
+    /// what changed in the tree since reconciled, or else built fresh. The
+    /// caller re-reads the row pointers.
+    fn switch_workspace_content(
+        &mut self,
+        chrome: &Chrome,
+        desktop: &crate::shell::state::DesktopTree,
+        failures: &std::collections::BTreeMap<u64, String>,
+        records: &ui::record::RecordStore,
+    ) {
+        use tilo_desktop::composition::{DesktopSurface, ReconcileOutcome};
+        // Before the target is mounted: a tab that moved here from a kept
+        // workspace is mounted by this one alone.
+        let moved_on = self.parked_workspaces.stale(desktop, true);
+        self.desktop_close_reports
+            .extend(parked_workspaces::close(moved_on));
+        let kept = self.parked_workspaces.take(desktop.active.raw());
+        let resumed = kept.is_some();
+        let incoming = kept.unwrap_or_else(|| {
+            crate::shell::build_desktop_root(desktop, records, chrome, failures).0
+        });
+        let mut outgoing = std::mem::replace(&mut self.content, incoming);
+        if let Some(shown) = outgoing
+            .as_any_mut()
+            .and_then(|content| content.downcast_mut::<DesktopSurface>())
+            && let Some(next) = self.desktop_surface_mut()
+        {
+            next.take_pointer_from(shown);
+        }
+        // The outgoing rows stay alive, kept; the map moves to the new ones
+        // before anything walks it.
+        self.group_row_ptrs.clear();
+        let dropped = match self.content_built_for_ws {
+            Some(shown) => self.parked_workspaces.park(shown, outgoing),
+            None => vec![outgoing],
+        };
+        self.desktop_close_reports
+            .extend(parked_workspaces::close(dropped));
+        if !resumed {
+            return;
+        }
+        let outcome = {
+            let state = chrome.borrow();
+            self.desktop_surface_mut().map(|surface| {
+                surface.reconcile(
+                    desktop,
+                    records,
+                    &mut crate::shell::NativeTileResolver {
+                        inputs: &state.hosted_inputs,
+                        failures,
+                    },
+                )
+            })
+        };
+        if outcome == Some(ReconcileOutcome::RebuildRequired) {
+            // Its strips changed while it was away: new chrome around the
+            // same mounted apps (the surface is this workspace's room).
+            let surface_chrome = crate::shell::workspace_surface_chrome(desktop, chrome);
+            let state = chrome.borrow();
+            if let Some(surface) = self.desktop_surface_mut() {
+                surface.rebuild_retaining(
+                    desktop,
+                    records,
+                    &mut crate::shell::NativeTileResolver {
+                        inputs: &state.hosted_inputs,
+                        failures,
+                    },
+                    surface_chrome,
+                );
+            }
+        }
+    }
+
+    /// The workspaces whose content is kept while another one is shown,
+    /// least recently shown first.
+    #[cfg(test)]
+    pub(crate) fn kept_workspaces_for_tests(&self) -> Vec<u64> {
+        self.parked_workspaces.workspaces()
     }
 
     /// The shared desktop surface, when the content is one. Hand-built test
@@ -4791,7 +4935,10 @@ impl ShellOverlayHost {
         chrome.borrow_mut().retry_new_tab_records();
         self.place_new_groups();
         let current_rev = chrome.borrow().revision;
-        if current_rev == self.last_chrome_revision {
+        let closing_visuals = self
+            .desktop_surface_mut()
+            .is_some_and(|surface| surface.has_closing_visuals());
+        if current_rev == self.last_chrome_revision && !closing_visuals {
             return false;
         }
         self.last_chrome_revision = current_rev;
@@ -6199,6 +6346,13 @@ impl ShellOverlayHost {
 
     /// The live file-chooser dialog, if one is up. For the frame
     /// builder's widget walk and for tests.
+    #[cfg(test)]
+    pub(crate) fn file_picker_actions_for_test(
+        &self,
+    ) -> crate::shell::file_picker_overlay::actions::PickerActions {
+        self.file_picker_overlay.actions()
+    }
+
     pub fn file_picker(&self) -> Option<&ui::widget::FilePicker> {
         self.file_picker_overlay.widget()
     }
@@ -6393,7 +6547,7 @@ impl ShellOverlayHost {
     /// This is read-only presentation state. The developer control transport
     /// serialises it when that transport is enabled, while normal production
     /// sessions never bind the transport at all.
-    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
+    pub fn active_window_bounds(&self) -> Option<ui::widget::WindowGroupBounds> {
         let chrome = self.chrome.clone()?;
         let (strip_id, group_id) = {
             let st = chrome.borrow();
@@ -6409,8 +6563,17 @@ impl ShellOverlayHost {
         // SAFETY: same ownership contract as `group_at_for_tests` above.
         let row: &GroupRow = unsafe { &*ptr };
         let group = row.groups.iter().find(|group| group.id == group_id)?;
-        let maximize = group.active_maximize_rect().unwrap_or(Rect::ZERO);
-        Some((maximize, group.restore_rect()))
+        Some(group.presentation_bounds())
+    }
+
+    /// Compatibility view for the existing developer transport.
+    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
+        self.active_window_bounds().map(|bounds| {
+            (
+                bounds.maximize.unwrap_or(Rect::ZERO),
+                bounds.restore.unwrap_or(Rect::ZERO),
+            )
+        })
     }
 
     /// Test-only: runs the per-frame active-group reconcile outside `update`.
@@ -7947,6 +8110,7 @@ impl ShellOverlayHost {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         );
         self.pending_launchpad_actions
@@ -8308,6 +8472,9 @@ impl ShellOverlayHost {
             // accessor.
             let row: &GroupRow = unsafe { &*ptr };
             for (idx, wg) in row.groups.iter().enumerate() {
+                if wg.is_closing() {
+                    continue;
+                }
                 live_active.insert(wg.id, wg.active_tab_id());
                 if !tree_ids.contains(&wg.id) {
                     writes.push((strip_id, idx, build_state_group_from_widget(wg)));
@@ -9774,16 +9941,21 @@ impl ShellOverlayHost {
     /// Mirror of the geometry in `draw_quick_settings`. The panel is sized
     /// from the controls actually visible on this device, not a fixed grid of
     /// unavailable radios.
-    fn quick_settings_rect(&self) -> Rect {
+    fn quick_settings_width(&self) -> f64 {
         // Under the tray, on the display whose full top bar holds it.
         let area = self.tray_area();
-        let popover_w = if area.width() >= 1200.0 {
+        if area.width() >= 1200.0 {
             400.0
         } else if area.width() >= 720.0 {
             360.0
         } else {
             320.0
-        };
+        }
+    }
+
+    fn quick_settings_rect(&self) -> Rect {
+        let area = self.tray_area();
+        let popover_w = self.quick_settings_width();
         let x1 = area.x1 - 16.0;
         let y0 = area.y0 + 48.0;
         let desired_h = self.chrome.as_ref().map_or(360.0, |chrome| {
@@ -9873,9 +10045,11 @@ impl ShellOverlayHost {
                 let rows = state.quick_settings.vpns.len();
                 DrillInList::list_height(qs::LIST_TOP, rows)
             }
-            QsLevel::Notifications => self
-                .notification_center
-                .preferred_height(state.notification_log(), self.qs_type_lines),
+            QsLevel::Notifications => self.notification_center.preferred_height_for_width(
+                state.notification_log(),
+                self.qs_type_lines,
+                self.quick_settings_width(),
+            ),
             QsLevel::Clipboard => {
                 let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -11488,9 +11662,13 @@ impl ShellOverlayHost {
     /// `Pressed` — otherwise `Released`/`CursorMoved` fall through and
     /// light up affordances underneath.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
+        (self.palette_visible && self.palette.get_rect().contains(p))
+            || self.cursor_over_other_open_overlay(p)
+    }
+
+    fn cursor_over_other_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
         self.dictation_pointer_at((p.x, p.y))
-            || (self.palette_visible && self.palette.get_rect().contains(p))
             || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
@@ -11524,12 +11702,51 @@ impl ShellOverlayHost {
             chrome.borrow_mut().projection_follow =
                 crate::shell::chrome_state::ProjectionFollow::Person;
         }
+        if let Some(request) = self.projection_overlay.take_request() {
+            self.invoke_display_request(request, ctx);
+        }
         if outcome.invalidate
             && let Some(chrome) = self.chrome.as_ref()
         {
             chrome.borrow_mut().bump();
         }
         outcome.consumed
+    }
+
+    /// Make a display choice from the sheet through its published action,
+    /// resolved and invoked exactly as the control socket does, so the
+    /// person at the sheet and an agent pass one authority check and stage
+    /// through one door. The sheet follows the job to its receipt.
+    fn invoke_display_request(
+        &mut self,
+        request: crate::shell::projection_overlay::DisplayRequest,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        use crate::shell::search::action_api::{ActionError, AllVisible, ResourceRef};
+        let outcome = self
+            .chrome
+            .clone()
+            .ok_or_else(|| ActionError::Refused("this shell has no desktop to act on".into()))
+            .and_then(|chrome| {
+                let resource = ResourceRef::new(
+                    crate::shell::search::providers::actions::PROVIDER_ID,
+                    request.action_id(),
+                );
+                // Visibility is not authority: the action itself checks the
+                // workspace's grant when it is invoked, as for every caller.
+                let catalog = self.action_catalog_for_resource(
+                    &resource,
+                    &chrome.borrow(),
+                    ctx.state.doc(),
+                    ctx.path,
+                    &AllVisible,
+                );
+                let selected = catalog.select(&resource).ok_or_else(|| {
+                    ActionError::Refused(format!("{} is not published", request.action_id()))
+                })?;
+                selected.invoke_nullary(&mut ctx.state, ctx.path, &chrome)
+            });
+        self.projection_overlay.follow_request(request, outcome);
     }
 
     /// Close the display sheet a `display.layout.*` action opened once the
@@ -11611,6 +11828,19 @@ impl ShellOverlayHost {
         {
             desk.set_pointer(None);
         }
+        // Focus loss or a fresh press ends an abandoned navigation gesture.
+        // Escape alone keeps the matching release owned across page changes.
+        if matches!(
+            event,
+            WindowEvent::Focused(false)
+                | WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+        ) {
+            self.qs_navigation_release_pending = false;
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_cursor = Some(p);
@@ -11675,8 +11905,20 @@ impl ShellOverlayHost {
         false
     }
 
-    /// Routes an in-progress root-page slider drag before modal absorption.
-    fn route_qs_slider_drag(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+    /// Retains root navigation releases and slider drags before modal absorption.
+    fn route_qs_pointer_capture(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        ) && std::mem::take(&mut self.qs_navigation_release_pending)
+        {
+            *handled = true;
+            return true;
+        }
         if !self.qs_root.drag_active() {
             return false;
         }
@@ -12080,8 +12322,7 @@ impl ShellOverlayHost {
     fn route_absorbable_pointer_and_toast_click(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        handled: &mut bool,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let covered = self
             .last_cursor
@@ -12105,14 +12346,14 @@ impl ShellOverlayHost {
             let changed = self.notification_stack.handle_pointer_event(
                 &ChromeNotifications::new(&chrome),
                 event,
-                scale_factor,
+                ctx.scale_factor,
                 &mut banner_handled,
             );
             if changed {
                 chrome.borrow_mut().bump();
             }
             if banner_handled {
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
@@ -12129,7 +12370,20 @@ impl ShellOverlayHost {
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
         {
-            *handled = true;
+            // The palette owns hover before this guard isolates the app below.
+            // Another covering overlay keeps its existing input priority.
+            if self.palette_visible
+                && self.palette.get_rect().contains(p)
+                && !self.cursor_over_other_open_overlay(p)
+            {
+                let palette_child = ctx
+                    .taffy
+                    .children(ctx.node_id)
+                    .ok()
+                    .and_then(|children| children.get(1).copied());
+                self.route_palette_event(event, ctx, palette_child);
+            }
+            *ctx.handled = true;
             return true;
         }
         false
@@ -13104,7 +13358,7 @@ impl ShellOverlayHost {
     /// Requires the debug environment gate and a known fixture phase.
     #[cfg(debug_assertions)]
     pub fn seed_dictation_for_shots(&mut self, phase: &str) -> Result<(), &'static str> {
-        use crate::compositor::dictation::DictationStatus;
+        use crate::compositor::dictation_status::DictationStatus;
         if std::env::var_os("TILO_UI_DEBUG").is_none() {
             return Err("dictation shots require TILO_UI_DEBUG and a debug build");
         }
@@ -13124,7 +13378,7 @@ impl ShellOverlayHost {
             }
             "dictation-model-required" => {
                 self.layers.dictation.status(DictationStatus::Unavailable(
-                    crate::compositor::dictation::runtime::RuntimeError::Worker(
+                    crate::compositor::dictation_status::RuntimeError::Worker(
                         agent_provider_config::speech::SpeechError::ModelUnavailable,
                     ),
                 ));
@@ -14921,13 +15175,7 @@ impl ShellOverlayHost {
                 ),
             )),
             DeviceFabricPaneRow::RemoteAudioConsent(consent) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 Some((
@@ -14949,22 +15197,12 @@ impl ShellOverlayHost {
                 ))
             }
             DeviceFabricPaneRow::RemoteAudioSource(source) => {
-                self.qs_selected_remote_audio = Some(source.token);
-                self.qs_selected_realtime = None;
-                self.qs_selected_media = None;
-                self.qs_selected_gamepad = None;
-                self.qs_selected_remote_capture = None;
+                self.qs_selected_source = Some(QsDeviceSource::RemoteAudio(source.token));
                 self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::SpeakerConsent(consent) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 Some((
@@ -14985,10 +15223,13 @@ impl ShellOverlayHost {
                     &[("group", session.name.into())],
                 ),
             )),
-            DeviceFabricPaneRow::SpeakerGroup(group) if self.qs_selected_remote_audio.is_some() => {
+            DeviceFabricPaneRow::SpeakerGroup(group)
+                if let Some(QsDeviceSource::RemoteAudio(source_token)) =
+                    self.qs_selected_source =>
+            {
                 Some((
                     DeviceFabricUiAction::StartSpeakerGroupAudio {
-                        source_token: self.qs_selected_remote_audio.unwrap_or_default(),
+                        source_token,
                         group: group.id,
                     },
                     t_args(
@@ -14997,16 +15238,20 @@ impl ShellOverlayHost {
                     ),
                 ))
             }
-            DeviceFabricPaneRow::SpeakerGroup(group) if self.qs_selected_media.is_some() => Some((
-                DeviceFabricUiAction::PlayMediaOnSpeakerGroup {
-                    session_id: self.qs_selected_media.clone().unwrap_or_default(),
-                    group: group.id,
-                },
-                t_args(
-                    "host-fabric-speaker-playing-media",
-                    &[("group", group.name.into())],
-                ),
-            )),
+            DeviceFabricPaneRow::SpeakerGroup(group)
+                if let Some(QsDeviceSource::Media(session_id)) = &self.qs_selected_source =>
+            {
+                Some((
+                    DeviceFabricUiAction::PlayMediaOnSpeakerGroup {
+                        session_id: session_id.clone(),
+                        group: group.id,
+                    },
+                    t_args(
+                        "host-fabric-speaker-playing-media",
+                        &[("group", group.name.into())],
+                    ),
+                ))
+            }
             DeviceFabricPaneRow::SpeakerSetup => {
                 if let Some(chrome) = self.chrome.clone() {
                     {
@@ -15042,13 +15287,7 @@ impl ShellOverlayHost {
                 },
             )),
             DeviceFabricPaneRow::RemoteCaptureConsent(consent) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 Some((
@@ -15070,11 +15309,7 @@ impl ShellOverlayHost {
                 ))
             }
             DeviceFabricPaneRow::RemoteCaptureSource(kind) => {
-                self.qs_selected_remote_capture = Some(kind);
-                self.qs_selected_remote_audio = None;
-                self.qs_selected_realtime = None;
-                self.qs_selected_media = None;
-                self.qs_selected_gamepad = None;
+                self.qs_selected_source = Some(QsDeviceSource::RemoteCapture(kind));
                 self.bump_chrome();
                 return;
             }
@@ -15098,13 +15333,7 @@ impl ShellOverlayHost {
                 }
             }
             DeviceFabricPaneRow::RealtimeConsent(consent) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 let result =
@@ -15130,22 +15359,12 @@ impl ShellOverlayHost {
                 return;
             }
             DeviceFabricPaneRow::RealtimeSource(source) => {
-                self.qs_selected_realtime = Some(source.session);
-                self.qs_selected_media = None;
-                self.qs_selected_gamepad = None;
-                self.qs_selected_remote_capture = None;
-                self.qs_selected_remote_audio = None;
+                self.qs_selected_source = Some(QsDeviceSource::Realtime(source.session));
                 self.bump_chrome();
                 return;
             }
             DeviceFabricPaneRow::BluetoothAuthorization(authorization) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 Some((
@@ -15198,13 +15417,7 @@ impl ShellOverlayHost {
                 }
             }
             DeviceFabricPaneRow::GamepadAuthorization(authorization) => {
-                let (allow, decline) =
-                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                let approved = if allow.contains(point) {
-                    true
-                } else if decline.contains(point) {
-                    false
-                } else {
+                let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                     return;
                 };
                 let action = DeviceFabricUiAction::AuthorizeGamepadForwarding {
@@ -15239,11 +15452,7 @@ impl ShellOverlayHost {
                         ),
                     ))
                 } else {
-                    self.qs_selected_gamepad = Some(gamepad.token);
-                    self.qs_selected_media = None;
-                    self.qs_selected_realtime = None;
-                    self.qs_selected_remote_audio = None;
-                    self.qs_selected_remote_capture = None;
+                    self.qs_selected_source = Some(QsDeviceSource::Gamepad(gamepad.token));
                     self.bump_chrome();
                     return;
                 }
@@ -15277,11 +15486,7 @@ impl ShellOverlayHost {
                 crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed => None,
             },
             DeviceFabricPaneRow::Media(media) => {
-                self.qs_selected_media = Some(media.session_id);
-                self.qs_selected_realtime = None;
-                self.qs_selected_gamepad = None;
-                self.qs_selected_remote_audio = None;
-                self.qs_selected_remote_capture = None;
+                self.qs_selected_source = Some(QsDeviceSource::Media(media.session_id));
                 self.bump_chrome();
                 return;
             }
@@ -15307,13 +15512,7 @@ impl ShellOverlayHost {
                 if status.phase
                     == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
                 {
-                    let (allow, decline) =
-                        Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-                    let approved = if allow.contains(point) {
-                        true
-                    } else if decline.contains(point) {
-                        false
-                    } else {
+                    let Some(approved) = self.qs_device_row_choice(row_index, point) else {
                         return;
                     };
                     Some((
@@ -15350,7 +15549,7 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::Device(device)
                 if !device.is_local
                     && device.online
-                    && let Some(kind) = self.qs_selected_remote_capture =>
+                    && let Some(QsDeviceSource::RemoteCapture(kind)) = self.qs_selected_source =>
             {
                 Some((
                     DeviceFabricUiAction::RequestRemoteCapture {
@@ -15370,11 +15569,12 @@ impl ShellOverlayHost {
                 if !device.is_local
                     && device.online
                     && device.audio_output
-                    && self.qs_selected_remote_audio.is_some() =>
+                    && let Some(QsDeviceSource::RemoteAudio(source_token)) =
+                        self.qs_selected_source =>
             {
                 Some((
                     DeviceFabricUiAction::StartRemoteAudio {
-                        source_token: self.qs_selected_remote_audio.unwrap_or_default(),
+                        source_token,
                         target: device.id,
                     },
                     t_args(
@@ -15387,11 +15587,7 @@ impl ShellOverlayHost {
                 if !device.is_local
                     && device.online
                     && device.kind == crate::shell::device_fabric::DeviceKind::Phone
-                    && self.qs_selected_remote_audio.is_none()
-                    && self.qs_selected_gamepad.is_none()
-                    && self.qs_selected_realtime.is_none()
-                    && self.qs_selected_remote_capture.is_none()
-                    && self.qs_selected_media.is_none() =>
+                    && self.qs_selected_source.is_none() =>
             {
                 Some((
                     DeviceFabricUiAction::RequestPhoneTethering { phone: device.id },
@@ -15402,11 +15598,14 @@ impl ShellOverlayHost {
                 ))
             }
             DeviceFabricPaneRow::Device(device)
-                if !device.is_local && device.online && self.qs_selected_gamepad.is_some() =>
+                if !device.is_local
+                    && device.online
+                    && let Some(QsDeviceSource::Gamepad(source_token)) =
+                        self.qs_selected_source =>
             {
                 Some((
                     DeviceFabricUiAction::StartPhysicalGamepad {
-                        source_token: self.qs_selected_gamepad.unwrap_or_default(),
+                        source_token,
                         target: device.id,
                     },
                     t_args(
@@ -15416,9 +15615,11 @@ impl ShellOverlayHost {
                 ))
             }
             DeviceFabricPaneRow::Device(device)
-                if !device.is_local && device.online && self.qs_selected_realtime.is_some() =>
+                if !device.is_local
+                    && device.online
+                    && let Some(QsDeviceSource::Realtime(session)) = &self.qs_selected_source =>
             {
-                let session = self.qs_selected_realtime.clone().unwrap_or_default();
+                let session = session.clone();
                 let result = self.realtime_continuity_call(RealtimeContinuityUiAction::Propose {
                     session,
                     target: device.id,
@@ -15440,9 +15641,11 @@ impl ShellOverlayHost {
                 return;
             }
             DeviceFabricPaneRow::Device(device)
-                if !device.is_local && device.online && self.qs_selected_media.is_some() =>
+                if !device.is_local
+                    && device.online
+                    && let Some(QsDeviceSource::Media(session_id)) = &self.qs_selected_source =>
             {
-                let session_id = self.qs_selected_media.clone().unwrap_or_default();
+                let session_id = session_id.clone();
                 let compatible = view.local_media.iter().any(|media| {
                     media.session_id == session_id && media.targets.contains(&device.id)
                 });
@@ -15567,15 +15770,8 @@ impl ShellOverlayHost {
             if !input.is_default {
                 return None;
             }
-            let (lower, raise) =
-                Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
-            let raise = if raise.contains(point) {
-                true
-            } else if lower.contains(point) {
-                false
-            } else {
-                return None;
-            };
+            // The first button lowers, the second raises.
+            let raise = !self.qs_device_row_choice(row_index, point)?;
             // A level step is its own feedback: the row's level updates.
             return Some((
                 DeviceFabricUiAction::StepInputLevel {
@@ -15742,6 +15938,7 @@ impl ShellOverlayHost {
             let mut st = chrome.borrow_mut();
             self.qs_root.handle_click(p, panel, &mut st.quick_settings)
         };
+        self.qs_navigation_release_pending |= matches!(action, RootAction::Enter(_));
         self.apply_quick_settings_root_action(action, &chrome);
     }
 
@@ -17315,7 +17512,7 @@ impl ShellOverlayHost {
                 }
                 self.layers
                     .dictation
-                    .status(crate::compositor::dictation::DictationStatus::Idle);
+                    .status(crate::compositor::dictation_status::DictationStatus::Idle);
                 self.layers.dictation.request_cancel();
                 if let Some(chrome) = self.chrome.clone() {
                     self.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
@@ -17600,6 +17797,7 @@ impl Widget for ShellOverlayHost {
             sidebar.sync(s, p);
         }
         self.palette.sync(s, p);
+        self.agent_quick_composer.sync(s, p);
         self.capture_studio.sync(s, p);
         for (_, mirror) in &mut self.capture_mirrors {
             mirror.sync(s, p);
@@ -17625,10 +17823,25 @@ impl Widget for ShellOverlayHost {
     )]
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let (doc, path) = ui::doc::document_ref(doc, path);
+        let action_dirty = self
+            .agent_actions
+            .values_mut()
+            .fold(false, |changed, actions| {
+                actions.pump(&mut self.agent_quick_composer) | changed
+            });
+        if action_dirty {
+            self.agent_quick_composer.sync(doc, path);
+        }
+        let agent_quick_dirty = action_dirty | self.agent_quick_composer.update(doc, path);
+        let marker_dirty = self
+            .agent_markers
+            .retain(|source| source.is_fresh(Instant::now()));
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
             let mut apps = apps.borrow_mut();
+            // Only Linux enrollment asks for a provider's network access.
+            #[cfg(target_os = "linux")]
             if let Some(prompts) = &self.portal_prompts {
                 apps.bind_messaging_network_prompts(prompts.clone());
             }
@@ -17651,8 +17864,9 @@ impl Widget for ShellOverlayHost {
         let pairing_dirty = self.pairing.pump(doc, path);
         let radio_dirty = self.poll_quick_settings_radio();
         let quick_settings_dirty = self.apply_quick_settings_readings();
+        let projection_open = self.overlay_flags().projection;
         let display_storage_dirty =
-            self.projection_overlay.poll_storage() | self.close_settled_projection();
+            self.projection_overlay.poll_storage(projection_open) | self.close_settled_projection();
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         self.tick_shortcut_triggers();
@@ -17804,7 +18018,9 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
-        content_dirty
+        agent_quick_dirty
+            || marker_dirty
+            || content_dirty
             || quick_settings_dirty
             || radio_dirty
             || display_storage_dirty
@@ -17906,6 +18122,12 @@ impl Widget for ShellOverlayHost {
         self.push_display_layout();
         let content_node = self.content.build_layout(taffy, theme, node_map);
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
+        // Match children(): a closed composer has no live controls to measure
+        // or query. Visibility changes retire/rebuild the map below.
+        self.agent_quick_composer_node = self.agent_quick_composer.is_open().then(|| {
+            self.agent_quick_composer
+                .build_layout(taffy, theme, node_map)
+        });
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
         self.capture_node = Some(capture_node);
         self.screenshot_markup_node = self
@@ -18016,6 +18238,11 @@ impl Widget for ShellOverlayHost {
             Some(s) => vec![content_node, palette_node, s, capture_node],
             None => vec![content_node, palette_node, capture_node],
         };
+        children.extend(self.agent_quick_composer_node);
+        children.extend(
+            self.agent_markers
+                .build(taffy, theme, node_map, self.rect.origin()),
+        );
         if let Some(markup_node) = self.screenshot_markup_node {
             children.push(markup_node);
         }
@@ -18091,6 +18318,13 @@ impl Widget for ShellOverlayHost {
             }
             return;
         }
+        // The dedicated OOBE tree does not mount desktop agent controls.
+        // Their cached nodes belong only to the desktop layout built below.
+        if let Some(agent_node) = self.agent_quick_composer_node {
+            self.agent_quick_composer
+                .apply_layout(taffy, agent_node, self.rect.origin());
+        }
+        self.agent_markers.apply(taffy, self.rect.origin());
         // One more pass if the card sized against stale host dimensions or
         // focus moved to another display; settles in a single extra frame.
         if self.palette_layout_host != Some((self.rect, self.overlay_area())) {
@@ -18282,6 +18516,13 @@ impl Widget for ShellOverlayHost {
         self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
         self.draw_dropdowns_and_sheets(scene, transform, text_renderer, theme, presence, flags);
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
+        let suppress_agent_markers = self.agent_quick_composer.is_open()
+            || self.onboarding_active()
+            || self.inner_surface_captures_input()
+            || self.modal_sheet_owns_keyboard();
+        self.agent_markers.refresh(presence, suppress_agent_markers);
+        self.agent_quick_composer
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
             self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
@@ -18614,6 +18855,19 @@ impl Widget for ShellOverlayHost {
         if self.route_capture_mirror_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
+        if self.agent_quick_composer.is_open()
+            && let Some(node) = self.agent_quick_composer_node
+        {
+            self.agent_quick_composer
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled || self.agent_quick_composer.modal_capture().is_some() {
+                return;
+            }
+        }
+        self.agent_markers.route_event(event, ctx);
+        if *ctx.handled {
+            return;
+        }
         if let Some(chrome) = self.chrome.clone() {
             let reading = {
                 let st = chrome.borrow();
@@ -18635,7 +18889,7 @@ impl Widget for ShellOverlayHost {
                 return;
             }
         }
-        if self.route_qs_slider_drag(event, ctx.handled) {
+        if self.route_qs_pointer_capture(event, ctx.handled) {
             return;
         }
         if self.route_room_activity_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
@@ -18660,7 +18914,10 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
-        if self.route_absorbable_pointer_and_toast_click(event, ctx.scale_factor, ctx.handled) {
+        if self.route_absorbable_pointer_and_toast_click(
+            event,
+            &mut ctx.reborrow(ctx.path, ctx.node_id),
+        ) {
             return;
         }
         if self.route_permission_prompt_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
@@ -18827,6 +19084,8 @@ impl Widget for ShellOverlayHost {
                 | LayerId::Dictation => {}
                 LayerId::CommandPalette => {
                     if let Some(mut palette) = self.palette.accessibility() {
+                        // The query owns focus, not its synthetic parent dialog.
+                        palette.state.focused = false;
                         // The filter band is the host's, painted over the
                         // palette's reserved strip; it joins the palette's
                         // tree after the palette's own children (query,
@@ -19189,7 +19448,7 @@ impl Widget for ShellOverlayHost {
                             let view = self
                                 .device_fabric_call(DeviceFabricUiAction::Snapshot)
                                 .unwrap_or_default();
-                            let selected_id = self.qs_selected_media.as_ref().or_else(|| {
+                            let selected_id = self.qs_selected_media().or_else(|| {
                                 view.local_media
                                     .iter()
                                     .find(|media| media.playing)
@@ -19207,416 +19466,21 @@ impl Widget for ShellOverlayHost {
                             let rows = device_fabric_pane_rows(&view, &realtime);
                             let total = rows.len();
                             let items = rows
-                                .into_iter()
+                                .iter()
                                 .enumerate()
                                 .map(|(index, item)| {
-                                    let (name, description, children) = match item {
-                                        DeviceFabricPaneRow::CalibrationProposal(proposal) => {
-                                            let label = view
-                                                .devices
-                                                .iter()
-                                                .find(|device| device.id == proposal.peer)
-                                                .map_or_else(
-                                                    || t("a11y-certified-display"),
-                                                    |device| device.label.clone(),
-                                                );
-                                            (
-                                                t_args(
-                                                    "a11y-placement-suggested",
-                                                    &[("display", label.into())],
-                                                ),
-                                                t("a11y-placement-suggested-description"),
-                                                vec![
-                                                    AccessNode::new(Role::Button)
-                                                        .with_name(t("a11y-placement-apply")),
-                                                    AccessNode::new(Role::Button)
-                                                        .with_name(t("a11y-placement-dismiss")),
-                                                ],
-                                            )
-                                        }
-                                        DeviceFabricPaneRow::CalibrationRevert(device) => (
-                                            t_args(
-                                                "a11y-placement-undo",
-                                                &[(
-                                                    "display",
-                                                    view.devices
-                                                        .iter()
-                                                        .find(|item| item.id == device)
-                                                        .map_or_else(
-                                                            || t("a11y-display-fallback"),
-                                                            |item| item.label.clone(),
-                                                        )
-                                                        .into(),
-                                                )],
-                                            ),
-                                            t("a11y-placement-undo-description"),
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::SpeakerConsent(consent) => (
-                                            consent.accessible_name(),
-                                            consent.accessible_description(),
-                                            vec![
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(consent.allow_label()),
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(consent.decline_label()),
-                                            ],
-                                        ),
-                                        DeviceFabricPaneRow::SpeakerSession(session) => (
-                                            t_args(
-                                                "a11y-speaker-playing-on",
-                                                &[("group", session.name.as_str().into())],
-                                            ),
-                                            t("a11y-speaker-session-description"),
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::SpeakerGroup(group) => (
-                                            group.name.clone(),
-                                            t_args(
-                                                "a11y-speaker-group-description",
-                                                &[("summary", speaker_group_summary(&group).into())],
-                                            ),
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::SpeakerSetup => (
-                                            t("a11y-speaker-setup"),
-                                            t("a11y-speaker-setup-description"),
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::SpeakerMembership(membership) => (
-                                            membership.title(sentence_case),
-                                            membership.accessible_description(),
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::RemoteAudioConsent(consent) => (
-                                            t_args(
-                                                "a11y-remote-audio-play-here",
-                                                &[("media", consent.label.as_str().into())],
-                                            ),
-                                            t("a11y-remote-audio-consent-description"),
-                                            vec![
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-remote-audio-allow")),
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-remote-audio-decline")),
-                                            ],
-                                        ),
-                                        DeviceFabricPaneRow::RemoteAudioSource(source) => (
-                                            source.label,
-                                            if source.application {
-                                                t("a11y-remote-audio-source-app")
-                                            } else {
-                                                t("a11y-remote-audio-source-system")
-                                            },
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::RemoteAudioRoute(route) => (
-                                            route.label,
-                                            if route.phase
-                                                == crate::shell::remote_audio::RemoteAudioPhase::Interrupted
-                                            {
-                                                t("a11y-remote-audio-route-interrupted")
-                                            } else {
-                                                t("a11y-remote-audio-route-active")
-                                            },
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::RemoteCaptureConsent(consent) => (
-                                            t_args(
-                                                "a11y-remote-capture-share",
-                                                &[
-                                                    ("input", t(remote_capture_kind_key(consent.profile.kind())).into()),
-                                                    ("app", consent.app_label.as_str().into()),
-                                                ],
-                                            ),
-                                            t("a11y-remote-capture-consent-description"),
-                                            vec![
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-remote-capture-allow")),
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-remote-capture-decline")),
-                                            ],
-                                        ),
-                                        DeviceFabricPaneRow::RemoteCaptureSource(kind) => (
-                                            t_args(
-                                                "a11y-remote-capture-source",
-                                                &[("input", t(remote_capture_kind_key(kind)).into())],
-                                            ),
-                                            t("a11y-remote-capture-source-description"),
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::RemoteCaptureSession(session) => (
-                                            t_args(
-                                                "a11y-remote-capture-session",
-                                                &[("input", t(remote_capture_kind_key(session.kind)).into())],
-                                            ),
-                                            match session.phase {
-                                                crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Requesting =>
-                                                    t("a11y-remote-capture-requesting"),
-                                                crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Provisioning =>
-                                                    t("a11y-remote-capture-provisioning"),
-                                                crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::AppApprovalRequired =>
-                                                    t("a11y-remote-capture-app-approval"),
-                                                crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::WaitingForReceiver =>
-                                                    t("a11y-remote-capture-waiting-receiver"),
-                                                crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Streaming =>
-                                                    t("a11y-remote-capture-streaming"),
-                                            },
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::RemoteCaptureDegraded(degraded) => (
-                                            t_args(
-                                                "a11y-remote-capture-unavailable",
-                                                &[("input", t(remote_capture_kind_key(degraded.kind)).into())],
-                                            ),
-                                            match degraded.reason {
-                                                crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::SourceUnavailable =>
-                                                    t("a11y-remote-capture-source-unavailable"),
-                                                crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::ReceiverUnavailable =>
-                                                    t("a11y-remote-capture-receiver-unavailable"),
-                                                crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::TransferInterrupted =>
-                                                    t("a11y-remote-capture-interrupted"),
-                                            },
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::RealtimeConsent(consent) => (
-                                            t_args(
-                                                "a11y-call-continue",
-                                                &[("room", consent.room_label.as_str().into())],
-                                            ),
-                                            t("a11y-call-consent-description"),
-                                            vec![
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-call-allow")),
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-call-decline")),
-                                            ],
-                                        ),
-                                        DeviceFabricPaneRow::RealtimeSource(source) => (
-                                            t_args(
-                                                "a11y-call-in",
-                                                &[("room", source.room_label.as_str().into())],
-                                            ),
-                                            t("a11y-call-source-description"),
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::BluetoothAuthorization(
-                                            authorization,
-                                        ) => (
-                                            t_args(
-                                                "a11y-bluetooth-pair",
-                                                &[("accessory", authorization.accessory_name.as_str().into())],
-                                            ),
-                                            t_args(
-                                                "a11y-bluetooth-pair-description",
-                                                &[("source", authorization.source_label.as_str().into())],
-                                            ),
-                                            vec![
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-bluetooth-pair-allow")),
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-bluetooth-pair-decline")),
-                                            ],
-                                        ),
-                                        DeviceFabricPaneRow::BluetoothHandoff(status) => (
-                                            t_args(
-                                                "a11y-bluetooth-handoff",
-                                                &[
-                                                    ("accessory", status.accessory_name.as_str().into()),
-                                                    ("peer", status.peer_label.as_str().into()),
-                                                ],
-                                            ),
-                                            match status.phase {
-                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::PreparingTarget =>
-                                                    t("a11y-handoff-preparing"),
-                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::AwaitingApproval =>
-                                                    t("a11y-handoff-awaiting-approval"),
-                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::ReleasingSource =>
-                                                    t("a11y-handoff-releasing"),
-                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::PairingTarget =>
-                                                    t("a11y-handoff-pairing"),
-                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::ConnectingTarget =>
-                                                    t("a11y-handoff-connecting"),
-                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::AwaitingConfirmation =>
-                                                    t("a11y-handoff-confirming"),
-                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Completed =>
-                                                    t("a11y-handoff-completed"),
-                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) if status.outbound =>
-                                                    t_args(
-                                                        "a11y-handoff-failed-retry",
-                                                        &[("reason", t(bluetooth_handoff_failure_key(failure)).into())],
-                                                    ),
-                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) =>
-                                                    t_args(
-                                                        "a11y-handoff-failed",
-                                                        &[("reason", t(bluetooth_handoff_failure_key(failure)).into())],
-                                                    ),
-                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled if status.outbound =>
-                                                    t("a11y-handoff-cancelled-retry"),
-                                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled =>
-                                                    t("a11y-handoff-cancelled"),
-                                            },
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::GamepadAuthorization(
-                                            authorization,
-                                        ) => (
-                                            t_args(
-                                                "a11y-controller-use",
-                                                &[("controller", authorization.controller_label.as_str().into())],
-                                            ),
-                                            t_args(
-                                                "a11y-controller-consent-description",
-                                                &[
-                                                    ("source", authorization.source_label.as_str().into()),
-                                                    ("app", authorization.app_id.as_str().into()),
-                                                ],
-                                            ),
-                                            vec![
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-controller-allow")),
-                                                AccessNode::new(Role::Button)
-                                                    .with_name(t("a11y-controller-decline")),
-                                            ],
-                                        ),
-                                        DeviceFabricPaneRow::LocalGamepad(gamepad) => (
-                                            gamepad.name,
-                                            if gamepad.forwarding.is_some() {
-                                                t("a11y-controller-forwarding")
-                                            } else {
-                                                t("a11y-controller-local")
-                                            },
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::MediaHandoff(status) => (
-                                            t_args(
-                                                "a11y-media-handoff",
-                                                &[
-                                                    ("media", status.title.as_str().into()),
-                                                    ("target", status.target_label.as_str().into()),
-                                                ],
-                                            ),
-                                            match status.phase {
-                                                crate::shell::device_fabric_runtime::MediaHandoffPhase::Pending =>
-                                                    t("a11y-media-handoff-pending"),
-                                                crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed =>
-                                                    t("a11y-media-handoff-completed"),
-                                                crate::shell::device_fabric_runtime::MediaHandoffPhase::Failed(failure) =>
-                                                    t_args(
-                                                        "a11y-handoff-failed-retry",
-                                                        &[("reason", t(media_handoff_failure_key(failure)).into())],
-                                                    ),
-                                                crate::shell::device_fabric_runtime::MediaHandoffPhase::Cancelled =>
-                                                    t("a11y-handoff-cancelled-retry"),
-                                            },
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::Media(media) => (
-                                            media.title,
-                                            if media.playing {
-                                                t("a11y-media-playing")
-                                            } else {
-                                                t("a11y-media-paused")
-                                            },
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::LocalOutput(output) => (
-                                            output.label,
-                                            if output.is_default {
-                                                t("a11y-output-current")
-                                            } else {
-                                                t("a11y-output-route")
-                                            },
-                                            Vec::new(),
-                                        ),
-                                        DeviceFabricPaneRow::LocalInput(input) => {
-                                            let detail = Self::local_input_detail(&input);
-                                            let actions = if input.is_default {
-                                                vec![
-                                                    AccessNode::new(Role::Button)
-                                                        .with_name(t("a11y-input-lower")),
-                                                    AccessNode::new(Role::Button)
-                                                        .with_name(t("a11y-input-raise")),
-                                                ]
-                                            } else {
-                                                Vec::new()
-                                            };
-                                            (input.label, detail, actions)
-                                        }
-                                        DeviceFabricPaneRow::Tethering(status) => (
-                                            t_args(
-                                                "a11y-tethering-with",
-                                                &[("peer", status.peer_label.as_str().into())],
-                                            ),
-                                            match status.phase {
-                                                crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired =>
-                                                    t("a11y-tethering-consent"),
-                                                crate::shell::personal_tethering_runtime::TetheringPhase::Active =>
-                                                    t("a11y-tethering-active"),
-                                                _ => t("a11y-tethering-status"),
-                                            },
-                                            if status.phase == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired {
-                                                vec![
-                                                    AccessNode::new(Role::Button)
-                                                        .with_name(t("a11y-tethering-allow")),
-                                                    AccessNode::new(Role::Button)
-                                                        .with_name(t("a11y-tethering-decline")),
-                                                ]
-                                            } else {
-                                                Vec::new()
-                                            },
-                                        ),
-                                        DeviceFabricPaneRow::Device(device) => {
-                                            let mut description = Self::fabric_device_detail(
-                                                &device,
-                                                selected,
-                                                view.transfers
-                                                    .iter()
-                                                    .rev()
-                                                    .find(|transfer| transfer.target == device.id),
-                                            );
-                                            if let Some(health) = view
-                                                .device_health
-                                                .iter()
-                                                .find(|health| health.peer == device.id)
-                                            {
-                                                description.push_str("; ");
-                                                description
-                                                    .push_str(&Self::fabric_health_detail(health));
-                                            }
-                                            (
-                                            device.label.clone(),
-                                            description,
-                                            if device.is_local {
-                                                Vec::new()
-                                            } else {
-                                                vec![
-                                                    AccessNode::new(Role::Button)
-                                                        .with_name(t("a11y-place-left")),
-                                                    AccessNode::new(Role::Button)
-                                                        .with_name(t("a11y-place-right")),
-                                                    AccessNode::new(Role::Button)
-                                                        .with_name(t("a11y-place-above")),
-                                                    AccessNode::new(Role::Button)
-                                                        .with_name(t("a11y-place-below")),
-                                                    AccessNode::new(Role::Button).with_name(
-                                                        if device.controls_local {
-                                                            t("a11y-control-revoke")
-                                                        } else {
-                                                            t("a11y-control-allow")
-                                                        },
-                                                    ),
-                                                ]
-                                            },
-                                        )
-                                        }
-                                    };
+                                    let (name, description, ..) =
+                                        self.qs_device_row_face(&view, selected, item);
+                                    let buttons = Self::qs_device_row_button_names(item)
+                                        .into_iter()
+                                        .map(|name| AccessNode::new(Role::Button).with_name(name))
+                                        .collect();
                                     AccessNode::new(Role::Button)
                                         .with_name(name)
                                         .with_description(description)
                                         .with_position(index.saturating_add(1), total)
                                         .with_state(AccessState::new().focusable(true))
-                                        .with_children(children)
+                                        .with_children(buttons)
                                 })
                                 .collect();
                             root.children.push(
@@ -19708,6 +19572,14 @@ impl Widget for ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        if target.starts_with(agent_markers::TARGET_PREFIX) {
+            if self.accessible_agent_marker_request_is_inert(target) {
+                return true;
+            }
+            return self
+                .agent_markers
+                .semantic_action(target, action, state, path);
+        }
         // The palette is published inside this host's tree (see
         // `accessibility_represents_child`), so its query's semantic target
         // arrives here, not at the palette widget. Setting it is typing it:
@@ -19941,6 +19813,10 @@ impl Widget for ShellOverlayHost {
         if let Some(pairing) = self.pairing.view() {
             out.push(pairing);
         }
+        if self.agent_quick_composer.is_open() {
+            out.push(&self.agent_quick_composer);
+        }
+        out.extend(self.agent_markers.children());
         out
     }
 
@@ -19969,11 +19845,16 @@ impl Widget for ShellOverlayHost {
         if let Some(pairing) = self.pairing.view_mut() {
             out.push(pairing);
         }
+        if self.agent_quick_composer.is_open() {
+            out.push(&mut self.agent_quick_composer);
+        }
+        out.extend(self.agent_markers.children_mut());
         out
     }
 
     fn take_focus_reset(&mut self) -> bool {
-        self.pairing.take_focus_reset()
+        self.agent_quick_composer.take_focus_reset()
+            | self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
             | self
                 .onboarding
@@ -20025,7 +19906,16 @@ impl Widget for ShellOverlayHost {
         let palette = std::mem::take(&mut self.palette_layout_dirty);
         let capture_mirrors = std::mem::take(&mut self.capture_mirrors_structure_dirty);
         let pairing = self.pairing.take_structure_dirty();
-        content | sidebar | palette | capture_mirrors | resynced | workspace_layout | pairing
+        content
+            | sidebar
+            | palette
+            | capture_mirrors
+            | resynced
+            | workspace_layout
+            | pairing
+            | self.agent_markers.take_structure_dirty()
+            | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
+            | self.agent_quick_composer.take_structure_dirty()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -20036,6 +19926,13 @@ impl Widget for ShellOverlayHost {
         self.wake_deadline_sources(Instant::now())
             .into_iter()
             .filter_map(|(_, deadline)| deadline)
+            .chain(self.agent_markers.deadline())
+            .chain(
+                self.agent_actions
+                    .values()
+                    .filter_map(agent_actions::AgentActions::deadline),
+            )
+            .chain(self.agent_quick_composer.next_wake_deadline())
             .min()
     }
 }
@@ -20138,11 +20035,65 @@ impl ShellOverlayHost {
     }
 }
 
+/// The kept workspaces' apps are mounted like the shown one's, so every step
+/// of closing the session reaches them too, after the widget children.
 impl ui::component_lifecycle::ComponentLifecycle for ShellOverlayHost {
+    fn unsaved_documents(
+        &self,
+        doc: &automerge::AutoCommit,
+    ) -> Vec<ui::close_admission::UnsavedDocument> {
+        let mut out = Vec::new();
+        self.for_each_child(&mut |child| {
+            out.extend(ui::component_lifecycle::unsaved_documents(child, doc));
+        });
+        for kept in self.parked_workspaces.contents() {
+            out.extend(ui::component_lifecycle::unsaved_documents(kept, doc));
+        }
+        out
+    }
+
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        let mut errors: Vec<String> = self
+            .children_mut()
+            .into_iter()
+            .flat_map(ui::component_lifecycle::checkpoint_components)
+            .collect();
+        for kept in self.parked_workspaces.contents_mut() {
+            errors.extend(ui::component_lifecycle::checkpoint_components(kept));
+        }
+        errors
+    }
+
+    fn finish_admitted_close(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports: Vec<_> = self
+            .children_mut()
+            .into_iter()
+            .flat_map(ui::component_lifecycle::finish_admitted_close)
+            .collect();
+        for kept in self.parked_workspaces.contents_mut() {
+            reports.extend(ui::component_lifecycle::finish_admitted_close(kept));
+        }
+        reports
+    }
+
+    fn close_components(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports: Vec<_> = self
+            .children_mut()
+            .into_iter()
+            .flat_map(ui::component_lifecycle::close_components)
+            .collect();
+        // Closed content is not kept: nothing would put it back usable.
+        reports.extend(parked_workspaces::close(self.parked_workspaces.drain()));
+        reports
+    }
+
     fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
         let mut reports = std::mem::take(&mut self.desktop_close_reports);
         for child in self.children_mut() {
             reports.extend(ui::component_lifecycle::take_component_close_reports(child));
+        }
+        for kept in self.parked_workspaces.contents_mut() {
+            reports.extend(ui::component_lifecycle::take_component_close_reports(kept));
         }
         reports
     }
@@ -21562,9 +21513,9 @@ impl ShellOverlayHost {
     }
 
     /// Wireless projection is an OS-owned edge sheet. Discovery and
-    /// protocol handshakes complete off-thread; polling only moves
-    /// already-completed state into this frame. Split out of
-    /// `draw_dropdowns_and_sheets`.
+    /// protocol handshakes complete off-thread, and the host update moves
+    /// their results and the display state into the sheet; painting only
+    /// draws it. Split out of `draw_dropdowns_and_sheets`.
     fn draw_projection_sheet(
         &mut self,
         scene: &mut Scene,
@@ -21574,7 +21525,7 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        let changed = self.projection_overlay.draw(
+        self.projection_overlay.draw(
             scene,
             transform,
             text_renderer,
@@ -21583,9 +21534,6 @@ impl ShellOverlayHost {
             self.rect,
             flags.projection,
         );
-        if changed && let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
     }
 
     fn shortcut_help_panel_rect(&self) -> Rect {
@@ -24743,20 +24691,44 @@ impl ShellOverlayHost {
         )
     }
 
-    fn normalise_qs_selected_media(&mut self, view: &DeviceFabricView) {
-        if self.qs_selected_media.as_ref().is_some_and(|selected| {
-            view.local_media
-                .iter()
-                .any(|media| &media.session_id == selected)
-        }) {
-            return;
+    fn qs_selected_media(&self) -> Option<&String> {
+        match &self.qs_selected_source {
+            Some(QsDeviceSource::Media(session_id)) => Some(session_id),
+            _ => None,
         }
-        self.qs_selected_media = view
+    }
+
+    /// Which of a device row's two trailing buttons `point` hits: `true` for
+    /// the first (allow), `false` for the second (decline), `None` for neither.
+    fn qs_device_row_choice(&self, row_index: usize, point: Point) -> Option<bool> {
+        let (first, second) = Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+        if first.contains(point) {
+            Some(true)
+        } else if second.contains(point) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    /// Defaults the source to the playing (or first) local media session
+    /// while no other source is chosen, and drops a media session that ended.
+    fn normalise_qs_selected_media(&mut self, view: &DeviceFabricView) {
+        match &self.qs_selected_source {
+            Some(QsDeviceSource::Media(selected))
+                if !view
+                    .local_media
+                    .iter()
+                    .any(|media| &media.session_id == selected) => {}
+            None => {}
+            Some(_) => return,
+        }
+        self.qs_selected_source = view
             .local_media
             .iter()
             .find(|media| media.playing)
             .or_else(|| view.local_media.first())
-            .map(|media| media.session_id.clone());
+            .map(|media| QsDeviceSource::Media(media.session_id.clone()));
     }
 
     fn fabric_device_detail(
@@ -24981,6 +24953,649 @@ impl ShellOverlayHost {
         }
     }
 
+    /// The title, detail, icon, selected state and enabled state of one
+    /// device-fabric row: what the pane draws and what it announces.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one presentation arm per device-fabric row kind"
+    )]
+    fn qs_device_row_face(
+        &self,
+        view: &DeviceFabricView,
+        selected: Option<&FabricMediaView>,
+        item: &DeviceFabricPaneRow,
+    ) -> (String, String, ui::icons::Icon, bool, bool) {
+        match item {
+            DeviceFabricPaneRow::CalibrationProposal(proposal) => {
+                let label = view
+                    .devices
+                    .iter()
+                    .find(|device| device.id == proposal.peer)
+                    .map_or_else(|| t("a11y-certified-display"), |device| device.label.clone());
+                let side = match proposal.edge {
+                    crate::shell::device_fabric::DisplayEdge::Left => "left",
+                    crate::shell::device_fabric::DisplayEdge::Right => "right",
+                    crate::shell::device_fabric::DisplayEdge::Top => "above",
+                    crate::shell::device_fabric::DisplayEdge::Bottom => "below",
+                };
+                (
+                    t_args("qs-devices-place", &[("display", label.into()), ("side", side.into())]),
+                    t("qs-devices-place-note"),
+                    ui::icons::Icon::Monitor,
+                    false,
+                    true,
+                )
+            }
+            DeviceFabricPaneRow::CalibrationRevert(device) => (
+                t_args(
+                    "a11y-placement-undo",
+                    &[(
+                        "display",
+                        view.devices
+                            .iter()
+                            .find(|item| item.id == *device)
+                            .map_or_else(|| t("a11y-display-fallback"), |item| item.label.clone())
+                            .into(),
+                    )],
+                ),
+                t("qs-devices-placement-undo-note"),
+                ui::icons::Icon::Monitor,
+                false,
+                true,
+            ),
+            DeviceFabricPaneRow::SpeakerConsent(consent) => (
+                consent.prompt(),
+                consent.note(),
+                match consent.scope {
+                    crate::shell::speaker_group_runtime::SpeakerConsentScope::Play(_) => {
+                        ui::icons::Icon::Volume2
+                    }
+                    crate::shell::speaker_group_runtime::SpeakerConsentScope::Listen => {
+                        ui::icons::Icon::Mic
+                    }
+                },
+                false,
+                true,
+            ),
+            DeviceFabricPaneRow::SpeakerSession(session) => (
+                t_args(
+                    "a11y-speaker-playing-on",
+                    &[("group", session.name.as_str().into())],
+                ),
+                match session.status() {
+                    crate::shell::speaker_group_runtime::SpeakerSessionStatus::ClockFailed(
+                        reason,
+                    ) => t_args(
+                        "qs-devices-speaker-clock-failed",
+                        &[
+                            ("count", session.failed_members.into()),
+                            ("reason", t(reason.message_key()).into()),
+                        ],
+                    ),
+                    crate::shell::speaker_group_runtime::SpeakerSessionStatus::SyncingClocks => {
+                        t_args(
+                            "qs-devices-speaker-syncing",
+                            &[
+                                ("playing", session.playing_members.into()),
+                                ("syncing", session.syncing_members.into()),
+                            ],
+                        )
+                    }
+                    _ if session.inbound => t_args(
+                        "qs-devices-speaker-for",
+                        &[(
+                            "peer",
+                            session
+                                .peer_label
+                                .clone()
+                                .unwrap_or_else(|| t("qs-devices-another-device"))
+                                .into(),
+                        )],
+                    ),
+                    crate::shell::speaker_group_runtime::SpeakerSessionStatus::Connecting => {
+                        t_args(
+                            "qs-devices-speaker-connecting",
+                            &[
+                                ("playing", session.playing_members.into()),
+                                ("waiting", session.waiting_members.into()),
+                            ],
+                        )
+                    }
+                    crate::shell::speaker_group_runtime::SpeakerSessionStatus::Playing => {
+                        t_args(
+                            "qs-devices-speakers-playing",
+                            &[("count", session.playing_members.into())],
+                        )
+                    }
+                },
+                ui::icons::Icon::Volume2,
+                true,
+                true,
+            ),
+            DeviceFabricPaneRow::SpeakerGroup(group) => (
+                group.name.clone(),
+                speaker_group_summary(group),
+                ui::icons::Icon::Volume2,
+                false,
+                group.ready_members() > 0
+                    && matches!(
+                        self.qs_selected_source,
+                        Some(QsDeviceSource::RemoteAudio(_) | QsDeviceSource::Media(_))
+                    ),
+            ),
+            DeviceFabricPaneRow::SpeakerSetup => (
+                t("a11y-speaker-setup"),
+                t("qs-devices-speaker-setup-note"),
+                ui::icons::Icon::Volume2,
+                false,
+                true,
+            ),
+            DeviceFabricPaneRow::SpeakerMembership(membership) => (
+                membership.title(sentence_case),
+                membership.note(),
+                ui::icons::Icon::Volume2,
+                false,
+                true,
+            ),
+            DeviceFabricPaneRow::RemoteAudioConsent(consent) => {
+                let source_label = view
+                    .devices
+                    .iter()
+                    .find(|device| device.id == consent.source)
+                    .map_or_else(|| t("qs-devices-another-certified"), |device| device.label.clone());
+                (
+                    t_args(
+                        "a11y-remote-audio-play-here",
+                        &[("media", consent.label.as_str().into())],
+                    ),
+                    t_args(
+                        "qs-devices-requested-allow-once",
+                        &[("source", source_label.into())],
+                    ),
+                    ui::icons::Icon::Volume2,
+                    false,
+                    true,
+                )
+            }
+            DeviceFabricPaneRow::RemoteAudioSource(source) => (
+                source.label.clone(),
+                if source.application {
+                    t("qs-devices-audio-app")
+                } else {
+                    t("qs-devices-audio-system")
+                },
+                ui::icons::Icon::Volume2,
+                self.qs_selected_source == Some(QsDeviceSource::RemoteAudio(source.token)),
+                true,
+            ),
+            DeviceFabricPaneRow::RemoteAudioRoute(route) => {
+                let peer = view
+                    .devices
+                    .iter()
+                    .find(|device| device.id == route.peer)
+                    .map_or_else(|| t("qs-devices-certified-device"), |device| device.label.clone());
+                let detail = match route.phase {
+                    crate::shell::remote_audio::RemoteAudioPhase::AwaitingConsent => {
+                        t_args("qs-devices-audio-awaiting", &[("peer", peer.into())])
+                    }
+                    crate::shell::remote_audio::RemoteAudioPhase::SyncingClock => {
+                        t_args("qs-devices-audio-syncing", &[("peer", peer.into())])
+                    }
+                    crate::shell::remote_audio::RemoteAudioPhase::ClockFailed(reason) => t_args(
+                        "qs-devices-audio-clock-failed",
+                        &[
+                            ("peer", peer.into()),
+                            ("reason", t(reason.message_key()).into()),
+                        ],
+                    ),
+                    crate::shell::remote_audio::RemoteAudioPhase::Streaming => {
+                        t_args("qs-devices-audio-streaming", &[("peer", peer.into())])
+                    }
+                    crate::shell::remote_audio::RemoteAudioPhase::Interrupted => {
+                        t_args("qs-devices-audio-interrupted", &[("peer", peer.into())])
+                    }
+                };
+                (
+                    route.label.clone(),
+                    detail,
+                    ui::icons::Icon::Volume2,
+                    true,
+                    true,
+                )
+            }
+            DeviceFabricPaneRow::RemoteCaptureConsent(consent) => {
+                let source_label = view
+                    .devices
+                    .iter()
+                    .find(|device| device.id == consent.peer)
+                    .map_or_else(|| t("qs-devices-another-certified"), |device| device.label.clone());
+                (
+                    t_args(
+                        "qs-devices-capture-share",
+                        &[("input", t(remote_capture_kind_key(consent.profile.kind())).into())],
+                    ),
+                    t_args(
+                        "qs-devices-capture-requested",
+                        &[
+                            ("source", source_label.into()),
+                            ("app", consent.app_label.as_str().into()),
+                        ],
+                    ),
+                    ui::icons::Icon::Camera,
+                    false,
+                    true,
+                )
+            }
+            DeviceFabricPaneRow::RemoteCaptureSource(kind) => (
+                t_args(
+                    "qs-devices-capture-use-remote",
+                    &[("input", t(remote_capture_kind_key(*kind)).into())],
+                ),
+                t("qs-devices-capture-source-note"),
+                ui::icons::Icon::Camera,
+                self.qs_selected_source == Some(QsDeviceSource::RemoteCapture(*kind)),
+                true,
+            ),
+            DeviceFabricPaneRow::RemoteCaptureSession(session) => {
+                let peer = view
+                    .devices
+                    .iter()
+                    .find(|device| device.id == session.peer)
+                    .map_or_else(|| t("qs-devices-certified-device"), |device| device.label.clone());
+                let detail = match session.phase {
+                    crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Requesting => {
+                        t_args("qs-devices-capture-waiting-on", &[("peer", peer.into())])
+                    }
+                    crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Provisioning => {
+                        t("a11y-remote-capture-provisioning")
+                    }
+                    crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::AppApprovalRequired => {
+                        t("qs-devices-capture-allow-app")
+                    }
+                    crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::WaitingForReceiver => {
+                        t_args("qs-devices-capture-waiting-ready", &[("peer", peer.into())])
+                    }
+                    crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Streaming => {
+                        t_args("qs-devices-capture-private", &[("peer", peer.into())])
+                    }
+                };
+                (
+                    t_args(
+                        "a11y-remote-capture-session",
+                        &[("input", t(remote_capture_kind_key(session.kind)).into())],
+                    ),
+                    detail,
+                    ui::icons::Icon::Camera,
+                    session.phase
+                        == crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Streaming,
+                    session.phase
+                        == crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::AppApprovalRequired
+                        || session.session_id.is_some(),
+                )
+            }
+            DeviceFabricPaneRow::RemoteCaptureDegraded(degraded) => (
+                t_args(
+                    "a11y-remote-capture-unavailable",
+                    &[("input", t(remote_capture_kind_key(degraded.kind)).into())],
+                ),
+                match degraded.reason {
+                    crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::SourceUnavailable => {
+                        t("qs-devices-capture-source-unavailable")
+                    }
+                    crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::ReceiverUnavailable => {
+                        t("qs-devices-capture-receiver-unavailable")
+                    }
+                    crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::TransferInterrupted => {
+                        t("qs-devices-capture-interrupted")
+                    }
+                },
+                ui::icons::Icon::Camera,
+                false,
+                false,
+            ),
+            DeviceFabricPaneRow::RealtimeConsent(consent) => {
+                let source_label = view
+                    .devices
+                    .iter()
+                    .find(|device| device.id == consent.source)
+                    .map_or_else(|| t("qs-devices-another-certified"), |device| device.label.clone());
+                (
+                    t_args(
+                        "a11y-call-continue",
+                        &[("room", consent.room_label.as_str().into())],
+                    ),
+                    t_args(
+                        "qs-devices-call-requested",
+                        &[("source", source_label.into())],
+                    ),
+                    ui::icons::Icon::Camera,
+                    false,
+                    true,
+                )
+            }
+            DeviceFabricPaneRow::RealtimeSource(source) => (
+                t_args(
+                    "a11y-call-in",
+                    &[("room", source.room_label.as_str().into())],
+                ),
+                t("qs-devices-call-source-note"),
+                ui::icons::Icon::Camera,
+                matches!(&self.qs_selected_source, Some(QsDeviceSource::Realtime(session)) if *session == source.session),
+                true,
+            ),
+            DeviceFabricPaneRow::BluetoothAuthorization(authorization) => (
+                t_args(
+                    "a11y-bluetooth-pair",
+                    &[("accessory", authorization.accessory_name.as_str().into())],
+                ),
+                t_args(
+                    "qs-devices-bluetooth-requested",
+                    &[("source", authorization.source_label.as_str().into())],
+                ),
+                ui::icons::Icon::Bluetooth,
+                false,
+                true,
+            ),
+            DeviceFabricPaneRow::BluetoothHandoff(status) => (
+                status.accessory_name.clone(),
+                match status.phase {
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::PreparingTarget =>
+                        t_args("qs-devices-handoff-checking", &[("peer", status.peer_label.as_str().into())]),
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::AwaitingApproval =>
+                        t_args("qs-devices-handoff-awaiting", &[("peer", status.peer_label.as_str().into())]),
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::ReleasingSource =>
+                        t("qs-devices-handoff-releasing"),
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::PairingTarget =>
+                        t_args("qs-devices-handoff-pairing", &[("peer", status.peer_label.as_str().into())]),
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::ConnectingTarget =>
+                        t_args("qs-devices-handoff-connecting", &[("peer", status.peer_label.as_str().into())]),
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::AwaitingConfirmation =>
+                        t("qs-devices-handoff-confirming"),
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Completed =>
+                        t_args("qs-devices-handoff-connected", &[("peer", status.peer_label.as_str().into())]),
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) if status.outbound =>
+                        t_args(
+                            "qs-devices-handoff-failed-retry",
+                            &[("reason", sentence_case(&t(bluetooth_handoff_failure_key(failure))).into())],
+                        ),
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) =>
+                        sentence_case(&t(bluetooth_handoff_failure_key(failure))),
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled if status.outbound =>
+                        t("qs-devices-cancelled-retry"),
+                    crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled =>
+                        t("qs-devices-cancelled"),
+                },
+                ui::icons::Icon::Bluetooth,
+                false,
+                status.phase
+                    != crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Completed
+                    && (status.outbound
+                        || !matches!(
+                            status.phase,
+                            crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(_)
+                                | crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled
+                        )),
+            ),
+            DeviceFabricPaneRow::GamepadAuthorization(authorization) => (
+                t_args(
+                    "a11y-controller-use",
+                    &[("controller", authorization.controller_label.as_str().into())],
+                ),
+                t_args(
+                    "qs-devices-controller-requested",
+                    &[
+                        ("source", authorization.source_label.as_str().into()),
+                        ("app", authorization.app_id.as_str().into()),
+                    ],
+                ),
+                ui::icons::Icon::Mouse,
+                false,
+                true,
+            ),
+            DeviceFabricPaneRow::LocalGamepad(gamepad) => (
+                gamepad.name.clone(),
+                gamepad.forwarding.as_ref().map_or_else(
+                    || t("qs-devices-controller-local"),
+                    |forwarding| {
+                        let target = view
+                            .devices
+                            .iter()
+                            .find(|device| device.id == forwarding.target)
+                            .map_or_else(|| t("qs-devices-another-device"), |device| device.label.clone());
+                        if forwarding.ready {
+                            t_args("qs-devices-controller-forwarding", &[("target", target.into())])
+                        } else {
+                            t_args("qs-devices-controller-awaiting", &[("target", target.into())])
+                        }
+                    },
+                ),
+                ui::icons::Icon::Mouse,
+                self.qs_selected_source == Some(QsDeviceSource::Gamepad(gamepad.token)) || gamepad.forwarding.is_some(),
+                true,
+            ),
+            DeviceFabricPaneRow::MediaHandoff(status) => (
+                t_args(
+                    "a11y-media-handoff",
+                    &[
+                        ("media", status.title.as_str().into()),
+                        ("target", status.target_label.as_str().into()),
+                    ],
+                ),
+                match status.phase {
+                    crate::shell::device_fabric_runtime::MediaHandoffPhase::Pending =>
+                        t("qs-devices-media-waiting"),
+                    crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed =>
+                        t("qs-devices-media-opened"),
+                    crate::shell::device_fabric_runtime::MediaHandoffPhase::Failed(failure) =>
+                        t_args(
+                            "qs-devices-media-failed",
+                            &[("reason", t(media_handoff_failure_key(failure)).into())],
+                        ),
+                    crate::shell::device_fabric_runtime::MediaHandoffPhase::Cancelled =>
+                        t("qs-devices-cancelled-retry"),
+                },
+                if view
+                    .local_media
+                    .iter()
+                    .find(|media| media.session_id == status.session_id)
+                    .is_some_and(|media| media.has_video)
+                {
+                    ui::icons::Icon::Film
+                } else {
+                    ui::icons::Icon::Music
+                },
+                false,
+                status.phase
+                    != crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed,
+            ),
+            DeviceFabricPaneRow::Media(media) => (
+                media.title.clone(),
+                if media.playing {
+                    t("qs-devices-media-playing")
+                } else {
+                    t("qs-devices-media-paused")
+                },
+                if media.has_video {
+                    ui::icons::Icon::Film
+                } else {
+                    ui::icons::Icon::Music
+                },
+                self.qs_selected_media() == Some(&media.session_id),
+                true,
+            ),
+            DeviceFabricPaneRow::LocalInput(input) => (
+                input.label.clone(),
+                Self::local_input_detail(input),
+                ui::icons::Icon::Mic,
+                input.is_default,
+                true,
+            ),
+            DeviceFabricPaneRow::LocalOutput(output) => (
+                output.label.clone(),
+                output.bluetooth_codec.as_ref().map_or_else(
+                    || {
+                        if output.is_default {
+                            t("qs-devices-output-default")
+                        } else {
+                            t("qs-devices-output-route")
+                        }
+                    },
+                    |codec| t_args("qs-devices-output-bluetooth", &[("codec", codec.as_str().into())]),
+                ),
+                ui::icons::Icon::Volume2,
+                output.is_default,
+                !output.is_default,
+            ),
+            DeviceFabricPaneRow::Tethering(status) => {
+                use crate::shell::personal_tethering_runtime::{
+                    TetheringDirection, TetheringPhase,
+                };
+                let detail = match status.phase {
+                    TetheringPhase::Requesting => t("qs-devices-tether-requesting"),
+                    TetheringPhase::ConsentRequired => t("qs-devices-tether-consent"),
+                    TetheringPhase::Preparing => t("qs-devices-tether-preparing"),
+                    TetheringPhase::Connecting => t("qs-devices-tether-connecting"),
+                    TetheringPhase::Active => match status.direction {
+                        TetheringDirection::Requester => t("qs-devices-tether-requester"),
+                        TetheringDirection::Provider => t("qs-devices-tether-provider"),
+                    },
+                    TetheringPhase::Denied => t("qs-devices-tether-denied"),
+                    TetheringPhase::Expired => t("qs-devices-tether-expired"),
+                    TetheringPhase::Offline => t("qs-devices-tether-offline"),
+                    TetheringPhase::PolicyDisabled => t("qs-devices-tether-disabled"),
+                    TetheringPhase::Failed => t("qs-devices-tether-failed"),
+                    TetheringPhase::Disconnected => t("qs-devices-tether-disconnected"),
+                };
+                (
+                    t_args(
+                        "qs-devices-tether-with",
+                        &[("peer", status.peer_label.as_str().into())],
+                    ),
+                    detail,
+                    ui::icons::Icon::Wifi,
+                    status.phase == TetheringPhase::Active,
+                    status.can_disconnect(),
+                )
+            }
+            DeviceFabricPaneRow::Device(device) => {
+                let enabled = !device.is_local
+                    && device.online
+                    && (device.kind == crate::shell::device_fabric::DeviceKind::Phone
+                        || matches!(
+                            self.qs_selected_source,
+                            Some(
+                                QsDeviceSource::Gamepad(_)
+                                    | QsDeviceSource::RemoteAudio(_)
+                                    | QsDeviceSource::RemoteCapture(_)
+                                    | QsDeviceSource::Realtime(_)
+                            )
+                        )
+                        || selected.is_some_and(|media| media.targets.contains(&device.id)));
+                let mut detail = if device.kind
+                    == crate::shell::device_fabric::DeviceKind::Phone
+                    && !device.is_local
+                    && device.online
+                    && self.qs_selected_source.is_none()
+                {
+                    t("qs-devices-ask-phone")
+                } else if matches!(self.qs_selected_source, Some(QsDeviceSource::Gamepad(_)))
+                    && !device.is_local
+                    && device.online
+                {
+                    t("qs-devices-use-controller")
+                } else if let Some(QsDeviceSource::RemoteCapture(kind)) = self.qs_selected_source
+                    && !device.is_local
+                    && device.online
+                {
+                    t_args(
+                        "qs-devices-use-input",
+                        &[("input", t(remote_capture_kind_key(kind)).into())],
+                    )
+                } else if matches!(self.qs_selected_source, Some(QsDeviceSource::RemoteAudio(_)))
+                    && !device.is_local
+                    && device.online
+                {
+                    if device.audio_output {
+                        t("qs-devices-play-audio-here")
+                    } else {
+                        t("qs-devices-no-audio")
+                    }
+                } else {
+                    Self::fabric_device_detail(
+                        device,
+                        selected,
+                        view.transfers
+                            .iter()
+                            .rev()
+                            .find(|transfer| transfer.target == device.id),
+                    )
+                };
+                if let Some(health) = view
+                    .device_health
+                    .iter()
+                    .find(|health| health.peer == device.id)
+                {
+                    detail.push_str(" · ");
+                    detail.push_str(&Self::fabric_health_detail(health));
+                }
+                (
+                    device.label.clone(),
+                    detail,
+                    ui::icons::Icon::Monitor,
+                    false,
+                    enabled,
+                )
+            }
+        }
+    }
+
+    /// The names of a device-fabric row's trailing buttons, left to right.
+    fn qs_device_row_button_names(item: &DeviceFabricPaneRow) -> Vec<String> {
+        use crate::shell::personal_tethering_runtime::TetheringPhase;
+        let pair = |allow: &str, decline: &str| vec![t(allow), t(decline)];
+        match item {
+            DeviceFabricPaneRow::CalibrationProposal(_) => {
+                pair("a11y-placement-apply", "a11y-placement-dismiss")
+            }
+            DeviceFabricPaneRow::RemoteAudioConsent(_) => {
+                pair("a11y-remote-audio-allow", "a11y-remote-audio-decline")
+            }
+            DeviceFabricPaneRow::SpeakerConsent(consent) => {
+                vec![consent.allow_label(), consent.decline_label()]
+            }
+            DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
+                pair("a11y-remote-capture-allow", "a11y-remote-capture-decline")
+            }
+            DeviceFabricPaneRow::RealtimeConsent(_) => pair("a11y-call-allow", "a11y-call-decline"),
+            DeviceFabricPaneRow::GamepadAuthorization(_) => {
+                pair("a11y-controller-allow", "a11y-controller-decline")
+            }
+            DeviceFabricPaneRow::BluetoothAuthorization(_) => {
+                pair("a11y-bluetooth-pair-allow", "a11y-bluetooth-pair-decline")
+            }
+            DeviceFabricPaneRow::Tethering(status)
+                if status.phase == TetheringPhase::ConsentRequired =>
+            {
+                pair("a11y-tethering-allow", "a11y-tethering-decline")
+            }
+            DeviceFabricPaneRow::LocalInput(input) if input.is_default => {
+                pair("a11y-input-lower", "a11y-input-raise")
+            }
+            DeviceFabricPaneRow::Device(device) => vec![
+                t("qs-devices-place-this-left"),
+                t("qs-devices-place-this-right"),
+                t("qs-devices-place-this-above"),
+                t("qs-devices-place-this-below"),
+                if device.controls_local {
+                    t("a11y-control-revoke")
+                } else {
+                    t("a11y-control-allow")
+                },
+            ],
+            _ => Vec::new(),
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the bounded device rows share paint geometry with their capability and transport status"
@@ -25011,7 +25626,7 @@ impl ShellOverlayHost {
             return;
         };
         self.normalise_qs_selected_media(&view);
-        let selected = self.qs_selected_media.as_ref().and_then(|id| {
+        let selected = self.qs_selected_media().and_then(|id| {
             view.local_media
                 .iter()
                 .find(|media| &media.session_id == id)
@@ -25047,585 +25662,8 @@ impl ShellOverlayHost {
             .enumerate()
         {
             let row = self.qs_device_row_rect(index);
-            let (title, detail, icon, selected_row, enabled) = match item {
-                DeviceFabricPaneRow::CalibrationProposal(proposal) => {
-                    let label = view
-                        .devices
-                        .iter()
-                        .find(|device| device.id == proposal.peer)
-                        .map_or_else(|| t("a11y-certified-display"), |device| device.label.clone());
-                    let side = match proposal.edge {
-                        crate::shell::device_fabric::DisplayEdge::Left => "left",
-                        crate::shell::device_fabric::DisplayEdge::Right => "right",
-                        crate::shell::device_fabric::DisplayEdge::Top => "above",
-                        crate::shell::device_fabric::DisplayEdge::Bottom => "below",
-                    };
-                    (
-                        t_args("qs-devices-place", &[("display", label.into()), ("side", side.into())]),
-                        t("qs-devices-place-note"),
-                        ui::icons::Icon::Monitor,
-                        false,
-                        true,
-                    )
-                }
-                DeviceFabricPaneRow::CalibrationRevert(device) => (
-                    t_args(
-                        "a11y-placement-undo",
-                        &[(
-                            "display",
-                            view.devices
-                                .iter()
-                                .find(|item| item.id == *device)
-                                .map_or_else(|| t("a11y-display-fallback"), |item| item.label.clone())
-                                .into(),
-                        )],
-                    ),
-                    t("qs-devices-placement-undo-note"),
-                    ui::icons::Icon::Monitor,
-                    false,
-                    true,
-                ),
-                DeviceFabricPaneRow::SpeakerConsent(consent) => (
-                    consent.prompt(),
-                    consent.note(),
-                    match consent.scope {
-                        crate::shell::speaker_group_runtime::SpeakerConsentScope::Play(_) => {
-                            ui::icons::Icon::Volume2
-                        }
-                        crate::shell::speaker_group_runtime::SpeakerConsentScope::Listen => {
-                            ui::icons::Icon::Mic
-                        }
-                    },
-                    false,
-                    true,
-                ),
-                DeviceFabricPaneRow::SpeakerSession(session) => (
-                    t_args(
-                        "a11y-speaker-playing-on",
-                        &[("group", session.name.as_str().into())],
-                    ),
-                    match session.status() {
-                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::ClockFailed(
-                            reason,
-                        ) => t_args(
-                            "qs-devices-speaker-clock-failed",
-                            &[
-                                ("count", session.failed_members.into()),
-                                ("reason", t(reason.message_key()).into()),
-                            ],
-                        ),
-                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::SyncingClocks => {
-                            t_args(
-                                "qs-devices-speaker-syncing",
-                                &[
-                                    ("playing", session.playing_members.into()),
-                                    ("syncing", session.syncing_members.into()),
-                                ],
-                            )
-                        }
-                        _ if session.inbound => t_args(
-                            "qs-devices-speaker-for",
-                            &[(
-                                "peer",
-                                session
-                                    .peer_label
-                                    .clone()
-                                    .unwrap_or_else(|| t("qs-devices-another-device"))
-                                    .into(),
-                            )],
-                        ),
-                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::Connecting => {
-                            t_args(
-                                "qs-devices-speaker-connecting",
-                                &[
-                                    ("playing", session.playing_members.into()),
-                                    ("waiting", session.waiting_members.into()),
-                                ],
-                            )
-                        }
-                        crate::shell::speaker_group_runtime::SpeakerSessionStatus::Playing => {
-                            t_args(
-                                "qs-devices-speakers-playing",
-                                &[("count", session.playing_members.into())],
-                            )
-                        }
-                    },
-                    ui::icons::Icon::Volume2,
-                    true,
-                    true,
-                ),
-                DeviceFabricPaneRow::SpeakerGroup(group) => (
-                    group.name.clone(),
-                    speaker_group_summary(group),
-                    ui::icons::Icon::Volume2,
-                    false,
-                    group.ready_members() > 0
-                        && (self.qs_selected_remote_audio.is_some()
-                            || self.qs_selected_media.is_some()),
-                ),
-                DeviceFabricPaneRow::SpeakerSetup => (
-                    t("a11y-speaker-setup"),
-                    t("qs-devices-speaker-setup-note"),
-                    ui::icons::Icon::Volume2,
-                    false,
-                    true,
-                ),
-                DeviceFabricPaneRow::SpeakerMembership(membership) => (
-                    membership.title(sentence_case),
-                    membership.note(),
-                    ui::icons::Icon::Volume2,
-                    false,
-                    true,
-                ),
-                DeviceFabricPaneRow::RemoteAudioConsent(consent) => {
-                    let source_label = view
-                        .devices
-                        .iter()
-                        .find(|device| device.id == consent.source)
-                        .map_or_else(|| t("qs-devices-another-certified"), |device| device.label.clone());
-                    (
-                        t_args(
-                            "a11y-remote-audio-play-here",
-                            &[("media", consent.label.as_str().into())],
-                        ),
-                        t_args(
-                            "qs-devices-requested-allow-once",
-                            &[("source", source_label.into())],
-                        ),
-                        ui::icons::Icon::Volume2,
-                        false,
-                        true,
-                    )
-                }
-                DeviceFabricPaneRow::RemoteAudioSource(source) => (
-                    source.label.clone(),
-                    if source.application {
-                        t("qs-devices-audio-app")
-                    } else {
-                        t("qs-devices-audio-system")
-                    },
-                    ui::icons::Icon::Volume2,
-                    self.qs_selected_remote_audio == Some(source.token),
-                    true,
-                ),
-                DeviceFabricPaneRow::RemoteAudioRoute(route) => {
-                    let peer = view
-                        .devices
-                        .iter()
-                        .find(|device| device.id == route.peer)
-                        .map_or_else(|| t("qs-devices-certified-device"), |device| device.label.clone());
-                    let detail = match route.phase {
-                        crate::shell::remote_audio::RemoteAudioPhase::AwaitingConsent => {
-                            t_args("qs-devices-audio-awaiting", &[("peer", peer.into())])
-                        }
-                        crate::shell::remote_audio::RemoteAudioPhase::SyncingClock => {
-                            t_args("qs-devices-audio-syncing", &[("peer", peer.into())])
-                        }
-                        crate::shell::remote_audio::RemoteAudioPhase::ClockFailed(reason) => t_args(
-                            "qs-devices-audio-clock-failed",
-                            &[
-                                ("peer", peer.into()),
-                                ("reason", t(reason.message_key()).into()),
-                            ],
-                        ),
-                        crate::shell::remote_audio::RemoteAudioPhase::Streaming => {
-                            t_args("qs-devices-audio-streaming", &[("peer", peer.into())])
-                        }
-                        crate::shell::remote_audio::RemoteAudioPhase::Interrupted => {
-                            t_args("qs-devices-audio-interrupted", &[("peer", peer.into())])
-                        }
-                    };
-                    (
-                        route.label.clone(),
-                        detail,
-                        ui::icons::Icon::Volume2,
-                        true,
-                        true,
-                    )
-                }
-                DeviceFabricPaneRow::RemoteCaptureConsent(consent) => {
-                    let source_label = view
-                        .devices
-                        .iter()
-                        .find(|device| device.id == consent.peer)
-                        .map_or_else(|| t("qs-devices-another-certified"), |device| device.label.clone());
-                    (
-                        t_args(
-                            "qs-devices-capture-share",
-                            &[("input", t(remote_capture_kind_key(consent.profile.kind())).into())],
-                        ),
-                        t_args(
-                            "qs-devices-capture-requested",
-                            &[
-                                ("source", source_label.into()),
-                                ("app", consent.app_label.as_str().into()),
-                            ],
-                        ),
-                        ui::icons::Icon::Camera,
-                        false,
-                        true,
-                    )
-                }
-                DeviceFabricPaneRow::RemoteCaptureSource(kind) => (
-                    t_args(
-                        "qs-devices-capture-use-remote",
-                        &[("input", t(remote_capture_kind_key(*kind)).into())],
-                    ),
-                    t("qs-devices-capture-source-note"),
-                    ui::icons::Icon::Camera,
-                    self.qs_selected_remote_capture == Some(*kind),
-                    true,
-                ),
-                DeviceFabricPaneRow::RemoteCaptureSession(session) => {
-                    let peer = view
-                        .devices
-                        .iter()
-                        .find(|device| device.id == session.peer)
-                        .map_or_else(|| t("qs-devices-certified-device"), |device| device.label.clone());
-                    let detail = match session.phase {
-                        crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Requesting => {
-                            t_args("qs-devices-capture-waiting-on", &[("peer", peer.into())])
-                        }
-                        crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Provisioning => {
-                            t("a11y-remote-capture-provisioning")
-                        }
-                        crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::AppApprovalRequired => {
-                            t("qs-devices-capture-allow-app")
-                        }
-                        crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::WaitingForReceiver => {
-                            t_args("qs-devices-capture-waiting-ready", &[("peer", peer.into())])
-                        }
-                        crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Streaming => {
-                            t_args("qs-devices-capture-private", &[("peer", peer.into())])
-                        }
-                    };
-                    (
-                        t_args(
-                            "a11y-remote-capture-session",
-                            &[("input", t(remote_capture_kind_key(session.kind)).into())],
-                        ),
-                        detail,
-                        ui::icons::Icon::Camera,
-                        session.phase
-                            == crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::Streaming,
-                        session.phase
-                            == crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase::AppApprovalRequired
-                            || session.session_id.is_some(),
-                    )
-                }
-                DeviceFabricPaneRow::RemoteCaptureDegraded(degraded) => (
-                    t_args(
-                        "a11y-remote-capture-unavailable",
-                        &[("input", t(remote_capture_kind_key(degraded.kind)).into())],
-                    ),
-                    match degraded.reason {
-                        crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::SourceUnavailable => {
-                            t("qs-devices-capture-source-unavailable")
-                        }
-                        crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::ReceiverUnavailable => {
-                            t("qs-devices-capture-receiver-unavailable")
-                        }
-                        crate::shell::remote_capture::runtime::RemoteCaptureDegradedReason::TransferInterrupted => {
-                            t("qs-devices-capture-interrupted")
-                        }
-                    },
-                    ui::icons::Icon::Camera,
-                    false,
-                    false,
-                ),
-                DeviceFabricPaneRow::RealtimeConsent(consent) => {
-                    let source_label = view
-                        .devices
-                        .iter()
-                        .find(|device| device.id == consent.source)
-                        .map_or_else(|| t("qs-devices-another-certified"), |device| device.label.clone());
-                    (
-                        t_args(
-                            "a11y-call-continue",
-                            &[("room", consent.room_label.as_str().into())],
-                        ),
-                        t_args(
-                            "qs-devices-call-requested",
-                            &[("source", source_label.into())],
-                        ),
-                        ui::icons::Icon::Camera,
-                        false,
-                        true,
-                    )
-                }
-                DeviceFabricPaneRow::RealtimeSource(source) => (
-                    t_args(
-                        "a11y-call-in",
-                        &[("room", source.room_label.as_str().into())],
-                    ),
-                    t("qs-devices-call-source-note"),
-                    ui::icons::Icon::Camera,
-                    self.qs_selected_realtime.as_ref() == Some(&source.session),
-                    true,
-                ),
-                DeviceFabricPaneRow::BluetoothAuthorization(authorization) => (
-                    t_args(
-                        "a11y-bluetooth-pair",
-                        &[("accessory", authorization.accessory_name.as_str().into())],
-                    ),
-                    t_args(
-                        "qs-devices-bluetooth-requested",
-                        &[("source", authorization.source_label.as_str().into())],
-                    ),
-                    ui::icons::Icon::Bluetooth,
-                    false,
-                    true,
-                ),
-                DeviceFabricPaneRow::BluetoothHandoff(status) => (
-                    status.accessory_name.clone(),
-                    match status.phase {
-                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::PreparingTarget =>
-                            t_args("qs-devices-handoff-checking", &[("peer", status.peer_label.as_str().into())]),
-                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::AwaitingApproval =>
-                            t_args("qs-devices-handoff-awaiting", &[("peer", status.peer_label.as_str().into())]),
-                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::ReleasingSource =>
-                            t("qs-devices-handoff-releasing"),
-                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::PairingTarget =>
-                            t_args("qs-devices-handoff-pairing", &[("peer", status.peer_label.as_str().into())]),
-                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::ConnectingTarget =>
-                            t_args("qs-devices-handoff-connecting", &[("peer", status.peer_label.as_str().into())]),
-                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::AwaitingConfirmation =>
-                            t("qs-devices-handoff-confirming"),
-                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Completed =>
-                            t_args("qs-devices-handoff-connected", &[("peer", status.peer_label.as_str().into())]),
-                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) if status.outbound =>
-                            t_args(
-                                "qs-devices-handoff-failed-retry",
-                                &[("reason", sentence_case(&t(bluetooth_handoff_failure_key(failure))).into())],
-                            ),
-                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(failure) =>
-                            sentence_case(&t(bluetooth_handoff_failure_key(failure))),
-                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled if status.outbound =>
-                            t("qs-devices-cancelled-retry"),
-                        crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled =>
-                            t("qs-devices-cancelled"),
-                    },
-                    ui::icons::Icon::Bluetooth,
-                    false,
-                    status.phase
-                        != crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Completed
-                        && (status.outbound
-                            || !matches!(
-                                status.phase,
-                                crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Failed(_)
-                                    | crate::shell::device_fabric_runtime::BluetoothHandoffPhaseView::Cancelled
-                            )),
-                ),
-                DeviceFabricPaneRow::GamepadAuthorization(authorization) => (
-                    t_args(
-                        "a11y-controller-use",
-                        &[("controller", authorization.controller_label.as_str().into())],
-                    ),
-                    t_args(
-                        "qs-devices-controller-requested",
-                        &[
-                            ("source", authorization.source_label.as_str().into()),
-                            ("app", authorization.app_id.as_str().into()),
-                        ],
-                    ),
-                    ui::icons::Icon::Mouse,
-                    false,
-                    true,
-                ),
-                DeviceFabricPaneRow::LocalGamepad(gamepad) => (
-                    gamepad.name.clone(),
-                    gamepad.forwarding.as_ref().map_or_else(
-                        || t("qs-devices-controller-local"),
-                        |forwarding| {
-                            let target = view
-                                .devices
-                                .iter()
-                                .find(|device| device.id == forwarding.target)
-                                .map_or_else(|| t("qs-devices-another-device"), |device| device.label.clone());
-                            if forwarding.ready {
-                                t_args("qs-devices-controller-forwarding", &[("target", target.into())])
-                            } else {
-                                t_args("qs-devices-controller-awaiting", &[("target", target.into())])
-                            }
-                        },
-                    ),
-                    ui::icons::Icon::Mouse,
-                    self.qs_selected_gamepad == Some(gamepad.token) || gamepad.forwarding.is_some(),
-                    true,
-                ),
-                DeviceFabricPaneRow::MediaHandoff(status) => (
-                    t_args(
-                        "a11y-media-handoff",
-                        &[
-                            ("media", status.title.as_str().into()),
-                            ("target", status.target_label.as_str().into()),
-                        ],
-                    ),
-                    match status.phase {
-                        crate::shell::device_fabric_runtime::MediaHandoffPhase::Pending =>
-                            t("qs-devices-media-waiting"),
-                        crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed =>
-                            t("qs-devices-media-opened"),
-                        crate::shell::device_fabric_runtime::MediaHandoffPhase::Failed(failure) =>
-                            t_args(
-                                "qs-devices-media-failed",
-                                &[("reason", t(media_handoff_failure_key(failure)).into())],
-                            ),
-                        crate::shell::device_fabric_runtime::MediaHandoffPhase::Cancelled =>
-                            t("qs-devices-cancelled-retry"),
-                    },
-                    if view
-                        .local_media
-                        .iter()
-                        .find(|media| media.session_id == status.session_id)
-                        .is_some_and(|media| media.has_video)
-                    {
-                        ui::icons::Icon::Film
-                    } else {
-                        ui::icons::Icon::Music
-                    },
-                    false,
-                    status.phase
-                        != crate::shell::device_fabric_runtime::MediaHandoffPhase::Completed,
-                ),
-                DeviceFabricPaneRow::Media(media) => (
-                    media.title.clone(),
-                    if media.playing {
-                        t("qs-devices-media-playing")
-                    } else {
-                        t("qs-devices-media-paused")
-                    },
-                    if media.has_video {
-                        ui::icons::Icon::Film
-                    } else {
-                        ui::icons::Icon::Music
-                    },
-                    self.qs_selected_media.as_ref() == Some(&media.session_id),
-                    true,
-                ),
-                DeviceFabricPaneRow::LocalInput(input) => (
-                    input.label.clone(),
-                    Self::local_input_detail(input),
-                    ui::icons::Icon::Mic,
-                    input.is_default,
-                    true,
-                ),
-                DeviceFabricPaneRow::LocalOutput(output) => (
-                    output.label.clone(),
-                    output.bluetooth_codec.as_ref().map_or_else(
-                        || {
-                            if output.is_default {
-                                t("qs-devices-output-default")
-                            } else {
-                                t("qs-devices-output-route")
-                            }
-                        },
-                        |codec| t_args("qs-devices-output-bluetooth", &[("codec", codec.as_str().into())]),
-                    ),
-                    ui::icons::Icon::Volume2,
-                    output.is_default,
-                    !output.is_default,
-                ),
-                DeviceFabricPaneRow::Tethering(status) => {
-                    use crate::shell::personal_tethering_runtime::{
-                        TetheringDirection, TetheringPhase,
-                    };
-                    let detail = match status.phase {
-                        TetheringPhase::Requesting => t("qs-devices-tether-requesting"),
-                        TetheringPhase::ConsentRequired => t("qs-devices-tether-consent"),
-                        TetheringPhase::Preparing => t("qs-devices-tether-preparing"),
-                        TetheringPhase::Connecting => t("qs-devices-tether-connecting"),
-                        TetheringPhase::Active => match status.direction {
-                            TetheringDirection::Requester => t("qs-devices-tether-requester"),
-                            TetheringDirection::Provider => t("qs-devices-tether-provider"),
-                        },
-                        TetheringPhase::Denied => t("qs-devices-tether-denied"),
-                        TetheringPhase::Expired => t("qs-devices-tether-expired"),
-                        TetheringPhase::Offline => t("qs-devices-tether-offline"),
-                        TetheringPhase::PolicyDisabled => t("qs-devices-tether-disabled"),
-                        TetheringPhase::Failed => t("qs-devices-tether-failed"),
-                        TetheringPhase::Disconnected => t("qs-devices-tether-disconnected"),
-                    };
-                    (
-                        t_args(
-                            "qs-devices-tether-with",
-                            &[("peer", status.peer_label.as_str().into())],
-                        ),
-                        detail,
-                        ui::icons::Icon::Wifi,
-                        status.phase == TetheringPhase::Active,
-                        status.can_disconnect(),
-                    )
-                }
-                DeviceFabricPaneRow::Device(device) => {
-                    let enabled = !device.is_local
-                        && device.online
-                        && (device.kind == crate::shell::device_fabric::DeviceKind::Phone
-                            || self.qs_selected_gamepad.is_some()
-                            || self.qs_selected_remote_audio.is_some()
-                            || self.qs_selected_remote_capture.is_some()
-                            || self.qs_selected_realtime.is_some()
-                            || selected.is_some_and(|media| media.targets.contains(&device.id)));
-                    let mut detail = if device.kind
-                        == crate::shell::device_fabric::DeviceKind::Phone
-                        && !device.is_local
-                        && device.online
-                        && self.qs_selected_gamepad.is_none()
-                        && self.qs_selected_remote_audio.is_none()
-                        && self.qs_selected_remote_capture.is_none()
-                        && self.qs_selected_realtime.is_none()
-                        && self.qs_selected_media.is_none()
-                    {
-                        t("qs-devices-ask-phone")
-                    } else if self.qs_selected_gamepad.is_some()
-                        && !device.is_local
-                        && device.online
-                    {
-                        t("qs-devices-use-controller")
-                    } else if let Some(kind) = self.qs_selected_remote_capture
-                        && !device.is_local
-                        && device.online
-                    {
-                        t_args(
-                            "qs-devices-use-input",
-                            &[("input", t(remote_capture_kind_key(kind)).into())],
-                        )
-                    } else if self.qs_selected_remote_audio.is_some()
-                        && !device.is_local
-                        && device.online
-                    {
-                        if device.audio_output {
-                            t("qs-devices-play-audio-here")
-                        } else {
-                            t("qs-devices-no-audio")
-                        }
-                    } else {
-                        Self::fabric_device_detail(
-                            device,
-                            selected,
-                            view.transfers
-                                .iter()
-                                .rev()
-                                .find(|transfer| transfer.target == device.id),
-                        )
-                    };
-                    if let Some(health) = view
-                        .device_health
-                        .iter()
-                        .find(|health| health.peer == device.id)
-                    {
-                        detail.push_str(" · ");
-                        detail.push_str(&Self::fabric_health_detail(health));
-                    }
-                    (
-                        device.label.clone(),
-                        detail,
-                        ui::icons::Icon::Monitor,
-                        false,
-                        enabled,
-                    )
-                }
-            };
+            let (title, detail, icon, selected_row, enabled) =
+                self.qs_device_row_face(&view, selected, item);
             let accessible = format!("{title}. {detail}");
             let mut face = ButtonFace::new(row, "")
                 .hovered(enabled && self.last_cursor.is_some_and(|point| row.contains(point)))
@@ -25635,31 +25673,8 @@ impl ShellOverlayHost {
                 face = face.role(ButtonRole::Primary);
             }
             Button::paint(scene, transform, text_renderer, theme, &face);
-            let tethering_consent = matches!(
-                item,
-                DeviceFabricPaneRow::Tethering(status)
-                    if status.phase == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
-            );
-            let input_level = matches!(
-                item,
-                DeviceFabricPaneRow::LocalInput(input) if input.is_default
-            );
-            let trailing = if tethering_consent
-                || input_level
-                || matches!(
-                    item,
-                    DeviceFabricPaneRow::Device(_)
-                        | DeviceFabricPaneRow::CalibrationProposal(_)
-                        | DeviceFabricPaneRow::RemoteAudioConsent(_)
-                        | DeviceFabricPaneRow::SpeakerConsent(_)
-                        | DeviceFabricPaneRow::RemoteCaptureConsent(_)
-                        | DeviceFabricPaneRow::RealtimeConsent(_)
-                        | DeviceFabricPaneRow::GamepadAuthorization(_)
-                ) {
-                86.0
-            } else {
-                0.0
-            };
+            let buttons = Self::qs_device_row_button_names(item);
+            let trailing = if buttons.is_empty() { 0.0 } else { 86.0 };
             ui::icons::draw_icon(
                 scene,
                 transform,
@@ -25697,117 +25712,17 @@ impl ShellOverlayHost {
                 Some(f32_of_f64(row.width() - 54.0 - trailing)),
                 &theme.text(TextRole::Caption),
             );
-            if tethering_consent
-                || matches!(
-                    item,
-                    DeviceFabricPaneRow::CalibrationProposal(_)
-                        | DeviceFabricPaneRow::RemoteAudioConsent(_)
-                        | DeviceFabricPaneRow::SpeakerConsent(_)
-                        | DeviceFabricPaneRow::RemoteCaptureConsent(_)
-                        | DeviceFabricPaneRow::RealtimeConsent(_)
-                        | DeviceFabricPaneRow::GamepadAuthorization(_)
-                )
+            if let (DeviceFabricPaneRow::Device(device), [placement_names @ .., control_name]) =
+                (item, buttons.as_slice())
             {
-                let (allow, decline) = Self::qs_realtime_consent_actions(row);
-                Button::paint(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    &ButtonFace::new(allow, "")
-                        .role(ButtonRole::Plain)
-                        .icon(ui::icons::Icon::Check)
-                        .hovered(self.last_cursor.is_some_and(|point| allow.contains(point)))
-                        .accessible_name(&match item {
-                            DeviceFabricPaneRow::CalibrationProposal(_) => {
-                                t("a11y-placement-apply")
-                            }
-                            DeviceFabricPaneRow::RemoteAudioConsent(_) => {
-                                t("a11y-remote-audio-allow")
-                            }
-                            DeviceFabricPaneRow::SpeakerConsent(consent) => consent.allow_label(),
-                            DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
-                                t("a11y-remote-capture-allow")
-                            }
-                            DeviceFabricPaneRow::GamepadAuthorization(_) => {
-                                t("a11y-controller-allow")
-                            }
-                            DeviceFabricPaneRow::Tethering(_) => t("a11y-tethering-allow"),
-                            _ => t("a11y-call-allow"),
-                        }),
-                );
-                Button::paint(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    &ButtonFace::new(decline, "")
-                        .role(ButtonRole::Plain)
-                        .icon(ui::icons::Icon::X)
-                        .hovered(
-                            self.last_cursor
-                                .is_some_and(|point| decline.contains(point)),
-                        )
-                        .accessible_name(&match item {
-                            DeviceFabricPaneRow::CalibrationProposal(_) => {
-                                t("a11y-placement-dismiss")
-                            }
-                            DeviceFabricPaneRow::RemoteAudioConsent(_) => {
-                                t("a11y-remote-audio-decline")
-                            }
-                            DeviceFabricPaneRow::SpeakerConsent(consent) => consent.decline_label(),
-                            DeviceFabricPaneRow::RemoteCaptureConsent(_) => {
-                                t("a11y-remote-capture-decline")
-                            }
-                            DeviceFabricPaneRow::GamepadAuthorization(_) => {
-                                t("a11y-controller-decline")
-                            }
-                            DeviceFabricPaneRow::Tethering(_) => t("a11y-tethering-decline"),
-                            _ => t("a11y-call-decline"),
-                        }),
-                );
-            } else if input_level {
-                let (lower, raise) = Self::qs_realtime_consent_actions(row);
-                for (rect, icon, name) in [
-                    (lower, ui::icons::Icon::ArrowDown, t("a11y-input-lower")),
-                    (raise, ui::icons::Icon::ArrowUp, t("a11y-input-raise")),
-                ] {
-                    Button::paint(
-                        scene,
-                        transform,
-                        text_renderer,
-                        theme,
-                        &ButtonFace::new(rect, "")
-                            .role(ButtonRole::Plain)
-                            .icon(icon)
-                            .hovered(self.last_cursor.is_some_and(|point| rect.contains(point)))
-                            .accessible_name(&name),
-                    );
-                }
-            } else if let DeviceFabricPaneRow::Device(device) = item {
                 let (placements, control) = Self::qs_device_row_actions(row);
-                for (rect, icon, name) in [
-                    (
-                        placements[0],
-                        ui::icons::Icon::ArrowLeft,
-                        t("qs-devices-place-this-left"),
-                    ),
-                    (
-                        placements[1],
-                        ui::icons::Icon::ArrowRight,
-                        t("qs-devices-place-this-right"),
-                    ),
-                    (
-                        placements[2],
-                        ui::icons::Icon::ArrowUp,
-                        t("qs-devices-place-this-above"),
-                    ),
-                    (
-                        placements[3],
-                        ui::icons::Icon::ArrowDown,
-                        t("qs-devices-place-this-below"),
-                    ),
-                ] {
+                let icons = [
+                    ui::icons::Icon::ArrowLeft,
+                    ui::icons::Icon::ArrowRight,
+                    ui::icons::Icon::ArrowUp,
+                    ui::icons::Icon::ArrowDown,
+                ];
+                for ((rect, icon), name) in placements.into_iter().zip(icons).zip(placement_names) {
                     Button::paint(
                         scene,
                         transform,
@@ -25822,14 +25737,9 @@ impl ShellOverlayHost {
                                     && self.last_cursor.is_some_and(|point| rect.contains(point)),
                             )
                             .disabled(device.is_local || !device.online || !device.display)
-                            .accessible_name(&name),
+                            .accessible_name(name),
                     );
                 }
-                let control_name = if device.controls_local {
-                    t("a11y-control-revoke")
-                } else {
-                    t("a11y-control-allow")
-                };
                 let mut control_face = ButtonFace::new(control, "")
                     .role(ButtonRole::Plain)
                     .icon(ui::icons::Icon::Mouse)
@@ -25840,11 +25750,31 @@ impl ShellOverlayHost {
                                 .is_some_and(|point| control.contains(point)),
                     )
                     .disabled(device.is_local || !device.online)
-                    .accessible_name(&control_name);
+                    .accessible_name(control_name);
                 if device.controls_local {
                     control_face = control_face.role(ButtonRole::Primary);
                 }
                 Button::paint(scene, transform, text_renderer, theme, &control_face);
+            } else if !buttons.is_empty() {
+                let (first, second) = Self::qs_realtime_consent_actions(row);
+                let icons = if matches!(item, DeviceFabricPaneRow::LocalInput(_)) {
+                    [ui::icons::Icon::ArrowDown, ui::icons::Icon::ArrowUp]
+                } else {
+                    [ui::icons::Icon::Check, ui::icons::Icon::X]
+                };
+                for ((rect, icon), name) in [first, second].into_iter().zip(icons).zip(&buttons) {
+                    Button::paint(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        &ButtonFace::new(rect, "")
+                            .role(ButtonRole::Plain)
+                            .icon(icon)
+                            .hovered(self.last_cursor.is_some_and(|point| rect.contains(point)))
+                            .accessible_name(name),
+                    );
+                }
             }
         }
         if rows.len() > visible_rows {
@@ -26643,6 +26573,10 @@ mod palette_dispatch_tests;
 #[cfg(test)]
 #[path = "two_workspace_host_tests.rs"]
 mod two_workspace_host_tests;
+
+#[cfg(test)]
+#[path = "parked_workspaces_tests.rs"]
+mod parked_workspaces_tests;
 
 #[cfg(test)]
 #[allow(

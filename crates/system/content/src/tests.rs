@@ -1,9 +1,5 @@
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::string_slice,
-    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -42,6 +38,19 @@ fn unknown_content_still_reports_its_length() {
     assert_eq!(m.mime, "");
     assert_eq!((m.w, m.h), (0, 0));
     assert_eq!(m.len, 19, "length is knowable even when the format is not");
+}
+
+#[test]
+fn image_format_reads_the_signature_alone() {
+    let format = |bytes: &[u8]| image_format(bytes).map(|format| format.extension);
+    assert_eq!(format(b"\x89PNG\r\n\x1a\n"), Some("png"));
+    assert_eq!(format(&[0xff, 0xd8, 0xff, 0xe0]), Some("jpg"));
+    assert_eq!(format(b"GIF89a"), Some("gif"));
+    assert_eq!(format(b"RIFFxxxxWEBP"), Some("webp"));
+    assert_eq!(format(b"  <svg xmlns=\"\"/>"), Some("svg"));
+    assert_eq!(format(b"<?xml version=\"1.0\"?><svg/>"), Some("svg"));
+    assert_eq!(format(b"<?xml version=\"1.0\"?><html/>"), None);
+    assert_eq!(format(b"not an image"), None);
 }
 
 #[test]

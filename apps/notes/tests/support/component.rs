@@ -130,12 +130,13 @@ pub fn driver(
     instance: u64,
     checkout: &RecordCheckout,
 ) -> ui::headless::FrameHarness {
-    let mut driver = ui::headless::FrameHarness::from_component(
-        component(f, instance, existing(checkout)),
-        (1000, 700),
-        runner_inputs(),
-    )
-    .unwrap();
+    component_driver(component(f, instance, existing(checkout)))
+}
+/// A 1000x700 driver for `component` that matches shortcuts as Linux does.
+pub fn component_driver(component: AppComponent) -> ui::headless::FrameHarness {
+    let mut driver =
+        ui::headless::FrameHarness::from_component(component, (1000, 700), runner_inputs())
+            .unwrap();
     // These scenarios spell host shortcuts with Ctrl (Ctrl+Z undo). The
     // driver otherwise follows the build host's conventions, where macOS
     // binds undo to Cmd and a Ctrl+Z would never reach history.
@@ -568,19 +569,12 @@ pub fn invoke_confirmed(
 }
 
 pub fn move_pointer(driver: &mut ui::headless::FrameHarness, point: vello::kurbo::Point) {
-    driver.send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-    });
+    driver.send(&ui::synthetic_input::cursor_moved(point.x, point.y));
 }
 pub fn mouse(
     driver: &mut ui::headless::FrameHarness,
     button: winit::event::MouseButton,
     state: winit::event::ElementState,
 ) {
-    driver.send(&winit::event::WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        button,
-        state,
-    });
+    driver.send(&ui::synthetic_input::mouse_input(state, button));
 }

@@ -125,14 +125,13 @@ class NativeClosure(unittest.TestCase):
             lib = bundle / 'lib'
             lib.mkdir(parents=True)
             # As tilo-runtime-bundle signs them: each library at the top of
-            # lib/, the loader (executable) only at its interpreter path.
+            # lib/, the loader (executable) there and at its interpreter path.
             for path in paths:
+                shutil.copy(path, lib / path.name)
                 if path.name.startswith('ld-linux'):
                     loader = lib / str(path).lstrip('/')
                     loader.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy(path, loader)
-                else:
-                    shutil.copyfile(path, lib / path.name)
             # Small real ELF stand-ins meet the SDK name contract without Rust
             # compilation; the application's actual DT_NEEDED is the subject.
             for name in ('libruntime_dylib.so', 'libstd-fixture.so'):

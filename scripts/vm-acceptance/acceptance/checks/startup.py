@@ -408,8 +408,13 @@ def _timed_open(ctx, app: str, shell_anon: list[float] | None = None,
         if times is not None:
             log = ctx.vm.exec(f'tail -n +{(log_lines or 0) + 1} "{SESSION_LOG}" | grep -a "tilo::launch_latency"',
                               check=False)
+            # `marks` is every startup mark of the launch (ms since its `main`, first of each
+            # name), so a per-step table reads the launch itself rather than A16's summary
+            # line, which drops sub-millisecond intervals.
             result = {"open": times[0], "startup": times[1], "segments": open_segments(t0, marks),
-                      "compositor": parse_launch_latencies(log, app)}
+                      "compositor": parse_launch_latencies(log, app),
+                      "marks": {name: round(seconds * 1e3, 1)
+                                for name, seconds in sorted(marks["events"].items(), key=lambda item: item[1])}}
         else:
             # No first frame: keep what the session said about this app since the request
             # (a launch refused or held, say waiting for its previous instance to retire).
@@ -466,7 +471,7 @@ def segment_series(results: list[dict]) -> dict[str, list[float]]:
 
 
 def kpi_p95_target(kpi: str) -> float | None:
-    """The KPI document's p95 ceiling for `kpi` (tools/perf/kpi-budgets.toml), if any."""
+    """The KPI's p95 ceiling for `kpi` (tools/perf/kpi-budgets.toml), if any."""
     budgets = tomllib.loads(KPI_BUDGETS.read_text(encoding="utf-8"))
     target = budgets.get("kpi", {}).get(kpi, {}).get("p95")
     return None if target is None else float(target)
@@ -482,7 +487,7 @@ def p95(values: list[float]) -> float:
 def warm_opens(ctx, res):
     """Each app is opened and closed once unmeasured, so its files are in the page cache,
     then ten times measured. The budget is the app's (acceptance/app_startup.py) on the
-    session's renderer, held by the median; on a GPU the KPI document's p95 target holds as
+    session's renderer, held by the median; on a GPU the KPI's p95 target holds as
     well. Every launch is recorded, split into segments that add up to the open (the
     launcher's phases among them) and the compositor's own request/spawn/map times. Then
     Files opens `REPEATED_OPENS` times more, each to its first frame; a restart of the

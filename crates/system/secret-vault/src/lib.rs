@@ -347,7 +347,7 @@ impl VaultFormat {
                     tracing::warn!(vault = self.name, %error, "could not create vault dir for key");
                     return None;
                 }
-                if private_fs::create_atomic(&path, key.expose_secret()).is_err() {
+                if tilo_files::native::private::create_atomic(&path, key.expose_secret()).is_err() {
                     tracing::warn!(vault = self.name, "vault key write failed");
                     return None;
                 }
@@ -373,8 +373,7 @@ impl VaultFormat {
 /// blocking API cannot use).
 #[cfg(not(windows))]
 pub fn system_store_available() -> bool {
-    tilo_secrets::availability(tilo_secrets::Feature::Blocking)
-        == tilo_secrets::Availability::Available
+    tilo_secrets::available(tilo_secrets::Feature::Blocking)
         && SecretStore::for_app("Tilo").probe_blocking().is_ok()
 }
 
@@ -388,7 +387,9 @@ fn vault_exists(dir: &Path) -> bool {
 /// One byte past the key width is enough to recognise a malformed key.
 fn read_key_bytes(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
     let mut bytes = Zeroizing::new(Vec::new());
-    private_fs::read(path)?.take(33).read_to_end(&mut bytes)?;
+    tilo_files::native::private::read(path)?
+        .take(33)
+        .read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 

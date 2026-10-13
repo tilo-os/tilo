@@ -13,6 +13,7 @@
 //! through [`drain_events`], drained once per frame.
 
 pub(crate) mod diagnostics;
+pub(crate) mod launch_history;
 
 use crate::shell::state::WorkspaceAuthority as _;
 pub(crate) mod action_authority;
@@ -161,7 +162,7 @@ static WINDOWS_COMPAT_ENTRY_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(target_os = "linux")]
-pub(super) fn proc_stat(pid: u32) -> Option<(u32, u64)> {
+pub(crate) fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm is parenthesised and may contain spaces/parentheses; the final ')'
     // is the only safe place from which to index the remaining fields.
@@ -174,7 +175,7 @@ pub(super) fn proc_stat(pid: u32) -> Option<(u32, u64)> {
 // Linux process ancestry is the authority for sandbox launch attribution.
 // Other hosts must not infer equivalent authority from numeric PIDs.
 #[cfg(not(target_os = "linux"))]
-pub(super) fn proc_stat(_pid: u32) -> Option<(u32, u64)> {
+pub(crate) fn proc_stat(_pid: u32) -> Option<(u32, u64)> {
     None
 }
 
@@ -573,10 +574,26 @@ pub(crate) struct VerifiedLaunchIdentity {
     pub confined: bool,
 }
 
+/// Kernel-bound identity of one supervised launcher process. The start time
+/// makes a recycled numeric PID a different custody domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedLaunchCustody {
+    pub supervisor_pid: u32,
+    pub supervisor_start_time: u64,
+}
+
 /// Resolve a descendant to the exact live launch record that owns it.
 /// Kernel parent links and process start-times prevent app-id spoofing and PID
 /// reuse; the bounded walk fails closed for daemonised or unknown clients.
-pub(crate) fn verified_launch_for_descendant(mut pid: u32) -> Option<VerifiedLaunchIdentity> {
+pub(crate) fn verified_launch_for_descendant(pid: u32) -> Option<VerifiedLaunchIdentity> {
+    verified_launch_custody_for_descendant(pid).map(|(identity, _)| identity)
+}
+
+/// Resolve both the durable launch identity and the exact live supervising
+/// process which authenticated this descendant.
+pub(crate) fn verified_launch_custody_for_descendant(
+    mut pid: u32,
+) -> Option<(VerifiedLaunchIdentity, VerifiedLaunchCustody)> {
     const MAX_ANCESTORS: usize = 32;
     for _ in 0..MAX_ANCESTORS {
         let (parent_pid, start_time) = proc_stat(pid)?;
@@ -584,11 +601,17 @@ pub(crate) fn verified_launch_for_descendant(mut pid: u32) -> Option<VerifiedLau
             && let Some(known) = map.get(&pid)
             && known.start_time == start_time
         {
-            return Some(VerifiedLaunchIdentity {
-                package_id: known.package_id.clone(),
-                workspace_id: known.workspace_id.clone(),
-                confined: known.confined,
-            });
+            return Some((
+                VerifiedLaunchIdentity {
+                    package_id: known.package_id.clone(),
+                    workspace_id: known.workspace_id.clone(),
+                    confined: known.confined,
+                },
+                VerifiedLaunchCustody {
+                    supervisor_pid: pid,
+                    supervisor_start_time: start_time,
+                },
+            ));
         }
         if parent_pid == 0 || parent_pid == pid {
             return None;
@@ -596,6 +619,27 @@ pub(crate) fn verified_launch_for_descendant(mut pid: u32) -> Option<VerifiedLau
         pid = parent_pid;
     }
     None
+}
+
+pub(crate) fn launch_custody_is_current(
+    custody: VerifiedLaunchCustody,
+    package_id: &str,
+    workspace_id: &str,
+) -> bool {
+    let Some((_, start_time)) = proc_stat(custody.supervisor_pid) else {
+        return false;
+    };
+    if start_time != custody.supervisor_start_time {
+        return false;
+    }
+    LAUNCHED_PROCESSES.lock().is_ok_and(|launches| {
+        launches.get(&custody.supervisor_pid).is_some_and(|launch| {
+            launch.start_time == custody.supervisor_start_time
+                && launch.confined
+                && launch.package_id == package_id
+                && launch.workspace_id.as_deref() == Some(workspace_id)
+        })
+    })
 }
 
 /// Resolve a host process (normally xdg-dbus-proxy) to the Tilo package
@@ -1171,6 +1215,7 @@ pub(crate) struct LaunchSession(std::sync::Arc<SessionLaunches>);
 pub(crate) struct SessionLaunches {
     events: Mutex<Vec<LaunchEvent>>,
     pub(crate) diagnostics: Mutex<Option<diagnostics::Options>>,
+    pub(crate) launch_history: Mutex<launch_history::History>,
     pub(super) startup: super::launch_readiness::StartupObservations,
     /// `package_id` -> where its next window should land; claimed (not
     /// consumed) by [`placement_for_toplevel`] since the compositor tracks
@@ -1220,6 +1265,7 @@ impl Default for SessionLaunches {
         Self {
             events: Mutex::default(),
             diagnostics: Mutex::default(),
+            launch_history: Mutex::default(),
             startup: super::launch_readiness::StartupObservations::default(),
             pending: Mutex::default(),
             launched: Mutex::default(),
@@ -1392,6 +1438,8 @@ struct PendingPlacement {
     /// authoritative FIFO; metrics never guesses by app id during failures.
     launch_metric_id: u64,
     metric_spawned: bool,
+    /// One supervisor owns the diagnostic join even before its child spawns.
+    diagnostic_reserved: bool,
 }
 
 impl PendingPlacement {
@@ -1676,25 +1724,30 @@ pub fn installed_continuity_contract(package_id: &str) -> InstalledContinuityReq
 /// Returns an error if the cache is stale and re-reading the registry
 /// fails — see [`read_installed_apps`].
 pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
+    installed_apps_snapshot().map(|(_, apps)| apps)
+}
+
+/// Pair records with their cache revision while holding the cache lock.
+fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
     {
         let cache = lock(&APP_CACHE);
         if let Some((apps, Some(at))) = cache.as_ref()
             && at.elapsed() < APP_CACHE_TTL
         {
-            return Ok(apps.clone());
+            return Ok((APP_CACHE_REVISION.load(Ordering::Acquire), apps.clone()));
         }
     }
     let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
     let apps = read_installed_apps()?;
-    record_app_read(epoch, &apps);
+    let generation = record_app_read(epoch, &apps);
     // Watch after the first memoize so opening the registry to fill the
     // cache cannot look like an install and wipe the snapshot we just wrote.
     ensure_app_cache_watch();
-    Ok(apps)
+    Ok((generation, apps))
 }
 
 /// Store a registry read that started at `read_epoch` as the new baseline.
-fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) {
+fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) -> u64 {
     let mut cache = lock(&APP_CACHE);
     // An invalidation (install, removal, watch event, repointed registry)
     // that raced this read means the read may predate it: keep it only as
@@ -1709,6 +1762,13 @@ fn record_app_read(read_epoch: u64, apps: &[InstalledApp]) {
         APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     }
     *cache = Some((apps.to_vec(), fresh));
+    let generation = if fresh.is_some() {
+        APP_CACHE_REVISION.load(Ordering::Acquire)
+    } else {
+        0
+    };
+    drop(cache);
+    generation
 }
 
 /// Drop the memoised enumeration. Used after an install/remove and by
@@ -1815,14 +1875,17 @@ fn watch_app_cache_roots(roots: &[PathBuf], ready: &std::sync::mpsc::Sender<()>)
 
 /// Immutable installed-app snapshot revision for retained search projections.
 pub fn gui_apps_snapshot() -> (u64, Vec<InstalledApp>) {
-    // Pair a source generation with the exact projection read under it. If
-    // cache invalidation races this small read, return the observed changed
-    // generation; retained index workers will reject it instead of treating
-    // old records as a current snapshot.
-    let before = APP_CACHE_REVISION.load(Ordering::Acquire);
-    let apps = gui_apps();
-    let after = APP_CACHE_REVISION.load(Ordering::Acquire);
-    (if before == after { before } else { 0 }, apps)
+    // Cache population advances the revision but does not invalidate the
+    // records it just read. Only an invalidation racing the read stamps it
+    // stale; the generation is paired under the cache lock.
+    let before = gui_apps_generation();
+    let (generation, mut apps) = installed_apps_snapshot().unwrap_or_else(|_| {
+        let after = gui_apps_generation();
+        (if before == after { before } else { 0 }, Vec::new())
+    });
+    apps.retain(|app| app.has_gui);
+    apps.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    (generation, apps)
 }
 
 /// Current installed-app source generation.  Search projections use this
@@ -2485,10 +2548,7 @@ pub fn launch_workspace_agent(
         .sandbox
         .services
         .get(launcher::services::COLLAB_SERVICE)
-        .is_some_and(|requirement| {
-            launcher::manifest::ServiceReq::parse(requirement)
-                .is_ok_and(|requirement| requirement.is_required())
-        });
+        .is_some_and(launcher::manifest::ServiceReq::is_required);
     if manifest.kind != launcher::manifest::KIND_SERVICE
         || manifest.entrypoint.cli_bin().is_none()
         || !requires_collaboration
@@ -3679,6 +3739,10 @@ fn start_launch(
     );
     let worker_events = events.clone();
     let startup_token = super::launch_readiness::command_token(&command);
+    let diagnostic_attempt = diagnostic_attempt_for(&app.package_id, &command);
+    if let Some(id) = diagnostic_attempt {
+        lock(&events.launch_history).prepared(id, &command);
+    }
     let spawn_result = builder.spawn(move || {
         let mut authority_lease = authority;
         let events = worker_events;
@@ -3688,6 +3752,7 @@ fn start_launch(
             &command,
             std::time::Duration::from_secs(30),
         ) {
+            record_launch_phase(diagnostic_attempt, launch_history::Phase::SpawnFailed);
             events.startup.fail(startup_token, detail.clone());
             events.push(LaunchEvent {
                 package_id: app.package_id.clone(),
@@ -3720,6 +3785,7 @@ fn start_launch(
         let launch_gate = match launcher::registration_gate::install(&mut cmd) {
             Ok(gate) => gate,
             Err(error) => {
+                record_launch_phase(diagnostic_attempt, launch_history::Phase::SpawnFailed);
                 events.startup.fail(startup_token, error.to_string());
                 events.push(LaunchEvent {
                     package_id: app.package_id.clone(),
@@ -3737,6 +3803,7 @@ fn start_launch(
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
+                record_launch_phase(diagnostic_attempt, launch_history::Phase::SpawnFailed);
                 events.startup.fail(startup_token, e.to_string());
                 events.push(LaunchEvent {
                     package_id: app.package_id.clone(),
@@ -3753,6 +3820,9 @@ fn start_launch(
         // The command still holds the launcher's end of the gate.
         drop(cmd);
         tilo_startup_metrics::launch_phase(&app.package_id, "spawned");
+        if let Some(id) = diagnostic_attempt {
+            lock(&events.launch_history).spawned(id, child.id());
+        }
         if let Some(identity) = command.service_identity.clone() {
             // Capture compositor-authored launch input before releasing the
             // child gate. Never read window authority back from the sandbox.
@@ -3778,10 +3848,14 @@ fn start_launch(
         if let Some(lease) = authority_lease.as_mut()
             && let Err(error) = lease.register_sandbox(child.id())
         {
+            record_launch_phase(diagnostic_attempt, launch_history::Phase::SpawnFailed);
             // The child is still behind the launch gate and has no sandbox
             // descriptors. Do not release a stale accepted-policy snapshot.
             let _ = child.kill();
-            let _ = child.wait();
+            let status = child.wait();
+            if let Some(id) = diagnostic_attempt {
+                lock(&events.launch_history).exited(id, launch_exit_status(&status));
+            }
             unregister_launched_process(child.id());
             events.startup.fail(startup_token, error.to_string());
             events.push(LaunchEvent {
@@ -3795,7 +3869,13 @@ fn start_launch(
             });
             return;
         }
-        mark_launch_spawned(&app.package_id, child.id());
+        let launch_metric_id = mark_launch_spawned(&app.package_id, child.id(), diagnostic_attempt);
+        let launch_generation = tilo_startup_metrics::launch_generation();
+        eprintln!(
+            "app-spawn: package={} launcher_pid={} launch_id={launch_metric_id:?} launch_generation={launch_generation}",
+            app.package_id,
+            child.id(),
+        );
         events.startup.started(startup_token, child.id());
         // Recorded before the gate opens, so the session learns of the start
         // before the app can do anything a start explains.
@@ -3855,22 +3935,32 @@ fn start_launch(
         // A replacement waiting for this writer to retire may go now.
         note_running_changed();
         LAUNCH_RETIREMENT_CHANGED.notify_all();
+        let mut diagnostic_exit = launch_exit_status(&status);
+        if let Some(id) = diagnostic_attempt {
+            lock(&events.launch_history).exited(id, diagnostic_exit.clone());
+        }
         // Every end of an app, clean or not, with how it ended (a signal has
         // no exit code). The session's default log passes errors only, so a
         // clean exit would otherwise leave no trace; stderr is recorded.
         match &status {
             Ok(status) => eprintln!(
-                "app-exit: package={} launcher_pid={launcher_pid} status={status}",
+                "app-exit: package={} launcher_pid={launcher_pid} launch_id={launch_metric_id:?} launch_generation={launch_generation} status={status}",
                 app.package_id
             ),
             Err(error) => eprintln!(
-                "app-exit: package={} launcher_pid={launcher_pid} wait_failed={error}",
+                "app-exit: package={} launcher_pid={launcher_pid} launch_id={launch_metric_id:?} launch_generation={launch_generation} wait_failed={error}",
                 app.package_id
             ),
         }
         let tail = stderr_drain
             .and_then(|drain| drain.join().ok())
             .unwrap_or_default();
+        if let Some(id) = diagnostic_attempt {
+            diagnostic_exit.reason_key = (!diagnostic_exit.success).then(|| stopped_reason_key(diagnostic_exit.code, &tail.iter().cloned().collect::<Vec<_>>().join("\n")));
+            diagnostic_exit.retained_stderr_lines = tail.len();
+            diagnostic_exit.stderr_state = launch_history::StderrState::Complete;
+            lock(&events.launch_history).exited(id, diagnostic_exit);
+        }
         unregister_launched_process(launcher_pid);
         let kind = match status {
             Ok(status) if status.success() => LaunchEventKind::Exited,
@@ -3905,6 +3995,10 @@ fn start_launch(
     match spawn_result {
         Ok(_) => Ok(()),
         Err(e) => {
+            lock(&events.launch_history).event(
+                diagnostic_attempt.unwrap_or(0),
+                launch_history::Phase::SpawnFailed,
+            );
             let detail = format!("could not start launch thread: {e}");
             events.push(LaunchEvent {
                 package_id: identity.0,
@@ -3925,16 +4019,79 @@ pub(crate) fn push_event(event: LaunchEvent) {
     LaunchSession::current().push(event);
 }
 
-fn mark_launch_spawned(package_id: &str, pid: u32) {
+fn launch_exit_status(status: &std::io::Result<std::process::ExitStatus>) -> launch_history::Exit {
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt as _;
+    #[cfg(unix)]
+    let signal = status
+        .as_ref()
+        .ok()
+        .and_then(std::process::ExitStatus::signal);
+    #[cfg(not(unix))]
+    let signal = None;
+    launch_history::Exit {
+        code: status
+            .as_ref()
+            .ok()
+            .and_then(std::process::ExitStatus::code),
+        signal,
+        success: status.as_ref().is_ok_and(std::process::ExitStatus::success),
+        wait_failed: status.is_err(),
+        reason_key: None,
+        retained_stderr_lines: 0,
+        stderr_redacted: true,
+        stderr_state: launch_history::StderrState::Pending,
+    }
+}
+
+fn diagnostic_attempt_for(package_id: &str, command: &LaunchCommand) -> Option<u64> {
+    let instance = command.env.iter().find_map(|(name, value)| {
+        (name == "TILO_CONTINUITY_INSTANCE")
+            .then(|| value.parse::<u64>().ok())
+            .flatten()
+    });
     let session = LaunchSession::current();
     let mut pending = lock(&session.pending);
-    if let Some(note) = pending
+    let id = pending
         .iter_mut()
-        .find(|note| note.key == package_id && !note.metric_spawned)
-    {
-        note.metric_spawned = true;
-        tilo_startup_metrics::launch_spawned(note.launch_metric_id, pid);
+        .find(|note| {
+            note.key == package_id
+                && !note.metric_spawned
+                && !note.diagnostic_reserved
+                && note.claimed_by.is_none()
+                && instance.is_none_or(|instance| note.continuity_instance == Some(instance))
+        })
+        .map(|note| {
+            note.diagnostic_reserved = true;
+            note.launch_metric_id
+        });
+    drop(pending);
+    id
+}
+
+fn record_launch_phase(id: Option<u64>, phase: launch_history::Phase) {
+    if let Some(id) = id {
+        lock(&LaunchSession::current().launch_history).event(id, phase);
     }
+}
+
+fn mark_launch_spawned(package_id: &str, pid: u32, attempt: Option<u64>) -> Option<u64> {
+    let session = LaunchSession::current();
+    let mut pending = lock(&session.pending);
+    let id = pending
+        .iter_mut()
+        .find(|note| {
+            note.key == package_id && !note.metric_spawned && Some(note.launch_metric_id) == attempt
+        })
+        .map(|note| {
+            note.metric_spawned = true;
+            note.launch_metric_id
+        });
+    drop(pending);
+    if let Some(id) = id {
+        tilo_startup_metrics::launch_spawned(id, pid);
+    }
+    id
 }
 
 /// Finish every launch-bound surface that has captured its first frame.
@@ -3948,6 +4105,9 @@ pub(crate) fn record_presented_launches(frame_seq: impl Fn(u64) -> u64) {
 
 /// Record the first captured frame for a launch-bound surface exactly once.
 pub(crate) fn record_first_present(surface_id: u64, frame_seq: u64) {
+    if frame_seq != 0 {
+        lock(&LaunchSession::current().launch_history).presented(surface_id);
+    }
     tilo_startup_metrics::launch_first_present(surface_id, frame_seq);
 }
 
@@ -4147,8 +4307,13 @@ pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
 
 /// An accepted toplevel's kernel peer, after ordinary workspace admission.
 /// A client-announced application id cannot produce a startup receipt.
-pub(crate) fn record_startup_window(pid: u32) {
-    LaunchSession::current().startup.adopted(pid);
+pub(crate) fn record_startup_window(
+    pid: u32,
+    adoption: Option<tilo_action_broker::services::LaunchAdoption>,
+) {
+    LaunchSession::current()
+        .startup
+        .adopted_window(pid, adoption);
 }
 
 /// Live unconfined launches a close of an unmatched toolkit window may stop.
@@ -4339,6 +4504,12 @@ pub fn set_pending_placement_for_identities(
     // can still be tied to this launch and not to a session helper.
     lock(&session.awaiting_window).insert(key.to_string());
     let mut pending = lock(&session.pending);
+    let launch_metric_id = tilo_startup_metrics::launch_requested(key);
+    let saved_tab = match placement {
+        crate::shell::tab_binding::Placement::IntoTab(tab) => Some(tab),
+        _ => None,
+    };
+    lock(&session.launch_history).requested(launch_metric_id, key, saved_tab);
     pending.push(PendingPlacement {
         key: key.to_string(),
         identities: identities.to_vec(),
@@ -4347,8 +4518,9 @@ pub fn set_pending_placement_for_identities(
         claimed_by: None,
         retire_after: None,
         present_before: pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT),
-        launch_metric_id: tilo_startup_metrics::launch_requested(key),
+        launch_metric_id,
         metric_spawned: false,
+        diagnostic_reserved: false,
     });
 }
 
@@ -4417,6 +4589,7 @@ pub fn placement_and_instance_for_toplevel(
                 if let Some(entry) = pending.get_mut(idx) {
                     entry.claimed_by = Some(surface_id);
                     tilo_startup_metrics::launch_mapped(entry.launch_metric_id, surface_id);
+                    lock(&session.launch_history).mapped(entry.launch_metric_id, surface_id);
                     // Both compositor trees ask for the same launch note,
                     // so keep a claimed answer briefly rather than consume
                     // it on the first lookup. Bound that duplication window
@@ -4456,6 +4629,8 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
     {
         note.continuity_instance = Some(instance);
     } else {
+        let launch_metric_id = tilo_startup_metrics::launch_requested(package_id);
+        lock(&session.launch_history).requested(launch_metric_id, package_id, None);
         pending.push(PendingPlacement {
             key: package_id.to_string(),
             identities: identities_for_package(package_id),
@@ -4464,8 +4639,9 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
             claimed_by: None,
             retire_after: None,
             present_before: pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT),
-            launch_metric_id: tilo_startup_metrics::launch_requested(package_id),
+            launch_metric_id,
             metric_spawned: false,
+            diagnostic_reserved: false,
         });
     }
 }
@@ -4539,6 +4715,7 @@ pub fn clear_pending_placement(package_id: &str) {
         .map(|index| pending.remove(index));
     drop(pending);
     if let Some(note) = note {
+        lock(&session.launch_history).event(note.launch_metric_id, launch_history::Phase::Retired);
         tilo_startup_metrics::launch_failed(note.launch_metric_id);
     }
 }
@@ -4567,6 +4744,7 @@ pub(crate) fn take_sole_claimed_surface_for_failed_launch(package_id: &str) -> O
     let surface_id = pending.get(index)?.claimed_by?;
     let note = pending.remove(index);
     drop(pending);
+    lock(&session.launch_history).event(note.launch_metric_id, launch_history::Phase::Retired);
     tilo_startup_metrics::launch_failed(note.launch_metric_id);
     Some(surface_id)
 }
@@ -4620,6 +4798,8 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
             expired.push(note.key.clone());
         }
         if !keep {
+            lock(&LaunchSession::current().launch_history)
+                .event(note.launch_metric_id, launch_history::Phase::Retired);
             tilo_startup_metrics::launch_failed(note.launch_metric_id);
         }
         keep
@@ -4647,6 +4827,7 @@ pub fn clear_pending_placements() {
     let session = LaunchSession::current();
     let mut pending = lock(&session.pending);
     for note in pending.drain(..) {
+        lock(&session.launch_history).event(note.launch_metric_id, launch_history::Phase::Retired);
         tilo_startup_metrics::launch_failed(note.launch_metric_id);
     }
     drop(pending);
@@ -5270,6 +5451,21 @@ mod tests {
                 "so.tilo.same-app",
                 crate::shell::tab_binding::Placement::IntoTab(22),
             );
+            let command = LaunchCommand {
+                program: PathBuf::new(),
+                args: Vec::new(),
+                env: Vec::new(),
+                service_identity: None,
+                portal_workspace_id: None,
+                managed_agent_id: None,
+            };
+            let first = diagnostic_attempt_for("so.tilo.same-app", &command).unwrap();
+            let second = diagnostic_attempt_for("so.tilo.same-app", &command).unwrap();
+            assert_ne!(
+                first, second,
+                "concurrent supervisors must own distinct diagnostic attempts before either spawns"
+            );
+            assert_eq!(diagnostic_attempt_for("so.tilo.same-app", &command), None);
 
             assert_eq!(
                 placement_for_toplevel("same-app", 101),
@@ -5288,13 +5484,21 @@ mod tests {
                 "dev.tilo.timed",
                 crate::shell::tab_binding::Placement::NewGroup,
             );
-            mark_launch_spawned("dev.tilo.timed", 4242);
+            let selected = launch_metrics_of("dev.tilo.timed")[0].0;
+            let attempt = mark_launch_spawned("dev.tilo.timed", 4242, Some(selected))
+                .expect("a staged launch must expose its exact diagnostic attempt");
+            assert_eq!(
+                mark_launch_spawned("dev.tilo.timed", 4243, Some(selected)),
+                None
+            );
+            assert_eq!(mark_launch_spawned("dev.tilo.unknown", 4244, None), None);
             assert_eq!(
                 placement_for_toplevel("timed", 909),
                 Some(crate::shell::tab_binding::Placement::NewGroup)
             );
             let metrics = launch_metrics_of("dev.tilo.timed");
             assert_eq!(metrics.len(), 1);
+            assert_eq!(metrics[0].0, attempt);
             assert!(metrics[0].2);
             assert_eq!(metrics[0].3, Some(909));
             record_first_present(909, 1);
@@ -5424,6 +5628,10 @@ mod tests {
         std::fs::set_permissions(&script, permissions).unwrap();
 
         let _ = drain_events();
+        set_pending_placement(
+            PACKAGE_ID,
+            crate::shell::tab_binding::Placement::IntoTab(77),
+        );
         spawn_launch(
             PACKAGE_ID.into(),
             "Live GUI".into(),
@@ -5459,7 +5667,97 @@ mod tests {
             saw_exit,
             "the supervisor must wait for a live GUI child without synchronously blocking on its open stderr pipe"
         );
+        let history = lock(&LaunchSession::current().launch_history).value();
+        let attempt = history["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|attempt| attempt["package_id"] == PACKAGE_ID)
+            .unwrap();
+        assert_eq!(attempt["saved_tab"], 77);
+        assert_eq!(attempt["exit"]["success"], true);
+        assert_eq!(attempt["exit"]["stderr_redacted"], true);
+        assert_eq!(attempt["exit"]["retained_stderr_lines"], 1);
+        assert!(attempt["process"]["kernel_start_ticks"].as_u64().unwrap() > 0);
+        assert!(
+            attempt["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["phase"] == "exited")
+        );
+        assert!(
+            !history
+                .to_string()
+                .contains("starting without closing stderr")
+        );
+        assert!(
+            LaunchSession::default()
+                .launch_history
+                .lock()
+                .unwrap()
+                .value()["attempts"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        clear_pending_placements();
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn failed_launch_retains_exact_record_process_and_exit_without_app_output() {
+        use std::os::unix::fs::PermissionsExt as _;
+        const PACKAGE: &str = "dev.tilo.failed-diagnostic";
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("failed-app");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'PRIVATE_OUTPUT_MUST_STAY_REDACTED\\n' >&2\nexit 17\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        set_pending_placement(PACKAGE, crate::shell::tab_binding::Placement::IntoTab(78));
+        attach_continuity_instance(PACKAGE, 902);
+        spawn_launch(
+            PACKAGE.into(),
+            "Fixture".into(),
+            LaunchCommand {
+                program: script,
+                args: Vec::new(),
+                env: vec![("TILO_CONTINUITY_INSTANCE".into(), "902".into())],
+                service_identity: None,
+                portal_workspace_id: None,
+                managed_agent_id: None,
+            },
+        )
+        .unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        let mut finished = false;
+        while Instant::now() < deadline && !finished {
+            finished = drain_events().iter().any(|event| {
+                event.package_id == PACKAGE
+                    && matches!(event.kind, LaunchEventKind::Failed { code: Some(17), .. })
+            });
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(finished, "the real supervisor must observe the failure");
+        let history = lock(&LaunchSession::current().launch_history).value();
+        let attempt = &history["attempts"][0];
+        assert_eq!(attempt["saved_tab"], 78);
+        assert_eq!(attempt["record_instance"], 902);
+        assert_eq!(attempt["exit"]["code"], 17);
+        assert_eq!(attempt["exit"]["success"], false);
+        assert_eq!(attempt["exit"]["retained_stderr_lines"], 1);
+        assert!(attempt["process"]["pid"].as_u64().unwrap() > 0);
+        assert!(attempt["process"]["kernel_start_ticks"].as_u64().unwrap() > 0);
+        assert!(
+            !history
+                .to_string()
+                .contains("PRIVATE_OUTPUT_MUST_STAY_REDACTED")
+        );
+        clear_pending_placements();
+    }
+
     use std::io::Write;
 
     #[test]
@@ -5653,8 +5951,14 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_APPS_DATA_DIR", tmp.path());
             invalidate_app_cache();
-            let initial = installed_apps().unwrap();
+            let (snapshot_generation, initial_gui) = gui_apps_snapshot();
             let initial_generation = gui_apps_generation();
+            assert_eq!(
+                snapshot_generation, initial_generation,
+                "populating a cold cache must not invalidate its own snapshot"
+            );
+            assert_eq!(initial_gui.len(), 1);
+            let initial = installed_apps().unwrap();
             let expire = || {
                 lock(&APP_CACHE).as_mut().unwrap().1 = None;
             };
@@ -5713,7 +6017,8 @@ mod tests {
             let read_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
             let raced = read_installed_apps().unwrap();
             expire_watched_app_cache();
-            record_app_read(read_epoch, &raced);
+            let raced_snapshot_generation = record_app_read(read_epoch, &raced);
+            assert_eq!(raced_snapshot_generation, 0, "a raced read stays stale");
             let raced_generation = gui_apps_generation();
             let stale = lock(&APP_CACHE).as_ref().unwrap().1.is_none();
             let reread_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
@@ -6552,8 +6857,24 @@ mod tests {
                     confined: true,
                 })
             );
+            let (_, custody) = verified_launch_custody_for_descendant(descendant)
+                .expect("the live descendant retains exact launcher custody");
+            assert!(launch_custody_is_current(
+                custody,
+                "so.tilo.mail",
+                "room-mail"
+            ));
+            assert!(!launch_custody_is_current(
+                custody,
+                "so.tilo.chat",
+                "room-mail"
+            ));
             unregister_launched_process(launcher.pid());
             assert_eq!(verified_package_for_descendant(descendant), None);
+            assert!(
+                !launch_custody_is_current(custody, "so.tilo.mail", "room-mail"),
+                "the persisted numeric pid/start pair loses authority when its live launch retires"
+            );
         }
 
         fn an_unconfined_launch_is_portal_attributed_without_service_authority() {

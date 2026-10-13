@@ -18,7 +18,7 @@
 //!    displays.
 
 use automerge::{AutoCommit, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -110,13 +110,11 @@ fn decode_favicon_png(
     if decoded.width != expected_width || decoded.height != expected_height {
         return None;
     }
-    Some(vello::peniko::ImageData {
-        data: vello::peniko::Blob::new(std::sync::Arc::new(decoded.rgba)),
-        format: vello::peniko::ImageFormat::Rgba8,
-        alpha_type: vello::peniko::ImageAlphaType::Alpha,
-        width: expected_width,
-        height: expected_height,
-    })
+    Some(ui::raster::rgba8(
+        decoded.rgba,
+        expected_width,
+        expected_height,
+    ))
 }
 
 /// Browser's public navigation boundary. Keep this separate from the generic
@@ -314,6 +312,22 @@ struct PendingHistory {
     document_revision: u64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompositionView {
+    Page { find: bool },
+    Settings,
+    Library(LibrarySection),
+}
+
+#[derive(Clone, PartialEq)]
+struct CompositionKey {
+    theme: Theme,
+    view: CompositionView,
+    compact: bool,
+    immersive: bool,
+    window_scale: f32,
+}
+
 /// Root widget for the browser app. See module docs.
 #[allow(
     clippy::struct_excessive_bools,
@@ -328,6 +342,8 @@ pub struct BrowserWidget {
     engine: SharedEngine,
     browsing_mode: BrowsingMode,
     composed: ui::widget::Composed,
+    composition_key: Option<CompositionKey>,
+    composition_dirty: bool,
     bootstrap_done: bool,
     /// `--shots` mode: no network, no filter loader, deterministic page.
     headless: bool,
@@ -689,6 +705,8 @@ impl BrowserWidget {
             engine,
             browsing_mode,
             composed: ui::widget::Composed::default(),
+            composition_key: None,
+            composition_dirty: false,
             bootstrap_done: false,
             headless,
             dispatch: None,
@@ -2009,6 +2027,42 @@ impl BrowserWidget {
                 retryable: false,
             },
         });
+    }
+
+    /// Ordinary layout passes retain control state, including pending native paste replies.
+    /// Rebuild when the view, theme or chrome structure changes.
+    fn retain_composition(&mut self, theme: &Theme) -> Box<dyn Widget> {
+        let key = CompositionKey {
+            theme: theme.clone(),
+            view: if self.show_settings {
+                CompositionView::Settings
+            } else if self.show_library {
+                CompositionView::Library(self.library_section)
+            } else {
+                CompositionView::Page {
+                    find: self.daily.open,
+                }
+            },
+            compact: self.compact_chrome,
+            immersive: self.content_fullscreen && self.window_fullscreen_active,
+            window_scale: self.window_scale,
+        };
+        if !self.composition_dirty
+            && !self.structure_dirty
+            && self.composition_key.as_ref() == Some(&key)
+            && let Some(composed) = self.composed.take()
+        {
+            return composed;
+        }
+        let address = self.composed.element().and_then(address_state);
+        let mut composed = self.build_composition(theme);
+        if let Some((id, state)) = address {
+            restore_address(composed.as_mut(), &id, &state);
+        }
+        self.composition_key = Some(key);
+        self.composition_dirty = false;
+        self.structure_dirty = false;
+        composed
     }
 
     #[allow(
@@ -3380,7 +3434,7 @@ impl Continuable for BrowserWidget {
         _root: &ObjId,
     ) -> Option<ui::collaboration::ContinuationMetadata> {
         Some(ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
+            schema_version: ui::collaboration::semantic_schema::WEB_LOCATION_V1,
             bytes: self.restorable_page()?,
         })
     }
@@ -3391,7 +3445,8 @@ impl Continuable for BrowserWidget {
         _state: &mut ui::widget::Edits<'_>,
         _root: &ObjId,
     ) -> bool {
-        metadata.schema_version == 1 && self.restore_page(&metadata.bytes)
+        metadata.schema_version == ui::collaboration::semantic_schema::WEB_LOCATION_V1
+            && self.restore_page(&metadata.bytes)
     }
 }
 
@@ -3471,7 +3526,6 @@ impl Widget for BrowserWidget {
     ) -> NodeId {
         self.pending_chrome_focus = None;
         let page_focused = self.control_focused("browser.surface");
-        let address_state = self.composed.element().and_then(address_state);
         // The tiers and the labelled widths follow the text scale, which is
         // only known here; the one-frame capture seed set them at 1×.
         self.text_scale = theme.text_scale;
@@ -3480,14 +3534,11 @@ impl Widget for BrowserWidget {
         if self.rect.width() > 0.0 {
             self.compact_chrome = is_compact_chrome(self.chrome_width(), self.compact_breakpoint);
         }
-        // The popover is anchored to controls of the composition on screen,
-        // which the new one replaces below.
+        // Anchor the popover to the controls currently on screen before laying
+        // out either the retained composition or its replacement.
         let anchored_panel = self.build_anchored_panel(theme);
-        let mut composed = self.build_composition(theme);
+        let mut composed = self.retain_composition(theme);
         let child_node = composed.build_layout(taffy, theme, node_map);
-        if let Some((id, state)) = address_state {
-            restore_address(composed.as_mut(), &id, &state);
-        }
         composed.set_motion_reduced(self.motion_reduced);
         self.composed.replace(composed);
         if let Some(id) = self.daily.focus_pending.take() {
@@ -3512,10 +3563,7 @@ impl Widget for BrowserWidget {
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         // `new_with_children` only fails when a child belongs to a different
@@ -3633,7 +3681,9 @@ impl Widget for BrowserWidget {
 
     fn take_structure_dirty(&mut self) -> bool {
         // Toggling the settings pane swaps the content widget → rebuild.
-        std::mem::take(&mut self.structure_dirty) || self.composed.take_structure_dirty()
+        let own = std::mem::take(&mut self.structure_dirty);
+        self.composition_dirty |= own;
+        own || self.composed.take_structure_dirty()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -3646,7 +3696,7 @@ impl Widget for BrowserWidget {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.window_scale = ctx.scale_factor as f32;
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         if let Some((node, id)) = self.pending_chrome_focus.take() {
             self.focus_control_preserving_selection(id);
@@ -3931,11 +3981,11 @@ impl Widget for BrowserWidget {
                         direction.as_str(),
                         entry.id
                     ))
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.back_menu.hovered() == Some(index),
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.back_menu.hovered() == Some(index)),
+                    )
             })
             .collect();
         let name = match direction {
@@ -4105,7 +4155,9 @@ impl BrowserWidget {
     /// The row a history or download hit opens, beyond the published page
     /// of rows too.
     pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
-        self.search_index.resource(id).map(live_row)
+        self.search_index
+            .resource(id)
+            .map(ui::framework::LiveRow::from_resource)
     }
 
     /// What only this window knows, as rows beneath the browser resource:
@@ -4117,7 +4169,7 @@ impl BrowserWidget {
         self.published()
             .children
             .into_iter()
-            .map(live_row)
+            .map(ui::framework::LiveRow::from_resource)
             .collect()
     }
 
@@ -4406,25 +4458,6 @@ impl BrowserWidget {
         browser.children.extend(bookmark_rows);
         browser
     }
-}
-
-/// `resource` as the live row it is published as.
-fn live_row(resource: Resource) -> ui::framework::LiveRow {
-    let mut row = ui::framework::LiveRow::new(
-        resource.id.as_str(),
-        resource.kind.clone(),
-        resource.label.clone(),
-    );
-    if let Some(presentation) = resource.presentation {
-        row = row.presentation(presentation);
-    }
-    for action in resource.actions {
-        row = row.operation(action);
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
 }
 
 impl ui::widget::controls::ActionControls for BrowserWidget {
@@ -4836,6 +4869,67 @@ mod architecture_tests {
             None,
             ElementState::Pressed,
         ))
+    }
+
+    #[test]
+    fn delayed_address_paste_survives_layout() {
+        use std::sync::{Arc, Mutex, mpsc};
+        use ui::clipboard::{ClipboardBackend, ClipboardTarget};
+
+        #[derive(Default)]
+        struct Delayed {
+            reply: Mutex<Option<mpsc::Sender<Option<String>>>>,
+        }
+        impl ClipboardBackend for Delayed {
+            fn set_text(&self, _: ClipboardTarget, _: &str) -> bool {
+                false
+            }
+            fn text(&self, _: ClipboardTarget) -> Option<String> {
+                None
+            }
+            fn request_text(&self, _: ClipboardTarget) -> mpsc::Receiver<Option<String>> {
+                let (reply, result) = mpsc::channel();
+                *self.reply.lock().unwrap() = Some(reply);
+                result
+            }
+            fn name(&self) -> &'static str {
+                "delayed-address-paste"
+            }
+        }
+        let clipboard = Arc::new(Delayed::default());
+        let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
+        let _host = ui::host::enter(&services);
+        let mut widget = BrowserWidget::with_engine(TestEngine::new(), true);
+        let (tree, node) =
+            super::tests::layout_keeping_tree(&mut widget, 900.0, 700.0, &Theme::dark());
+        assert!(widget.focus_address_input());
+        let mut event = key(WNamedKey::Enter);
+        if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+            event.logical_key = WKey::Character("v".into());
+        }
+        let mut document = AutoCommit::new();
+        let handled = ui::testing::Dispatch::new()
+            .doc(&mut document)
+            .layout(&tree, node)
+            .modifiers(winit::keyboard::ModifiersState::CONTROL)
+            .send(&mut widget, &event)
+            .handled;
+        assert!(handled);
+        let reply = clipboard
+            .reply
+            .lock()
+            .unwrap()
+            .take()
+            .expect("native paste requested");
+        super::tests::layout_at(&mut widget, 900.0, 700.0);
+        reply
+            .send(Some("https://example.test/pasted".into()))
+            .expect("layout retains the pending paste");
+        widget.sync(&document, &automerge::ROOT);
+        assert_eq!(
+            widget.address.with(Clone::clone),
+            "https://example.test/pasted"
+        );
     }
 
     /// Find-in-page focus handoff, DPI through find reflow and the daily shortcut capture set.
@@ -5832,10 +5926,7 @@ mod architecture_tests {
             widget.cursor = Point::new(850.0, 650.0);
             dispatch_back_event(
                 &mut widget,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
-                },
+                &ui::synthetic_input::cursor_moved(850.0, 650.0),
             );
             assert!(dispatch_back_event(
                 &mut widget,
@@ -6445,7 +6536,7 @@ mod tests {
 
     /// Lay the widget out and hand back the tree and the widget's node, for
     /// tests that dispatch events against it.
-    fn layout_keeping_tree(
+    pub(super) fn layout_keeping_tree(
         widget: &mut BrowserWidget,
         width: f32,
         height: f32,
@@ -6462,10 +6553,7 @@ mod tests {
         let layout_root = tree
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(width),
-                        height: Dimension::length(height),
-                    },
+                    size: Size::from_lengths(width, height),
                     ..Default::default()
                 },
                 &[child],
@@ -6504,20 +6592,9 @@ mod tests {
             .layout(tree, node);
         let mut release_handled = false;
         for event in [
-            WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
+            ui::synthetic_input::cursor_moved(point.x, point.y),
+            ui::synthetic_input::mouse_press(),
+            ui::synthetic_input::mouse_release(),
         ] {
             release_handled = at.send(widget, &event).handled;
         }
@@ -7378,10 +7455,7 @@ mod tests {
             let layout_root = tree
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(390.0),
-                            height: Dimension::length(844.0),
-                        },
+                        size: Size::from_lengths(390.0, 844.0),
                         ..Default::default()
                     },
                     &[child],
@@ -7487,10 +7561,7 @@ mod tests {
             let layout_root = tree
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(900.0),
-                            height: Dimension::length(620.0),
-                        },
+                        size: Size::from_lengths(900.0, 620.0),
                         ..Default::default()
                     },
                     &[child],
@@ -8620,7 +8691,7 @@ mod tests {
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
             let (mut doc, root) = synced(&mut widget);
             let metadata = ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
+                schema_version: ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                 bytes: br#"{"url":"https://example.test/reading"}"#.to_vec(),
             };
             assert!(widget.restore_continuation_metadata(
@@ -8993,7 +9064,7 @@ mod tests {
                     .is_none()
             );
             let metadata = ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
+                schema_version: ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                 bytes: br#"{"url":"https://normal.test"}"#.to_vec(),
             };
             assert!(!widget.restore_continuation_metadata(

@@ -622,6 +622,10 @@ pub struct OnboardingView {
     /// `false` shows the post-mint backup step; `true` shows the concise
     /// desktop hand-off. Persisted separately so a crash cannot skip backup.
     identity_ready_page: bool,
+    /// This device joined the identity from another one and holds only its
+    /// public record: the root key stays on the approving device, so the
+    /// ready screen recommends no backup of this one.
+    joined_member: bool,
     /// Settings can reopen the proven backup ceremony for an existing
     /// identity. That is a short modal task, not a second first-login flow.
     portable_backup_only: bool,
@@ -886,6 +890,7 @@ impl OnboardingView {
             backup_copy_form_open: false,
             backup_skip_acknowledged: false,
             identity_ready_page: false,
+            joined_member: false,
             portable_backup_only: false,
             progress_error: None,
             tour_page: None,
@@ -1235,6 +1240,7 @@ impl OnboardingView {
         self.backup_copy_form_open = false;
         self.backup_skip_acknowledged = false;
         self.identity_ready_page = false;
+        self.joined_member = false;
         self.portable_backup_only = true;
         self.progress_error = None;
         self.tour_page = None;
@@ -1267,6 +1273,7 @@ impl OnboardingView {
             .unwrap_or_else(|| identity_dir.join("primary.json"));
         match crate::onboarding::existing_identity_at(&identity_path) {
             Ok(identity) => {
+                self.joined_member = crate::onboarding::holds_no_identity_secret(&identity_path);
                 self.flow.resume_created(identity);
                 self.identity_ready_page = matches!(
                     stage,
@@ -1385,6 +1392,7 @@ impl OnboardingView {
         self.backup_was_verified = false;
         self.backup_copy_form_open = false;
         self.identity_ready_page = false;
+        self.joined_member = false;
         self.portable_backup_only = false;
         self.tour_page = None;
         self.tour_only = false;
@@ -2559,17 +2567,15 @@ impl OnboardingView {
                 vec![paragraph(&t("onboarding-done-next-body"), theme)],
             )))
             .push(Box::new(Section::titled(
-                if self.backup_was_verified {
-                    t("onboarding-done-backup-verified")
-                } else {
-                    t("onboarding-done-backup-recommended")
-                },
+                t(done_backup_title_key(
+                    self.joined_member,
+                    self.backup_was_verified,
+                )),
                 vec![paragraph_with_id(
-                    &if self.backup_was_verified {
-                        t("onboarding-done-backup-verified-body")
-                    } else {
-                        t("onboarding-done-backup-recommended-body")
-                    },
+                    &t(done_backup_body_key(
+                        self.joined_member,
+                        self.backup_was_verified,
+                    )),
                     theme,
                     "onboarding.done.backup-guidance",
                 )],
@@ -2715,6 +2721,29 @@ impl OnboardingView {
             .with_icon(ui::icons::Icon::ArrowRight)
             .role(ui::widget::ButtonRole::Primary);
         footer_actions(vec![Box::new(tour), Box::new(enter)])
+    }
+}
+
+/// The ready screen's backup heading. A device that joined from another one
+/// holds no root key, so nothing on it needs a backup.
+fn done_backup_title_key(joined_member: bool, backup_verified: bool) -> &'static str {
+    if joined_member {
+        "onboarding-done-joined-key-elsewhere"
+    } else if backup_verified {
+        "onboarding-done-backup-verified"
+    } else {
+        "onboarding-done-backup-recommended"
+    }
+}
+
+/// The ready screen's backup guidance under [`done_backup_title_key`].
+fn done_backup_body_key(joined_member: bool, backup_verified: bool) -> &'static str {
+    if joined_member {
+        "onboarding-done-joined-key-elsewhere-body"
+    } else if backup_verified {
+        "onboarding-done-backup-verified-body"
+    } else {
+        "onboarding-done-backup-recommended-body"
     }
 }
 
@@ -3173,14 +3202,14 @@ impl Widget for OnboardingView {
 
         // Choosing the nearby flow is the explicit request to pair, so the
         // screen opens with pairing already under way.
-        let mut start_nearby = false;
-        if self.pressed.take(KEY_CHOOSE_NEARBY) && self.flow.screen() == Screen::Existing {
+        let mut start_nearby =
+            self.pressed.take(KEY_CHOOSE_NEARBY) && self.flow.screen() == Screen::Existing;
+        if start_nearby {
             self.error = None;
             self.nearby_failure = None;
             self.nearby_status = None;
             self.nearby_code = None;
             self.flow.choose_nearby();
-            start_nearby = true;
         }
 
         if self.pressed.take(KEY_CONNECT_BROWSE)
@@ -3274,6 +3303,7 @@ impl Widget for OnboardingView {
                 // the ready screen instead of the backup step. The journal
                 // records the hand-off first, so a restart resumes there.
                 self.identity_ready_page = self.persist_progress(PersistedStage::ReadyToEnter);
+                self.joined_member = true;
                 self.codec_page = self.identity_ready_page && self.codec_step_offered;
                 self.error = None;
                 self.nearby_status = Some(t("onboarding-nearby-connected"));
@@ -3693,10 +3723,7 @@ impl Widget for OnboardingView {
             flex_direction: taffy::FlexDirection::Column,
             justify_content: Some(taffy::JustifyContent::Center),
             align_items: Some(taffy::AlignItems::Center),
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
                 left: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
                 right: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
@@ -4216,6 +4243,31 @@ mod tests {
                 .is_none(),
             "a joined device is not asked to back up an identity it does not hold"
         );
+        let joined_guidance = |names: &[String]| {
+            assert!(
+                names.contains(&t("onboarding-done-joined-key-elsewhere"))
+                    && names.contains(&t("onboarding-done-joined-key-elsewhere-body")),
+                "the ready screen says the key stays on the approving device: {names:?}"
+            );
+            assert!(
+                !names.contains(&t("onboarding-done-backup-recommended")),
+                "a joined device is not told a backup is still recommended: {names:?}"
+            );
+        };
+        joined_guidance(&names);
+
+        // A restart resumes on the same ready screen, knowing the device
+        // joined from its identity record alone.
+        runtime_identity::set_active_identity(&identity_dir, "identity-joined")
+            .expect("select the joined identity");
+        let (mut resumed, _) = self::view();
+        resumed.identity_dir = Some(identity_dir);
+        resumed.restore_pending_progress_from_disk();
+        assert_eq!(resumed.flow.screen(), Screen::Done);
+        let composition = resumed.build_composition(&Theme::dark(), PANEL_MAX_HEIGHT);
+        let mut names = Vec::new();
+        accessible_names(&*composition, &mut names);
+        joined_guidance(&names);
     }
 
     fn process_group_has_live_member(pgid: i32) -> bool {
@@ -4257,11 +4309,7 @@ mod tests {
             None,
             ElementState::Pressed,
         );
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     fn dispatch_escape(view: &mut OnboardingView, document: &mut AutoCommit) -> bool {
@@ -4272,10 +4320,7 @@ mod tests {
     }
 
     fn pointer_event(position: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(position.x, position.y),
-        }
+        ui::synthetic_input::cursor_moved(position.x, position.y)
     }
 
     use ui::synthetic_input::mouse_press;

@@ -23,7 +23,7 @@ use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 
 use ui::presence::PresenceCtx;
@@ -150,9 +150,7 @@ impl Widget for KeyboardView {
         taffy.widget_leaf(crate::full_width_row(HEIGHT), node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     #[allow(
         clippy::similar_names,
@@ -228,10 +226,6 @@ impl Widget for KeyboardView {
 
     fn test_id(&self) -> Option<&str> {
         Some("keyboard_view")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

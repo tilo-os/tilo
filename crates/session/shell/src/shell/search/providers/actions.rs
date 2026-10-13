@@ -25,6 +25,49 @@ mod native_identity;
 
 use crate::shell::shared_display_actions;
 
+const WORKSPACE_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
+    "name",
+    ParamType::Text,
+    "1 to 120 characters without control characters. Omit to use the localized default name.",
+)];
+
+fn workspace_create_context(
+    state: &ChromeState,
+) -> Result<
+    (
+        crate::shell::state::WorkspaceId,
+        crate::shell::state::RoomId,
+        String,
+    ),
+    ActionError,
+> {
+    let tree = state.tree();
+    let workspace = tree
+        .desktop
+        .active_workspace()
+        .ok_or_else(|| ActionError::Refused("there is no active workspace context".into()))?;
+    let context = (
+        workspace.id,
+        workspace.room,
+        state.local_user_for_room(&workspace.room),
+    );
+    drop(tree);
+    Ok(context)
+}
+
+fn create_workspace(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+    let default_name = t("search-action-workspace-create-default-name");
+    let supplied = args.text("name").unwrap_or(&default_name);
+    let name = supplied.trim();
+    if name.is_empty() || name.chars().count() > 120 || supplied.chars().any(char::is_control) {
+        return Err(ActionError::Refused(t(
+            "search-action-workspace-create-invalid-name",
+        )));
+    }
+    state.add_workspace(name);
+    Ok(())
+}
+
 /// What `record.bring` must be told.
 const RECORD_BRING_PARAMS: &[ActionParam] = &[
     ActionParam::required(
@@ -147,6 +190,14 @@ const DEVICE_REVOKE_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+fn workspace_create_contract() -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        kind: tilo_actions::ActionKind::Undoable,
+        retry: tilo_actions::RetryPolicy::AtMostOnce,
+        ..tilo_actions::ActionContract::default()
+    }
+}
+
 fn alarm_action_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
         kind: tilo_actions::ActionKind::Undoable,
@@ -181,6 +232,8 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "quick-settings.open",
     "quick-settings.clipboard",
     "quick-settings.devices",
+    "quick-settings.network",
+    "quick-settings.bluetooth",
     "projection.open",
     "projection.close",
     "capture.open",
@@ -197,6 +250,7 @@ const VIEW_ACTION_IDS: &[&str] = &[
     "history.undo",
     "history.restore",
     shared_display_actions::INSPECT_ID,
+    DISPLAY_OUTPUTS_INSPECT_ID,
 ];
 
 pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
@@ -213,6 +267,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.reversible = true;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
+        "workspace.create" => contract = workspace_create_contract(),
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Privileged;
@@ -290,7 +345,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
             tilo_actions::OperationKind::View
         }
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
-        "record.bring" | "peer.invite.named" | "agent.invite" => {
+        "record.bring" | "peer.invite.named" | "agent.invite" | "workspace.create" => {
             tilo_actions::OperationKind::Document
         }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
@@ -1504,6 +1559,24 @@ impl Action {
             },
         ),
         chrome(
+            "quick-settings.network",
+            "qs-network-details",
+            "search-action-quick-settings-network-subtitle",
+            |st, _| {
+                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Wifi);
+                Ok(())
+            },
+        ),
+        chrome(
+            "quick-settings.bluetooth",
+            "qs-bluetooth-details",
+            "search-action-quick-settings-bluetooth-subtitle",
+            |st, _| {
+                st.open_quick_settings_level(crate::shell::quick_settings::QsLevel::Bluetooth);
+                Ok(())
+            },
+        ),
+        chrome(
             "quick-settings.devices",
             "search-action-quick-settings-devices",
             "search-action-quick-settings-devices-subtitle",
@@ -1578,6 +1651,12 @@ impl Action {
             "search-action-display-layout-external-only",
             "search-action-display-layout-external-only-subtitle",
             |st, _| stage_display_layout(st, DisplayLayoutMode::ExternalOnly),
+        ),
+        chrome(
+            DISPLAY_OUTPUTS_INSPECT_ID,
+            "search-action-display-outputs-inspect",
+            "search-action-display-outputs-inspect-subtitle",
+            |_, _| Ok(()),
         ),
         chrome(
             DISPLAY_KEEP_ID,
@@ -1724,9 +1803,7 @@ impl Action {
             "search-action-room-activity-open",
             "search-action-room-activity-open-subtitle",
             |st, _| {
-                st.overlays.room_activity = true;
-                // The sheet covers the dropdown that can also open it.
-                st.overlays.collaborators = false;
+                st.open_room_activity(None);
                 Ok(())
             },
         ),
@@ -2043,6 +2120,13 @@ impl Action {
             "search-action-strip-focus-next-subtitle",
             |st, _| request_window_shortcut(st, ShortcutAction::NextStrip),
         ),
+        Action {
+            id: "workspace.create",
+            label: "search-action-workspace-create",
+            subtitle: "search-action-workspace-create-subtitle",
+            params: WORKSPACE_CREATE_PARAMS,
+            apply: create_workspace,
+        },
         chrome(
             "workspace.previous",
             "search-action-workspace-previous",
@@ -2682,6 +2766,7 @@ pub(crate) const DISPLAY_BUILTIN_ONLY_ID: &str = "display.layout.builtin-only";
 pub(crate) const DISPLAY_EXTERNAL_ONLY_ID: &str = "display.layout.external-only";
 pub(crate) const DISPLAY_KEEP_ID: &str = "display.change.keep";
 pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
+pub(crate) const DISPLAY_OUTPUTS_INSPECT_ID: &str = "display.outputs.inspect";
 pub(crate) const BLUETOOTH_PAIRING_DECLINE_ID: &str = "bluetooth.pairing.decline";
 
 /// Decline the Bluetooth pairing question on screen, or stop the pairing
@@ -2711,6 +2796,78 @@ fn stage_display_layout(
     Err(ActionError::Refused(
         "display layouts require lifecycle dispatch".into(),
     ))
+}
+
+/// The attached displays as the compositor drives them, for an agent or a
+/// screen reader to read before choosing a layout: each one's scale, mode,
+/// place on the desktop and whether it is primary, the layout they form, and
+/// the change waiting for Keep or Revert, if one is. Displays come from what
+/// the compositor published in memory; the layout from settings.
+fn inspect_display_outputs() -> Result<serde_json::Value, ActionError> {
+    use settings_store::hardware::{
+        DisplayConfig, DisplayHardwareSnapshot, DisplayTransaction, DisplayTransactionState,
+    };
+    let snapshot = DisplayHardwareSnapshot::published()
+        .ok_or_else(|| ActionError::Refused("the compositor has not published displays".into()))?;
+    let set = settings_store::display_mode::attached_set(&snapshot.outputs);
+    let committed = DisplayConfig::load_for(&set);
+    let waiting = DisplayTransaction::load().filter(|transaction| {
+        transaction.set.key == set.key
+            && matches!(
+                transaction.state,
+                DisplayTransactionState::Requested
+                    | DisplayTransactionState::AwaitingConfirmation
+                    | DisplayTransactionState::ConfirmRequested
+            )
+    });
+    let effective = waiting
+        .as_ref()
+        .map_or(&committed, |transaction| &transaction.candidate);
+    let outputs = snapshot
+        .outputs
+        .iter()
+        .map(|output| {
+            let connector = &output.descriptor.connector;
+            let config = effective
+                .output_for(connector)
+                .cloned()
+                .unwrap_or_else(|| output.unconfigured());
+            let placement = snapshot
+                .layout
+                .iter()
+                .find(|placement| &placement.connector == connector);
+            serde_json::json!({
+                "output": connector,
+                "label": output.descriptor.connector_label,
+                "builtin": output.builtin,
+                "enabled": config.enabled,
+                "primary": config.primary,
+                "scale": output.scale,
+                "mode": output.current_mode,
+                "modes": output.descriptor.modes,
+                "mirror_of": config.mirror_of,
+                "rect": placement.map(|placement| serde_json::json!({
+                    "x": placement.x,
+                    "y": placement.y,
+                    "width": placement.width,
+                    "height": placement.height,
+                })),
+            })
+        })
+        .collect::<Vec<_>>();
+    let layout = settings_store::display_mode::active_layout(&snapshot.outputs, effective)
+        .map(|mode| format!("display.layout.{}", mode.id()));
+    Ok(serde_json::json!({
+        "outputs": outputs,
+        "layout": layout,
+        "waiting": waiting.map(|transaction| serde_json::json!({
+            "transaction": transaction.id,
+            "state": transaction.state,
+            "deadline_unix_ms": transaction.deadline_unix_ms,
+            "keep": DISPLAY_KEEP_ID,
+            "revert": DISPLAY_REVERT_ID,
+        })),
+    }))
 }
 
 /// Keep or revert the display change that is waiting for confirmation.
@@ -2909,9 +3066,12 @@ impl Default for ActionsProvider {
     }
 }
 
+/// The provider id the shell's own actions are addressed by.
+pub(crate) const PROVIDER_ID: &str = "actions";
+
 impl SearchProvider for ActionsProvider {
     fn id(&self) -> &'static str {
-        "actions"
+        PROVIDER_ID
     }
     fn name(&self) -> &'static str {
         "Actions"
@@ -3356,7 +3516,11 @@ impl ActionsProvider {
                                         let mut state = chrome.borrow_mut();
                                         state.projection_staged(transaction.id);
                                         state.bump();
-                                        crate::shell::search::ActionReceipt::completed()
+                                        // The change to answer with Keep or
+                                        // Revert, for the caller to follow.
+                                        crate::shell::search::ActionReceipt::completed_with(
+                                            serde_json::json!({ "transaction": transaction.id }),
+                                        )
                                     })),
                                     Err(error) => {
                                         let mut state = chrome.borrow_mut();
@@ -3415,6 +3579,8 @@ impl ActionsProvider {
                     (on_open, Some(begin))
                 } else {
                     let action_id = action.id;
+                    let creation_context = (action_id == "workspace.create")
+                        .then(|| workspace_create_context(ctx.chrome).ok());
                     let on_open = Rc::new(
                         move |_doc: &mut ui::widget::Edits<'_>,
                               _root: &automerge::ObjId,
@@ -3425,6 +3591,14 @@ impl ActionsProvider {
                                 return Err(ActionError::Refused(format!(
                                     "current workspace authority no longer permits {action_id}"
                                 )));
+                            }
+                            if let Some(expected) = &creation_context
+                                && workspace_create_context(&st).ok().as_ref() != expected.as_ref()
+                            {
+                                return Err(ActionError::Refused(
+                                    "workspace creation context changed; resolve the action again"
+                                        .into(),
+                                ));
                             }
                             let outcome = apply(&mut st, args);
                             // Repaint only on success; a refusal changed nothing.
@@ -3448,8 +3622,8 @@ impl ActionsProvider {
                     params: action.params.to_vec(),
                     contract: Some(shell_action_contract(action.id)),
                     on_open,
-                    on_invoke: (action.id == shared_display_actions::INSPECT_ID).then(|| {
-                        Rc::new(
+                    on_invoke: match action.id {
+                        shared_display_actions::INSPECT_ID => Some(Rc::new(
                             |_: &mut ui::widget::Edits<'_>,
                              _: &automerge::ObjId,
                              _: &Chrome,
@@ -3457,8 +3631,20 @@ impl ActionsProvider {
                                 shared_display_actions::inspect()
                                     .map(crate::shell::search::ActionReceipt::completed_with)
                             },
-                        ) as Rc<crate::shell::search::InvokeFn>
-                    }),
+                        )
+                            as Rc<crate::shell::search::InvokeFn>),
+                        DISPLAY_OUTPUTS_INSPECT_ID => Some(Rc::new(
+                            |_: &mut ui::widget::Edits<'_>,
+                             _: &automerge::ObjId,
+                             _: &Chrome,
+                             _: &ActionArgs| {
+                                inspect_display_outputs()
+                                    .map(crate::shell::search::ActionReceipt::completed_with)
+                            },
+                        )
+                            as Rc<crate::shell::search::InvokeFn>),
+                        _ => None,
+                    },
                     on_begin_invoke,
                 });
             }
@@ -4094,6 +4280,103 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn display_outputs_inspection_reads_the_published_displays_and_the_waiting_change() {
+        use settings_store::hardware::{
+            DisplayHardwareSnapshot, DisplayOutputSnapshot, DisplayTransaction,
+            DisplayTransactionState, LiveOutputPlacement, OutputDescriptor, OutputMode,
+        };
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let chrome = chrome_with_room();
+        assert!(
+            invoke_shell_action(&chrome, DISPLAY_OUTPUTS_INSPECT_ID, &serde_json::json!({}))
+                .is_err(),
+            "with nothing published there is nothing to inspect"
+        );
+        let mode = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let output = |connector: &str, builtin: bool| DisplayOutputSnapshot {
+            descriptor: OutputDescriptor {
+                connector: connector.into(),
+                connector_label: connector.into(),
+                modes: vec![mode],
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
+                monitor: None,
+            },
+            current_mode: mode,
+            scale: if builtin { 2.0 } else { 1.0 },
+            builtin,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profile_labels: std::collections::BTreeMap::new(),
+        };
+        let (publisher_pid, publisher_start_ticks) =
+            settings_store::hardware::publisher_identity().unwrap();
+        let outputs = vec![output("eDP-1", true), output("HDMI-A-1", false)];
+        DisplayHardwareSnapshot {
+            publisher_pid,
+            publisher_start_ticks,
+            outputs: outputs.clone(),
+            layout: vec![LiveOutputPlacement {
+                connector: "HDMI-A-1".into(),
+                x: 960,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
+            ..DisplayHardwareSnapshot::default()
+        }
+        .save()
+        .unwrap();
+        let inspect = |chrome: &Chrome| {
+            let Ok(crate::shell::search::InvocationDisposition::Accepted(receipt)) =
+                invoke_shell_action(chrome, DISPLAY_OUTPUTS_INSPECT_ID, &serde_json::json!({}))
+            else {
+                panic!("inspection completes immediately")
+            };
+            let tilo_actions::InvocationUpdate::Succeeded { output, .. } = receipt.update else {
+                panic!("inspection returns the displays")
+            };
+            output.value.unwrap()
+        };
+        let value = inspect(&chrome);
+        let listed = value["outputs"].as_array().unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0]["output"], "eDP-1");
+        assert_eq!(listed[0]["builtin"], true);
+        assert_eq!(listed[0]["scale"], 2.0);
+        assert_eq!(listed[1]["rect"]["x"], 960);
+        assert_eq!(listed[1]["mode"]["width"], 1920);
+        assert!(value["waiting"].is_null());
+
+        let set = settings_store::display_mode::attached_set(&outputs);
+        let candidate = settings_store::display_mode::plan_layout(
+            DisplayLayoutMode::Mirror,
+            &outputs,
+            &settings_store::hardware::DisplayConfig::default(),
+        )
+        .unwrap();
+        let mut staged = DisplayTransaction::request(set, candidate).unwrap();
+        staged.state = DisplayTransactionState::AwaitingConfirmation;
+        staged.save().unwrap();
+        let value = inspect(&chrome);
+        assert_eq!(value["waiting"]["transaction"], staged.id);
+        assert_eq!(value["waiting"]["keep"], DISPLAY_KEEP_ID);
+        assert_eq!(value["layout"], DISPLAY_MIRROR_ID);
+        assert_eq!(value["outputs"][1]["mirror_of"], "eDP-1");
+        assert_eq!(
+            shell_action_kind(DISPLAY_OUTPUTS_INSPECT_ID),
+            tilo_actions::OperationKind::View
+        );
+    }
+
+    #[test]
     fn shared_display_public_actions_inspect_and_edit_only_the_current_certified_pair() {
         let _home = shared_display_actions::test_support::publish();
         let chrome = chrome_with_room();
@@ -4692,7 +4975,9 @@ mod tests {
                 .find(|r| r.id == "room.activity.open")
                 .expect("typing 'activity' must surface the room-activity action");
             assert_eq!(action.title, "Show workspace activity");
-            assert!(!c.borrow().overlays.room_activity, "starts closed");
+            let activity_tab =
+                || crate::shell::tab_binding::active_workspace_activity_tab(&c.borrow().tree());
+            assert!(activity_tab().is_none(), "starts closed");
             (action.on_open)(
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
@@ -4701,12 +4986,16 @@ mod tests {
             )
             .expect("a nullary chrome action must run");
             assert!(
-                c.borrow().overlays.room_activity,
-                "invoking the exported action opened the sheet"
+                activity_tab().is_some(),
+                "invoking the exported action opens the workspace's Activity tab"
+            );
+            assert!(
+                !c.borrow().overlays.room_activity,
+                "Activity is a tab, not a modal that captures input"
             );
             assert!(
                 !c.borrow().overlays.collaborators,
-                "the dropdown the sheet can also be opened from is dismissed with it"
+                "the dropdown Activity can also be opened from is dismissed with it"
             );
         }
 
@@ -4817,10 +5106,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn shell_action_matching_ranks_prefix_substring_subtitle_and_fuzzy() {
         // Phase `prefix_beats_substring_beats_subtitle`.
         {
@@ -7784,5 +8069,44 @@ mod tests {
             bind(INVITATION_LIST_ID, serde_json::json!({"confirm": true})).unwrap(),
             PeerSyncRequest::ListPendingInvitations
         );
+    }
+    #[test]
+    fn radio_details_navigation_actions_are_views_and_do_not_toggle_radios() {
+        for (id, level) in [
+            (
+                "quick-settings.network",
+                crate::shell::quick_settings::QsLevel::Wifi,
+            ),
+            (
+                "quick-settings.bluetooth",
+                crate::shell::quick_settings::QsLevel::Bluetooth,
+            ),
+        ] {
+            let provider = ActionsProvider::new();
+            let chrome = chrome_with_room();
+            let before = (
+                chrome.borrow().quick_settings.wifi,
+                chrome.borrow().quick_settings.bluetooth,
+            );
+            let results = action_results(&provider, &chrome);
+            let result = results
+                .iter()
+                .find(|result| result.id == id)
+                .expect("published view action");
+            assert_eq!(result.operation_kind, tilo_actions::OperationKind::View);
+            for _ in 0..2 {
+                invoke_action(&results, id, &chrome);
+                let state = chrome.borrow();
+                assert!(state.overlays.quick_settings);
+                assert_eq!(
+                    state.quick_settings.nav_stack,
+                    [crate::shell::quick_settings::QsLevel::Root, level.clone()]
+                );
+                assert_eq!(
+                    (state.quick_settings.wifi, state.quick_settings.bluetooth),
+                    before
+                );
+            }
+        }
     }
 }

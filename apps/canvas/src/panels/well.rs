@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use ui::a11y::{AccessNode, Role};
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
+use ui::vello::kurbo::{Affine, Circle, Rect, Stroke};
 use ui::widget::{AppModel, EventCtx, ModelPath, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::{PresenceCtx, TextRenderer, Theme};
@@ -58,19 +58,14 @@ impl Widget for Well {
         // As tall as a panel row: the rail's tools are that size too.
         let side = theme.tokens.metrics.panel_row_height;
         let style = Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(side),
-                height: taffy::Dimension::length(side),
-            },
+            size: taffy::Size::from_lengths(side, side),
             flex_shrink: 0.0,
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -116,7 +111,7 @@ impl Widget for Well {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let at = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let at = ctx.logical(position);
                 self.hovered = self.rect.contains(at);
             }
             WindowEvent::CursorLeft { .. } => self.hovered = false,
@@ -144,9 +139,5 @@ impl Widget for Well {
 
     fn name(&self) -> &'static str {
         "Well"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }

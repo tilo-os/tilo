@@ -20,6 +20,7 @@ class SourceBoundaryTests(unittest.TestCase):
         self.assertTrue(BUILD.allowed('crates/text/emoji/data/en.txt', True))
         self.assertTrue(BUILD.allowed('tools/cargo-runner.sh', True))
         self.assertTrue(BUILD.allowed('tools/with-test-environment.sh', True))
+        self.assertTrue(BUILD.allowed('tools/font-catalog.py', True))
         self.assertFalse(BUILD.allowed('tools/unreviewed-upload.sh', True))
         self.assertTrue(BUILD.allowed('apps/good-morning/src/main.rs', False))
         self.assertFalse(BUILD.allowed('apps/good-morning/untracked-data.json', False))
@@ -45,6 +46,27 @@ class SourceBoundaryTests(unittest.TestCase):
             (mirror / 'unexpected.txt').write_text('do not upload')
             with self.assertRaisesRegex(ValueError, 'unexpected upload'):
                 BUILD.prepare(source, mirror, receipt)
+
+    def test_public_compile_includes_are_mirrored_without_broadening_data_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, mirror = root / 'owner', root / 'mirror'
+            source.mkdir()
+            subprocess.run(['git', 'init', '-q', str(source)], check=True)
+            public = sorted(BUILD.SOURCE_HELPERS)
+            private = ['os/private.env', 'docs/customer-data.json',
+                       'tools/protocols/credentials.json', 'dist/private.env']
+            for name in [*BUILD.ROOT_FILES, *public, *private]:
+                path = source / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('fixture:' + name)
+            subprocess.run(['git', '-C', str(source), 'add', '.'], check=True)
+            BUILD.prepare(source, mirror, root / 'receipt.json')
+            for name in public:
+                self.assertEqual((mirror / name).read_bytes(), (source / name).read_bytes(), name)
+            for name in private:
+                self.assertFalse((mirror / name).exists(), name)
+            self.assertFalse(BUILD.allowed('docs/architecture/dictation-whistle-aot-image.json', False))
 
     def test_symlink_source_cannot_read_external_file(self):
         with tempfile.TemporaryDirectory() as directory:

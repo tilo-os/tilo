@@ -157,5 +157,5 @@ do not treat an old run as a repository baseline.
 `tools/perf/compare.py` compares a record only with stored records from the same
 environment. Scheduled results and their baselines are kept in the
 `tilo-perf-results` package; see
-[Performance results](../../DEVELOPMENT.md#performance-results). Use
+[Performance results](../../docs/measurements/performance.md). Use
 `compare.sh` for a one-off diff of two local runs.

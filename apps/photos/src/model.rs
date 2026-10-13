@@ -42,8 +42,8 @@ pub struct ImageAnalysis {
     /// other component's audit trail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ocr_provenance: Option<AnalysisProvenance>,
-    /// Provenance for `description`, `objects`, and `pets`. Older records use
-    /// `provenance`; newly produced records populate this field explicitly.
+    /// Provenance for `description`, `objects`, and `pets`, kept apart from
+    /// `ocr_provenance` for the same reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision_provenance: Option<AnalysisProvenance>,
 }
@@ -67,26 +67,23 @@ pub struct VisionComponent {
 /// The bounded provenance attached to an analysis result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AnalysisProvenance {
-    /// `local-ocr`, `local-vision`, `local-description` (legacy), or `user`.
+    /// `local-ocr`, `local-vision`, or `user`.
     #[serde(default = "default_analysis_source")]
     pub source: String,
     /// Stable engine/model family identifier, never an error or command line.
     #[serde(default)]
     pub engine: String,
     /// Signed local model identifier when a vision result was produced. Empty
-    /// for OCR, user-authored, and older records.
-    #[serde(default)]
+    /// for OCR and user-authored results.
     pub model_id: String,
     /// Immutable signed model revision when a vision result was produced.
-    /// Empty preserves backwards compatibility with pre-provenance records.
-    #[serde(default)]
+    /// Empty for OCR and user-authored results.
     pub model_revision: String,
     /// OCR language when text recognition was used.
     #[serde(default)]
     pub language: String,
-    /// The content hash this result describes. Empty means a legacy/path-only
-    /// image and makes the result deliberately refreshable, not transferable.
-    #[serde(default)]
+    /// The content hash this result describes. A result belongs to exactly
+    /// these bytes and is never transferred to a photograph's other pixels.
     pub content: String,
     /// Explicit sharing semantics: `shared` records were accepted through the
     /// document action; `local` records must never be written to the CRDT.
@@ -145,27 +142,16 @@ impl ImageAnalysis {
     /// completed. Empty model output still counts: completion provenance is
     /// what prevents a whole-library scan from retrying a blank scene forever.
     #[must_use]
-    pub fn vision_provenance_for_content(
-        &self,
-        content: Option<&str>,
-    ) -> Option<&AnalysisProvenance> {
-        let provenance = self.vision_provenance.as_ref().or_else(|| {
-            matches!(
-                self.provenance.source.as_str(),
-                "local-vision" | "local-description"
-            )
-            .then_some(&self.provenance)
-        })?;
-        match content {
-            Some(content) => (provenance.content == content).then_some(provenance),
-            None => provenance.content.is_empty().then_some(provenance),
-        }
+    pub fn vision_provenance_for_content(&self, content: &str) -> Option<&AnalysisProvenance> {
+        self.vision_provenance
+            .as_ref()
+            .filter(|provenance| provenance.content == content)
     }
 
     /// Whether the current bytes have already been processed by this exact
     /// signed model revision.
     #[must_use]
-    pub fn has_vision_component(&self, content: Option<&str>, model_revision: &str) -> bool {
+    pub fn has_vision_component(&self, content: &str, model_revision: &str) -> bool {
         self.vision_provenance_for_content(content)
             .is_some_and(|provenance| provenance.model_revision == model_revision)
     }
@@ -278,8 +264,6 @@ impl PhotoLocation {
 
 /// The most labels of one kind a photograph carries.
 pub const MAX_LABELS: usize = 32;
-/// The longest label, folder or capture value, in characters.
-pub const MAX_LABEL_CHARS: usize = 128;
 /// The longest album name, in characters.
 pub const MAX_NAME_CHARS: usize = 256;
 /// The most photographs one album holds.
@@ -340,12 +324,8 @@ pub struct LibraryPhoto {
 impl LibraryPhoto {
     #[must_use]
     pub fn from_image(image: OpenImage) -> Self {
-        let id = match &image.content {
-            Some(hash) => format!("photos.photo:{hash}"),
-            None => format!("photos.photo:path:{}", image.path),
-        };
         Self {
-            id,
+            id: format!("photos.photo:{}", image.content),
             name: image.name.clone(),
             image,
             ..Self::default()
@@ -462,10 +442,7 @@ impl LibraryPhoto {
                     "image analysis is compact, explicitly shared, and carries safe provenance",
                 ));
             }
-            if !analysis_content_matches(self, analysis)
-                || (analysis.provenance.source.starts_with("local-")
-                    && !analysis_names_exact_content(self, analysis))
-            {
+            if !analysis_names_exact_content(self, analysis) {
                 return Err(Refusal::new(
                     "analysis provenance does not name this photograph's content",
                 ));
@@ -479,13 +456,10 @@ impl LibraryPhoto {
     pub(crate) fn importable(&self) -> Result<(), Refusal> {
         let dimensions = u64::from(self.image.width).saturating_mul(u64::from(self.image.height));
         if !valid_name(&self.image.name)
-            || self.image.path.trim().is_empty()
-            || self.image.path.chars().count() > MAX_RESOURCE_ID_CHARS
-            || self.image.path.chars().any(char::is_control)
             || self.image.width == 0
             || self.image.height == 0
             || dimensions > crate::pixels::MAX_DECODED_PIXELS
-            || !self.image.content.as_deref().is_some_and(is_content_hash)
+            || !is_content_hash(&self.image.content)
         {
             return Err(Refusal::new(
                 "a photograph is content-addressed, portable and bounded",
@@ -495,8 +469,8 @@ impl LibraryPhoto {
     }
 
     /// A short, deterministic description for resource trees and assistive
-    /// technology.  Every field is optional, so an imported legacy record
-    /// still has a useful result without pretending it has metadata.
+    /// technology.  Every field is optional, so a photograph with no metadata
+    /// still has a useful, honest summary.
     #[must_use]
     pub fn metadata_summary(&self) -> String {
         let mut parts = Vec::new();
@@ -521,44 +495,6 @@ impl LibraryPhoto {
             parts.push(format!("Description: {}", vision.description));
         }
         parts.join(". ")
-    }
-
-    /// A short provenance line for a gallery card. The details
-    /// sheet retains every field and its labels; a shelf should let a person
-    /// distinguish photographs before it starts truncating at "People:".
-    #[must_use]
-    pub fn metadata_card_summary(&self) -> String {
-        let mut parts = Vec::new();
-        if let Some(folder) = &self.folder {
-            parts.push(folder.clone());
-        }
-        if let Some(person) = self.people.iter().next() {
-            parts.push(person.clone());
-        }
-        if let Some(tag) = self.tags.iter().next() {
-            parts.push(tag.clone());
-        }
-        if let Some(captured_at) = &self.captured_at {
-            parts.push(captured_at.clone());
-        }
-        if let Some(location) = &self.location {
-            parts.push(location.display_name());
-        }
-        if let Some(vision) = &self.vision
-            && !vision.description.is_empty()
-        {
-            parts.push(vision.description.clone());
-        }
-        parts.join(", ")
-    }
-
-    /// Strip a content-addressed photograph's machine-local source location
-    /// before it enters the shared library. The display name and content hash
-    /// are sufficient for every collaborator; an absolute import path is not.
-    #[must_use]
-    pub fn portable(mut self) -> Self {
-        self.image = self.image.portable();
-        self
     }
 }
 
@@ -644,10 +580,6 @@ impl PhotoLibrary {
 
     pub fn album(&self, id: &str) -> Option<&Album> {
         self.albums.get(&Id::from_raw(id))
-    }
-
-    pub fn album_mut(&mut self, id: &str) -> Option<&mut Album> {
-        self.albums.get_mut(&Id::from_raw(id))
     }
 
     /// Every photograph, in import order.
@@ -841,62 +773,34 @@ impl Edits {
 /// replica at the change before it.
 #[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct OpenImage {
-    /// File name, as shown.
+    /// File name, as shown. Never an absolute origin path: the bytes resolve
+    /// by [`Self::content`] through the content store on every device.
     pub name: String,
-    /// Where the picture was opened from, for a picture with no content
-    /// address; a content-addressed picture keeps only its name here, never
-    /// an absolute origin path: its bytes resolve by [`Self::content`]
-    /// through the content store on every device.
-    pub path: String,
     /// Intrinsic pixel size of the *original*, before any edit.
     pub width: u32,
     pub height: u32,
     /// blake3 of the picture's bytes — the one name for it that means the
     /// same thing in every session.
-    ///
-    /// `#[serde(default)]` so a document written before this field existed
-    /// still parses; such a picture has only its path, which is why the
-    /// resolution order keeps working from one.
-    #[serde(default)]
-    pub content: Option<String>,
+    pub content: String,
 }
 
 impl OpenImage {
-    /// Derive the display name from a path.
-    pub fn from_path(path: &str, width: u32, height: u32) -> Self {
-        let name = std::path::Path::new(path)
+    /// The picture whose bytes hash to `content`, opened from `origin`.
+    ///
+    /// Only the file name of `origin` is kept: a path is true on one machine,
+    /// and the hash is what every participant resolves. Create one wherever
+    /// the bytes are put into the content store, because a hash in a document
+    /// that no participant can resolve names no picture at all.
+    pub fn new(origin: &str, width: u32, height: u32, content: impl Into<String>) -> Self {
+        let name = std::path::Path::new(origin)
             .file_name()
-            .map_or_else(|| path.to_string(), |s| s.to_string_lossy().into_owned());
+            .map_or_else(|| origin.to_string(), |s| s.to_string_lossy().into_owned());
         Self {
-            path: path.to_string(),
             name,
             width,
             height,
-            content: None,
+            content: content.into(),
         }
-    }
-
-    /// Name the bytes this picture is, by their hash.
-    ///
-    /// Set wherever the picture is opened from bytes this machine has, which
-    /// is also where those bytes are put into the content store — the two go
-    /// together, because a hash in a document that no participant can resolve
-    /// is worth less than the path it replaced.
-    #[must_use]
-    pub fn with_content(mut self, hash: impl Into<String>) -> Self {
-        self.content = Some(hash.into());
-        self
-    }
-
-    /// Drop the origin path from a content-addressed record before durable
-    /// sharing. A legacy record has no portable byte identity, so retain its
-    /// path as its explicit compatibility fallback.
-    #[must_use]
-    pub fn portable(mut self) -> Self {
-        if self.content.is_some() {
-            self.path.clone_from(&self.name);
-        }
-        self
     }
 
     /// Pixel size after `edits` — what the status line reports and what a
@@ -911,34 +815,36 @@ impl OpenImage {
             (w, h)
         }
     }
+
+    /// A picture whose bytes the test never reads, named by the hash of its
+    /// origin so distinct origins are distinct photographs.
+    #[cfg(test)]
+    pub(crate) fn fixture(origin: &str, width: u32, height: u32) -> Self {
+        Self::new(
+            origin,
+            width,
+            height,
+            tilo_content::hash_bytes(origin.as_bytes()),
+        )
+    }
 }
 
-/// The bytes of the picture `open` names, from wherever this machine has them.
+/// The bytes of the picture `open` names, from this machine's content store.
 ///
-/// Content first: it is the portable identity every current import writes.
-/// Path-only legacy records retain their old local fallback, but a new shared
-/// record never causes this device to probe another participant's filesystem.
 /// Resolving the hash is what turns "a photograph a collaborator opened" into
-/// pixels here rather than into an empty canvas.
+/// pixels here rather than into an empty canvas; a shared record never causes
+/// this device to probe another participant's filesystem.
 ///
-/// Missing both is not an error to report: content a collaborator imported may
-/// simply not have reached this device's store yet, so the honest answer now is
-/// no picture, and the moment after the bytes land there is one.
+/// Missing bytes are not an error to report: content a collaborator imported
+/// may simply not have reached this device's store yet, so the honest answer
+/// now is no picture, and the moment after the bytes land there is one.
 ///
 /// Public, and the only answer to this question, because the app is not the
 /// only thing that asks it. Anything acting on the open photograph — the
 /// editor drawing it, a participant with no window rendering the crop it was
-/// asked for — needs the same bytes, and a second copy of "read the path" is
-/// how one of those callers ends up reading a path that is true on another
-/// machine.
+/// asked for — needs the same bytes.
 pub fn bytes_of(open: &OpenImage, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
-    if let Some(content) = &open.content {
-        return crate::pixels::read_bounded(store.open(content)?, crate::pixels::MAX_ENCODED_BYTES);
-    }
-    crate::files::read_native(
-        std::path::Path::new(&open.path),
-        crate::pixels::MAX_ENCODED_BYTES as u64,
-    )
+    crate::pixels::read_bounded(store.open(&open.content)?, crate::pixels::MAX_ENCODED_BYTES)
 }
 
 /// A stored capture time as people read it: the ISO separator between the
@@ -1012,7 +918,7 @@ pub(crate) fn valid_analysis(analysis: &ImageAnalysis) -> bool {
         matches!(provenance.scope.as_str(), "shared")
             && matches!(
                 provenance.source.as_str(),
-                "local-ocr" | "local-vision" | "local-description" | "user"
+                "local-ocr" | "local-vision" | "user"
             )
             && compact_text(&provenance.engine, 128)
             && compact_text(&provenance.model_id, 128)
@@ -1027,12 +933,7 @@ pub(crate) fn valid_analysis(analysis: &ImageAnalysis) -> bool {
                     && !provenance.model_revision.is_empty()
                     && provenance.engine == "tilo-vision"))
             && compact_text(&provenance.language, 16)
-            && (provenance.content.is_empty()
-                || (provenance.content.len() == CONTENT_HEX_LEN
-                    && provenance
-                        .content
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))))
+            && is_content_hash(&provenance.content)
     }
     let valid_ocr = analysis.ocr_text.chars().count() <= MAX_ANALYSIS_TEXT_CHARS
         && analysis
@@ -1059,33 +960,11 @@ pub(crate) fn valid_analysis(analysis: &ImageAnalysis) -> bool {
             .as_ref()
             .is_none_or(|provenance| {
                 valid_provenance(provenance)
-                    && matches!(
-                        provenance.source.as_str(),
-                        // `local-ocr` is retained only for pre-component
-                        // combined records that were valid in older Photos.
-                        "local-ocr" | "local-vision" | "local-description" | "user"
-                    )
+                    && matches!(provenance.source.as_str(), "local-vision" | "user")
             })
 }
 
-fn analysis_content_matches(photo: &LibraryPhoto, analysis: &ImageAnalysis) -> bool {
-    [
-        Some(&analysis.provenance),
-        analysis.ocr_provenance.as_ref(),
-        analysis.vision_provenance.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    .all(|provenance| {
-        provenance.content.is_empty()
-            || photo.image.content.as_deref() == Some(provenance.content.as_str())
-    })
-}
-
 pub(crate) fn analysis_names_exact_content(photo: &LibraryPhoto, analysis: &ImageAnalysis) -> bool {
-    let Some(content) = photo.image.content.as_deref() else {
-        return false;
-    };
     [
         Some(&analysis.provenance),
         analysis.ocr_provenance.as_ref(),
@@ -1093,49 +972,29 @@ pub(crate) fn analysis_names_exact_content(photo: &LibraryPhoto, analysis: &Imag
     ]
     .into_iter()
     .flatten()
-    .all(|provenance| provenance.content == content)
+    .all(|provenance| provenance.content == photo.image.content)
 }
 
 pub(crate) fn merge_image_analysis(
     existing: Option<&ImageAnalysis>,
     incoming: ImageAnalysis,
-    content: Option<&str>,
+    content: &str,
 ) -> ImageAnalysis {
     let mut merged = existing.cloned().unwrap_or_default();
-    let component_is_current = |provenance: &crate::model::AnalysisProvenance| {
-        provenance.content.is_empty() || Some(provenance.content.as_str()) == content
+    let stale = |provenance: Option<&AnalysisProvenance>| {
+        provenance.is_some_and(|provenance| provenance.content != content)
     };
-    let ocr_provenance = merged.ocr_provenance.as_ref().unwrap_or(&merged.provenance);
-    if !merged.ocr_text.is_empty() && !component_is_current(ocr_provenance) {
+    if !merged.ocr_text.is_empty() && stale(merged.ocr_provenance.as_ref()) {
         merged.ocr_text.clear();
         merged.ocr_provenance = None;
     }
-    let vision_provenance = merged
-        .vision_provenance
-        .as_ref()
-        .unwrap_or(&merged.provenance);
     if (!merged.description.is_empty() || !merged.objects.is_empty() || !merged.pets.is_empty())
-        && !component_is_current(vision_provenance)
+        && stale(merged.vision_provenance.as_ref())
     {
         merged.description.clear();
         merged.objects.clear();
         merged.pets.clear();
         merged.vision_provenance = None;
-    }
-    // Hydrate component provenance for pre-component records before changing
-    // anything. This prevents a new OCR result from making an older visual
-    // description look as though OCR produced it (and vice versa).
-    if merged.ocr_provenance.is_none() && !merged.ocr_text.is_empty() {
-        merged.ocr_provenance = Some(merged.provenance.clone());
-    }
-    if merged.vision_provenance.is_none()
-        && (!merged.description.is_empty() || !merged.objects.is_empty() || !merged.pets.is_empty())
-        && matches!(
-            merged.provenance.source.as_str(),
-            "local-vision" | "local-description" | "user"
-        )
-    {
-        merged.vision_provenance = Some(merged.provenance.clone());
     }
     match incoming.provenance.source.as_str() {
         "local-ocr" => {
@@ -1144,7 +1003,7 @@ pub(crate) fn merge_image_analysis(
                 .ocr_provenance
                 .or_else(|| Some(incoming.provenance.clone()));
         }
-        "local-vision" | "local-description" => {
+        "local-vision" => {
             merged.description = incoming.description;
             merged.objects = incoming.objects;
             merged.pets = incoming.pets;
@@ -1154,7 +1013,7 @@ pub(crate) fn merge_image_analysis(
             let dedicated_ocr = merged.ocr_provenance.as_ref().is_some_and(|provenance| {
                 matches!(provenance.source.as_str(), "local-ocr" | "user")
             });
-            if !dedicated_ocr && incoming.provenance.source == "local-vision" {
+            if !dedicated_ocr {
                 merged.ocr_text = incoming.ocr_text;
                 merged.ocr_provenance = incoming
                     .ocr_provenance
@@ -1166,13 +1025,6 @@ pub(crate) fn merge_image_analysis(
         }
         _ => return incoming,
     }
-    // Keep the legacy primary field meaningful for older peers while the
-    // component fields retain the complete, non-lossy audit trail.
-    merged.provenance = merged
-        .vision_provenance
-        .clone()
-        .or_else(|| merged.ocr_provenance.clone())
-        .unwrap_or(incoming.provenance);
     merged
 }
 
@@ -1512,7 +1364,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn analysis_text_eligibility_and_legacy_provenance() {
+    fn analysis_text_eligibility() {
         assert_eq!(ImageAnalysis::default().searchable_text(), "");
         let analysis = ImageAnalysis {
             ocr_text: "  MARKET  ".to_owned(),
@@ -1535,7 +1387,7 @@ mod tests {
             ocr_provenance: Some(provenance("local-ocr", String::new())),
             ..Default::default()
         };
-        assert!(!analysis.has_vision_component(Some(&"a".repeat(64)), &"b".repeat(64)));
+        assert!(!analysis.has_vision_component(&"a".repeat(64), &"b".repeat(64)));
         let analysis = ImageAnalysis {
             vision_provenance: Some(provenance("local-vision", "b".repeat(64))),
             ..analysis
@@ -1546,24 +1398,13 @@ mod tests {
         {
             assert_eq!(
                 analysis.has_vision_component(
-                    Some(&content.to_string().repeat(64)),
+                    &content.to_string().repeat(64),
                     &revision.to_string().repeat(64)
                 ),
                 eligible,
                 "content {content} revision {revision}"
             );
         }
-
-        let legacy = r#"{
-            "source":"local-ocr",
-            "engine":"tilo-ocr",
-            "language":"eng",
-            "content":"abc",
-            "scope":"shared"
-        }"#;
-        let provenance: AnalysisProvenance = serde_json::from_str(legacy).unwrap();
-        assert!(provenance.model_id.is_empty());
-        assert!(provenance.model_revision.is_empty());
     }
 
     fn rect(left: f64, top: f64, width: f64, height: f64) -> Rect01 {
@@ -1608,10 +1449,10 @@ mod tests {
 
     #[test]
     fn open_images_name_themselves_and_size_by_their_edits() {
-        let img = OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 1, 1);
+        let img = OpenImage::fixture("/var/tmp/tilo/home/quinten/harbour.png", 1, 1);
         assert_eq!(img.name, "harbour.png");
 
-        let img = OpenImage::from_path("/x/harbour.png", 800, 400);
+        let img = OpenImage::fixture("/x/harbour.png", 800, 400);
         for (case, edits, size) in [
             ("identity", Edits::default(), (800, 400)),
             (

@@ -31,7 +31,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::FromRawFd;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -946,20 +946,19 @@ fn open_environment(
         editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
     };
     let handed = if let Some((app, _)) = &editor {
-        use std::os::fd::AsFd;
         serde_json::to_vec(&response)
             .map_err(anyhow::Error::from)
             .and_then(|mut bytes| {
                 bytes.push(b'\n');
                 runtime_portal::fd_transport::send_with_fds(
-                    writer.as_raw_fd(),
+                    &*writer,
                     &bytes,
-                    &[master.as_raw_fd(), app.as_fd().as_raw_fd()],
+                    &[master.as_fd(), app.as_fd()],
                 )
                 .map_err(anyhow::Error::from)
             })
     } else {
-        reply(writer, &response, Some(master.as_raw_fd()))
+        reply(writer, &response, Some(master.as_fd()))
     };
     let child = accept_session_handoff(handed, child).inspect_err(|_| {
         AuditLog::at(store.audit_dir()).append(
@@ -1224,7 +1223,7 @@ fn serve_host(
             runs: runs.is_some(),
             editor_protocol: None,
         },
-        Some(master.as_raw_fd()),
+        Some(master.as_fd()),
     );
     let child = accept_session_handoff(handed, child).inspect_err(|_| {
         AuditLog::at(store.audit_dir()).append(
@@ -1351,7 +1350,7 @@ fn serve_relay(
             runs: false,
             editor_protocol: None,
         },
-        Some(master.as_raw_fd()),
+        Some(master.as_fd()),
     );
     let child = accept_session_handoff(handed, child).inspect_err(|_| {
         AuditLog::at(store.audit_dir()).append(
@@ -1618,7 +1617,6 @@ fn spawn_attached(
     }
     cmd.arg("--host-root").arg(launch.host_root);
     if let Some(editor) = launch.editor {
-        use std::os::fd::AsFd;
         use std::os::unix::process::CommandExt;
         let fd = editor.as_fd().as_raw_fd();
         cmd.arg("--editor-fd").arg(fd.to_string());
@@ -1719,7 +1717,7 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(std::fs::File, std::fs::Fi
 fn reply(
     stream: &mut UnixStream,
     response: &ServeResponse,
-    fd: Option<RawFd>,
+    fd: Option<BorrowedFd<'_>>,
 ) -> anyhow::Result<()> {
     let mut bytes = serde_json::to_vec(response)?;
     bytes.push(b'\n');
@@ -1728,7 +1726,7 @@ fn reply(
             stream.write_all(&bytes)?;
             stream.flush()?;
         }
-        Some(fd) => send_with_fd(stream.as_raw_fd(), &bytes, fd)?,
+        Some(fd) => send_with_fd(&*stream, &bytes, fd)?,
     }
     Ok(())
 }
@@ -1825,7 +1823,7 @@ mod tests {
                 runs: false,
                 editor_protocol: None,
             },
-            Some(master.as_raw_fd()),
+            Some(master.as_fd()),
         );
         assert!(
             handed.is_err(),
@@ -1842,6 +1840,26 @@ mod tests {
         assert_eq!(
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ECHILD)
+        );
+    }
+
+    /// Terminal parses this reply strictly (`UshSessionReply` in
+    /// `apps/terminal/src/main_body.rs`, unknown fields refused), and its test
+    /// `a_session_that_marks_its_runs_opens_and_keeps_the_key` sends these
+    /// bytes. A field added here must be added there too, or every open of a
+    /// session that sends it fails as a malformed reply.
+    #[test]
+    fn a_session_reply_keeps_its_wire_form() {
+        let reply = ServeResponse::Session {
+            session: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            environment: "default".into(),
+            relay_session: None,
+            runs: true,
+            editor_protocol: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&reply).unwrap(),
+            "{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\",\"runs\":true}"
         );
     }
 
@@ -2282,13 +2300,8 @@ mod tests {
             let (a, b) = UnixStream::pair().unwrap();
             let (master, mut slave) = open_pty(80, 24).unwrap();
 
-            send_with_fd(
-                a.as_raw_fd(),
-                b"{\"result\":\"session\"}\n",
-                master.as_raw_fd(),
-            )
-            .unwrap();
-            let (payload, fd) = recv_with_fd(b.as_raw_fd()).unwrap();
+            send_with_fd(&a, b"{\"result\":\"session\"}\n", &master).unwrap();
+            let (payload, fd) = recv_with_fd(&b).unwrap();
             assert!(String::from_utf8_lossy(&payload).contains("session"));
             let fd = fd.expect("no descriptor arrived");
 
@@ -2297,15 +2310,9 @@ mod tests {
             slave.write_all(b"hello\n").unwrap();
             slave.flush().unwrap();
             let mut buf = [0u8; 32];
-            // SAFETY: `fd` is the descriptor just received and still open.
-            let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast::<libc::c_void>(), buf.len()) };
+            let n = std::fs::File::from(fd).read(&mut buf).unwrap();
             assert!(n > 0, "nothing came back through the received descriptor");
-            // `n > 0` was just asserted above, so the cast below cannot lose the sign.
-            #[allow(clippy::cast_sign_loss, reason = "n > 0 was just asserted above")]
-            let n = n as usize;
             assert!(String::from_utf8_lossy(&buf[..n]).contains("hello"));
-            // SAFETY: we own `fd` now.
-            unsafe { libc::close(fd) };
         }
     }
 }

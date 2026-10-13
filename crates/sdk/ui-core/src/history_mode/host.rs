@@ -71,6 +71,13 @@ pub(super) struct Composition {
     preview: Option<super::PreviewSide>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Walks of a History's owned layout subtrees on this thread, so tests
+    /// can hold a focus-order recomputation to one walk, not one per node.
+    pub(crate) static OWNERSHIP_WALKS: Cell<usize> = const { Cell::new(0) };
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent presentation, focus and refresh flags are not mutually exclusive modes"
@@ -1039,13 +1046,7 @@ impl HistoryHost {
         if !self.captures_input() && !self.has_saved_focus() {
             return;
         }
-        let mut owned = HashSet::new();
-        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
-        while let Some(node) = pending.pop() {
-            if owned.insert(node) {
-                pending.extend(tree.children(node).unwrap_or_default());
-            }
-        }
+        let owned = self.owned_nodes(tree);
         let mut pending: Vec<_> = self.chrome_node.into_iter().collect();
         while let Some(node) = pending.pop() {
             if owned.contains(&node) {
@@ -1058,7 +1059,24 @@ impl HistoryHost {
             pending.extend(tree.children(node).unwrap_or_default());
         }
     }
+    /// Every layout node this History owns, collected in one walk: the set
+    /// [`Self::owns_node`] answers for one node, for callers that ask it of
+    /// every node in a composition.
+    pub(crate) fn owned_nodes(&self, tree: &TaffyTree<()>) -> HashSet<NodeId> {
+        #[cfg(test)]
+        OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
+        let mut owned = HashSet::new();
+        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
+        while let Some(node) = pending.pop() {
+            if owned.insert(node) {
+                pending.extend(tree.children(node).unwrap_or_default());
+            }
+        }
+        owned
+    }
     pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
+        #[cfg(test)]
+        OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
         let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
         while let Some(candidate) = pending.pop() {
             if candidate == node {

@@ -184,7 +184,7 @@ impl ScheduleStore {
             calendar,
             last_rung,
             last_at_ms: None,
-            token: hex::encode(super::random_nonzero_token()),
+            token: hex::encode(crate::random::nonzero::<16>()),
             active: None,
             snooze_at_ms: None,
         };
@@ -404,7 +404,7 @@ impl ScheduleStore {
                 None => PortalCaller::new(entry.workspace, entry.app.clone()),
             };
             if entry.token.is_empty() {
-                entry.token = hex::encode(super::random_nonzero_token());
+                entry.token = hex::encode(crate::random::nonzero::<16>());
             }
             let target = tilo_desktop::notifications::ScheduledNotificationTarget {
                 room: entry.room.clone(),
@@ -502,10 +502,6 @@ pub(super) async fn drive(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::expect_used,
-    reason = "fixture construction and persisted-state round trips must fail the test"
-)]
 mod tests {
     use super::*;
     use chrono::FixedOffset;

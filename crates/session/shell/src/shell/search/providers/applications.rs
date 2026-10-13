@@ -26,7 +26,7 @@ use crate::shell::search::{
     SearchResult,
 };
 use tilo_desktop::notifications::{Notification, NotificationSeverity};
-use tilo_search::{Document, Matching, Page, SearchIndex};
+use tilo_search::{Document, Matching, SearchIndex};
 
 /// Chip label / group header for launchable apps; also the provider's `name()`.
 pub const APPLICATIONS_KIND: &str = "Applications";
@@ -60,25 +60,13 @@ fn grouped_detail(package_id: &str, metadata: String) -> String {
     )
 }
 
-fn app_detail(needle: &str, app: &InstalledApp) -> String {
-    let metadata = match app.category.as_deref() {
-        Some(category) => format!("Tilo · {category} · {}", app.package_id),
-        None => format!("Tilo · {} · {}", app.package_id, app.version),
+fn app_detail(needle: &str, package_id: &str, category: Option<&str>, version: &str) -> String {
+    let metadata = match category {
+        Some(category) => format!("Tilo · {category} · {package_id}"),
+        None => format!("Tilo · {package_id} · {version}"),
     };
     if needle.is_empty() {
-        grouped_detail(&app.package_id, metadata)
-    } else {
-        metadata
-    }
-}
-
-fn catalogue_app_detail(needle: &str, app: &CatalogueApp) -> String {
-    let metadata = match app.category.as_deref() {
-        Some(category) => format!("Tilo · {category} · {}", app.package_id),
-        None => format!("Tilo · {} · {}", app.package_id, app.version),
-    };
-    if needle.is_empty() {
-        grouped_detail(&app.package_id, metadata)
+        grouped_detail(package_id, metadata)
     } else {
         metadata
     }
@@ -325,7 +313,12 @@ impl ApplicationsProvider {
             };
             let launch_app = app.clone();
             // A declared category is a more useful second line than the version.
-            let detail = app_detail(needle, &app);
+            let detail = app_detail(
+                needle,
+                &app.package_id,
+                app.category.as_deref(),
+                &app.version,
+            );
             // Where the window will land leads the line, since it's the
             // part of a launch row that changes with context.
             let subtitle = t_args(
@@ -477,10 +470,6 @@ impl ApplicationsProvider {
         self.catalogue_results_for_with_hosts(needle, apps, installed, &[], open_target)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "catalogue-result construction keeps ranking, alias suppression, install state, and action metadata together so duplicate offerings cannot diverge"
-    )]
     #[cfg(test)]
     fn catalogue_results_for_with_hosts(
         &self,
@@ -544,7 +533,12 @@ impl ApplicationsProvider {
             };
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
-            let detail = catalogue_app_detail(needle, &app);
+            let detail = app_detail(
+                needle,
+                &app.package_id,
+                app.category.as_deref(),
+                &app.version,
+            );
             let trust = if app.trust.trim().is_empty() {
                 t("search-apps-verification-pending")
             } else {
@@ -1016,9 +1010,22 @@ impl SearchProvider for ApplicationsProvider {
         self.query_page(ctx, None, SearchBudget::PALETTE).results
     }
 
+    fn query_incomplete_reason(
+        &self,
+        _ctx: &SearchContext<'_>,
+    ) -> Option<crate::shell::search::QueryIncompleteReason> {
+        if self.index.building() {
+            Some(crate::shell::search::QueryIncompleteReason::Pending)
+        } else if self.snapshot().is_none() {
+            Some(crate::shell::search::QueryIncompleteReason::Unavailable)
+        } else {
+            None
+        }
+    }
+
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         self.index
-            .refresh(&self.source_generation(), self.builder());
+            .refresh(|| self.source_generation(), self.builder());
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
@@ -1066,69 +1073,20 @@ impl SearchProvider for ApplicationsProvider {
         let Some(snapshot) = self.snapshot() else {
             return SearchPage::exhausted(revision, Vec::new());
         };
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor
-                .token
-                .strip_prefix("applications:")
-                .and_then(|token| {
-                    token
-                        .split_once('\u{1f}')
-                        .filter(|(_, query)| *query == ctx.needle)
-                        .and_then(|(offset, _)| offset.parse::<usize>().ok())
-                }) {
-                Some(offset) => offset,
-                None => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
-        let found = snapshot.index.search(
+        crate::shell::search::index_page(
+            revision,
+            cursor,
             ctx.needle,
-            Page {
-                offset,
-                limit: budget.max_work.min(budget.max_results),
+            budget,
+            |page| snapshot.index.search(ctx.needle, page),
+            |hit| {
+                let entry = usize::try_from(hit.key)
+                    .ok()
+                    .and_then(|at| snapshot.entries.get(at))?;
+                let score = provider_score(hit.rank.unwrap_or(0));
+                self.entry_row(&ctx, &snapshot, entry, score)
             },
-        );
-        let mut considered = 0usize;
-        let mut bytes = 0usize;
-        let mut results = Vec::new();
-        for hit in &found.hits {
-            let Some(entry) = usize::try_from(hit.key)
-                .ok()
-                .and_then(|at| snapshot.entries.get(at))
-            else {
-                considered = considered.saturating_add(1);
-                continue;
-            };
-            let score = provider_score(hit.rank.unwrap_or(0));
-            let Some(row) = self.entry_row(&ctx, &snapshot, entry, score) else {
-                considered = considered.saturating_add(1);
-                continue;
-            };
-            let row_bytes = row
-                .title
-                .len()
-                .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
-            if bytes.saturating_add(row_bytes) > budget.max_bytes {
-                break;
-            }
-            bytes = bytes.saturating_add(row_bytes);
-            considered = considered.saturating_add(1);
-            results.push(row);
-        }
-        let exhausted = !found.more && considered == found.hits.len();
-        let next = offset.saturating_add(considered);
-        SearchPage {
-            revision: revision.clone(),
-            results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("applications:{next}\u{1f}{}", ctx.needle),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+        )
     }
 }
 
@@ -1321,6 +1279,62 @@ mod tests {
             !grant_file_manager_home(&mut tree, workspace, SYSTEM_FILE_MANAGER),
             "a second open finds the grant in place"
         );
+    }
+
+    #[test]
+    fn catalogue_completion_waits_for_actual_worker() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        use crate::shell::search::{QueryArgs, QueryIncompleteReason, SearchRegistry};
+        let source = ApplicationsTestSource::new(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let gate = source.state.lock().expect("hold source materialization");
+        let (woken, wake) = std::sync::mpsc::channel();
+        let _installed = crate::shell::search::invocation_wake::install(Arc::new(move || {
+            woken.send(()).expect("waiting catalogue caller");
+        }));
+        let mut registry = SearchRegistry::new();
+        registry.register(std::rc::Rc::new(ApplicationsProvider::with_test_source(
+            source.clone(),
+        )));
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let pending = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(pending.enumerate().is_empty());
+        assert!(!pending.completion().complete);
+        assert_eq!(
+            pending
+                .completion()
+                .incomplete
+                .first()
+                .expect("pending source")
+                .reason,
+            QueryIncompleteReason::Pending
+        );
+        drop(gate);
+        wake.recv_timeout(tilo_test_env::hang_bound())
+            .expect("the actual index worker must wake a held listing");
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let ready = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+            assert!(ready.enumerate().is_empty());
+            if ready.completion().complete {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actual empty index did not become ready"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]
@@ -1518,10 +1532,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn activating_an_app_is_idempotent_and_reports_failures() {
         // Phase `repeated_activation_while_opening_is_idempotent`.
         {
@@ -1810,10 +1820,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn application_rows_dedupe_only_true_identity_and_hide_malformed_records() {
         // Phase `duplicate_registry_offers_produce_one_application_row`.
         {
@@ -2166,10 +2172,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn installed_apps_and_catalogue_offers_never_double_up() {
         // Phase `an_app_you_have_wins_a_tie_but_not_a_better_match`.
         {

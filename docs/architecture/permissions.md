@@ -14,7 +14,8 @@ are granted.
 
 ```rust
 pub struct Grant {
-    pub subject: Subject,     // a person, a role preset, an agent, a task, a Shortcut, an app
+    pub subject: Subject,     // a person, a role preset, an agent, a task, a Shortcut, an app, a bot,
+                              // or a person on a device that is not theirs (ForeignDevice)
     pub node: TreePath,       // room › app › resource kind › resource › item › action
     pub kinds: KindSet,       // any of Read, Undoable, Outside
     pub answer: Answer,       // Allow, Ask, Deny
@@ -75,7 +76,8 @@ Roles are presets of grants on a room, kept as named grant sets:
 |---|---|
 | Viewer | Read: Allow |
 | Commenter | Read: Allow; comment units and actions: Allow (Undoable) |
-| Editor | Read, Undoable: Allow; Outside: Ask |
+| Editor | Read, Undoable: Allow; Outside: Ask; moderation: Deny |
+| Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`: Allow on members below Moderator |
 | Owner | everything: Allow, and governance |
 
 The room is itself a resource in the tree. Inviting, removing members,
@@ -83,10 +85,23 @@ changing roles and room settings are the room's actions; a role preset or a
 grant covers them like any other node. Ownership stays structural: the owner
 cannot be removed by a grant.
 
+**Moderation.** Some actions act on other people's content: removing someone's
+message, locking a channel. An app marks them `#[action(moderation)]`, and the
+framework places them under a `moderation` field node of their resource
+(`room › app › kind › resource › moderation › action`). Role presets can then
+cover every app's moderation with one grant on `room/**/moderation`, with no
+list of verbs. Editors are denied there and Moderators allowed. An app still
+checks authorship for ordinary edits and deletes ("only your own message"),
+because that rule depends on the item, not on the tree. A Moderator's
+governance reaches only members ranked below Moderator. `RoomPolicy::check_action`
+refuses a Moderator who removes or bans a Moderator or the Owner. `ban` and `unban`
+are new governance actions: a ban is a removal plus the `block:<person>` Deny
+(`RoomPolicy::block`) that keeps the person out until `unban` revokes it.
+
 ## 4. Delegation
 
-An agent, a task, a Shortcut or an app acting for a person acts with the
-person's authority, bounded by the delegation's grants:
+An agent, a task, a Shortcut, a bot or an app acting for a person acts with
+the person's authority, bounded by the delegation's grants:
 
 ```
 answer = min(decide(person, node, kind), decide(delegation, node, kind))
@@ -103,6 +118,11 @@ it, and a person's restriction always reaches their agents.
 - **Shortcuts.** A Shortcut's grant set is stored with it and shown on import.
   An unattended run turns Ask into a refusal unless the set holds a matching
   Allow.
+- **Bots.** A bot is an installed Shortcut acting under its own identity
+  (`Subject::Bot(installation)`). Its grant set is derived from its steps,
+  reviewed once by the installer, and bounded by the installer's own authority.
+  It never includes governance ([bots.md](bots.md) §3). Agents and bots hold the
+  same kind of root-signed, expiring delegation for their own device keys.
 - **History.** Every entry records the actor and the person it acted for
   ([resources.md](resources.md) §5.1).
 
@@ -129,7 +149,12 @@ Every peer checks every incoming change before merging it.
   in a sealed room the relay cannot read the record. Kinds, footprints and
   tree positions come from that package's `surface.toml`, fetched by hash;
   until it is available the change is held, never trusted. Builds that are not
-  packaged serve their committed surface by hash through the same path.
+  packaged serve their committed surface by hash through the same path. The
+  committed file is the shipped one, byte for byte, so its hash is the one a
+  change names; `tilo-app surface` writes it from the code and keeps only what
+  this check and the storage check need (kinds, verb ids, kinds, footprints,
+  tree fields and parameters; field paths, units, layouts and types). Labels,
+  descriptions and field titles stay in the code.
 - **The relay** checks, without app code and without reading content, that the
   action is granted to the author (and their delegation) and that the change
   writes only units that action may write. Storage units come from the model:

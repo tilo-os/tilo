@@ -1,10 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "controlled regression assertions"
-)]
 use super::legacy_document::*;
 use super::*;
 use crate::widget::{AppModel, ModelPath};

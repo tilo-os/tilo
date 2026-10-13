@@ -50,9 +50,11 @@ HISTORY_BUDGET_MS = 1000
 # A warm open on a CPU rasterizer, judged by the median of A15's ten opens: well under
 # the per-launch software budget, which also covers a session's cold first launches.
 # Since apps stopped starting OpenGL beside Vulkan and a GPU-less session pins
-# lavapipe, the median is 0.6-0.8 s on a quiet runner and was at most ~1.2 s on a
-# contended one before either change.
-WARM_OPEN_SOFTWARE_BUDGET_MS = 1500
+# lavapipe, the median was 0.6-0.8 s on a quiet runner and at most ~1.2 s on a
+# contended one before either change. Since a window's first frame stopped waiting
+# for vello pipelines it never dispatches, the median is 0.45-0.5 s (Files, Notes,
+# Settings; vm-acceptance on main-74b93f5), so a median past 1 s is a regression.
+WARM_OPEN_SOFTWARE_BUDGET_MS = 1000
 
 
 def warm_open_budget_ms(app: str, renderer: str = "gpu") -> int:

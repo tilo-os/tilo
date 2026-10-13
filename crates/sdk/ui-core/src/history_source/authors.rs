@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use crate::widget::history::HistoryAuthor;
+use crate::widget::history::{AuthorRelation, HistoryAttribution, HistoryAuthor};
 
 /// Display name used for an actor with no registered identity and no
 /// self-declared handle. Deliberately not a person's name.
@@ -48,6 +48,51 @@ pub struct AuthorDirectory {
     /// The principal of whoever reads the history, whose own changes read
     /// as theirs.
     reader: Option<String>,
+    /// Delegated agents by the actor id they write as (their own device
+    /// key): their changes read as theirs, on behalf of their person.
+    agents: HashMap<String, HistoryAgent>,
+}
+
+/// A delegated agent as history names it: its own principal, how it is
+/// shown, and the person it acts for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryAgent {
+    /// The agent's principal (`agent:<id>`).
+    pub principal: String,
+    /// Its display name.
+    pub label: String,
+    /// Its cursor colour: history paints it as presence does.
+    pub rgb: (u8, u8, u8),
+    /// The principal of the person it acts for, whose name the directory
+    /// resolves ([`AuthorDirectory::register_person`]).
+    pub person: String,
+}
+
+/// A delegated agent on a room's roster, as the session verified it: its
+/// own device key, the person whose root signed its delegation for exactly
+/// that device, and how it is shown. Only the session produces these, after
+/// checking that delegation; history uses them to name who wrote and never
+/// to decide what anyone may do.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RosterAgent {
+    /// The agent's own device key: the actor its signed changes carry.
+    pub device: [u8; 32],
+    /// The root key of the person it acts for.
+    pub person: [u8; 32],
+    /// That person's name as the room's governance records it.
+    pub person_name: String,
+    /// The delegation's stable agent id.
+    pub agent_id: String,
+    /// The agent's display name.
+    pub label: String,
+    /// Its cursor colour, sRGB.
+    pub color: [u8; 3],
+}
+
+/// The directory key of a principal: the hex of its UTF-8, the actor id a
+/// process writing under that principal's handle has.
+fn principal_key(principal: &str) -> String {
+    hex::encode(principal.as_bytes())
 }
 
 impl AuthorDirectory {
@@ -62,6 +107,58 @@ impl AuthorDirectory {
     /// display name should win.
     pub fn register(&mut self, actor_hex: &str, author: HistoryAuthor) {
         self.by_actor.insert(actor_hex.to_lowercase(), author);
+    }
+
+    /// Bind a person's principal (the hex of their root key, or a handle)
+    /// to how they are named, so the changes they make and the changes made
+    /// on their behalf both name them.
+    pub fn register_person(&mut self, principal: &str, author: HistoryAuthor) {
+        self.register(&principal_key(principal), author);
+    }
+
+    /// Bind the actor id `actor_hex` a delegated agent writes as (its own
+    /// device key) to that agent: its changes read as the agent's, on behalf
+    /// of its person, wherever this directory names authors.
+    pub fn register_agent(&mut self, actor_hex: &str, agent: HistoryAgent) {
+        self.agents.insert(actor_hex.to_lowercase(), agent);
+    }
+
+    /// Name a verified roster agent: the changes its own device key signed
+    /// read as the agent's, on behalf of its person, and the person reads by
+    /// the name governance gives them unless the directory already names
+    /// them.
+    pub fn register_roster_agent(&mut self, agent: &RosterAgent) {
+        let person = hex::encode(agent.person);
+        if !self.by_actor.contains_key(&principal_key(&person)) {
+            self.register_person(
+                &person,
+                author_for_identity(agent.person_name.clone(), &person),
+            );
+        }
+        let [red, green, blue] = agent.color;
+        self.register_agent(
+            &hex::encode(agent.device),
+            HistoryAgent {
+                principal: format!("agent:{}", agent.agent_id),
+                label: agent.label.clone(),
+                rgb: (red, green, blue),
+                person,
+            },
+        );
+    }
+
+    /// An empty directory that names every agent the session verified for
+    /// the rooms this thread's app is in ([`set_room_agents`]): what an app's
+    /// own history reads with.
+    #[must_use]
+    pub fn with_room_agents() -> Self {
+        let mut directory = Self::new();
+        ROOM_AGENTS.with(|rooms| {
+            for agent in rooms.borrow().values().flatten() {
+                directory.register_roster_agent(agent);
+            }
+        });
+        directory
     }
 
     /// Bind `actor_hex` to the local user, read from the Tilo identity on disk.
@@ -80,25 +177,81 @@ impl AuthorDirectory {
     /// docs for the fallback ladder.
     pub fn resolve(&self, actor_hex: &str) -> HistoryAuthor {
         let key = actor_hex.to_lowercase();
+        if let Some(agent) = self.agents.get(&key) {
+            return self.agent_author(&key, agent);
+        }
+        self.resolve_identity(&key)
+    }
+
+    /// The author of a file version signed by `device`, certified by the
+    /// root `person`: the agent that device is, on behalf of that person,
+    /// or else the person by name. `None` when the directory knows neither.
+    pub fn resolve_file_actor(
+        &self,
+        person: &[u8; 32],
+        device: &[u8; 32],
+    ) -> Option<HistoryAuthor> {
+        let person = hex::encode(person);
+        let device = hex::encode(device);
+        if let Some(agent) = self
+            .agents
+            .get(&device)
+            .filter(|agent| agent.person == person)
+        {
+            return Some(self.agent_author(&device, agent));
+        }
+        let key = principal_key(&person);
+        self.by_actor
+            .contains_key(&key)
+            .then(|| self.resolve_identity(&key))
+    }
+
+    /// The author a registered agent is: the agent, on behalf of its person,
+    /// in the agent's own colour.
+    fn agent_author(&self, actor_hex: &str, agent: &HistoryAgent) -> HistoryAuthor {
+        let person = self.resolve_identity(&principal_key(&agent.person)).name;
+        let reader = self.reader();
+        let name = crate::history_source::sentence::with_reader(|words| {
+            words.actor(&tilo_history::Who {
+                actor: &agent.label,
+                kind: tilo_actions::ActorKind::Agent,
+                for_person: Some(&person),
+                for_reader: reader.as_deref() == Some(agent.person.as_str()),
+                is_reader: false,
+            })
+        });
+        author_coloured(name, short_id(actor_hex), agent.rgb)
+            .with_relation(AuthorRelation::Software)
+            .with_attribution(HistoryAttribution {
+                actor: agent.principal.clone(),
+                kind: tilo_actions::ActorKind::Agent,
+                actor_name: agent.label.clone(),
+                on_behalf_of: Some(agent.person.clone()),
+                on_behalf_of_name: Some(person),
+            })
+    }
+
+    /// [`Self::resolve`] for anyone but a registered agent.
+    fn resolve_identity(&self, key: &str) -> HistoryAuthor {
         let registered = self
             .by_actor
-            .get(&key)
-            .or_else(|| handle_actor_hex(&key).and_then(|handle| self.by_actor.get(&handle)));
+            .get(key)
+            .or_else(|| handle_actor_hex(key).and_then(|handle| self.by_actor.get(&handle)));
         if let Some(a) = registered {
             let mut presented = a.clone();
             presented.name = participant_display_label(&presented.name);
-            let override_key = actor_handle(&key).unwrap_or_else(|| key.clone());
+            let override_key = actor_handle(key).unwrap_or_else(|| key.to_owned());
             if let Some(rgb) = self.color_overrides.get(&override_key) {
                 presented = presented.with_rgb(*rgb);
             }
             return presented;
         }
-        let short = short_id(&key);
-        match actor_handle(&key) {
+        let short = short_id(key);
+        match actor_handle(key) {
             Some(handle) => {
                 self.author_from_identity(participant_display_label(&handle), &handle, short)
             }
-            None => self.author_from_identity(UNKNOWN_AUTHOR_NAME, &key, short),
+            None => self.author_from_identity(UNKNOWN_AUTHOR_NAME, key, short),
         }
     }
 
@@ -123,7 +276,6 @@ impl AuthorDirectory {
         actor_hex: &str,
         entry: Option<&tilo_actions::ActionContext>,
     ) -> HistoryAuthor {
-        use crate::widget::history::AuthorRelation;
         let reader = self.reader();
         let Some(invoker) = entry.and_then(|entry| entry.invoker.as_ref()) else {
             let author = self.resolve(actor_hex);
@@ -135,6 +287,12 @@ impl AuthorDirectory {
                 author
             };
         };
+        // A delegated agent writing as itself, under its own principal.
+        if let Some(agent) = self.agents.get(&actor_hex.to_lowercase())
+            && agent.principal == invoker.actor
+        {
+            return self.agent_author(actor_hex, agent);
+        }
         // The person's own writer names them as the directory knows them;
         // anyone else by their principal, without its namespace.
         let author = if self.is_registered(actor_hex)
@@ -171,8 +329,16 @@ impl AuthorDirectory {
                 is_reader: reads,
             })
         });
+        let attribution = invoker.kind.acts_for_someone().then(|| HistoryAttribution {
+            actor: invoker.actor.clone(),
+            kind: invoker.kind,
+            actor_name: author.name.clone(),
+            on_behalf_of: invoker.on_behalf_of.clone(),
+            on_behalf_of_name: for_person.clone(),
+        });
         let mut author = author.with_relation(relation);
         author.name = name;
+        author.attribution = attribution;
         author
     }
 
@@ -205,7 +371,8 @@ impl AuthorDirectory {
     /// uses this to decide whether a row's author is trustworthy enough to,
     /// say, offer a "message them" affordance.
     pub fn is_registered(&self, actor_hex: &str) -> bool {
-        self.by_actor.contains_key(&actor_hex.to_lowercase())
+        let key = actor_hex.to_lowercase();
+        self.by_actor.contains_key(&key) || self.agents.contains_key(&key)
     }
 
     pub fn len(&self) -> usize {
@@ -219,6 +386,34 @@ impl AuthorDirectory {
 
 thread_local! {
     static THREAD_READER: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    /// The verified agents of each room this thread's app is in, as the
+    /// session last sent them.
+    static ROOM_AGENTS: std::cell::RefCell<std::collections::BTreeMap<String, Vec<RosterAgent>>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+    /// Moves whenever [`ROOM_AGENTS`] is replaced, so a history view that
+    /// named them knows to name them again.
+    static ROOM_AGENTS_REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Which replacement of this thread's room agents
+/// ([`set_room_agents`]) is current.
+pub(crate) fn room_agents_revision() -> u64 {
+    ROOM_AGENTS_REVISION.with(std::cell::Cell::get)
+}
+
+/// Replace the verified agents of `room` this thread's app names in its
+/// history ([`AuthorDirectory::with_room_agents`]). Only the session's
+/// context stream calls this, with what it verified.
+pub fn set_room_agents(room: &str, agents: Vec<RosterAgent>) {
+    ROOM_AGENTS.with(|rooms| {
+        let mut rooms = rooms.borrow_mut();
+        if agents.is_empty() {
+            rooms.remove(room);
+        } else {
+            rooms.insert(room.to_owned(), agents);
+        }
+    });
+    ROOM_AGENTS_REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
 }
 
 /// The principal of the person this thread's app runs for: whose changes

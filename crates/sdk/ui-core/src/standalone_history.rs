@@ -110,12 +110,21 @@ pub(crate) fn apply_restore(
     if sorted(committed_heads(&state.doc)) != review.reviewed_live_heads {
         return Err(HistoryError::StaleReview);
     }
+    // A restore delivered through the action surface is its invoker's: an
+    // agent's restore records the agent and the person it acted for, as the
+    // host admitted them, exactly as any other action it takes.
+    let invoker = crate::invocation_scope::current_invoker().filter(|invoker| {
+        author
+            .as_ref()
+            .is_some_and(|author| author.0 == invoker.actor)
+    });
     let context = tilo_actions::ActionContext {
         what: Some(tilo_actions::Did::history(
             tilo_actions::HistoryOp::Restore,
             0,
             None,
         )),
+        invoker,
         ..tilo_actions::ActionContext::default()
     };
     Ok(state.restore_to_heads_with_context(&review.target_heads, None, None, author, &context))

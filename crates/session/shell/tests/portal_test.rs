@@ -7,10 +7,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -947,10 +944,6 @@ async fn sc_call(
 // RemoteDesktop: consent -> Start -> Notify* seat injection.
 
 #[tokio::test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 async fn remote_desktop_injection_needs_consent_and_an_authenticated_sender() {
     // Phase `remote_desktop_senderless_transport_cannot_inject_after_consent`.
     {

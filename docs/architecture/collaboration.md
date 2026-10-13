@@ -307,7 +307,7 @@ This gives three deployments without three protocols:
   falls back to `/4`, then `/3`, on `no_application_protocol`. A host writes
   `UnsignedDelta` only to `/5` sessions; older ones get the full envelope they
   know.
-- Presence (TIL-710): the host coalesces, paces and batches the presence it
+- Presence: the host coalesces, paces and batches the presence it
   forwards, per receiving connection (`tilo_relay::presence_mailbox`).
   Latest-state presence — a pointer, a caret, a selection, the range being
   typed — has a slot (`NeighbourMsg::presence_slot`, which the host reads
@@ -330,7 +330,7 @@ This gives three deployments without three protocols:
   Clients dial `/6` first and fall back to `/5`; older sessions get the same
   coalesced presence, one frame each. A slot can only supersede the same
   authenticated author's presence, and the host forwards the bytes unchanged.
-- Coded deltas (TIL-755): `tilo-relay/7` (`ALPN_CODED_DELTA_V1`) is `/6` on
+- Coded deltas: `tilo-relay/7` (`ALPN_CODED_DELTA_V1`) is `/6` on
   which the host writes each live zero-signature delta of at most 4 KiB as an
   `EnvelopeV2::CodedDelta`: ranges copied from the last delta that session
   received from the same author on the same route (the delta's leading kind
@@ -343,7 +343,7 @@ This gives three deployments without three protocols:
   Both halves keep at most 64 slots of at most 4 KiB per session. Deltas are
   never delayed for it. Clients dial `/7` first and fall back to `/6`; older
   sessions, replays and positions get the frames they always did.
-- Packets, not frames (TIL-776): a 27 B presence batch costs about 35 B of
+- Packets, not frames: a 27 B presence batch costs about 35 B of
   QUIC packet on top, so the host writes whatever goes to one connection
   together in one write where it can. A live delta's write carries its
   position and every presence that may go early: carets, selections, typing

@@ -776,6 +776,8 @@ mod tests {
         assert!(dynamic.rpath.is_empty());
     }
 
+    // Reads an ELF executable and compares it with the Linux sandbox loaders.
+    #[cfg(target_os = "linux")]
     #[test]
     fn reads_the_needed_libraries_of_a_real_dynamically_linked_binary() {
         let exe = std::env::current_exe().unwrap();

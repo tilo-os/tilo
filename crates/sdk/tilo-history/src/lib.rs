@@ -287,6 +287,7 @@ impl<'a> Reader<'a> {
             ActorKind::Agent => self.framework_message("history-actor-agent", &args),
             ActorKind::Shortcut => self.framework_message("history-actor-shortcut", &args),
             ActorKind::App => self.framework_message("history-actor-app", &args),
+            ActorKind::Bot => self.framework_message("history-actor-bot", &args),
             ActorKind::Person => who.actor.to_owned(),
         };
         let person = if who.for_reader {

@@ -47,7 +47,7 @@ pub use dir::DirBackend;
 #[cfg(feature = "dir")]
 pub use files::FilesBackend;
 pub use memory::MemoryBackend;
-pub use sniff::sniff;
+pub use sniff::{ImageFormat, image_format, image_size, sniff};
 
 /// The app-files owner of a page's content store (see [`ContentStore::for_app`]).
 #[cfg(feature = "dir")]
@@ -297,10 +297,7 @@ impl ContentStore {
         if let Some(shared) = env(SHARED_STORE_ENV).filter(|value| !value.is_empty()) {
             return Self::in_dir(PathBuf::from(shared));
         }
-        if !matches!(
-            tilo_files::availability(tilo_files::Feature::NativePaths),
-            tilo_files::Availability::Available
-        ) {
+        if !tilo_files::available(tilo_files::Feature::NativePaths) {
             return Self::in_page_files();
         }
         let Some(data) = tilo_paths::data_dir() else {

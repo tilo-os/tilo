@@ -237,14 +237,22 @@ impl App {
             .as_ref()
             .and_then(|history| history.review_layout_node())
             .or(self.layout.root_node);
+        // History's owned nodes, walked once for this recomputation: both the
+        // capture filter and the History-last sort ask it of every node.
+        let owned = self
+            .history
+            .as_ref()
+            .map(|history| history.owned_nodes(&self.layout.taffy))
+            .unwrap_or_default();
+        let captures = self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.captures_input());
         let (order, app_trap) = root.map_or_else(
             || (Vec::new(), false),
             |root| {
                 crate::focus_navigation::mapped_order(root, &self.layout.taffy, |node| {
-                    let allowed = restrictions.allows(node)
-                        && self.history.as_ref().is_none_or(|history| {
-                            !history.captures_input() || history.owns_node(node, &self.layout.taffy)
-                        });
+                    let allowed = restrictions.allows(node) && (!captures || owned.contains(&node));
                     self.inspect_node(node, |widget| {
                         (
                             allowed && widget.is_focusable() && widget.is_enabled(),
@@ -257,16 +265,8 @@ impl App {
             },
         );
         self.focusable_order = order;
-        if self
-            .history
-            .as_ref()
-            .is_none_or(|history| !history.captures_input())
-        {
-            self.focusable_order.sort_by_key(|id| {
-                self.history
-                    .as_ref()
-                    .is_some_and(|history| history.owns_node(*id, &self.layout.taffy))
-            });
+        if !captures {
+            self.focusable_order.sort_by_key(|id| owned.contains(id));
         }
         let trap_active = app_trap
             || self

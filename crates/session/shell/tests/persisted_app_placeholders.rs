@@ -4,16 +4,6 @@
 //! `resolve_tile_shape_for_test`, a probe returning `"App"`/`"Stub"`
 //! without exposing `UiTile` (which carries a `Box<dyn AppWidget>`).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use shell::shell::state::FreshId as _;
 use shell::shell::state::{
     AppKind, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceTree,

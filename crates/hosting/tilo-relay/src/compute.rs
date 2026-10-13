@@ -1354,6 +1354,14 @@ mod tests {
                 admit_compute_job(&spec(), &candidate, 200),
                 Err(ComputeError::WorkerUnavailable)
             );
+            // The threshold is the mesh's one battery rule, not a local copy.
+            candidate.power = PowerAvailability::Battery(15);
+            assert_eq!(
+                admit_compute_job(&spec(), &candidate, 200),
+                Err(ComputeError::WorkerUnavailable)
+            );
+            candidate.power = PowerAvailability::Battery(16);
+            assert_eq!(admit_compute_job(&spec(), &candidate, 200), Ok(()));
             candidate = worker();
             candidate.accelerators.clear();
             assert_eq!(

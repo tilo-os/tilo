@@ -41,6 +41,7 @@ not listed here.
 | `imager-windows-aarch64` | aarch64 | `imager-windows-x86_64` on native ARM64 | self-hosted |
 | `imager-macos-x86_64` | x86_64 | Imager and runtime builds on Intel macOS with Xcode | macos-15-intel |
 | `imager-macos-aarch64` | aarch64 | Imager and runtime builds on Apple silicon with Xcode | macos-15 |
+| `macos-aarch64` | aarch64 | Development builds and tests on a persistent Apple-silicon Mac; never release signing | macos-15 |
 
 ## Running pull-request CI locally
 
@@ -65,11 +66,13 @@ the smaller `os/Containerfile.ci-fast`.
 | `app-sdk.yml` linux | `cargo build -p tilo-app-cli --bin tilo-app`, then `target/debug/tilo-app build --target linux apps/calculator` and `target/debug/tilo-app package --target linux apps/calculator --output calculator.tapp` |
 | `app-sdk.yml` web | `target/debug/tilo-app build --target web --bundle desktop apps/calculator`; `node --test crates/platform/*/web/*.test.mjs` |
 | `app-sdk.yml` web-size | `target/debug/tilo-app build --target web --bundle desktop --release apps/calculator`, then `python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle`; uploads/downloads the exact release worker, verifies hashes and qualifies it in disposable staging. Runs alongside the dev mount. |
-| `app-sdk.yml` macos | the linux lane's commands with `--target macos`, on macOS with Xcode |
+| `dev-runtime-macos.yml` check | `cargo check -p tilo-runtime --all-targets --locked`, on macOS |
+| `dev-apps-macos.yml` sdk | the `app-sdk.yml` linux lane's commands with `--target macos`, on macOS |
+| `dev-apps-macos.yml` apps | `cargo build --locked $(python3 tools/ci/macos_apps.py)`, then `cargo test` with the same packages, on macOS |
 | `ci-filesystem.yml` real-fuse | `bash scripts/ci-fuse-preflight.sh`, then `cargo test --locked -p tilo-fs --test integration_test -- --test-threads=1` and the job's other named tests |
 | `ci-filesystem.yml` native-tier1 | `tools/native-tier1.sh` on a host that meets `runner-native-storage` |
 | `ci-render-counters.yml` counters | `cargo build --release -p ui-examples --example ui-perf`, then `python3 scripts/perf/render_bench.py counters target/release/examples/ui-perf` (pixel parity, then allocation and raster-pixel budgets at 4K; see [docs/ui-performance-benchmark.md](../../docs/ui-performance-benchmark.md#where-this-runs)) |
-| `perf-scheduled.yml` (nightly, not per PR) | `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../DEVELOPMENT.md#performance-results) |
+| `perf-scheduled.yml` (nightly, not per PR) | `python3 tools/perf/compare.py --results <records.jsonl> --store https://code.tilo.so --groups <group>` compares records with the published store without writing to it; see [Performance results](../../docs/measurements/performance.md) |
 
 `scripts/ci-run.sh` and `tools/ci/measure.sh`, which wrap most job commands,
 only label and time a command; leave them out locally.

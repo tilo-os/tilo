@@ -44,6 +44,7 @@ pub mod auth;
 pub mod certify;
 pub mod compaction;
 pub mod config;
+pub mod delegation;
 pub mod environment;
 pub mod home_peer;
 pub mod legacy_window;
@@ -52,6 +53,7 @@ pub mod mesh;
 pub mod metrics;
 pub mod policy;
 pub mod process_lease;
+pub mod public_avatars;
 pub mod retention;
 pub mod room_operator;
 pub mod rooms;
@@ -63,7 +65,8 @@ pub use auth::{AuthError, AuthenticatedPeer, PeerRole};
 pub use config::{ConfigError, EnvironmentsConfig, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use home_peer::{
     HomePeerRegistration, RELAY_OFFERS_FILE, RelayEnvironments, RelayOffer, RelayOffers,
-    home_peer_registry_path, valid_home_peer_label,
+    home_peer_registry_path, personal_device_peer_path, remember_personal_device,
+    valid_home_peer_label,
 };
 pub use mesh::{
     ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, PowerAvailability,

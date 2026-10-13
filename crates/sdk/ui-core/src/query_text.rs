@@ -545,11 +545,7 @@ mod tests {
             text.map(Into::into),
             ElementState::Pressed,
         );
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(event)
     }
 
     #[test]

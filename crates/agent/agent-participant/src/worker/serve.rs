@@ -17,7 +17,7 @@ use ui::portable_storage::{PortableStorage, StorageKey};
 use ui::record::{RecordCheckout, RecordId, RecordOwners};
 
 use super::proto::{FRAMING, Mode, PROTOCOL_VERSION, ProbeReport, Reply, Request, WireDoorError};
-use crate::apps::{AppCatalogue, Replica, Seed};
+use crate::apps::{AppCatalogue, Replica, ReplicaActor, Seed};
 use crate::room_actions::ViewReadPolicy;
 
 /// Serve as a worker in `mode` on the socket that is this process's stdin.
@@ -90,9 +90,12 @@ impl Worker {
                 app_id,
                 room,
                 participant,
-                agent,
+                actor,
                 seed,
-            } => self.open(&app_id, &room, &participant, agent, seed),
+            } => match decode(&actor) {
+                Ok(actor) => self.open(&app_id, &room, &participant, actor, seed),
+                Err(reason) => Reply::Failed(reason),
+            },
             Request::ViewsLoad { app_id, doc } => self.load_views(app_id, &doc),
             Request::Views { wanted, policy } => self.views(&wanted, &policy),
             Request::ReadPrepare {
@@ -139,12 +142,30 @@ impl Worker {
                 address,
                 arguments,
                 confirm,
-            } => match (decode(&address), decode(&arguments)) {
-                (Ok(address), Ok(arguments)) => {
-                    output(replica.invoke(&address, &arguments, confirm), &address)
+                invoker,
+                context,
+                appearance,
+            } => {
+                let invoker = invoker.as_deref().map(decode).transpose();
+                let context = context.as_deref().map(decode).transpose();
+                let appearance = appearance.as_deref().map(decode).transpose();
+                let scope = invoker.and_then(|invoker| {
+                    context.and_then(|context| {
+                        appearance.map(|appearance| (invoker, context, appearance))
+                    })
+                });
+                match (decode(&address), decode(&arguments), scope) {
+                    (Ok(address), Ok(arguments), Ok((invoker, context, appearance))) => output(
+                        replica.invoke_within(
+                            invoker, context, appearance, &address, &arguments, confirm,
+                        ),
+                        &address,
+                    ),
+                    (Err(reason), ..) | (_, Err(reason), _) | (.., Err(reason)) => {
+                        Reply::Failed(reason)
+                    }
                 }
-                (Err(reason), _) | (_, Err(reason)) => Reply::Failed(reason),
-            },
+            }
             Request::TakeMutation => {
                 Reply::Mutation(replica.take_mutation().map(|mutation| match mutation {
                     DocumentMutation::Snapshot(bytes) => (true, bytes),
@@ -176,7 +197,7 @@ impl Worker {
         app_id: &str,
         room: &str,
         participant: &str,
-        agent: bool,
+        actor: ReplicaActor,
         seed: Option<(String, Vec<Vec<u8>>)>,
     ) -> Reply {
         if self.mode != Mode::Replica || self.replica.is_some() {
@@ -189,7 +210,7 @@ impl Worker {
                 None => return Reply::Failed("invalid record id".into()),
             },
         };
-        match Replica::open(&self.catalogue, app_id, room, participant, agent, seed) {
+        match Replica::open(&self.catalogue, app_id, room, participant, actor, seed) {
             Ok(replica) => {
                 let record = replica.record_id().as_str().to_owned();
                 self.replica = Some(replica);

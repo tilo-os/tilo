@@ -149,60 +149,36 @@ impl StatePeer {
             return Ok(false);
         }
         let history = self.publication_history(&local)?;
+        let accepted = accepted.doc.committed_document();
         Ok(history
             .get_heads()
             .iter()
-            .all(|head| accepted.doc.get_change_by_hash(head).is_some()))
+            .all(|head| accepted.get_change_meta_by_hash(head).is_some()))
     }
 
     // A partial incremental's dependencies come only from this actually admitted
     // record. Comparing resulting change hashes distinguishes equal text from
     // genuine causal inclusion, and permits equivalent document/change encodings.
-    fn publication_history(&self, local: &LocalDocument) -> Result<automerge::Automerge, String> {
+    /// `local` with every change it depends on from the admitted record:
+    /// what a recovery re-sends for it (see [`history`]).
+    fn publication_history(
+        &self,
+        local: &LocalDocument,
+    ) -> Result<std::sync::Arc<automerge::Automerge>, String> {
         let current = self
             .core
             .documents
             .get(&local.route)
             .ok_or("retained publication record missing")?;
-        let mut history = match local
+        let mutation = local
             .mutation
             .as_ref()
-            .ok_or("a sealed publication has no cleartext history")?
-        {
-            DocumentMutation::Snapshot(bytes) => automerge::Automerge::load(bytes).map_err(err)?,
-            DocumentMutation::Incremental(bytes) => {
-                let mut history = automerge::Automerge::new();
-                history.load_incremental(bytes).map_err(err)?;
-                history
-            }
-        };
-        loop {
-            let missing = history.get_missing_deps(&[]);
-            if missing.is_empty() {
-                break;
-            }
-            let dependencies = missing
-                .iter()
-                .map(|hash| {
-                    current
-                        .doc
-                        .get_change_by_hash(hash)
-                        .ok_or("retained publication dependency is not in admitted history")
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            history.apply_changes(dependencies).map_err(err)?;
-            if history.get_missing_deps(&[]) == missing {
-                return Err("retained publication dependencies did not advance".into());
-            }
-        }
-        if !history
-            .get_heads()
-            .iter()
-            .all(|head| current.doc.get_change_by_hash(head).is_some())
-        {
-            return Err("retained publication changes are not in admitted history".into());
-        }
-        Ok(history)
+            .ok_or("a sealed publication has no cleartext history")?;
+        history::of(
+            history::key(mutation),
+            mutation,
+            current.doc.committed_document(),
+        )
     }
 
     fn fresh_local_recovery_checkpoint(
@@ -273,7 +249,7 @@ impl StatePeer {
             if history
                 .get_heads()
                 .iter()
-                .all(|head| successor.get_change_by_hash(head).is_some())
+                .all(|head| successor.get_change_meta_by_hash(head).is_some())
             {
                 return Ok(true);
             }
@@ -632,33 +608,15 @@ impl StatePeer {
 // Count the closed wire DTO before cloning the caller's prefix. These are encoded
 // refusal limits, not a native CRDT heap qualification or a durable barrier.
 fn publication_size(messages: &[NeighbourMsg]) -> Result<usize, String> {
-    struct Count(usize);
-    impl postcard::ser_flavors::Flavor for Count {
-        type Output = usize;
-        fn try_push(&mut self, _: u8) -> postcard::Result<()> {
-            self.try_extend(&[0])
-        }
-        fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-            self.0 = self
-                .0
-                .checked_add(bytes.len())
-                .filter(|size| *size <= MAX_PUBLICATION_BYTES)
-                .ok_or(postcard::Error::SerializeBufferFull)?;
-            Ok(())
-        }
-        fn finalize(self) -> postcard::Result<usize> {
-            Ok(self.0)
-        }
-    }
     if messages.len() > MAX_PUBLICATIONS {
         return Err("local publication count limit".into());
     }
-    let mut total = 0;
-    for message in messages {
-        total = postcard::serialize_with_flavor(message, Count(total))
-            .map_err(|_| "local publication byte limit")?;
-    }
-    Ok(total)
+    messages.iter().try_fold(0usize, |total, message| {
+        let room = MAX_PUBLICATION_BYTES.saturating_sub(total);
+        crate::postcard_sink::encoded_len(message, room)
+            .map(|size| total.saturating_add(size))
+            .map_err(|_| "local publication byte limit".into())
+    })
 }
 
 #[cfg(test)]
@@ -666,5 +624,6 @@ mod sealed_renewal_tests;
 #[cfg(test)]
 mod tests;
 
+mod history;
 mod projection;
 pub use projection::LocalRecoveryReservation;

@@ -9,10 +9,12 @@
 # own target dir, which always has libstd; an image whose bundle lacked it
 # still shipped, and no thin app could start.
 #
-# The one exception is the dynamic loader. The bundle signs it once, at its
+# The one exception is the dynamic loader: the launcher binds it from its
 # canonical interpreter path (lib/lib64/ld-linux-x86-64.so.2,
-# lib/lib/ld-linux-aarch64.so.1, ...), where the launcher binds it for INTERP;
-# the mapped interpreter then answers libc's NEEDED on its soname.
+# lib/lib/ld-linux-aarch64.so.1, ...) for INTERP, and the mapped interpreter
+# answers libc's NEEDED on its soname, so a copy there satisfies that NEEDED
+# too. The bundle also signs it at the top of lib/ for tools that follow
+# NEEDED by name.
 set -euo pipefail
 
 bundle=${1:?usage: verify-runtime-bundle-closure.sh BUNDLE_DIR [THIN_APP...]}
@@ -58,7 +60,7 @@ for object in "${objects[@]}"; do
     fi
   done < <(sed -n 's/.*(NEEDED).*\[\([^]]*\)\].*/\1/p' <<<"$report")
   # The libraries the runtime loads on first use (GLib, GStreamer;
-  # tools/ci/runtime-dylib-lazy-link.py, TIL-713) must be signed beside it
+  # tools/ci/runtime-dylib-lazy-link.py, #4020) must be signed beside it
   # as well: a media app would otherwise abort at its first media call.
   if ! lazy=$(readelf -W -p .tilo.lazy_needed "$object" 2>/dev/null); then
     printf '%s: readelf cannot read its lazily loaded libraries\n' "$object" >&2

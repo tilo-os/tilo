@@ -26,7 +26,7 @@ class RuntimeDependencies(unittest.TestCase):
             'bridge': 'extern int leaf(void); int bridge(void) { return leaf(); }',
             'runtime': '#include <stdio.h>\nextern int bridge(void); '
                        'int toolkit(void) { return puts("fixture") + bridge(); }\n'
-                       # What tools/ci/runtime-dylib-lazy-link.py records (TIL-713).
+                       # What tools/ci/runtime-dylib-lazy-link.py records.
                        '__attribute__((used, section(".tilo.lazy_needed"))) '
                        'static const char lazy_needed[] = "liblazy.so";',
             'deep': 'int deep(void) { return 3; }',
@@ -131,13 +131,13 @@ elif args[0]=='build':
         self.assertFalse((self.directory / 'record.json').exists())
 
     def test_production_bake_refuses_a_library_signed_twice(self):
-        once = 'libc.so.6 libm.so.6 lib64/libutil.so.1 lib64/ld-linux-x86-64.so.2'
+        # The loader alone is signed at the top of lib/ and its interpreter path.
+        once = 'libc.so.6 libm.so.6 lib64/libutil.so.1 lib64/ld-linux-x86-64.so.2 ld-linux-x86-64.so.2'
         result = self.bake(once)
         self.assertEqual(result.returncode, 0, result.stderr)
         for twice, message in [
                 (once + ' lib64/libc.so.6', 'libc.so.6 is signed twice, at lib/libc.so.6 and lib/lib64/libc.so.6'),
-                (once + ' usr/lib64/libm.so.6', 'libm.so.6 is signed twice'),
-                (once + ' ld-linux-x86-64.so.2', 'the loader is signed at lib/ld-linux-x86-64.so.2')]:
+                (once + ' usr/lib64/libm.so.6', 'libm.so.6 is signed twice')]:
             with self.subTest(twice=twice):
                 result = self.bake(twice)
                 self.assertNotEqual(result.returncode, 0)
@@ -145,16 +145,17 @@ elif args[0]=='build':
 
     def signed_layout(self):
         """The closure laid out the way tilo-runtime-bundle signs it: every
-        library once at the top of lib/, the loader only at its interpreter path."""
+        library once at the top of lib/, the loader there and at its
+        interpreter path."""
         bundle = self.directory / 'bundle'
         objects = [self.directory / 'libruntime_dylib.so', self.directory / 'libstd-fixture.so']
         for path in [*objects, *COLLECTOR.collect(objects, [self.directory])]:
+            targets = [bundle / 'lib' / path.name]
             if path.name.startswith('ld-linux'):
-                target = bundle / 'lib' / str(path).lstrip('/')
-            else:
-                target = bundle / 'lib' / path.name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(path, target)  # keeps the loader executable, as the bundle does
+                targets.append(bundle / 'lib' / str(path).lstrip('/'))
+            for target in targets:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(path, target)  # keeps the loader executable, as the bundle does
         return bundle
 
     def verify_closure(self, bundle):
@@ -162,18 +163,18 @@ elif args[0]=='build':
                                str(bundle), str(self.directory / 'app')],
                               capture_output=True, text=True)
 
-    def test_the_loader_signed_only_at_its_interpreter_path_satisfies_libc(self):
+    def test_an_app_needs_the_loader_at_its_interpreter_path(self):
         bundle = self.signed_layout()
         loaders = list((bundle / 'lib').glob('*/**/ld-linux*'))
         self.assertEqual(len(loaders), 1, loaders)
-        self.assertFalse(list((bundle / 'lib').glob('ld-linux*')))
         result = self.verify_closure(bundle)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+        # The copy at the top of lib/ answers libc's NEEDED, not an app's INTERP.
         loaders[0].unlink()
         result = self.verify_closure(bundle)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn(f'signed runtime is missing {loaders[0].name}', result.stderr)
+        self.assertIn('the signed runtime lacks its interpreter', result.stderr)
 
     def test_an_app_runs_on_the_signed_layout_with_one_copy_of_each_library(self):
         # The launcher maps the bundle's loader as the app's interpreter and

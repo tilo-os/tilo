@@ -30,7 +30,7 @@ use taffy::{Dimension, LengthPercentage, NodeId, Size, Style, TaffyTree};
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
+use vello::peniko::{Color, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -39,10 +39,13 @@ use thumbnail::{FileCategory, ThumbKey, ThumbState, ThumbnailService, category_f
 use super::file_list::{ListInputs, ListSlot, sort_column};
 use crate::command::{CommandSink, FileCommand, push};
 use crate::i18n::{arg, t, t_args};
-use crate::model::{
-    AvailabilityPolicy, AvailabilityProjection, Entry, ReplicaEvidence, Residency, SortBy,
-    SortOrder, SyncState, TransferPhase, ViewMode, human_size,
-};
+use crate::model::{Entry, SortBy, SortOrder, ViewMode, human_size};
+use fs_protocol::AvailabilityPolicy;
+use fs_protocol::AvailabilityProjectionV1;
+use fs_protocol::ProjectedReplicaEvidence;
+use fs_protocol::Residency;
+use fs_protocol::SyncState;
+use fs_protocol::TransferPhase;
 use ui::SelectionModel;
 use ui::chrome::{SelectionState, paint_row_selection};
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
@@ -649,13 +652,7 @@ impl FileView {
         if let Some(img) = ctx.imgs.borrow().get(&key) {
             return img.clone();
         }
-        let img = PenikoImage {
-            data: Blob::new(Arc::new(rgba.rgba.clone())),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: rgba.width,
-            height: rgba.height,
-        };
+        let img = ui::raster::rgba8(rgba.rgba.clone(), rgba.width, rgba.height);
         ctx.imgs.borrow_mut().insert(key, img.clone());
         img
     }
@@ -1043,7 +1040,7 @@ impl Widget for FileView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 self.last_cursor = pt;
                 if self.mode == ViewMode::List {
                     self.list.handle_event(event, ctx);
@@ -1202,10 +1199,7 @@ impl Widget for FileView {
                     .with_description(accessible_entry_description(entry))
                     .with_position(index + 1, self.entries.len())
                     .with_bounds(self.cell_rect(index))
-                    .with_state(AccessState {
-                        selected: self.selection.is_selected(index),
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().selected(self.selection.is_selected(index)))
             })
             .collect();
         let mut node = AccessNode::new(Role::List)
@@ -1217,11 +1211,7 @@ impl Widget for FileView {
                     .map_or(self.rect, |viewport| self.rect.intersect(viewport)),
             )
             .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: true,
-                focused: self.is_focused,
-                ..Default::default()
-            })
+            .with_state(AccessState::new().focusable(true).focused(self.is_focused))
             .with_children(children);
         if let Some(i) = primary
             && i < self.entries.len()
@@ -1259,10 +1249,7 @@ impl FileView {
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
                 left: LengthPercentage::length(0.0),
                 right: LengthPercentage::length(0.0),
@@ -1296,7 +1283,10 @@ fn accessible_entry_description(entry: &Entry) -> String {
     }
 
     if let Some(availability) = &entry.availability {
-        use crate::model::{AvailabilityPolicy, ReplicaEvidence, Residency, TransferPhase};
+        use fs_protocol::AvailabilityPolicy;
+        use fs_protocol::ProjectedReplicaEvidence;
+        use fs_protocol::Residency;
+        use fs_protocol::TransferPhase;
         if availability.transfer.last_error.is_some() {
             facts.push(t("files-a11y-transfer-failed"));
         } else {
@@ -1320,11 +1310,13 @@ fn accessible_entry_description(entry: &Entry) -> String {
             });
         }
         match availability.replicas {
-            ReplicaEvidence::Unknown => facts.push(t("files-a11y-replica-unknown")),
-            ReplicaEvidence::Known { durable, .. } if durable > 0 => {
+            ProjectedReplicaEvidence::Unknown => facts.push(t("files-a11y-replica-unknown")),
+            ProjectedReplicaEvidence::Known { durable, .. } if durable > 0 => {
                 facts.push(t("files-a11y-durably-replicated"));
             }
-            ReplicaEvidence::Known { .. } => facts.push(t("files-a11y-not-durably-replicated")),
+            ProjectedReplicaEvidence::Known { .. } => {
+                facts.push(t("files-a11y-not-durably-replicated"));
+            }
         }
     } else if let Some(sync) = entry.sync_state {
         facts.push(match sync {
@@ -1362,7 +1354,7 @@ fn sync_badge(state: SyncState, theme: &Theme) -> (Icon, Color) {
     }
 }
 
-fn availability_badge(state: &AvailabilityProjection, theme: &Theme) -> (Icon, Color) {
+fn availability_badge(state: &AvailabilityProjectionV1, theme: &Theme) -> (Icon, Color) {
     let colors = &theme.tokens.colors;
     if state.transfer.last_error.is_some() {
         return (Icon::Ban, colors.semantic.danger);
@@ -1386,8 +1378,8 @@ fn availability_badge(state: &AvailabilityProjection, theme: &Theme) -> (Icon, C
         }
         Residency::Resident { .. } if state.safely_replicated() => (Icon::Shield, colors.text_dim),
         Residency::Resident { .. } => match state.replicas {
-            ReplicaEvidence::Unknown => (Icon::Info, colors.text_dim),
-            ReplicaEvidence::Known { .. } => (Icon::Info, colors.semantic.warning),
+            ProjectedReplicaEvidence::Unknown => (Icon::Info, colors.text_dim),
+            ProjectedReplicaEvidence::Known { .. } => (Icon::Info, colors.semantic.warning),
         },
     }
 }
@@ -1450,7 +1442,7 @@ fn draw_availability_badge(
     scene: &mut Scene,
     transform: Affine,
     icon_rect: Rect,
-    state: &AvailabilityProjection,
+    state: &AvailabilityProjectionV1,
     scale: f64,
     theme: &Theme,
 ) {
@@ -2079,7 +2071,7 @@ mod tests {
         image::DynamicImage::ImageRgba8(host)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        xattr::set(&entry.path, crate::model::THUMB_XATTR, &png).unwrap();
+        xattr::set(&entry.path, fs_protocol::THUMB_XATTR, &png).unwrap();
 
         let (service, ctx) = thumb_ctx(&dir.path().join("cache"));
         let sink = new_sink();
@@ -2107,7 +2099,7 @@ mod tests {
         // picture of it.
         let dir = tempfile::tempdir().unwrap();
         let mut entry = photo_on_disk(dir.path(), "harbour.png", 80, 60);
-        entry.sync_state = Some(crate::model::SyncState::Projected);
+        entry.sync_state = Some(fs_protocol::SyncState::Projected);
         let (service, ctx) = thumb_ctx(&dir.path().join("cache"));
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2310,7 +2302,7 @@ mod tests {
         policy: &str,
         replicas: &serde_json::Value,
         error: bool,
-    ) -> AvailabilityProjection {
+    ) -> AvailabilityProjectionV1 {
         let value = serde_json::json!({
             "schema_version": 1,
             "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -2331,7 +2323,7 @@ mod tests {
                 "replicas_observed_at_ms": 3
             }
         });
-        AvailabilityProjection::parse(&serde_json::to_vec(&value).unwrap()).unwrap()
+        AvailabilityProjectionV1::parse_xattr(&serde_json::to_vec(&value).unwrap()).unwrap()
     }
 
     fn rich_availability_badges_are_honest_and_actionable() {
@@ -2578,7 +2570,7 @@ mod tests {
             &serde_json::json!({"state": "known", "reachable": 2, "durable": 1}),
             false,
         ));
-        entries[1].share = crate::model::ShareProjection::parse(
+        entries[1].share = fs_protocol::ShareProjectionV1::parse_xattr(
             &serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "record_id": uuid::Uuid::nil().to_string(),
@@ -2598,7 +2590,8 @@ mod tests {
                 }]
             }))
             .unwrap(),
-        );
+        )
+        .ok();
 
         entries
     }
@@ -2672,11 +2665,10 @@ mod tests {
         }
 
         fn press(&mut self, button: MouseButton) {
-            self.send(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
+            self.send(&ui::synthetic_input::mouse_input(
+                ElementState::Pressed,
                 button,
-            });
+            ));
         }
 
         /// The centre of list row `index`.
@@ -2775,11 +2767,7 @@ mod tests {
         let slot = laid.view.list.clone();
         let centre = laid.view.list.rect().center();
         laid.move_to(centre);
-        laid.send(&WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -5.0),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        laid.send(&ui::synthetic_input::mouse_wheel(0.0, -5.0));
         let scrolled = slot.scroll_y();
         assert!(scrolled > 0.0, "a wheel-down scrolls the list");
         assert!(slot.max_scroll_y() >= scrolled);

@@ -244,8 +244,9 @@ pub struct PermissionContext {
     /// Who reaches sandboxed resources.
     actor: Actor,
     sandbox: Vec<CapOverride>,
-    /// Who acts in the room and what bounds them.
-    standing: Standing,
+    /// Who acts in the room and what bounds them. Shared, so a frame's
+    /// copies of the context and its directory witness copy no policy.
+    standing: Arc<Standing>,
     /// The instant grants and capabilities are judged at, Unix seconds, for
     /// contexts without a retained sampler. `None` skips expiry and is only
     /// for deliberately unclocked local contexts.
@@ -266,7 +267,7 @@ pub(crate) struct DirectoryPermissionWitness {
     user: UserId,
     actor: Actor,
     sandbox: Vec<CapOverride>,
-    standing: Standing,
+    standing: Arc<Standing>,
     /// Which grants (room, then each bound's own) and sandbox capabilities
     /// were live: time matters only where it changes an answer.
     live: Vec<bool>,
@@ -281,7 +282,7 @@ impl PermissionContext {
             user: UserId(standing.person.clone()),
             actor,
             sandbox,
-            standing,
+            standing: Arc::new(standing),
             now: crate::time::try_unix_now(),
             policy_time: None,
             action_authority: None,
@@ -343,6 +344,17 @@ impl PermissionContext {
         )
     }
 
+    /// The permissions of a whole standing a host built (an installer
+    /// bounded by a bot's grants), decided exactly as that standing says.
+    #[must_use]
+    pub fn from_standing(room: &str, standing: Standing) -> Self {
+        Self::new(
+            Actor::person(standing.person.clone()).in_room(room),
+            Vec::new(),
+            standing,
+        )
+    }
+
     /// `person`, who is no member of [`LOCAL_ROOM`]: nothing is allowed.
     pub fn stranger(person: impl Into<String>) -> Self {
         let person = person.into();
@@ -395,7 +407,7 @@ impl PermissionContext {
     /// The same context with one more grant in the room's policy.
     #[must_use]
     pub fn with_grant(mut self, grant: policy::Grant) -> Self {
-        self.standing.policy.grants.push(grant);
+        Arc::make_mut(&mut self.standing).policy.grants.push(grant);
         self
     }
 
@@ -403,7 +415,7 @@ impl PermissionContext {
     /// `grants`.
     #[must_use]
     pub fn acting_as(mut self, subject: policy::Subject, grants: Vec<policy::Grant>) -> Self {
-        self.standing = self.standing.bounded_by(subject, grants);
+        self.standing = Arc::new(Arc::unwrap_or_clone(self.standing).bounded_by(subject, grants));
         self
     }
 
@@ -474,7 +486,7 @@ impl PermissionContext {
     #[must_use]
     pub fn with_standing(mut self, standing: Standing) -> Self {
         self.user = UserId(standing.person.clone());
-        self.standing = standing;
+        self.standing = Arc::new(standing);
         self
     }
 
@@ -510,7 +522,7 @@ impl PermissionContext {
             user: self.user.clone(),
             actor: self.actor.clone(),
             sandbox: self.sandbox.clone(),
-            standing: self.standing.clone(),
+            standing: Arc::clone(&self.standing),
             live,
             action_authority,
         })

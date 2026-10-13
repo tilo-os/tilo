@@ -20,6 +20,19 @@ Rolling back never deletes a generation, so `rollback --forward` (or
 `--to <n>`) goes forward again until `gc` prunes it; `tilo-vm slot show`
 lists them, generation 0 (the bare image) included.
 
+`tilo-vm --json slot show` includes `provenance`, keyed by selected component,
+read from each imported layer's metadata. Compare `source_commit`,
+`dirty_tree_hash`, `target`, `toolchain` and `cargo_lock_hash` with the selected
+`apps+runtime` cohort before qualifying a replacement. Profiles can differ.
+Older daemons/imports may omit provenance; that is unknown, not proof of a match.
+The import record is diagnostic metadata; package authenticity still comes from
+the existing signed installer and the OS publisher pins.
+
+For a captured fresh-slot replacement journey, the executable evidence contract
+is `scripts/vm-acceptance/component-replacement.py` (instructions in that suite's
+README). It checks successful activation, failed-candidate recovery, isolated
+fixture state and teardown, and never performs deployment itself.
+
 The one positional argument is the component; the slot is `--slot` and
 defaults to the one named after your branch. Components and their scope
 come from `os/components.toml`
@@ -217,6 +230,31 @@ generation; the pending marker remains for diagnosis. Neither recovery path
 resets account identity or application data. Kernel changes retain their separate
 boot-confirmation lifecycle.
 
+### Matched userspace replacement
+
+```sh
+tilo-vm swap --slot my-slot userspace --builder remote
+```
+
+`userspace` builds the matched session components and `apps+runtime` from one
+verified worktree inventory, using each component's canonical profile and the
+registered remote builder for the target architecture. It stages every member
+before asking the daemon to activate them together. Host/VM builders, custom
+profiles, image sources and the VM-wide slot are not supported for this command.
+
+The daemon checks the admitted session identity and expected generation before
+selection, verifies the signed cohort in its candidate view, and preserves held
+apps and the session's existing application-store location. Publisher rotation
+keeps trust only for exact retained runtime identities, not every runtime signed
+by an old key. One readiness-checked session refresh commits the generation;
+failure restores prior app selections and the prior view through normal recovery.
+Account identity and application data are not reset. A receipt distinguishes
+staging, activation and recovery; missing verification fails rather than skipping.
+
+Older daemons without `userspace.apply` must be updated through the normal daemon
+component swap first. Individual component swaps and `app:<dir>` installs remain
+available for narrower changes; they are not an atomic userspace replacement.
+
 ### Worktree apps and their matching runtime
 
 `tilo-vm swap apps+runtime --builder remote` builds every packaged native app and
@@ -276,6 +314,25 @@ Set `CARGO` to your Cargo drop-in when using a remote builder. The host path
 packages and uploads its received binary
 and this worktree's mandatory startup companion. The slot restarts through its
 normal PAM unit; no OS image rebuild, account reset or lock override is needed.
+
+### Updating the guest daemon
+
+`tilo-vm swap vmd --slot vm --builder host --profile dev` imports the
+replacement through the existing authenticated route, then opens its RPC
+from that immutable imported layer before applying the normal generation
+transition. An already-running RPC process would keep executing its old
+mount-composition code even after its binary on disk was replaced. The
+handoff preserves its state root and configured RPC flags, checks the root
+and architecture in the new handshake, and records `daemon-handoff` and
+`applying_daemon_layer` in the receipt. A failed handoff applies no generation.
+
+This needs the existing SSH route; a peer-only connection reports a clear
+error before activation. No registered daemon command or access policy is
+changed. The update still restarts affected sessions through their normal
+units: checkpoint shared work and agree on a maintenance window first.
+Stand-in views include the candidate VM layers and their private identity
+environment before restarting; readiness still precedes committing the new
+generation, and failure uses the existing recovery path.
 
 ### Repeating a host-built component swap
 

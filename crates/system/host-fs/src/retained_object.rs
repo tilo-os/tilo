@@ -47,7 +47,8 @@ pub struct RetainedObject {
 }
 impl RetainedObject {
     /// Retain precisely the object whose metadata the view already observed.
-    /// No-follow `O_PATH` avoids payload reads, hydration and special-file I/O.
+    /// No-follow `O_PATH` (on macOS, an event-only no-follow open that refuses
+    /// device nodes) avoids payload reads, hydration and special-file I/O.
     ///
     /// # Errors
     /// Refuses a replaced/changed observation, unsupported hosts and I/O errors.
@@ -109,28 +110,65 @@ fn open_object(path: &Path) -> io::Result<File> {
     // SAFETY: successful open transferred this fresh descriptor.
     Ok(unsafe { File::from_raw_fd(descriptor) })
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn open_object(path: &Path) -> io::Result<File> {
+    use std::os::fd::FromRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::FileTypeExt as _;
+    // macOS has no O_PATH, so the object is opened for real. Opening a device
+    // node runs its driver's open routine, which a selection must never do;
+    // refuse those up front. A swap to a device after this check is caught by
+    // the identity comparison in `retain_shown`.
+    let kind = std::fs::symlink_metadata(path)?.file_type();
+    if kind.is_block_device() || kind.is_char_device() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "device nodes are not retained",
+        ));
+    }
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    // SAFETY: NUL-terminated name; open returns an owned descriptor. O_SYMLINK
+    // keeps a symlink itself rather than its target, O_NONBLOCK keeps a FIFO
+    // from waiting for a writer, and O_EVTONLY keeps the descriptor from
+    // holding the volume busy against an eject.
+    let descriptor = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDONLY | libc::O_SYMLINK | libc::O_NONBLOCK | libc::O_EVTONLY | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful open transferred this fresh descriptor.
+    Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn open_object(_: &Path) -> io::Result<File> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "retained local objects require Linux",
+        "retained local objects require Linux or macOS",
     ))
 }
 
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
     use super::*;
     fn observation(path: &Path) -> io::Result<ObservedObject> {
         ObservedObject::from_metadata(&std::fs::symlink_metadata(path)?)
-            .ok_or_else(|| io::Error::other("Linux identity unavailable"))
+            .ok_or_else(|| io::Error::other("object identity unavailable"))
     }
     fn scratch() -> io::Result<std::path::PathBuf> {
+        // macOS reads the clock in whole microseconds, so tests starting
+        // together also need a per-process sequence number to stay apart.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "tilo-retained-{}-{}",
+            "tilo-retained-{}-{}-{}",
             std::process::id(),
             tilo_clock::try_unix_now_ns()
-                .ok_or_else(|| io::Error::other("system clock is before the Unix epoch"))?
+                .ok_or_else(|| io::Error::other("system clock is before the Unix epoch"))?,
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir(&path)?;
         Ok(path)

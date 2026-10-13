@@ -303,27 +303,11 @@ pub fn mime_from_filename(name: &str) -> &'static str {
         .unwrap_or("application/octet-stream")
 }
 
-/// Outcome of a (simulated, in this slice) send. The live app returns the
-/// SMTP server's reply here.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SendOutcome {
-    /// Bytes were built and (in the live app) submitted. Carries the wire
-    /// size so the UI can confirm "sent (N KB)".
-    Sent {
-        wire_bytes: usize,
-    },
-    Failed(String),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn mime_build_parses_addresses_and_embeds_verified_attachments() {
         // Phase `parse_addr_list_handles_named_and_bare`.
         {
@@ -442,10 +426,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn parsed_messages_dedupe_and_keep_rfc_thread_linkage() {
         // Phase `refetching_the_same_message_id_dedupes_not_duplicates`.
         {
@@ -522,10 +502,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn parse_eml_extracts_html_and_hydrated_attachments() {
         // Phase `parse_eml_captures_the_html_part`.
         {
@@ -597,10 +573,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn fetched_messages_overlay_flags_and_prefer_internaldate() {
         // Phase `parse_fetched_overlays_flags_and_uses_header_date`.
         {

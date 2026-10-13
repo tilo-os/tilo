@@ -136,7 +136,9 @@ impl RecordId {
     /// rename or move reaches the same records.
     ///
     /// Reads the file's `user.tilo.record-id` attribute (16 raw bytes — the
-    /// collaborative filesystem serves its `FileRecordId` there). A file
+    /// collaborative filesystem serves its `FileRecordId` there; on macOS,
+    /// where every copy inherits the attribute, the id is followed by the
+    /// inode it belongs to so a copy is told apart). A file
     /// without one, on a filesystem that accepts user attributes, gets a
     /// freshly minted id written with create-only semantics (a concurrent
     /// opener that wins the race is re-read, so both agree). Anything else —
@@ -306,99 +308,25 @@ fn normalise(path: &Path) -> PathBuf {
 }
 
 /// The durable file id behind [`RecordId::identify_file`]: the
-/// `user.tilo.record-id` extended attribute.
-#[cfg(target_os = "linux")]
+/// `user.tilo.record-id` extended attribute, kept by `tilo-files`.
 mod file_identity {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
     use std::path::Path;
 
     /// The attribute the collaborative filesystem serves its `FileRecordId`
     /// in, and the one written for files elsewhere.
-    pub(super) const ATTRIBUTE: &str = "user.tilo.record-id";
-
-    fn c_path(path: &Path) -> Option<CString> {
-        CString::new(path.as_os_str().as_bytes()).ok()
-    }
-
-    fn c_name() -> CString {
-        CString::new(ATTRIBUTE).unwrap_or_default()
-    }
-
-    /// The id stored on `path`, if it carries a well-formed one.
-    pub(super) fn read(path: &Path) -> Option<uuid::Uuid> {
-        let path = c_path(path)?;
-        let name = c_name();
-        let mut buf = [0_u8; 16];
-        // SAFETY: both strings are NUL-terminated and `buf` is writable for
-        // its full length, which is what we pass.
-        let n = unsafe {
-            libc::getxattr(
-                path.as_ptr(),
-                name.as_ptr(),
-                buf.as_mut_ptr().cast(),
-                buf.len(),
-            )
-        };
-        (n == 16)
-            .then(|| uuid::Uuid::from_bytes(buf))
-            .filter(|id| !id.is_nil())
-    }
-
-    /// Store `id` on `path` unless it already carries one. `Ok(false)` when
-    /// another writer got there first.
-    fn create(path: &Path, id: uuid::Uuid) -> std::io::Result<bool> {
-        let path =
-            c_path(path).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-        let name = c_name();
-        let bytes = id.into_bytes();
-        // SAFETY: NUL-terminated strings and a 16-byte readable value.
-        let rc = unsafe {
-            libc::setxattr(
-                path.as_ptr(),
-                name.as_ptr(),
-                bytes.as_ptr().cast(),
-                bytes.len(),
-                libc::XATTR_CREATE,
-            )
-        };
-        if rc == 0 {
-            return Ok(true);
-        }
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EEXIST) {
-            Ok(false)
-        } else {
-            Err(error)
-        }
-    }
+    pub(super) use fs_protocol::RECORD_ID_XATTR as ATTRIBUTE;
 
     /// The file's id, minting and storing one for a regular file that has
     /// none. `None` when the file can't carry an id.
     pub(super) fn read_or_mint(path: &Path) -> Option<uuid::Uuid> {
-        if let Some(id) = read(path) {
-            return Some(id);
-        }
-        if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
-            return None;
-        }
-        match create(path, uuid::Uuid::new_v4()) {
-            // Read back rather than trusting the value written: the stored
-            // attribute is the identity, whoever wrote it.
-            Ok(_) => read(path),
+        let fresh = uuid::Uuid::new_v4().into_bytes();
+        match tilo_files::native::identity::read_or_mint(path, ATTRIBUTE, fresh) {
+            Ok(id) => id.map(uuid::Uuid::from_bytes),
             Err(error) => {
                 tracing::debug!(path = %path.display(), %error, "file cannot carry a record id; identifying it by path");
                 None
             }
         }
-    }
-}
-
-/// Without Linux extended attributes a file is identified by its path.
-#[cfg(not(target_os = "linux"))]
-mod file_identity {
-    pub(super) fn read_or_mint(_path: &std::path::Path) -> Option<uuid::Uuid> {
-        None
     }
 }
 
@@ -779,11 +707,6 @@ pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
     let kind = RecordKind::new(str_at(doc, &m, "kind")?);
     let checkout = RecordCheckout::new(id, kind);
     checkout.is_valid().then_some(checkout)
-}
-
-/// [`identity`] of a saved document, as a peer sends it.
-pub fn identity_saved(bytes: &[u8]) -> Option<RecordCheckout> {
-    identity(&AutoCommit::load(bytes).ok()?)
 }
 
 /// Identities this record's document was known by before adoption, oldest
@@ -1340,7 +1263,6 @@ impl RecordSet {
         let home = identity
             .workspace_id
             .clone()
-            .or_else(|| identity.cluster_id.clone())
             // A launcher-less process still gets an explicit, non-routable
             // scope.  It may not collaborate (the broker rejects nil), but
             // it must never fall back to the historical package-global file.
@@ -3863,7 +3785,7 @@ pub fn tick(
 }
 
 #[cfg(test)]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod identity_tests;
 
 #[cfg(test)]

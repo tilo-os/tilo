@@ -1827,72 +1827,16 @@ fn assert_approval_replay(
     reopened
 }
 
-/// What the owner file held before byte fields became base64: the same
-/// record pretty-printed, every byte a JSON integer.
-fn legacy_owner_file(current: &[u8]) -> Vec<u8> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
-    let mut value: serde_json::Value = serde_json::from_slice(current).unwrap();
-    let rooms = value["rooms"].as_object_mut().unwrap();
-    assert!(!rooms.is_empty());
-    for room in rooms.values_mut() {
-        for field in ["peer", "invitation", "enrollment_intent"] {
-            let text = room[field].as_str().expect("byte fields are base64 text");
-            room[field] = serde_json::to_value(STANDARD.decode(text).unwrap()).unwrap();
-        }
-    }
-    serde_json::to_vec_pretty(&value).unwrap()
-}
-
 #[test]
-fn legacy_int_array_owner_file_still_loads() {
+fn owner_file_holds_byte_fields_as_compact_base64() {
     let joined = enrolled();
     let current = std::fs::read(&joined.path).unwrap();
-    let legacy = legacy_owner_file(&current);
-    assert!(
-        current.len() * 3 < legacy.len(),
-        "base64 compact record {} bytes against legacy {} bytes",
-        current.len(),
-        legacy.len()
-    );
-    let legacy_path = joined.path.with_file_name("legacy-joined-rooms.json");
-    std::fs::write(&legacy_path, &legacy).unwrap();
-    let reopened = open_file(&legacy_path).unwrap();
-    assert_eq!(
-        serde_json::to_vec(&*reopened.0.authority.read()).unwrap(),
-        current,
-        "the legacy record loads to exactly the record the current file holds"
-    );
-    // A restored peer's durable() bytes order per-author watermarks by hash,
-    // so compare what the room holds rather than a re-encoding of it.
-    let state = |owner: &NativeWorkspaceOwner| {
-        owner
-            .with_current(joined.room, |view| {
-                Ok((
-                    view.peer().rows(),
-                    view.peer().document_heads(APP, ""),
-                    view.generation(),
-                    view.continuity(),
-                ))
-            })
-            .unwrap()
-    };
-    assert_eq!(state(&reopened), state(&joined.owner));
-    // The next publication rewrites the legacy file in the current format.
-    let request = edit(&reopened, joined.room, joined.now);
-    reopened.commit_document(request, joined.now).unwrap();
-    let rewritten = std::fs::read(&legacy_path).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&rewritten).unwrap();
-    assert!(value["rooms"][joined.room.to_string()]["peer"].is_string());
-    assert!(!rewritten.contains(&b'\n'), "the owner file is compact");
-    let after = state(&reopened);
-    assert_ne!(after, state(&joined.owner));
-    drop(reopened);
-    let reread = open_file(&legacy_path).unwrap();
-    assert_eq!(
-        serde_json::to_vec(&*reread.0.authority.read()).unwrap(),
-        rewritten
-    );
-    assert_eq!(state(&reread), after);
+    assert!(!current.contains(&b'\n'), "the owner file is compact");
+    let value: serde_json::Value = serde_json::from_slice(&current).unwrap();
+    let room = &value["rooms"][joined.room.to_string()];
+    for field in ["peer", "invitation", "enrollment_intent"] {
+        assert!(room[field].is_string(), "{field} is base64 text");
+    }
 }
 
 #[test]
@@ -1934,4 +1878,87 @@ fn retained_replay_reuses_exact_committed_publication() {
         before,
         "an unchanged authenticated replay must not rewrite durable owner state"
     );
+}
+
+#[test]
+fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owner() {
+    let joined = enrolled();
+    let reader = member().verifying_key().to_bytes();
+    let (keys, _) = rotated_channel();
+    commit_sealed(&joined, &keys);
+    let before = std::fs::read(&joined.path).unwrap();
+    let mut decryptions = 0;
+    let mut opener = |op: &collab_types::SignedOp| {
+        decryptions += 1;
+        let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+        keys.open_content(
+            op.artifact,
+            &op.encryption.ok_or("not sealed")?,
+            &ciphertext,
+        )
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| error.to_string())
+    };
+    let captured = joined
+        .owner
+        .with_current(joined.room, |view| {
+            assert!(
+                view.read_document(reader, APP, "", None, 1024 * 1024, joined.now)
+                    .is_err(),
+                "the plaintext-only door must retain its encrypted refusal"
+            );
+            assert!(
+                view.read_document_with_history(
+                    [0x77; 32],
+                    (APP, ""),
+                    None,
+                    1024 * 1024,
+                    joined.now,
+                    &mut opener
+                )
+                .is_err(),
+                "a stranger cannot open history"
+            );
+            view.read_document_with_history(
+                reader,
+                (APP, ""),
+                None,
+                1024 * 1024,
+                joined.now,
+                &mut opener,
+            )
+        })
+        .unwrap();
+    let DocumentRead::Captured(captured) = captured else {
+        panic!("a first encrypted read captures history");
+    };
+    assert_eq!(
+        decryptions, 1,
+        "only the admitted member's read opens the write"
+    );
+    let doc = AutoCommit::load(&captured.bytes).unwrap();
+    assert_eq!(
+        doc.get(ROOT, "topic")
+            .unwrap()
+            .unwrap()
+            .0
+            .into_string()
+            .unwrap(),
+        SECRET
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+    let path = joined.path.clone();
+    let room = joined.room;
+    let now = joined.now;
+    drop(joined.owner);
+    let reopened = open_file(&path).unwrap();
+    assert!(matches!(reopened.with_current(room, |view| {
+        view.read_document_with_history(reader, (APP, ""), Some(captured.revision),
+            1024 * 1024, now, &mut |op| {
+                keys.open_content(op.artifact, &op.encryption.ok_or("not sealed")?,
+                    &collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?)
+                    .map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
+            })
+    }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }

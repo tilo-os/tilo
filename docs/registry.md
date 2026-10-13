@@ -91,6 +91,12 @@ publisher change sig = ed25519_sign(publisher_key,
                                            || postcard((action,
                                                         entry_without_signature))))
 
+bot entry/change sig = the same, under b"tilo-registry-bot-entry-v1\0"
+
+bots sig             = ed25519_sign(owner_or_channel_key,
+                                    blake3(b"tilo-registry-bots-v1\0"
+                                           || postcard((index digest, bots))))
+
 owner index sig      = ed25519_sign(owner_key,
                                     blake3(b"tilo-registry-index-v1\0"
                                            || postcard(index_manifest)))
@@ -100,6 +106,19 @@ delegated index sig  = ed25519_sign(channel_key,
                                            || postcard(index_manifest
                                                        + root authorization)))
 ```
+
+Bot entries were added without changing what any released client reads.
+An app entry encodes, signs and verifies byte for byte as before: its
+`kind` is omitted and its versions keep their flat `tapp_*` fields. A bot
+entry carries `"kind": "bot"`, its versions carry `bot` instead of the
+`tapp_*` fields, and its signature uses the bot domain, so neither kind can
+pass for the other. Snapshots list bot entries under `bots`, beside
+`entries`, with `bots_signature_hex`: the same key's signature over the bot
+entries and the digest the snapshot's own signature covers (the compact
+form uses `tilo-registry-compact-bots-v1`). The owner signature and the
+snapshot hash cover `entries` only, so a client that predates bots ignores
+both new fields and verifies the snapshot unchanged. See
+[architecture/bots.md](architecture/bots.md) §10 for bot entries.
 
 Postcard was chosen over JSON because JSON's key order and
 whitespace are not deterministic across encoders — signatures
@@ -123,6 +142,9 @@ GET  /thin/<root>.tapp    → thin form of a reviewed package, by package root
 GET  /blobs/<blake3>      → one payload blob of a reviewed package
 GET  /artifacts/<blake3>.tapp → a full .tapp stored with `import-artifact`
 GET  /blobs/<blake3>.zst, /artifacts/<blake3>.tapp.zst → their compressed twins
+PUT  /uploads/<blake3>.tapp    → a publisher's package, private until review
+PUT  /uploads/<blake3>.program → a publisher's bot program, private until review
+                                 (201/400/401/403/413/422)
 ```
 
 `/entries` carries `Cache-Control: no-cache` and `ETag: "<snapshot hash>"`
@@ -147,7 +169,7 @@ level 19 (`tilo_app_package::compressed`): `/blobs/<blake3>.zst` for every
 blob and chunk, `/artifacts/<blake3>.tapp.zst` for every imported package.
 The release pipeline uploads `<file>.tapp.zst` beside every tapp it
 publishes (`tilo-app-package compress`). Measured on real packages, twins are
-34–42 % of an app tapp and 32 % of the runtime's payload (TIL-600).
+34–42 % of an app tapp and 32 % of the runtime's payload.
 
 A twin is transport only. Signatures, `tapp_blake3_hex`, `tapp_size_bytes`,
 blob names and chunk lists all describe the uncompressed bytes, and nothing
@@ -440,6 +462,36 @@ local registry. Uploads stay private: review reads them from storage instead of
 fetching the URL (`review_entry_bytes`), and `review approve` imports the
 approved bytes as the artifact the URL then serves.
 
+A bot entry's program is uploaded the same way, to
+`PUT /uploads/<blake3>.program`, as the Shortcut's canonical JSON
+(`tilo_automation::program`), at most 256 KiB. The registry refuses bytes that
+are not exactly the canonical encoding (`422`), because the entry signs their
+hash and a room stores the same bytes. The answer's `url` is
+`https://apps.tilo.so/blobs/<blake3>`, which serves the program once review
+approves a version that binds it. Pruning keeps a program blob while any
+retained entry binds it.
+
+`tilo-app-package bot-entry` builds a bot entry from a program file in any
+formatting. It re-encodes the Shortcut canonically, derives the apps,
+triggers and appearance the program needs, refuses `--connector
+<id>@<min version>` lists that differ from the connectors its triggers use,
+and with `--upload` sends the canonical bytes first:
+
+```text
+tilo-app-package bot-entry \
+  --identity /run/secrets/app-publisher.json \
+  --package-id so.tilo.bots.echo --version 1.0.0 \
+  --action add --upload echo.json > request.json
+```
+
+A bot version is `{"version", "released_at_unix", "bot": {"program_url",
+"program_blake3_hex", "program_size_bytes", "requires": {"connectors":
+[{"package_id", "min_version"}], "apps", "appearance", "triggers"}}}`.
+`requires` must equal what the program uses: the registry
+checks it on submission and clients check it again on install. A bot is
+never installed as an app; it goes into a room through that room's
+`install-bot` action.
+
 A newer request for a package replaces the one waiting for review and must
 keep every version it lists, so a publisher releasing again before review
 builds on its waiting entry. `GET /entries/<package id>/pending` returns that
@@ -543,6 +595,15 @@ Their output includes filesystem, network, portal, and service requests.
 Approval moves the exact signed metadata into snapshot staging; a moderator
 cannot quietly rewrite a publisher's submission.
 
+A bot entry has no package to fetch: its program was uploaded to this
+registry before submission, and `submit` already refused it unless the bytes
+hash and size-match, parse as a canonical, structurally valid program, and
+need exactly the apps, connectors, triggers and appearance the version lists.
+`show` reads the program from storage and prints its name, step count and
+those needs; `approve` re-checks them and publishes the program at
+`/blobs/<blake3>`. An id never changes kind: an app cannot be updated into a
+bot or the reverse (409).
+
 `show --json` includes a `review_id` for the entire signed pending request,
 including its receipt time and both signatures. Pass it to either decision to
 refuse a request replaced after inspection, before fetching packages or changing
@@ -597,10 +658,29 @@ tilo-registry-server sign-delegated-snapshot \
   --valid-for-seconds 86400
 ```
 
-The collector reads a version from its own content-addressed store when it
+The collector selects pending runtime providers before apps within the same
+item bound, so a full page of deferred apps cannot keep its provider beyond the
+cutoff. It reads a version from its own content-addressed store when it
 already holds the bytes the publisher signed, and fetches only new versions.
 A submission it cannot collect completely stays pending and out of the staged
 batch; the others are staged, and the collector exits non-zero listing it.
+
+The signer checks every collected request and package before selecting complete
+requests whose new native versions have exact runtime providers in the resulting
+catalogue. A missing runtime defers that whole request, preserving its pending
+metadata, signatures and referenced package bytes. Independently installable
+requests and runtime providers can still publish. An entirely deferred batch
+reports `status = "deferred"` without signing or approving anything; a partial
+promotion reports its promoted and deferred counts. Signature, authority, byte,
+retention and recovery failures remain errors. The durable promotion journal and
+staged inventory contain only the selected requests, so crash recovery repeats
+the same verified transition. The next collector reconsiders pending requests.
+
+To resolve a deferred request, publish its exact verified runtime or have the
+original publisher replace its signed pending entry through normal publication.
+Publisher reconciliation may retire an unpublished missing-runtime version only
+after four newer offered releases of the same target and channel remain; it does
+not rewrite package identities or remove published rollback history.
 
 The store keeps each staged package once, as the payload blobs and thin form it
 serves for thin installs plus a record of the package root, and rebuilds and
@@ -867,11 +947,14 @@ data-dir/
     version-indexes/
         <blake3>.json    # complete signed entries the compact form names
     payload-blobs/
-        <blake3>         # payload blobs of reviewed packages
+        <blake3>         # payload blobs of reviewed packages, and approved bot programs
     thin-packages/
         <root>.tapp      # thin form of each reviewed package
     artifacts/
         <blake3>.tapp    # full packages hosted with import-artifact
+    uploads/
+        <blake3>.tapp    # publisher package uploads awaiting review; private
+        <blake3>.program # publisher bot programs awaiting review; private
 ```
 
 All writes are atomic-rename (`.tmp` → real path), so
@@ -882,6 +965,16 @@ in-flight changes; nothing gets torn.
 For a restore, drop the same tarball back in place and start
 `tilo-registry-server serve`. There's no daemon-side state
 outside the data-dir — the server is stateless across restarts.
+
+### Entry format cut-over
+
+Entries signed under the earlier domain, before `kind` and version
+`artifact`s, do not verify and are not read. A registry moves to the
+current form by archiving its data directory, starting empty, and
+republishing every app through the normal release workflow, then
+publishing a signed snapshot. Devices whose app installer predates the
+change cannot read the new catalogue until their OS update brings one that
+can.
 
 ## Moderation policy and operations
 
