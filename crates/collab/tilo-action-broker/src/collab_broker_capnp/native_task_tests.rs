@@ -19,6 +19,8 @@ use tilo_peer_state::workspace_task::{
     WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskSnapshot,
 };
 
+#[path = "native_task_launch_tests.rs"]
+mod closed_app;
 #[path = "native_task_cross_app_tests.rs"]
 mod cross_app;
 
@@ -28,6 +30,8 @@ struct Native {
     certificate: tilo_user_identity::DeviceCert,
     origin: PolicyOrigin,
     cached_projection: Mutex<Option<tilo_desktop_model::DesktopTree>>,
+    capped_connection: std::sync::atomic::AtomicBool,
+    spent_grants: Mutex<Vec<tilo_action_policy::GrantId>>,
 }
 fn room() -> tilo_desktop_model::RoomId {
     tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap()
@@ -59,6 +63,10 @@ impl WorkspaceAuthority for Native {
             workspace.room = room();
             workspace.policy =
                 tilo_desktop_model::projection::room_policy_of(doc, &room().to_string());
+            workspace
+                .policy
+                .grants
+                .retain(|grant| !self.spent_grants.lock().unwrap().contains(&grant.id));
             workspace.tasks = tilo_peer_state::workspace_task::snapshot(doc)?.tasks;
             let mut tree = tilo_desktop_model::DesktopTree {
                 active: workspace.id,
@@ -95,6 +103,10 @@ impl CertificateAuthority for Native {
     }
     fn governs(&self, requested: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
         requested.to_string() == room().to_string()
+            && !(self
+                .capped_connection
+                .load(std::sync::atomic::Ordering::SeqCst)
+                && device.is_some())
             && device.is_none_or(|key| *key == self.certificate.device_public_key)
     }
 }
@@ -123,6 +135,29 @@ impl OwnerCommitService for Native {
         })
     }
 }
+impl crate::services::AppActionGrants for Native {
+    fn may_grant(&self, _room: &str, _person: &str) -> bool {
+        false
+    }
+    fn record(
+        &self,
+        _request: &crate::app_actions::AppActionConsentRequest,
+        _grant: tilo_action_policy::Grant,
+        _answer: crate::app_actions::AppActionConsent,
+    ) -> Option<String> {
+        None
+    }
+    fn revoke(&self, requested: &str, grant: &str) {
+        assert_eq!(requested, room().to_string());
+        // Like the shell's grant service, update the broker's live policy
+        // projection synchronously without re-entering the task mutation turn.
+        self.spent_grants
+            .lock()
+            .unwrap()
+            .push(tilo_action_policy::GrantId::new(grant));
+    }
+}
+
 impl WorkspaceMemberships for Native {
     fn requires_room(&self, requested: &str) -> bool {
         OwnerCommitService::requires_room(self, requested)
@@ -208,6 +243,29 @@ impl WorkspaceTaskExecution for Native {
         })
     }
 
+    fn admit_host_launch(
+        &self,
+        requested: &str,
+        binding: &NativeTaskBinding,
+        requirement: &NativeTaskActionRequirement,
+        launch: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        if !OwnerCommitService::requires_room(self, requested) {
+            return Err("foreign task room".into());
+        }
+        self.owner.with_task_action_admission(
+            room(),
+            &binding.task_id,
+            &binding.agent_id,
+            binding.epoch,
+            binding.revision,
+            || {
+                self.authorize_action(requested, &binding.agent_id, requirement)?;
+                launch()
+            },
+        )
+    }
+
     fn admit(
         &self,
         requested: &str,
@@ -241,14 +299,22 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_launcher(None)
+    }
+    fn with_launcher(launcher: Option<Arc<dyn crate::services::LauncherServices>>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let owner = tilo_joined_room::open_file(&directory.path().join("native.json")).unwrap();
         let key = SigningKey::from_bytes(&[92; 32]);
-        let certificate = tilo_joined_room::testing::certificate(
+        let mut certificate = tilo_joined_room::testing::certificate(
             &SigningKey::from_bytes(&[91; 32]),
             &key,
             "Governor",
         );
+        // The signed device is initially governed here, so its foreign-device
+        // ceiling only applies after the live connection loses that authority.
+        certificate.capabilities.foreign = true;
+        tilo_user_identity::sign_device_cert(&mut certificate, &SigningKey::from_bytes(&[91; 32]))
+            .unwrap();
         tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
         let native = Arc::new(Native {
             owner,
@@ -256,6 +322,8 @@ impl Fixture {
             certificate,
             origin: OwnerPolicyClock::new().unwrap().new_origin(),
             cached_projection: Mutex::new(None),
+            capped_connection: std::sync::atomic::AtomicBool::new(false),
+            spent_grants: Mutex::new(Vec::new()),
         });
         let membership = OwnerCommitRequest {
             room: room().to_string(),
@@ -317,6 +385,8 @@ impl Fixture {
             None,
             Some(&config),
             HostServices {
+                launcher,
+                app_action_grants: Some(native.clone()),
                 task_execution: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
                 ..Default::default()
@@ -330,6 +400,23 @@ impl Fixture {
             directories: Rc::new(LocalActionDirectoryRegistry::new(rx)),
             task,
         }
+    }
+    /// Attenuate the live connection without changing its signed identity or
+    /// the owner's canonical authority over the delegated agent.
+    fn cap_connection(&self) {
+        self.native
+            .capped_connection
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let current = self
+            .state
+            .verify_action_caller(&room().to_string(), &self.signed_presentation())
+            .unwrap();
+        assert!(current.admitted.verified.capped);
+        assert!(self.native.certificate.capabilities.foreign);
+        assert!(
+            self.native
+                .governs(uuid::Uuid::parse_str(&room().to_string()).unwrap(), None)
+        );
     }
     fn person_command(&self, command: WorkspaceTaskCommand) -> Result<(), String> {
         self.native
@@ -390,9 +477,9 @@ impl Fixture {
             agent,
         )
     }
-    fn app_channel(&self, peer: u64, app: &str, agent: bool) -> channel_handle::Client {
+    fn signed_presentation(&self) -> Vec<u8> {
         let room = room().to_string();
-        let proof = runtime_collab::CertifiedJoinIdentity {
+        runtime_collab::CertifiedJoinIdentity {
             workspace_id: room.clone(),
             device_certificate: serde_json::to_vec(&self.native.certificate).unwrap(),
             proof: self
@@ -403,10 +490,13 @@ impl Fixture {
                 .to_vec(),
         }
         .encode()
-        .unwrap();
+        .unwrap()
+    }
+    fn app_channel(&self, peer: u64, app: &str, agent: bool) -> channel_handle::Client {
+        let room = room().to_string();
         let mut admitted = self
             .state
-            .verify_action_caller(&room, &proof)
+            .verify_action_caller(&room, &self.signed_presentation())
             .unwrap()
             .admitted;
         let route = CrdtRoute::record(app, room, "main");
@@ -542,6 +632,11 @@ fn set_notes_permission(f: &Fixture, may_write: bool) {
     put_grant(f, grant);
 }
 fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
+    f.native
+        .spent_grants
+        .lock()
+        .unwrap()
+        .retain(|id| id != &grant.id);
     let now = std::time::SystemTime::now();
     let messages = f
         .native

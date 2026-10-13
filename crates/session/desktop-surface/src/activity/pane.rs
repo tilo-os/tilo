@@ -9250,6 +9250,7 @@ fn describe_grantee(subject: &tilo_action_policy::Subject) -> String {
             t_args("activity-grant-shortcut", &[("shortcut", shortcut.into())])
         }
         Grantee::App(app) => app.clone(),
+        Grantee::Bot(bot) => t_args("activity-grant-bot", &[("bot", short(bot).into())]),
         Grantee::ForeignDevice => t("activity-grant-foreign-device"),
     }
 }
@@ -9258,6 +9259,7 @@ fn describe_grantee(subject: &tilo_action_policy::Subject) -> String {
 fn role_key(role: tilo_action_policy::Role) -> &'static str {
     match role {
         tilo_action_policy::Role::Owner => "owner",
+        tilo_action_policy::Role::Moderator => "moderator",
         tilo_action_policy::Role::Editor => "editor",
         tilo_action_policy::Role::Commenter => "commenter",
         tilo_action_policy::Role::Viewer => "viewer",

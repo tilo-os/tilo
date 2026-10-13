@@ -74,6 +74,9 @@ pub enum RoomRole {
     Commenter,
     /// Reads and writes.
     Editor,
+    /// Writes, moderates other people's content and removes or bans members
+    /// ranked below Moderator.
+    Moderator,
 }
 
 /// A person governance records in a room.

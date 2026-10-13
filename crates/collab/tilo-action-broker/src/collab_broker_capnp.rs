@@ -40,6 +40,7 @@ mod native_checkout;
 mod native_effect_recovery_tests;
 mod native_media;
 mod native_task_execution;
+mod native_task_launch;
 #[cfg(test)]
 mod policy_turn_tests;
 #[cfg(target_os = "linux")]
@@ -661,6 +662,19 @@ impl BrokerActor {
         }
     }
 
+    /// Installed bot `installation`, acting for the person who installed it:
+    /// it may do only what both its grant and that person may.
+    #[must_use]
+    pub fn bot(installation: &str, installer: impl Into<String>) -> Self {
+        Self {
+            id: format!("bot:{installation}"),
+            is_agent: false,
+            capped: false,
+            for_person: Some(installer.into()),
+            session_delegated: false,
+        }
+    }
+
     /// The same agent, acting for `person`.
     #[must_use]
     pub fn for_person(mut self, person: impl Into<String>) -> Self {
@@ -699,6 +713,11 @@ impl BrokerActor {
     fn delegate(&self) -> Option<Subject> {
         if let Some(app) = self.id.strip_prefix("app:") {
             return Some(Subject::App(app.to_owned()));
+        }
+        // A person's policy id is lowercase hex, so it never starts with
+        // `bot:` and the prefix cannot misread a person.
+        if let Some(bot) = self.id.strip_prefix("bot:") {
+            return Some(Subject::Bot(bot.to_owned()));
         }
         self.is_agent
             .then(|| Subject::agent(self.id.strip_prefix("agent:").unwrap_or(&self.id)))
@@ -4832,12 +4851,27 @@ impl CapnpBrokerState {
             .membership
             .as_ref()
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
-        // Only this room's live surfaces and in-scope actions reach the
-        // borrow; everything else is dropped before authority is read.
-        let published = self
+        // Ordinary directed invocation needs a live publisher. Only native
+        // task custody can activate an inert retained route; its catalogue
+        // keeps stable providers discoverable without inventing a publisher.
+        let live = self
             .published_surfaces_for_scope(scope)
             .into_iter()
-            .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
+            .filter(|surface| surface.live)
+            .collect::<Vec<_>>();
+        let routes = live
+            .iter()
+            .map(|surface| surface.route.clone())
+            .collect::<Vec<_>>();
+        let retained = self.launchable.surfaces().into_iter().filter(|surface| {
+            scope.is_none()
+                && self.native_tasks(cluster_id).is_some()
+                && !routes.contains(&surface.route)
+        });
+        let published = live
+            .into_iter()
+            .chain(retained)
+            .filter(|surface| surface.route.cluster_id == cluster_id)
             .map(|mut surface| {
                 surface.actions.retain(|action| {
                     scope.is_none_or(|scope| {
@@ -4883,6 +4917,16 @@ impl CapnpBrokerState {
             let published = published
                 .into_iter()
                 .map(|mut surface| {
+                    if !surface.live
+                        && !actor.may_in(
+                            workspace,
+                            &app_node(workspace, &surface.app_id),
+                            ActionKind::Undoable,
+                            now,
+                        )
+                    {
+                        surface.actions.clear();
+                    }
                     // Listed when the actor may take it, or would be asked
                     // first.
                     surface.actions.retain(|action| {
@@ -4913,6 +4957,7 @@ impl CapnpBrokerState {
         let mut surfaces = published
             .into_iter()
             .filter_map(|surface| {
+                let provider = (!surface.live).then(|| launchable::launchable_provider(&surface));
                 let actions = surface
                     .actions
                     .into_iter()
@@ -4947,6 +4992,7 @@ impl CapnpBrokerState {
                 (!actions.is_empty()).then(|| {
                     serde_json::json!({
                         "peer_id": surface.peer_id,
+                        "provider": provider,
                         "app_id": surface.app_id,
                         "cluster_id": surface.route.cluster_id,
                         "record_id": surface.route.record_id,
@@ -4961,6 +5007,7 @@ impl CapnpBrokerState {
             let display_name = app.display_name;
             surfaces.push(serde_json::json!({
                 "peer_id": 0,
+                "provider": tilo_actions::remote::workspace_provider(cluster_id),
                 "app_id": package_id,
                 "cluster_id": cluster_id,
                 "record_id": "",
@@ -5571,6 +5618,7 @@ impl CapnpBrokerState {
             let intent = serde_json::json!({ "request": request,
                 "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
                 "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
+                "record_id": offered.0.route.record_id,
                 "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
                 "action": offered.1.action, "revision": revision });
             if let Some(context) = durable {
@@ -6369,9 +6417,10 @@ impl CapnpBrokerState {
     ) -> Result<InvocationJob, String> {
         let runtime_collab::TaskAction {
             peer_id: target_peer,
+            provider: _,
             resource,
             action,
-            argument,
+            argument: _,
         } = target;
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
         if self.task_run_cancelled(peer_id, agent_id, run_id, lease)? {
@@ -6385,6 +6434,34 @@ impl CapnpBrokerState {
             .filter(|surface| surface.route.cluster_id == run.cluster_id)
             .and_then(|surface| surface.action_projection(resource, action))
             .ok_or("the task action is no longer published in this workspace")?;
+        self.admit_task_action(run, lease, target, provenance, (surface, descriptor))
+    }
+
+    fn admit_task_action(
+        &self,
+        run: PendingTaskRun,
+        lease: &str,
+        target: runtime_collab::TaskAction<'_>,
+        provenance: Option<&(
+            durable_local_invocation::LocalCaller,
+            tilo_actions::InvocationId,
+        )>,
+        offered: (PublishedSurface, PublishedAction),
+    ) -> Result<InvocationJob, String> {
+        let runtime_collab::TaskAction {
+            peer_id: target_peer,
+            provider: _,
+            resource,
+            action,
+            argument,
+        } = target;
+        let (surface, descriptor) = offered;
+        if surface.route.cluster_id != run.cluster_id
+            || surface.peer_id != target_peer
+            || !surface.live
+        {
+            return Err("task action publisher changed workspace or retired".into());
+        }
         let requirement = crate::services::NativeTaskActionRequirement {
             binding: run.native.clone(),
             app: surface.app_id.clone(),
@@ -6393,7 +6470,16 @@ impl CapnpBrokerState {
             action: descriptor.action.clone(),
             need: descriptor.contract.need(),
         };
-        let confirmation_required = descriptor.contract.confirmation.clone();
+        // Task transport carries a JSON argument map directly; the contract
+        // evaluator also accepts the action door's prefixed map encoding.
+        let contract_argument = argument.and_then(|text| {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+                .ok()
+                .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
+        });
+        let confirmation_required = descriptor
+            .contract
+            .confirmation_for_argument(contract_argument.as_deref().or(argument));
         if !matches!(
             confirmation_required,
             tilo_actions::ConfirmationPolicy::None
@@ -6626,18 +6712,22 @@ impl CapnpBrokerState {
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
+        // The certificate was checked above; its connection ceiling must also
+        // reflect current governance, not just governance at the original join.
+        let verified = match &admitted.certificate {
+            Some(cert) => VerifiedJoinIdentity::of(cert, self.capped_in(&route.cluster_id, cert)),
+            None => admitted.verified.clone(),
+        };
         // The person and any delegated agent are revalidated on one sample.
         membership
             .decide_in_room(&route.cluster_id, |workspace| {
-                let mut current = admit_verified_join_at(
-                    workspace,
-                    route,
-                    admitted.verified.clone(),
-                    now / 1_000_000_000,
-                )
-                .map_err(|error| {
-                    format!("certified collaboration session is no longer admitted: {error}")
-                })?;
+                let mut current =
+                    admit_verified_join_at(workspace, route, verified, now / 1_000_000_000)
+                        .map_err(|error| {
+                            format!(
+                                "certified collaboration session is no longer admitted: {error}"
+                            )
+                        })?;
                 current.certificate.clone_from(&admitted.certificate);
                 current.host_scope.clone_from(&admitted.host_scope);
                 current
@@ -9943,30 +10033,22 @@ impl channel_handle::Server for CapnpChannelHandle {
                         .and_then(|value| Ok(value.to_str()?.to_owned()))
                 })
                 .transpose()?;
+            let provider = request.get_provider()?.to_str()?.to_owned();
+            if !provider.is_empty() && request.get_peer_id() != 0 {
+                return Err(capnp::Error::failed(
+                    "task target mixes live and stable provider identities".into(),
+                ));
+            }
             let target = runtime_collab::TaskAction {
                 peer_id: request.get_peer_id(),
+                provider: &provider,
                 resource: &resource,
                 action: &action,
                 argument: argument.as_deref(),
             };
             let invocation = request.get_invocation()?.to_str()?;
-            let provenance = if runtime_collab::native_task_revision(&lease).is_some() {
-                let id = uuid::Uuid::parse_str(invocation).map_err(|_| {
-                    capnp::Error::failed("native task child requires stable invocation UUID".into())
-                })?;
-                if id.is_nil() {
-                    return Err(capnp::Error::failed("nil task invocation".into()));
-                }
-                Some((
-                    caller.ok_or_else(|| {
-                        capnp::Error::failed("native task channel custody unavailable".into())
-                    })?,
-                    tilo_actions::InvocationId(id),
-                ))
-            } else {
-                None
-            };
-            let observed = if let Some((caller, invocation)) = &provenance {
+            let provenance = native_task_execution::child_provenance(&lease, invocation, caller)?;
+            let (id, update) = if let Some((caller, invocation)) = &provenance {
                 let reask = native_task_execution::ChildReask {
                     peer_id,
                     agent_id: &agent_id,
@@ -9978,14 +10060,15 @@ impl channel_handle::Server for CapnpChannelHandle {
                 };
                 let wait = native_task_execution::ChildWait::read(&request)?;
                 state
-                    .observe_native_child(&reask, wait, (&route, &identity))
+                    .invoke_native_task_child(&reask, wait, (&route, &identity))
                     .await?
             } else {
-                None
-            };
-            let (id, update) = if let Some(observed) = observed {
-                observed
-            } else {
+                if !provider.is_empty() {
+                    return Err(capnp::Error::failed(
+                        "closed-app activation requires a native task's authenticated custody"
+                            .into(),
+                    ));
+                }
                 let job = state
                     .start_task_action(
                         peer_id,
@@ -9993,7 +10076,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         request.get_run_id(),
                         &lease,
                         target,
-                        provenance.as_ref(),
+                        None,
                     )
                     .map_err(capnp::Error::failed)?;
                 let update = state.invocation_status(job.id).ok_or_else(|| {
@@ -15323,6 +15406,7 @@ pub mod tests {
                     revision: Some("directory-r1".into()),
                     on_behalf_of: None,
                     wait_ms: None,
+                    appearance: None,
                 };
                 let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
                 let admitted = tokio::time::timeout(Duration::from_secs(2), async {
@@ -15436,6 +15520,7 @@ pub mod tests {
                 argument: InvokeArgument::None, context: None, confirmation: None,
                 revision: None, on_behalf_of: None,
                 wait_ms: None,
+                appearance: None,
             };
             let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
             let PendingPoll::Ready(Ok(receipt)) = pending.poll_ready() else {
