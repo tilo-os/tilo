@@ -3248,13 +3248,7 @@ impl Widget for ActivityTimeline {
         Some(winit::window::ImePurpose::Normal)
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 }
 
 impl ActivityTimeline {

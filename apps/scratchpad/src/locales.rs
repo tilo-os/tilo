@@ -4,8 +4,3 @@
 
 ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
-/// One constant per message of locales/en-US.ftl, for labels and placeholders.
-pub mod keys {
-    use ui::i18n::LabelKey;
-    pub const SCRATCHPAD_NOTE_BODY: LabelKey = LabelKey::new("scratchpad-note-body");
-}

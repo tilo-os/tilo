@@ -72,18 +72,13 @@ impl Widget for CountingContent {
         };
         taffy.widget_leaf(style, node_map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
     fn handle_event(&mut self, _event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.events.set(self.events.get().saturating_add(1));
         *ctx.handled = self.consume;
     }
     fn name(&self) -> &'static str {
         "CountingContent"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

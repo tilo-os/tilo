@@ -705,9 +705,6 @@ impl Widget for KeyboardMap {
         }
         self.observe_window_event(event);
     }
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
     fn is_focused(&self) -> bool {
         self.focused
     }
@@ -768,9 +765,7 @@ impl Widget for KeyboardMap {
     fn is_layout_dirty(&self) -> bool {
         false
     }
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
+    crate::redraw_flag!();
     fn name(&self) -> &'static str {
         "KeyboardMap"
     }

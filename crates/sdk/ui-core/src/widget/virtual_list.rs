@@ -2189,9 +2189,7 @@ mod tests {
             taffy.widget_leaf(style, node_map, self)
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             if self.consumes_press
@@ -2211,10 +2209,6 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "ProbeRow"
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
         }
 
         fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
