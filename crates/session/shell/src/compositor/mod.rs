@@ -40,6 +40,7 @@ pub mod device_rotation;
 pub(crate) mod diagnostic_actions;
 #[cfg(target_os = "linux")]
 pub mod dictation;
+pub mod dictation_status;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
 pub mod floating_service;
@@ -52,6 +53,7 @@ pub(crate) mod gnome_display_observation;
 pub(crate) mod gnome_input_capture;
 #[cfg(target_os = "linux")]
 pub mod gpu_health;
+#[cfg(target_os = "linux")]
 pub mod gpu_import;
 #[cfg(target_os = "linux")]
 pub mod hosted;
@@ -124,6 +126,7 @@ pub mod tablet;
 pub mod tablet_pad;
 #[cfg(target_os = "linux")]
 pub mod test_control;
+#[cfg(target_os = "linux")]
 pub mod text_commit;
 #[cfg(target_os = "linux")]
 pub mod toplevel_icon;

@@ -61,9 +61,6 @@ impl AppWidget for Root {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("R")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 fn factory(
     mut context: HostContext,

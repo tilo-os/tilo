@@ -328,10 +328,7 @@ fn tall_scroll_driver(theme: Theme) -> FrameHarness {
                 .with_child(Box::new(Text::new("Tall content").with_id("content"))),
         ));
     let mut driver = FrameHarness::new_with_theme(State::new(), Box::new(root), (400, 300), theme);
-    driver.send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(150.0, 150.0),
-    });
+    driver.send(&tilo_ui::synthetic_input::cursor_moved(150.0, 150.0));
     driver
 }
 

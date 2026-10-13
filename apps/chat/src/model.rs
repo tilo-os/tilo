@@ -210,45 +210,6 @@ pub struct VideoCaps {
     pub software_decode: Vec<String>,
 }
 
-/// How a call's media is routed. Peer-to-peer below the mesh threshold (each
-/// peer sends directly to every other); host-relay above it (peers publish to
-/// one designated host that re-fans the streams), which keeps a growing call's
-/// upload bandwidth flat. Chosen from the live participant count, so a call
-/// transparently promotes from P2P to host-based as people join.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CallSession {
-    Peer,
-    Host,
-}
-
-impl CallSession {
-    /// Mesh P2P stays practical up to a small fan-out; beyond it the call
-    /// switches to a host relay.
-    pub const PEER_MAX: usize = 3;
-
-    pub fn select(participants: usize) -> Self {
-        if participants <= Self::PEER_MAX {
-            CallSession::Peer
-        } else {
-            CallSession::Host
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            CallSession::Peer => "peer-to-peer",
-            CallSession::Host => "host relay",
-        }
-    }
-}
-
-/// The designated relay host for a host-based call: the lexicographically
-/// smallest member id, so every peer independently agrees who relays with **no
-/// extra signalling round-trip**. `None` for an empty call.
-pub fn call_host(members: &[VoiceMember]) -> Option<Id> {
-    members.iter().map(|m| m.user.clone()).min()
-}
-
 #[derive(Clone, Debug)]
 pub struct User {
     pub id: Id,
@@ -812,34 +773,6 @@ pub fn thread_participants(messages: &[Message], parent_id: &str) -> Vec<Id> {
     seen
 }
 
-/// Toggle `user`'s reaction with `emoji` on a reaction set. Adds the emoji
-/// (and user) when absent, removes the user when present, and drops the
-/// emoji entirely once nobody is left reacting. Returns the resulting
-/// "is the user now reacting" flag. Pure — the CRDT writer mirrors this.
-pub fn toggle_reaction(reactions: &mut Vec<Reaction>, emoji: &str, user: &str) -> bool {
-    if let Some(pos) = reactions.iter().position(|r| r.emoji == emoji) {
-        let Some(r) = reactions.get_mut(pos) else {
-            return false;
-        };
-        if let Some(uidx) = r.users.iter().position(|u| u == user) {
-            r.users.remove(uidx);
-            if r.users.is_empty() {
-                reactions.remove(pos);
-            }
-            false
-        } else {
-            r.users.push(user.to_string());
-            true
-        }
-    } else {
-        reactions.push(Reaction {
-            emoji: emoji.to_string(),
-            users: vec![user.to_string()],
-        });
-        true
-    }
-}
-
 /// An epoch-seconds timestamp's time of day, as the person reads clocks.
 pub fn clock(ts: i64) -> String {
     let secs_in_day = ts.rem_euclid(86_400);
@@ -850,15 +783,13 @@ pub fn clock(ts: i64) -> String {
 }
 
 /// Human relative label for a message timestamp relative to `now` —
-/// "Today" / "Yesterday" / "{n}d ago". Used for the date divider.
+/// "Today" / "Yesterday" / "3 days ago", in the desktop's language. Used
+/// for the date divider.
 pub fn day_label(ts: i64, now: i64) -> String {
     let day = ts.div_euclid(86_400);
     let today = now.div_euclid(86_400);
-    match today - day {
-        d if d <= 0 => "Today".to_string(),
-        1 => "Yesterday".to_string(),
-        d => format!("{d} days ago"),
-    }
+    let ago = (today - day).max(0);
+    ui::format::near_day(-ago).unwrap_or_else(|| ui::format::relative(ago * 86_400))
 }
 
 #[cfg(test)]
@@ -933,21 +864,6 @@ mod tests {
     }
 
     #[test]
-    fn toggle_reaction_adds_removes_and_prunes() {
-        let mut rx: Vec<Reaction> = vec![];
-        assert!(toggle_reaction(&mut rx, "👍", "u1"));
-        assert_eq!(rx.len(), 1);
-        assert!(toggle_reaction(&mut rx, "👍", "u2"));
-        assert_eq!(rx[0].count(), 2);
-        // u1 removes — emoji survives with u2.
-        assert!(!toggle_reaction(&mut rx, "👍", "u1"));
-        assert_eq!(rx[0].count(), 1);
-        // u2 removes — emoji pruned.
-        assert!(!toggle_reaction(&mut rx, "👍", "u2"));
-        assert!(rx.is_empty());
-    }
-
-    #[test]
     fn timestamps_format_as_a_24h_clock_and_a_relative_day() {
         // Phase: clock_formats_24h.
         {
@@ -961,47 +877,6 @@ mod tests {
             assert_eq!(day_label(now, now), "Today");
             assert_eq!(day_label(now - 86_400, now), "Yesterday");
             assert_eq!(day_label(now - 3 * 86_400, now), "3 days ago");
-        }
-    }
-
-    fn vm(user: &str) -> VoiceMember {
-        VoiceMember {
-            user: user.into(),
-            talking: false,
-            muted: false,
-            deafened: false,
-            audio_only: false,
-            sharing: false,
-            ticket: None,
-            video: None,
-        }
-    }
-
-    #[test]
-    fn call_topology_and_host_are_chosen_deterministically() {
-        // Phase: call_session_promotes_from_p2p_to_host_relay.
-        {
-            // Small calls mesh peer-to-peer; past the threshold they switch to a
-            // host relay so a growing call's upload bandwidth stays flat.
-            assert_eq!(CallSession::select(1), CallSession::Peer);
-            assert_eq!(
-                CallSession::select(CallSession::PEER_MAX),
-                CallSession::Peer
-            );
-            assert_eq!(
-                CallSession::select(CallSession::PEER_MAX + 1),
-                CallSession::Host
-            );
-            assert_eq!(CallSession::Peer.label(), "peer-to-peer");
-            assert_eq!(CallSession::Host.label(), "host relay");
-        }
-        // Phase: call_host_is_the_deterministic_smallest_id.
-        {
-            // Every peer independently agrees on the host (smallest id) with no
-            // extra signalling round-trip.
-            let members = vec![vm("u_charlie"), vm("u_alice"), vm("u_bob")];
-            assert_eq!(call_host(&members), Some("u_alice".to_string()));
-            assert_eq!(call_host(&[]), None);
         }
     }
 }

@@ -949,7 +949,7 @@ impl Widget for NumberInput {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.last_cursor = p;
                 let mh = self.stepper_hit(self.minus_rect).contains(p);
                 let ph = !mh && self.stepper_hit(self.plus_rect).contains(p);

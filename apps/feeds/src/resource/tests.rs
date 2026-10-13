@@ -857,11 +857,11 @@ fn history_entries_render_as_the_apps_sentences() {
     .unwrap();
 
     let sentences = |locale: &str| -> Vec<String> {
-        let source = LOCALES
-            .iter()
-            .find(|(candidate, _)| *candidate == locale)
-            .map(|(_, source)| *source)
-            .unwrap();
+        let source = match locale {
+            "en-US" => include_str!("../../locales/en-US.ftl"),
+            "de-DE" => include_str!("../../locales/de-DE.ftl"),
+            other => panic!("no catalogue for {other}"),
+        };
         let catalogue = tilo_history::Catalogue::new(locale, &[source]);
         let reader = tilo_history::Reader::new(locale).with_app(&catalogue);
         app.history()

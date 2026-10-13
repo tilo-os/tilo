@@ -5,7 +5,8 @@
 //! ## Injectable transport
 //! The check runs through the [`ProbeTransport`] trait, so the state machine is
 //! testable without a network: a mock returns canned success/failure. The
-//! network probe ([`LiveProbe`]) is compiled only under `live`. The default
+//! network probe ([`validate_account_cancellable`]) is compiled only under
+//! `live`. The default
 //! (offline) build uses [`OfflineProbe`], which reports success without opening
 //! a socket so `--shots` and the headless tests can still save an account.
 
@@ -145,26 +146,6 @@ impl ProbeTransport for OfflineProbe {
     }
     fn smtp_handshake(&self, _cfg: &AccountConfig) -> Result<(), String> {
         Ok(())
-    }
-}
-
-/// The live network probe: a real IMAP login + SMTP handshake. Compiled only
-/// under `live` so the default build doesn't pull the TLS/async stack.
-#[cfg(feature = "live")]
-pub struct LiveProbe;
-
-#[cfg(feature = "live")]
-impl ProbeTransport for LiveProbe {
-    fn imap_login(&self, cfg: &AccountConfig) -> Result<(), String> {
-        // async-imap: TCP+TLS to cfg.imap_host:cfg.imap_port, read the greeting,
-        // LOGIN (or AUTHENTICATE XOAUTH2 when cfg.auth == OAuth), LOGOUT.
-        // A connect/auth error maps to Err(reason).
-        live_probe::imap_login(cfg, None)
-    }
-    fn smtp_handshake(&self, cfg: &AccountConfig) -> Result<(), String> {
-        // lettre: connect to cfg.smtp_host:cfg.smtp_port, EHLO, STARTTLS /
-        // implicit TLS per cfg.smtp_tls, AUTH, then RSET/QUIT without sending.
-        live_probe::smtp_handshake(cfg, None)
     }
 }
 

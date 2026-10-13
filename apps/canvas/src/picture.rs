@@ -559,32 +559,6 @@ impl Pictures {
     }
 }
 
-/// The colour of the picture under `local` (in the mark's units), as the
-/// placement shows it, before grading.
-pub fn pixel_at(
-    image: &ImageData,
-    placement: &Placement,
-    local: ui::vello::kurbo::Point,
-) -> Option<[u8; 4]> {
-    if !placement.frame.contains(local) {
-        return None;
-    }
-    let at = placement
-        .picture_to_local((image.width, image.height))
-        .inverse()
-        * local;
-    if at.x < 0.0 || at.y < 0.0 {
-        return None;
-    }
-    let (column, row) = (at.x.floor() as u32, at.y.floor() as u32);
-    if column >= image.width || row >= image.height {
-        return None;
-    }
-    let start = ((u64::from(row) * u64::from(image.width) + u64::from(column)) * 4) as usize;
-    let rgba = image.data.data().get(start..start + 4)?;
-    <[u8; 4]>::try_from(rgba).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

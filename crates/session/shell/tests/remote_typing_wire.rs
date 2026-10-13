@@ -151,11 +151,7 @@ fn local_key(code: winit::keyboard::KeyCode, pressed: bool) -> WindowEvent {
         },
     );
     event.physical_key = PhysicalKey::Code(code);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }
 
 #[test]

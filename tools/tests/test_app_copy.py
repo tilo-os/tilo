@@ -6,15 +6,15 @@ from pathlib import Path
 
 
 TOOLS = Path(__file__).resolve().parents[1]
-for name in ("check_app_portability", "check_settings_i18n"):
+for name in ("check_app_portability", "check_app_copy"):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"policy/{name}.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
-copy = sys.modules["check_settings_i18n"]
+copy = sys.modules["check_app_copy"]
 
 
-class SettingsCopyTests(unittest.TestCase):
+class AppCopyTests(unittest.TestCase):
     def keys(self, source):
         return {key for key, _ in copy.used_keys(source, {"settings", "net"})}
 
@@ -71,21 +71,39 @@ class SettingsCopyTests(unittest.TestCase):
         '''
         self.assertEqual(self.keys(source), {"settings-raw-label"})
 
-    def test_an_absent_used_key_fails_even_when_existing_messages_are_valid(self):
+    @staticmethod
+    def crate(root, name, locales, source):
+        crate = root / name
+        (crate / "src").mkdir(parents=True)
+        (crate / "locales").mkdir()
+        for locale, messages in locales.items():
+            (crate / f"locales/{locale}.ftl").write_text(messages)
+        (crate / "src/view.rs").write_text(source)
+
+    def test_an_absent_used_key_fails_in_every_shipped_locale(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            settings = root / "apps/settings"
-            (settings / "src").mkdir(parents=True)
-            (settings / "locales").mkdir()
-            for locale in ("en-US", "de-DE"):
-                (settings / f"locales/{locale}.ftl").write_text("settings-present = Present\n")
-            (settings / "src/pane.rs").write_text('fn pane() { t("settings-absent"); }\n')
+            self.crate(root, "crates/sdk/ui-core", {"en-US": "ok = OK\n"}, "")
+            present = "settings-present = Present\n"
+            self.crate(root, "apps/settings", {"en-US": present, "de-DE": present},
+                       'fn pane() { t("settings-absent"); }\n')
+            self.crate(root, "apps/slides", {"en-US": "slides-tip = Tip\n"},
+                       'fn tip() { tr("slides-tip"); tr("slides-tip-overview"); }\n')
             self.assertEqual(copy.missing_copy(root), [
-                "apps/settings/src/pane.rs:1: en-US lacks settings-absent",
-                "apps/settings/src/pane.rs:1: de-DE lacks settings-absent",
+                "apps/settings/src/view.rs:1: de-DE lacks settings-absent",
+                "apps/settings/src/view.rs:1: en-US lacks settings-absent",
+                "apps/slides/src/view.rs:1: en-US lacks slides-tip-overview",
             ])
 
-    def test_every_actual_settings_source_key_has_both_catalogue_entries(self):
+    def test_toolkit_messages_resolve_in_every_crate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.crate(root, "crates/sdk/ui-core", {"en-US": "history-title = History\n"}, "")
+            self.crate(root, "apps/notes", {"en-US": "notes-x = X\n", "de": "notes-x = X\n"},
+                       'fn title() { t("history-title"); }\n')
+            self.assertEqual(copy.missing_copy(root), [])
+
+    def test_every_actual_source_key_is_in_its_catalogues(self):
         self.assertEqual(copy.missing_copy(copy.ROOT), [])
 
 

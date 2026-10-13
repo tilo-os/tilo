@@ -241,10 +241,6 @@ impl Session {
                 offset,
                 result,
             } => self.apply_browse_reply(connection_id, schema, table, offset, result),
-            DbReply::Disconnected => {
-                self.connected = false;
-                self.mark_connected(false);
-            }
         }
     }
 

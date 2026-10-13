@@ -1040,7 +1040,7 @@ impl Widget for FileView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 self.last_cursor = pt;
                 if self.mode == ViewMode::List {
                     self.list.handle_event(event, ctx);
@@ -2665,11 +2665,10 @@ mod tests {
         }
 
         fn press(&mut self, button: MouseButton) {
-            self.send(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
+            self.send(&ui::synthetic_input::mouse_input(
+                ElementState::Pressed,
                 button,
-            });
+            ));
         }
 
         /// The centre of list row `index`.
@@ -2768,11 +2767,7 @@ mod tests {
         let slot = laid.view.list.clone();
         let centre = laid.view.list.rect().center();
         laid.move_to(centre);
-        laid.send(&WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -5.0),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        laid.send(&ui::synthetic_input::mouse_wheel(0.0, -5.0));
         let scrolled = slot.scroll_y();
         assert!(scrolled > 0.0, "a wheel-down scrolls the list");
         assert!(slot.max_scroll_y() >= scrolled);

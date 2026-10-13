@@ -2,9 +2,9 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
 use automerge::ObjId;
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
@@ -407,13 +407,6 @@ impl Widget for Container {
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         // This container owns no operation handler: offer each child once.
         crate::widget::start_in_children(self, op, doc, path)
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        match &mut self.child {
-            Some(child) => child.update(state, path),
-            None => false,
-        }
     }
 
     fn build_layout(

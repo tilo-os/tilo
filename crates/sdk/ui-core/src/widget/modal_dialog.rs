@@ -2222,8 +2222,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // stays modal even hosted directly (tests, headless).
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 self.pointer_inside = true;
                 // A TextInput only takes a click while hovered, and this
                 // CursorMoved is what arms it.
