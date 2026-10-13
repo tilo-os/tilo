@@ -313,22 +313,7 @@ permission-prompt-always = Always allow
 permission-prompt-deny = Deny
 permission-prompt-requested = { $capability } requested by { $app }
 
-# Relative times, as history and activity rows show them.
-relative-time-just-now = just now
-relative-time-minutes = { $count ->
-        [one] { $count } min ago
-       *[other] { $count } min ago
-    }
-relative-time-hours = { $count ->
-        [one] { $count } h ago
-       *[other] { $count } h ago
-    }
-relative-time-days = { $count ->
-        [one] { $count } d ago
-       *[other] { $count } d ago
-    }
-
-# Coarse relative times ("3 days ago"), as lists and cards show them.
+# Coarse relative times ("3 days ago"), as history rows, lists and cards show them.
 relative-ago-just-now = just now
 relative-ago-minutes = { $count } min ago
 relative-ago-hours = { $count } hr ago
