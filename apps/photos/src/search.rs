@@ -659,7 +659,7 @@ mod tests {
     }
 
     fn open_doc(name: &str) -> AutoCommit {
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         crate::test_doc::put_image(
             &mut doc,
             &OpenImage::fixture(&format!("/pictures/{name}"), 800, 400),
@@ -879,7 +879,7 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn collection_and_late_search_hits_materialize_their_exact_resources() {
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         let location = PhotoLocation {
             latitude: 48.8566,
             longitude: 2.3522,
@@ -913,7 +913,7 @@ mod tests {
         );
 
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let mut library = PhotoLibrary::default();
             for index in 0..80 {
                 library.add_album(Album {
@@ -949,7 +949,7 @@ mod tests {
         }
 
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let library = PhotoLibrary::of(
                 Vec::new(),
                 vec![Album::named("photos.album:journey", "Journey")],
@@ -978,7 +978,7 @@ mod tests {
         }
 
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let mut library = PhotoLibrary::default();
             for index in 0..3_000 {
                 let name = if index == 2_999 {
