@@ -110,3 +110,14 @@ test('retained activity and notification commands preserve the runtime contract'
  assert.equal(sent[3].open,true);
  nav.close();
 });
+
+test('a snapshot read sees a move the surface made between reports',()=>{
+ let raw={version:1,generation:'g',active:{tab:'1'},entries:[]},revision=1,calls=0;
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>revision,dispatch:()=>{},active:()=>true});
+ nav.controller.subscribe(()=>calls++);
+ raw={...raw,active:{tab:'2'}};revision=2;
+ assert.equal(nav.controller.getSnapshot().active.tab,'2');
+ assert.equal(calls,1);
+ nav.controller.getSnapshot();
+ assert.equal(calls,1);
+});

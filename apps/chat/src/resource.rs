@@ -452,11 +452,21 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
     }
 
     fn effect(&mut self, effect: ChatEffect, cx: &mut EffectCx<Chat, Self>) -> EffectAnswer {
-        if matches!(
-            effect,
-            ChatEffect::CopyResourceLink { .. } | ChatEffect::OpenResourceLink { .. }
-        ) {
-            return self.begin_resource_navigation(&effect, cx.reply());
+        if let ChatEffect::ReadWorkspace {
+            workspace,
+            message,
+            channel,
+        } = &effect
+        {
+            let chat = cx.live().get();
+            return Ok(ui::framework::Effected::value(
+                crate::effects::read_workspace(
+                    &chat,
+                    workspace,
+                    message.as_deref(),
+                    channel.as_deref(),
+                ),
+            ));
         }
         if let ChatEffect::ReadWorkspace {
             workspace,

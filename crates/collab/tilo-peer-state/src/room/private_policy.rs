@@ -260,21 +260,6 @@ where
         seq.end()
     }
 }
-struct Hash<'a>(&'a mut blake3::Hasher);
-impl postcard::ser_flavors::Flavor for Hash<'_> {
-    type Output = ();
-    fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
-        self.0.update(&[byte]);
-        Ok(())
-    }
-    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-        self.0.update(bytes);
-        Ok(())
-    }
-    fn finalize(self) -> postcard::Result<()> {
-        Ok(())
-    }
-}
 fn revision<'a, R, I, J>(
     read: &R,
     meta: Metadata<'a, I, J>,
@@ -341,7 +326,7 @@ where
     // Verified union targets are unique, so this order is total.
     revocations.sort_unstable_by_key(|entry| entry.revoked_device_public_key);
     let mut hash = blake3::Hasher::new_derive_key("Tilo agent governance revision v1");
-    postcard::serialize_with_flavor(
+    crate::postcard_sink::hash_into(
         &(
             meta.room,
             meta.authority,
@@ -354,7 +339,8 @@ where
             CertificateRows(meta.certificates),
             revocations,
         ),
-        Hash(&mut hash),
+        &mut hash,
+        usize::MAX,
     )
     .map_err(Error::Encoding)?;
     let text = crate::room::key_hex::KeyHex::new(hash.finalize().as_bytes());
