@@ -16,8 +16,8 @@ use crate::shell::device_fabric::{DeviceKind, DisplayEdge};
 use crate::shell::device_fabric_runtime::{BluetoothHandoffPhaseView, MediaHandoffPhase};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::overlay_host::{
-    DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView, RealtimeContinuityBridge,
-    RealtimeContinuityUiAction,
+    DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView, InputControlReceipt,
+    RealtimeContinuityBridge, RealtimeContinuityUiAction,
 };
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::personal_tethering_runtime::TetheringPhase;
@@ -25,8 +25,8 @@ use crate::shell::remote_capture::device::RemoteCaptureKind;
 use crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{
-    ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    ActionReceipt, ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage,
+    SearchProvider, SearchResult,
 };
 use crate::shell::speaker_group_runtime::SpeakerConsentKind;
 
@@ -101,6 +101,20 @@ impl<A: 'static> ContinuityAction<A> {
 fn opaque(domain: &'static str, bytes: &[u8]) -> String {
     let digest = blake3::derive_key(domain, bytes);
     hex::encode(digest.get(..16).unwrap_or(&digest))
+}
+
+fn input_cleanup_action_id(
+    controller: &crate::shell::personal_continuity::DeviceId,
+    nonce: &[u8; 16],
+) -> String {
+    format!(
+        "spatial.control.revoke-bound.{}.{}",
+        opaque(
+            "so.tilo.continuity.device.v1",
+            controller.as_str().as_bytes()
+        ),
+        opaque("so.tilo.continuity.input-lease.v1", nonce)
+    )
 }
 
 /// The semantic id of "keep playing this local media session here and send
@@ -183,7 +197,7 @@ fn dispatch_device_action(
     expected: &DeviceFabricUiAction,
     confirmed: bool,
     requires_confirmation: bool,
-) -> Result<(), ActionError> {
+) -> Result<ActionReceipt, ActionError> {
     if requires_confirmation && !confirmed {
         return Err(ActionError::Refused(
             "explicit confirmation is required".into(),
@@ -198,8 +212,36 @@ fn dispatch_device_action(
             "continuity action is no longer available".into(),
         ));
     }
-    bridge(expected.clone()).map_err(ActionError::Refused)?;
-    Ok(())
+    let result = bridge(expected.clone()).map_err(ActionError::Refused)?;
+    match (expected, result.input_control_receipt) {
+        (
+            DeviceFabricUiAction::GrantControlBounded { controller },
+            Some(InputControlReceipt::Granted(lease)),
+        ) if &lease.controller == controller && lease.validate_at(lease.issued_unix_ms).is_ok() => {
+            Ok(ActionReceipt::completed_with(serde_json::json!({
+                "cleanup": {"provider": DEVICE_PROVIDER_ID, "id": input_cleanup_action_id(controller, &lease.nonce)},
+                "lease": lease,
+            })))
+        }
+        (
+            DeviceFabricUiAction::RevokeControlBound { controller, nonce },
+            Some(InputControlReceipt::Revoked {
+                controller: completed_controller,
+                nonce: completed_nonce,
+                removed,
+            }),
+        ) if controller == &completed_controller && nonce == &completed_nonce => Ok(
+            ActionReceipt::completed_with(serde_json::json!({"removed": removed})),
+        ),
+        (
+            DeviceFabricUiAction::GrantControlBounded { .. }
+            | DeviceFabricUiAction::RevokeControlBound { .. },
+            _,
+        ) => Err(ActionError::Refused(
+            "the exact input lease result is unavailable".into(),
+        )),
+        _ => Ok(ActionReceipt::completed()),
+    }
 }
 
 /// A device's identity as it appears in action ids: a digest, never the id.
@@ -635,6 +677,48 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             action,
             confirm: !device.controls_local,
         });
+        if !view
+            .issued_input_leases
+            .iter()
+            .any(|lease| lease.controller == device.id)
+        {
+            actions.push(DeviceAction {
+                id: format!(
+                    "spatial.control.grant-bounded.{}",
+                    opaque(
+                        "so.tilo.continuity.device.v1",
+                        device.id.as_str().as_bytes()
+                    )
+                ),
+                title: t_args(
+                    "search-continuity-control-grant-bounded",
+                    &[("device", device.label.as_str().into())],
+                ),
+                subtitle: t("search-continuity-control-bounded-subtitle"),
+                action: DeviceFabricUiAction::GrantControlBounded {
+                    controller: device.id.clone(),
+                },
+                confirm: true,
+            });
+        }
+    }
+    // Cleanup stays available without an online/display row. Its locator and
+    // dispatch revalidation bind the exact nonce, so a replacement cannot be
+    // selected by a stale catalogue or by device identity alone.
+    for lease in &view.issued_input_leases {
+        actions.push(DeviceAction {
+            id: input_cleanup_action_id(&lease.controller, &lease.nonce),
+            title: t_args(
+                "search-continuity-control-revoke-bound",
+                &[("device", label_for(&lease.controller).as_str().into())],
+            ),
+            subtitle: t("search-continuity-control-revoke-bound-subtitle"),
+            action: DeviceFabricUiAction::RevokeControlBound {
+                controller: lease.controller.clone(),
+                nonce: lease.nonce,
+            },
+            confirm: false,
+        });
     }
     for proposal in &view.calibration_proposals {
         let token = device_token(&proposal.peer);
@@ -1051,10 +1135,31 @@ fn device_projection(
         .into_iter()
         .map(|entry| {
             let bridge = Rc::clone(bridge);
-            // `into_result` has already demanded any required confirmation.
-            entry.into_result(DEVICE_PROVIDER_ID, move |expected| {
-                dispatch_device_action(&bridge, expected, true, true)
-            })
+            let expected = entry.action.clone();
+            let confirm = entry.confirm;
+            let invoke: Rc<crate::shell::search::InvokeFn> =
+                Rc::new(move |_doc, _root, _chrome, args| {
+                    ensure_confirmed(args, confirm)?;
+                    dispatch_device_action(&bridge, &expected, true, confirm)
+                });
+            let open = Rc::clone(&invoke);
+            SearchResult {
+                kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                provider_id: DEVICE_PROVIDER_ID.into(),
+                id: entry.id,
+                title: entry.title,
+                subtitle: Some(entry.subtitle),
+                badge: None,
+                score: 0,
+                params: confirmation_params(confirm),
+                contract: Some(contract(confirm)),
+                on_open: Rc::new(move |doc, root, chrome, args| {
+                    open(doc, root, chrome, args).map(drop)
+                }),
+                on_invoke: Some(invoke),
+                on_begin_invoke: None,
+            }
         })
         .chain(wake_result)
         .collect();
@@ -1599,6 +1704,175 @@ mod tests {
         tree.desktop.active = id;
         let handle: WorkspaceTreeHandle = crate::shell::state::WorkspaceTreeHandle::new(tree);
         ChromeState::new_with_handle(handle)
+    }
+
+    #[test]
+    fn bounded_input_grant_terminal_receipt_owns_the_nonce_not_a_later_snapshot() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use crate::shell::search::{InvocationDisposition, SearchRegistry};
+        let view = fixture();
+        let controller = view.devices.first().unwrap().id.clone();
+        let owned = crate::shell::device_fabric::InputLease {
+            controller: controller.clone(),
+            target: device("local-target"),
+            issued_unix_ms: 1,
+            expires_unix_ms: 900_001,
+            nonce: [0x37; 16],
+            allow_pointer: true,
+            allow_keyboard: true,
+        };
+        let returned = owned.clone();
+        let bridge: DeviceFabricBridge = Rc::new(move |action| {
+            let mut result = view.clone();
+            if let DeviceFabricUiAction::GrantControlBounded { .. } = action {
+                let mut replacement = returned.clone();
+                replacement.nonce = [0x38; 16];
+                result.issued_input_leases = vec![replacement];
+                result.input_control_receipt = Some(InputControlReceipt::Granted(returned.clone()));
+            }
+            Ok(result)
+        });
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(DeviceContinuityActionsProvider::new(bridge)));
+        let chrome = chrome();
+        let mut doc = AutoCommit::new();
+        let catalog = ActionCatalog::build(
+            &registry,
+            "",
+            SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        let id = format!(
+            "spatial.control.grant-bounded.{}",
+            opaque(
+                "so.tilo.continuity.device.v1",
+                controller.as_str().as_bytes()
+            )
+        );
+        let selected = catalog
+            .select(&ResourceRef::new(DEVICE_PROVIDER_ID, id))
+            .unwrap();
+        let args = serde_json::json!({"confirm":true});
+        let disposition = selected
+            .invoke_json(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                args.as_object().unwrap(),
+            )
+            .unwrap();
+        let InvocationDisposition::Accepted(receipt) = disposition else {
+            panic!("local grant must have a terminal receipt")
+        };
+        let tilo_actions::InvocationUpdate::Succeeded { output, .. } = receipt.update else {
+            panic!("grant must report completion")
+        };
+        let value = output.value.unwrap();
+        assert_eq!(
+            value.get("lease").unwrap(),
+            &serde_json::to_value(&owned).unwrap()
+        );
+        assert_eq!(
+            value.pointer("/cleanup/provider").unwrap(),
+            DEVICE_PROVIDER_ID
+        );
+        assert_eq!(
+            value.pointer("/cleanup/id").unwrap(),
+            &input_cleanup_action_id(&controller, &owned.nonce)
+        );
+    }
+
+    #[test]
+    fn bounded_input_actions_bind_cleanup_to_nonce_and_revalidate_replacements() {
+        let mut view = fixture();
+        let controller = view.devices.first().unwrap().id.clone();
+        let lease = crate::shell::device_fabric::InputLease {
+            controller: controller.clone(),
+            target: device("local-target"),
+            issued_unix_ms: 1,
+            expires_unix_ms: 900_001,
+            nonce: [0x37; 16],
+            allow_pointer: true,
+            allow_keyboard: true,
+        };
+        assert!(device_actions(&view).iter().any(|entry| entry.action
+            == DeviceFabricUiAction::GrantControlBounded {
+                controller: controller.clone()
+            }));
+        view.issued_input_leases.push(lease.clone());
+        let rows = device_actions(&view);
+        assert!(!rows.iter().any(|entry| matches!(
+            entry.action,
+            DeviceFabricUiAction::GrantControlBounded { .. }
+        )));
+        let original = rows
+            .iter()
+            .find(|entry| {
+                matches!(
+                    entry.action,
+                    DeviceFabricUiAction::RevokeControlBound { .. }
+                )
+            })
+            .unwrap()
+            .clone();
+        assert!(!original.id.contains(&hex::encode(lease.nonce)));
+        assert!(!original.id.contains(controller.as_str()));
+        let current = Rc::new(std::cell::RefCell::new(view));
+        let invoked = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let bridge: DeviceFabricBridge = {
+            let current = Rc::clone(&current);
+            let invoked = Rc::clone(&invoked);
+            Rc::new(move |action| {
+                let mut result = current.borrow().clone();
+                if let DeviceFabricUiAction::RevokeControlBound { controller, nonce } = &action {
+                    result.input_control_receipt = Some(InputControlReceipt::Revoked {
+                        controller: controller.clone(),
+                        nonce: *nonce,
+                        removed: true,
+                    });
+                }
+                if !matches!(
+                    action,
+                    DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh
+                ) {
+                    invoked.borrow_mut().push(action);
+                }
+                Ok(result)
+            })
+        };
+        current.borrow_mut().devices.clear();
+        dispatch_device_action(&bridge, &original.action, false, false).unwrap();
+        assert_eq!(
+            invoked.borrow().as_slice(),
+            std::slice::from_ref(&original.action)
+        );
+        invoked.borrow_mut().clear();
+        current
+            .borrow_mut()
+            .issued_input_leases
+            .first_mut()
+            .unwrap()
+            .nonce = [0x38; 16];
+        let replacement = device_actions(&current.borrow())
+            .into_iter()
+            .find(|entry| {
+                matches!(
+                    entry.action,
+                    DeviceFabricUiAction::RevokeControlBound { .. }
+                )
+            })
+            .unwrap();
+        assert_ne!(original.id, replacement.id);
+        assert!(dispatch_device_action(&bridge, &original.action, false, false).is_err());
+        assert!(invoked.borrow().is_empty());
+        current.borrow_mut().issued_input_leases.clear();
+        assert!(dispatch_device_action(&bridge, &replacement.action, false, false).is_err());
+        assert!(invoked.borrow().is_empty());
     }
 
     #[test]

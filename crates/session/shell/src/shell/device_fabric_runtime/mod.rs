@@ -1596,8 +1596,12 @@ pub struct LocalFabricCapabilities {
     pub audio_output: bool,
 }
 
+pub(crate) type HostDisplayObserver =
+    Arc<dyn Fn() -> Option<settings_store::hardware::DisplayHardwareSnapshot> + Send + Sync>;
+
 /// Stateful, low-frequency fabric pump owned by the native compositor loop.
 pub struct DeviceFabricRuntime {
+    host_display_observer: Option<HostDisplayObserver>,
     counter: u64,
     last_sample: Option<Instant>,
     display_refresh: display_refresh::DisplayRefresh,
@@ -1634,6 +1638,7 @@ impl DeviceFabricRuntime {
         let counter = network.device_fabric().max_counter();
         Self {
             counter,
+            host_display_observer: None,
             last_sample: None,
             display_refresh: display_refresh::DisplayRefresh::new(network.loop_waker()),
             last_publish: None,
@@ -1663,6 +1668,10 @@ impl DeviceFabricRuntime {
             policy_store_stamp: None,
             last_policy_store_check: None,
         }
+    }
+
+    pub(crate) fn set_host_display_observer(&mut self, observer: HostDisplayObserver) {
+        self.host_display_observer = Some(observer);
     }
 
     /// Tell the person how their request to wake a device ended.
@@ -1857,7 +1866,21 @@ impl DeviceFabricRuntime {
             counter: self.counter.saturating_add(1).max(1),
             device: device.clone(),
         };
+        let hardware = policy
+            .permits(ContinuityCapability::DisplayInput)
+            .then(|| {
+                selected_display_observation(
+                    self.host_display_observer.as_ref(),
+                    settings_store::hardware::DisplayHardwareSnapshot::load,
+                )
+            })
+            .flatten();
         let mut local = local;
+        if self.host_display_observer.is_some() {
+            local.display = hardware.as_ref().and_then(host_display_bounds);
+            local.pointer &= local.display.is_some();
+            local.keyboard &= local.display.is_some();
+        }
         if let Ok(mut spatial) = spatial_input_state().lock() {
             local.display = spatial.placed_local_rect(
                 local.display,
@@ -1876,10 +1899,6 @@ impl DeviceFabricRuntime {
             &tentative_stamp,
             policy,
         );
-        let hardware = policy
-            .permits(ContinuityCapability::DisplayInput)
-            .then(settings_store::hardware::DisplayHardwareSnapshot::load)
-            .flatten();
         let rich_outputs = hardware.as_ref().and_then(native_display_outputs);
         if let Some(display) = candidate.display.as_mut() {
             display.outputs = hardware
@@ -6487,6 +6506,11 @@ pub fn device_fabric_view(
         bluetooth_handoffs: bluetooth_handoff_status_views(&fabric),
         gamepad_authorizations,
         local_gamepads: Vec::new(),
+        issued_input_leases: spatial_input_state().lock().map_or_else(
+            |_| Vec::new(),
+            |state| state.issued.values().cloned().collect(),
+        ),
+        input_control_receipt: None,
         devices,
         local_media,
         media_handoffs: media_handoff_status_views(network),
@@ -6910,6 +6934,34 @@ pub fn grant_input_control(
     Ok(lease)
 }
 
+/// Grant one bounded lease without changing persistent input preferences or
+/// replacing authority another operation already owns.
+///
+/// # Errors
+///
+/// Refuses an existing lease, unavailable identity/policy/certified route, or
+/// failed delivery. The lease uses the normal fifteen-minute expiry and is
+/// never registered for automatic renewal.
+pub fn grant_input_control_bounded(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+) -> Result<InputLease, String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    prune_spatial_leases(network);
+    if spatial_input_state()
+        .lock()
+        .map_err(|_| "spatial input state is unavailable".to_string())?
+        .issued
+        .values()
+        .any(|lease| &lease.controller == controller)
+    {
+        return Err("an input lease already exists for this controller".into());
+    }
+    grant_input_control_inner(network, controller, false)
+}
+
 fn grant_input_control_automatic(
     network: &ShellNetwork,
     controller: &crate::shell::personal_continuity::DeviceId,
@@ -7040,6 +7092,34 @@ pub fn revoke_input_control(
     let persisted = display_auto_leases::record_decline(network, controller, true);
     let revoked = revoke_input_control_inner(network, controller, None);
     revoked.and(persisted)
+}
+
+/// Revoke only this controller's exact nonce, without persisting a decline.
+/// Missing and replaced nonces are harmless no-ops. Cleanup remains
+/// available after policy withdrawal; it never grants or renews authority.
+///
+/// # Errors
+///
+/// Reports unavailable state or failed notification. Local authority and held
+/// input are still removed when notification cannot be delivered.
+pub fn revoke_input_control_bound(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+    nonce: [u8; 16],
+) -> Result<bool, String> {
+    let _operation = input_control_operations()
+        .lock()
+        .map_err(|_| crate::shell::i18n::t("device-fabric-error-input-operation-unavailable"))?;
+    let matches = spatial_input_state()
+        .lock()
+        .map_err(|_| "spatial input state is unavailable".to_string())?
+        .issued
+        .get(&nonce)
+        .is_some_and(|lease| &lease.controller == controller);
+    if !matches {
+        return Ok(false);
+    }
+    revoke_input_control_inner(network, controller, Some(nonce)).map(|()| true)
 }
 
 fn revoke_input_control_automatic(
@@ -7327,6 +7407,110 @@ fn native_display_connectors(
         })
         .take(32)
         .collect()
+}
+
+fn selected_display_observation(
+    observer: Option<&HostDisplayObserver>,
+    fallback: impl FnOnce() -> Option<settings_store::hardware::DisplayHardwareSnapshot>,
+) -> Option<settings_store::hardware::DisplayHardwareSnapshot> {
+    match observer {
+        Some(observe) => observe(),
+        None => fallback(),
+    }
+}
+
+fn host_display_bounds(
+    snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
+) -> Option<crate::shell::device_fabric::DisplayRect> {
+    let left = snapshot.layout.iter().map(|r| r.x).min()?;
+    let top = snapshot.layout.iter().map(|r| r.y).min()?;
+    let right = snapshot
+        .layout
+        .iter()
+        .map(|r| r.x.checked_add_unsigned(r.width))
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .max()?;
+    let bottom = snapshot
+        .layout
+        .iter()
+        .map(|r| r.y.checked_add_unsigned(r.height))
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .max()?;
+    let width = u32::try_from(right.checked_sub(left)?).ok()?;
+    let height = u32::try_from(bottom.checked_sub(top)?).ok()?;
+    (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
+        x: left,
+        y: top,
+        width,
+        height,
+    })
+}
+
+#[cfg(test)]
+mod host_display_observation_tests {
+    use super::{HostDisplayObserver, host_display_bounds, selected_display_observation};
+    use settings_store::hardware::{DisplayHardwareSnapshot, LiveOutputPlacement};
+    use std::sync::Arc;
+    #[test]
+    fn withdrawn_scoped_observation_never_adopts_a_persisted_publisher() {
+        let observer: HostDisplayObserver = Arc::new(|| None);
+        let mut fallback_called = false;
+        assert!(
+            selected_display_observation(Some(&observer), || {
+                fallback_called = true;
+                Some(DisplayHardwareSnapshot::default())
+            })
+            .is_none()
+        );
+        assert!(!fallback_called);
+        assert!(
+            selected_display_observation(None, || {
+                fallback_called = true;
+                Some(DisplayHardwareSnapshot::default())
+            })
+            .is_some()
+        );
+        assert!(fallback_called);
+    }
+    #[test]
+    fn actual_mixed_scale_host_rectangles_supply_the_full_desktop_bounds() {
+        let d = DisplayHardwareSnapshot {
+            layout: vec![
+                LiveOutputPlacement {
+                    connector: "HDMI-1".into(),
+                    x: 1920,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                },
+                LiveOutputPlacement {
+                    connector: "DP-9".into(),
+                    x: 4480,
+                    y: 360,
+                    width: 1920,
+                    height: 1080,
+                },
+                LiveOutputPlacement {
+                    connector: "eDP-1".into(),
+                    x: 0,
+                    y: 1256,
+                    width: 1920,
+                    height: 1080,
+                },
+            ],
+            ..DisplayHardwareSnapshot::default()
+        };
+        let bounds = host_display_bounds(&d).expect("observed host extent");
+        assert_eq!(
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            (0, 0, 6400, 2336)
+        );
+        let mut overflow = d;
+        overflow.layout[0].x = i32::MAX;
+        assert!(host_display_bounds(&overflow).is_none());
+    }
 }
 
 fn native_display_outputs(

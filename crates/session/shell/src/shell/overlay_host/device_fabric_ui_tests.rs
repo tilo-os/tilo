@@ -19,6 +19,8 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
             bluetooth_handoffs: Vec::new(),
             gamepad_authorizations: Vec::new(),
             local_gamepads: Vec::new(),
+            issued_input_leases: Vec::new(),
+            input_control_receipt: None,
             devices: vec![FabricDeviceView {
                 id: remote.clone(),
                 label: "Travel laptop".into(),

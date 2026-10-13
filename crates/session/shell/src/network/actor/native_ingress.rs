@@ -61,8 +61,12 @@ impl ActorState {
     pub(super) async fn admit_native_governance(
         &self,
         ws: u64,
+        peer: iroh::EndpointId,
         event: super::HostEvent,
     ) -> super::HostEvent {
+        if matches!(&event, super::HostEvent::Ready) {
+            self.recover_native_governance(ws, peer, false);
+        }
         let input = match &event {
             super::HostEvent::NativeInput(input)
                 if matches!(
@@ -80,12 +84,21 @@ impl ActorState {
         let room = input.room();
         match tokio::task::spawn_blocking(move || {
             let before = input.generation().ok();
-            input.admit(&identity)?;
-            Ok::<_, String>(before != input.generation().ok())
+            let report = input.admit(&identity)?;
+            let missing = matches!(
+                report.primary(),
+                tilo_peer_state::InputDisposition::RetryLater(
+                    tilo_peer_state::MissingPrerequisite::CausalDependencies
+                )
+            );
+            Ok::<_, String>((before != input.generation().ok(), missing))
         })
         .await
         {
-            Ok(Ok(changed)) => {
+            Ok(Ok((changed, missing))) => {
+                if missing {
+                    self.recover_native_governance(ws, peer, true);
+                }
                 if changed {
                     self.drive_native_publication(ws);
                     if let Some(wake) = &self.wake {
@@ -119,6 +132,21 @@ impl ActorState {
                     identity?,
                 ))
             })
+    }
+    pub(super) fn recover_native_governance(&self, ws: u64, peer: iroh::EndpointId, missing: bool) {
+        let Some(runtime) = self.host_sessions.get(&(ws, peer)) else {
+            return;
+        };
+        let (Some(scope), Some(identity)) =
+            (runtime.native_scope.as_ref(), self.host_identity.as_ref())
+        else {
+            return;
+        };
+        if let Err(error) =
+            scope.recover_governance(&runtime.session, identity, &runtime.replaying, missing)
+        {
+            tracing::debug!(%error, "native governance replay blocked");
+        }
     }
     /// A refresh only asks the original subscribed host to run its own genuine
     /// checkpoint barrier. It grants no local admission and retires no outbox.
