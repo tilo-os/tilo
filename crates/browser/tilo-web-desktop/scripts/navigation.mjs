@@ -32,19 +32,21 @@ const snapshot = () => evaluate('tiloMount.navigation.getSnapshot()');
 const command = body => evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});return true;})()`);
 const label = s => s.entries.find(e => e.route.workspace === s.active.workspace && e.route.strip === s.active.strip && e.route.tab === s.active.tab)?.label;
 const workspace = s => s.workspaces.findIndex(w => w.id === s.activeWorkspace);
-// Waits for the desktop to settle on what an input asked for. Some changes
+// Waits for what an input asked for: `read` returns `expected`. Some changes
 // land on the next drawn frame, and headless Chrome may draw only about once
 // a second.
-async function settles(what, read, expected) {
+async function polls(what, read, expected) {
   let got;
   for (let i = 0; i < 150; i++) {
-    got = read(await snapshot());
+    got = await read();
     if (JSON.stringify(got) === JSON.stringify(expected)) return;
     await sleep(100);
   }
   if (process.env.SHOTS_DIR) writeFileSync(join(process.env.SHOTS_DIR, 'navigation-failed.png'), await tab.screenshot());
   assert.deepEqual(got, expected, what);
 }
+// Waits for the navigation snapshot to settle on what an input asked for.
+const settles = async (what, read, expected) => polls(what, async () => read(await snapshot()), expected);
 // The centre of the first semantics node with this accessible name (and,
 // when given, a description starting with `described`), once the desktop
 // shows it.
@@ -76,7 +78,7 @@ async function key(name, modifiers = 0) {
 }
 // The desktop's stand-in chord off a Mac: Alt+Shift.
 const chord = name => key(name, 1 | 8);
-const typing = async what => assert.equal(await evaluate('document.activeElement?.tagName'), 'TEXTAREA', `the note holds the keyboard${what}`);
+const typing = what => polls(`the note holds the keyboard${what}`, () => evaluate('document.activeElement?.tagName'), 'TEXTAREA');
 
 const apps = (await snapshot()).applications.map(a => a.id);
 for (const app of ['so.tilo.clocks', 'so.tilo.calculator', 'so.tilo.notes']) {
