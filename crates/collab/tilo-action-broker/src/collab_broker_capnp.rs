@@ -108,7 +108,7 @@ use runtime_collab::raw::{
     presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, RoomPolicy, Subject, TreePath, roles,
+    ActionKind, Answer, Authority, Grant, KindSet, RoomPolicy, Subject, TreePath, roles,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -839,13 +839,29 @@ impl BrokerActor {
     }
 
     /// The delegation a session-delegated agent carries in `room`, given by
-    /// `person`; nothing for any other actor.
+    /// `person`, with what that person allowed it for its task
+    /// ([`allow_for_task`]); nothing for any other actor.
     fn session_grants(&self, room: &str, person: &str) -> Vec<Grant> {
         if !self.session_delegated {
             return Vec::new();
         }
         let agent = self.id.strip_prefix("agent:").unwrap_or(&self.id);
-        roles::AgentPreset::Operator.grants(room, agent, &Subject::Person(person.to_owned()))
+        let mut grants =
+            roles::AgentPreset::Operator.grants(room, agent, &Subject::Person(person.to_owned()));
+        if let Ok(tasks) = task_grants().lock()
+            && let Some((_, allowed)) = tasks.get(agent)
+        {
+            grants.extend(
+                allowed
+                    .iter()
+                    .filter(|grant| {
+                        grant.granted_by == Subject::Person(person.to_owned())
+                            && TreePath::room(room).covers(&grant.node)
+                    })
+                    .cloned(),
+            );
+        }
+        grants
     }
 
     /// Whether this actor is a person acting from their own device: the one
@@ -1039,6 +1055,58 @@ pub(crate) fn published_node(
 
 /// The node of opening the application `app` in `workspace`: launching it is
 /// an action of the app itself.
+/// What people allowed session-delegated agents for the task each runs, by
+/// agent id, with the run they end with. Process-wide: a [`BrokerActor`] is
+/// a value rebuilt for every call, and these extend the delegation it
+/// carries ([`BrokerActor::session_grants`]).
+type TaskGrants = HashMap<String, (uuid::Uuid, Vec<Grant>)>;
+
+fn task_grants() -> &'static Mutex<TaskGrants> {
+    static GRANTS: std::sync::OnceLock<Mutex<TaskGrants>> = std::sync::OnceLock::new();
+    GRANTS.get_or_init(Mutex::default)
+}
+
+/// `person` allowed the session-delegated `agent` its outside actions in
+/// `app` of `room` until its run `execution` ends ("Allow for this task"):
+/// it then takes them without asking first. An action whose own contract
+/// asks for confirmation still asks every time.
+pub(crate) fn allow_for_task(
+    agent: &str,
+    execution: uuid::Uuid,
+    (room, app): (&str, &str),
+    person: &str,
+) {
+    let agent = agent.strip_prefix("agent:").unwrap_or(agent);
+    let grant = Grant::new(
+        format!("agent-task:{agent}:{room}:{app}"),
+        Subject::agent(agent),
+        TreePath::room(room).app(app),
+        KindSet::OUTSIDE,
+        Answer::Allow,
+        Subject::Person(person.to_owned()),
+    );
+    let Ok(mut tasks) = task_grants().lock() else {
+        return;
+    };
+    let entry = tasks
+        .entry(agent.to_owned())
+        .or_insert_with(|| (execution, Vec::new()));
+    if entry.0 != execution {
+        // Another run of the same agent id keeps nothing of this one.
+        *entry = (execution, Vec::new());
+    }
+    if !entry.1.iter().any(|held| held.id == grant.id) {
+        entry.1.push(grant);
+    }
+}
+
+/// The run `execution` ended: what it was allowed for its task ends too.
+fn end_task_grants(execution: uuid::Uuid) {
+    if let Ok(mut tasks) = task_grants().lock() {
+        tasks.retain(|_, (run, _)| *run != execution);
+    }
+}
+
 pub(crate) fn app_node(workspace: &tilo_desktop_model::Workspace, app: &str) -> TreePath {
     workspace.node().app(app)
 }
@@ -5999,6 +6067,9 @@ impl CapnpBrokerState {
     /// Retire only this run's transient presence, preserving its pending jobs.
     pub fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
         caller.retire_execution();
+        if let Some(execution) = caller.execution_id() {
+            end_task_grants(execution);
+        }
         if let Ok(mut pending) = self.pending_invocations.lock() {
             for invocation in pending.values_mut() {
                 if invocation
