@@ -2007,8 +2007,8 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// How many changes this page made to its room's records and sent:
-    /// above zero once the person posted or created something.
+    /// How many changes this page made to its room: records it sent, and
+    /// windows the person opened, closed or moved on its desktop.
     #[wasm_bindgen(js_name = authoredChanges)]
     pub fn authored_changes(&self) -> f64 {
         #[expect(

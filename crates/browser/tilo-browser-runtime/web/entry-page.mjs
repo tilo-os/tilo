@@ -882,31 +882,54 @@ function showVisitState({entered, retryAfter, tell, status}) {
 /**
  * The identity actions of the person this page joined as, when this
  * browser holds them (`browserIdentity`): shown in the desktop, offered once
- * the person first posts or creates something in the room.
+ * the person has done enough in the room to be worth keeping, at a pause.
  */
 function keepIdentity({peer, mount, home, name, runtime, link, naming}) {
   const identity = currentIdentity();
   if (!identity?.keepWithPasskey || !mount?.setHostActions) return null;
   // A device paired to a person whose root is elsewhere has nothing to keep.
   if (peer?.userPublicKey && peer.userPublicKey !== identity.userPublicKey) return null;
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? '');
   const actions = createIdentityActions({
     identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: peer?.setDisplayName ? naming : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
+    pause: inputPause(), searchChord: mac ? '⌘K' : 'Ctrl+K',
   });
   void actions.attach(mount);
   if (peer?.authoredChanges) {
-    // Checked on every peer change, and every few seconds in case a send
-    // changed nothing the peer reports.
+    // Read on every peer change, and every few seconds in case a send
+    // changed nothing the peer reports; stops once the identity is kept.
     let stop = () => {};
     const timer = setInterval(() => check(), 2000);
     const check = () => {
-      if (peer.authoredChanges() > 0) { stop(); clearInterval(timer); actions.authored(); }
+      if (identity.kept) { stop(); clearInterval(timer); return; }
+      actions.authored(peer.authoredChanges());
     };
     stop = peer.subscribe?.(check) ?? stop;
   }
   globalThis.tiloIdentity = actions;
   return actions;
+}
+
+/** How long without input counts as a pause in what the person is doing. */
+const PAUSE_MS = 2500;
+
+/**
+ * Whether the person is between things: no key, pointer or wheel input for
+ * `PAUSE_MS` and no button held (a drag in progress). Only when, never what:
+ * nothing about the input is kept.
+ */
+function inputPause() {
+  let last = Date.now();
+  let held = 0;
+  const touch = () => { last = Date.now(); };
+  addEventListener('pointerdown', () => { held += 1; touch(); }, {capture: true, passive: true});
+  for (const type of ['pointerup', 'pointercancel']) {
+    addEventListener(type, () => { held = Math.max(0, held - 1); touch(); }, {capture: true, passive: true});
+  }
+  for (const type of ['keydown', 'wheel', 'pointermove']) addEventListener(type, touch, {capture: true, passive: true});
+  return () => held === 0 && Date.now() - last >= PAUSE_MS;
 }
 
 /**
