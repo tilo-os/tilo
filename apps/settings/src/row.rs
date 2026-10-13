@@ -9,7 +9,7 @@ use ui::widget::{Button, Dropdown, Slider, Toggle};
 
 use crate::effects::SettingsEffect;
 use crate::host::{PaneCx, Section};
-use crate::widgets::{El, setting_row, setting_row_described, value_row};
+use crate::widgets::{El, setting_row, setting_row_described};
 
 /// One labelled row of a settings card ([`PaneCx::row`]).
 #[must_use]
@@ -60,11 +60,6 @@ impl Row<'_> {
             Some(description) => setting_row_described(&self.label, description, control),
             None => setting_row(&self.label, control),
         }
-    }
-
-    /// The row showing `value`, read only.
-    pub fn value(self, value: &str) -> El {
-        value_row(&self.label, value)
     }
 
     /// A toggle showing `on`, setting the section's field `field`.
