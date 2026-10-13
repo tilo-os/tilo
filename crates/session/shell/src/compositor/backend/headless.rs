@@ -494,6 +494,8 @@ impl Backend for HeadlessBackend {
             rendered_revision: None,
             queued_last: false,
             last_render: Duration::ZERO,
+            last_painted: None,
+            target_pixels: u64::from(width).saturating_mul(u64::from(height)),
         }))
     }
 
@@ -626,6 +628,19 @@ struct SimulatedVblankPresenter {
     queued_last: bool,
     /// How long the last frame took to render, GPU wait included.
     last_render: Duration,
+    /// What the last frame repainted when it was damage-limited; `None`
+    /// when it rendered the whole target.
+    last_painted: Option<PaintedArea>,
+    /// Pixels of the whole target.
+    target_pixels: u64,
+}
+
+/// The pixels a damage-limited frame was asked to repaint and the pixels the
+/// renderer rasterised for it.
+#[derive(Clone, Copy)]
+struct PaintedArea {
+    damage: u64,
+    raster: u64,
 }
 
 impl SimulatedVblankPresenter {
@@ -668,11 +683,13 @@ impl SimulatedVblankPresenter {
             && self.rendered_revision == frame.previous_revision)
             .then_some(frame.damage_regions.as_ref())
             .flatten();
+        self.last_painted = None;
         if let Some(regions) = damage {
             if regions.is_empty() {
                 self.rendered_revision = Some(frame.revision);
                 return false;
             }
+
             let rects: Vec<vello::kurbo::Rect> = regions
                 .iter()
                 .map(|r| {
@@ -684,8 +701,14 @@ impl SimulatedVblankPresenter {
                     )
                 })
                 .collect();
-            self.renderer
-                .render_damage_regions_gpu_wait(&frame.scene, FALLBACK_BG, &rects);
+            self.last_painted = Some(PaintedArea {
+                damage: crate::shell::render::paint::damage_area(regions),
+                raster: self.renderer.render_damage_regions_gpu_wait(
+                    &frame.scene,
+                    FALLBACK_BG,
+                    &rects,
+                ),
+            });
         } else {
             self.renderer.set_backdrop(frame.backdrop.clone());
             self.renderer.render_gpu_wait(&frame.scene, FALLBACK_BG);
@@ -725,7 +748,18 @@ impl Presenter for SimulatedVblankPresenter {
     }
 
     fn frame_detail(&mut self) -> Option<String> {
-        Some(format!("gpu_us={}", self.last_render.as_micros()))
+        let full = PaintedArea {
+            damage: self.target_pixels,
+            raster: self.target_pixels,
+        };
+        let painted = self.last_painted.unwrap_or(full);
+        Some(format!(
+            "gpu_us={} damage_px={} raster_px={} dense={}",
+            self.last_render.as_micros(),
+            painted.damage,
+            painted.raster,
+            u8::from(self.last_painted.is_none()),
+        ))
     }
 
     fn overlaps_presentation(&self) -> bool {
