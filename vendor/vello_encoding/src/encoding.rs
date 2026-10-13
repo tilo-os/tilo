@@ -92,11 +92,6 @@ impl Encoding {
 
     /// Appends another encoding to this one with an optional transform.
     pub fn append(&mut self, other: &Self, transform: &Option<Transform>) {
-        // A fragment with no drawing must not erase the forced transform/style
-        // emission left by glyph resolution in the preceding fragment.
-        if other.path_tags.is_empty() && other.draw_tags.is_empty() {
-            return;
-        }
         let glyph_runs_base = {
             let offsets = self.stream_offsets();
             let stops_base = self.resources.color_stops.len();
@@ -651,6 +646,21 @@ mod tests {
         encoding.force_next_transform_and_style();
         encoding.append(&Encoding::new(), &None);
         assert!(encoding.encode_transform(transform));
+        encoding.encode_fill_style(peniko::Fill::NonZero);
+        assert_eq!(encoding.styles.len(), 2);
+    }
+
+    #[test]
+    fn empty_append_keeps_the_appended_fragments_forced_state() {
+        let mut encoding = Encoding::new();
+        encoding.encode_transform(Transform::IDENTITY);
+        encoding.encode_fill_style(peniko::Fill::NonZero);
+        let mut fragment = Encoding::new();
+        fragment.force_next_transform_and_style();
+        assert!(fragment.path_tags.is_empty());
+        assert!(fragment.draw_tags.is_empty());
+        encoding.append(&fragment, &None);
+        assert!(encoding.encode_transform(Transform::IDENTITY));
         encoding.encode_fill_style(peniko::Fill::NonZero);
         assert_eq!(encoding.styles.len(), 2);
     }

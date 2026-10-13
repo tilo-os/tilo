@@ -5199,7 +5199,6 @@ fn continuous_flow_paints_and_selects_neighbour_chapters_without_snapping() {
     book.chapters = (0..30)
         .map(|i| crate::model::Chapter {
             title: format!("Chapter {i}"),
-            href: format!("{i}.xhtml"),
             blocks: vec![crate::model::Block::Paragraph {
                 spans: vec![crate::model::Span::plain(format!("Text in chapter {i}."))],
             }],

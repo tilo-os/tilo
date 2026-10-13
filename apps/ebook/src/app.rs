@@ -2569,26 +2569,34 @@ impl BooksApp {
                 .cloned()
         {
             let text = crate::resource::note_text_dispatcher(&self.dispatch, id);
-            if text
-                .submit_now(
+            let invoke = ui::tilo_resource::Invoke::<tilo_document::RichText>::apply(
+                &tilo_document::RichTextAction::PasteFragment {
+                    region: tilo_document::action::RegionKind::Body,
+                    start_block: first.id.clone(),
+                    start: 0,
+                    end_block: first.id,
+                    end: 0,
+                    blocks,
+                    adopt_first_style: true,
+                },
+            );
+            let saved = match invoke {
+                Ok(invoke) => text.submit_now(doc, invoke).is_ok(),
+                Err(error) => {
+                    tracing::warn!(%error, "books: could not build the selected passage's note");
+                    false
+                }
+            };
+            if !saved {
+                // Keep the draft and selection available for another attempt,
+                // rather than leaving an empty annotation or losing the note.
+                self.edit(
                     doc,
-                    ui::tilo_resource::Invoke::<tilo_document::RichText>::apply(
-                        &tilo_document::RichTextAction::PasteFragment {
-                            region: tilo_document::action::RegionKind::Body,
-                            start_block: first.id.clone(),
-                            start: 0,
-                            end_block: first.id,
-                            end: 0,
-                            blocks,
-                            adopt_first_style: true,
-                        },
-                    )
-                    .expect("a note fragment builds"),
-                )
-                .is_ok()
-            {
-                self.record_stale.set(true);
+                    Ebook::DELETE_ANNOTATION.with(books::DeleteAnnotation { annotation: id }),
+                );
+                return;
             }
+            self.record_stale.set(true);
             self.edit(
                 doc,
                 Ebook::paths()

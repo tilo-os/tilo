@@ -8,11 +8,7 @@
 // tool, the search query) stays local because it is per-peer.
 
 impl PdfApp {
-    fn handle_file_open_event(
-        &mut self,
-        event: &WindowEvent,
-        state: &ui::widget::Edits<'_>,
-    ) -> bool {
+    fn handle_file_open_event(&mut self, event: &WindowEvent) -> bool {
         if self.has_document {
             return false;
         }
@@ -30,7 +26,7 @@ impl PdfApp {
             if let Some((_, answer)) = self.pending_reopen.take() {
                 answer.withdraw();
             }
-            self.open_chosen(&path, state);
+            self.open_chosen(&path);
         }
         self.dirty = true;
         true
@@ -626,7 +622,7 @@ impl PdfApp {
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
-        if self.handle_file_open_event(event, state) {
+        if self.handle_file_open_event(event) {
             *handled = true;
             return;
         }
@@ -2664,8 +2660,8 @@ mod event_tests {
         let path = std::path::PathBuf::from(concat!(env!("OUT_DIR"), "/sample.pdf"));
         let mut rig = Rig::with(app, state);
         assert!(rig.feed(Modifiers::default(), &WindowEvent::DroppedFile(path)));
-        rig.app.sync_settled(&mut rig.st.doc, &rig.st.root);
-        assert!(rig.app.has_document);
+        tests::settle_until(&mut rig.app, &mut rig.st, |app| app.pending_open.is_none());
+        assert!(rig.app.has_document, "{:?}", rig.app.load_error);
         assert_eq!(rig.app.doc_name, "sample.pdf");
         assert!(rig.app.doc.page_count() >= 1);
     }

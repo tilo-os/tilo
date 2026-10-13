@@ -161,15 +161,6 @@ The rendering fixes below also preserve scene composition and driver correctness
 See the `[patch.crates-io]` comment in the root `Cargo.toml` and the module
 doc on `vendor/vello/src/bump_budget.rs` for why.
 
-## `vendor/vello_encoding/src/encoding.rs`: empty scene append preserves state
-
-Appending a fragment without path or draw tags is a no-op. Previously an empty
-suffix cleared the forced transform/style emission left by deferred glyph
-resolution. An unfocused rich-text paragraph ending in a glyph run could then
-translate the parent's next shape by the last glyph's position: a sidebar
-painted over the editor instead of at the edge of the window. Draw-only glyph
-fragments still append normally. The two encoding regressions cover both paths.
-
 ## `vendor/vello_encoding/src/config.rs`
 
 Adds `pub struct BumpBudget` (`INITIAL`, `UPSTREAM`, `CEILING`,
@@ -270,7 +261,10 @@ so the next draw whose transform equalled `transforms.last()` skipped it and
 was placed with the glyph run's transform instead — in Chat, pictures painted
 after a line of text landed off their card and never showed. `append` now
 keeps our force bits when the appended encoding has no transforms (or
-styles) of its own.
+styles) of its own. This also prevents a sidebar following an inline note
+editor from inheriting the last glyph's position. Encoding regressions cover
+forced transform/style preservation, state-only fragments and draw-only glyph
+fragments.
 
 ## `vendor/vello_encoding/src/resolve.rs`
 
