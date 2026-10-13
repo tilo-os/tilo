@@ -1855,10 +1855,7 @@ impl Widget for Toolbar {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
+            self.pointer = Some(ctx.logical(position));
         }
         if self.menu.is_open() {
             self.menu

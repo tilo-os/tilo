@@ -529,14 +529,6 @@ impl Workspace {
     pub fn presence_of(&self, id: ConnectionId) -> Presence {
         self.presence.get(&id).copied().unwrap_or(Presence::Unknown)
     }
-
-    /// Count of currently-online connections — drives the header stat.
-    pub fn online_count(&self) -> usize {
-        self.connections
-            .iter()
-            .filter(|c| self.presence_of(c.id) == Presence::Online)
-            .count()
-    }
 }
 
 #[cfg(test)]
@@ -717,7 +709,8 @@ mod tests {
             assert_eq!(w.presence_of(a), Presence::Unknown, "never probed");
             w.presence.insert(a, Presence::Online);
             w.presence.insert(b, Presence::Offline);
-            assert_eq!(w.online_count(), 1);
+            assert_eq!(w.presence_of(a), Presence::Online);
+            assert_eq!(w.presence_of(b), Presence::Offline);
         }
     }
 }

@@ -501,10 +501,6 @@ pub extern "C" fn tilo_dev_publish_root() -> i32 {
         fn app_icon(&self) -> crate::widget::IconDescriptor {
             crate::widget::IconDescriptor::Named("reloaded".into())
         }
-
-        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-            None
-        }
     }
 
     thread_local! {

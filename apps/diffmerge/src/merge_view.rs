@@ -1162,7 +1162,7 @@ impl Widget for MergeView {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         let editor = self.merged_editor.control();
         if editor.is_focused() || editor.rect().contains(self.cursor) {
@@ -1177,8 +1177,7 @@ impl Widget for MergeView {
                 self.modifiers = modifiers.state();
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 let mut moved = false;
                 if self.across.pointer(event, self.cursor, &mut moved) {
                     self.dirty |= moved;

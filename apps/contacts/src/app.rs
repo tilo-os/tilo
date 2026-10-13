@@ -1829,8 +1829,7 @@ impl Widget for ContactsApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse = ctx.logical(position);
         }
         let input = matches!(
             event,

@@ -390,7 +390,6 @@ impl DbClientApp {
             data_generation: session.data_gen,
             data_total: session.selected_table_rows(),
             data_offset: session.data_offset,
-            data_page_size: session.data_page_size,
             table,
             dialog: self.dialog,
             pending_sql: self.pending_query_confirmation.clone().unwrap_or_default(),

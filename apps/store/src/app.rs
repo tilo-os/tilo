@@ -1149,8 +1149,7 @@ impl Widget for StoreApp {
         // Track the pointer so the bubble stays open while it rests on it
         // (coords are window-space, unscaled).
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
         }
         if let (Some(root), Ok(children)) = (self.root.as_mut(), ctx.taffy.children(ctx.node_id))
             && let Some(&child_node) = children.first()
