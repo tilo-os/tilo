@@ -49,4 +49,4 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(TypstEditorShell)
 }
 
-pub use resource::{LOCALES, TypstEditorShell, Workspace};
+pub use resource::{TypstEditorShell, Workspace};

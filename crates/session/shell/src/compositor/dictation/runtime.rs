@@ -29,18 +29,7 @@ const FINISH_WINDOW: Duration = Duration::from_secs(60);
 const QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REPLY: usize = 64 * 1024 + 9;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RuntimeError {
-    Worker(SpeechError),
-    MicrophoneUnavailable,
-    VocabularyUnavailable,
-    VocabularyChanged,
-    AudioDiscontinuity,
-    TimedOut,
-    Protocol,
-    Busy,
-    Canceled,
-}
+pub use crate::compositor::dictation_status::RuntimeError;
 
 /// Private recorded words have no Debug implementation and never enter logs.
 pub enum RuntimeEvent {

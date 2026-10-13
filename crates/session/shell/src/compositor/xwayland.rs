@@ -39,8 +39,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng as _;
 use smithay::reexports::calloop::{
     self, Interest, LoopHandle, Mode, PostAction, RegistrationToken, generic::Generic,
 };
@@ -324,8 +322,7 @@ impl WorkspaceDisplay {
         fs::set_permissions(&paths.runtime, fs::Permissions::from_mode(0o700))
             .map_err(|error| format!("protecting {}: {error}", paths.runtime.display()))?;
 
-        let mut random = [0_u8; 2];
-        UnwrapErr(SysRng).fill_bytes(&mut random);
+        let random = crate::random::bytes::<2>();
         let first = 1000_u16.saturating_add(u16::from_be_bytes(random) % 20_000);
         for offset in 0..DISPLAY_ATTEMPTS {
             let number = first.wrapping_add(u16::try_from(offset).unwrap_or(0));
@@ -1122,8 +1119,7 @@ fn has_pending_connection(listener: &UnixListener) -> bool {
 }
 
 fn write_xauthority(path: &Path, display: u16) -> Result<[u8; 16], String> {
-    let mut cookie = [0_u8; 16];
-    UnwrapErr(SysRng).fill_bytes(&mut cookie);
+    let cookie = crate::random::bytes::<16>();
     let mut contents = Vec::with_capacity(64);
     push_u16(&mut contents, u16::MAX); // FamilyWild
     push_field(&mut contents, &[]);

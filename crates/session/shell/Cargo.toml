@@ -212,6 +212,10 @@ taffy.workspace = true
 vello.workspace = true
 # Compare replacement image patches while retaining every other scene command.
 vello_encoding.workspace = true
+# The DRM backend rasterizes on the CPU where the GPU cannot run vello's
+# compute pipeline (Mali Bifrost under panvk); every presenter bounds scroll
+# copies with its draw bounds.
+tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
 parking_lot.workspace = true
 
 libc.workspace = true
@@ -464,6 +468,3 @@ windows-vm = { path = "../../windows/windows-vm" }
 # The shell runtime's policy, where the person's allow for Terminal's Host
 # target (the device's own shell) is recorded.
 ush = { path = "../../runtime/ush" }
-# The DRM backend rasterizes on the CPU where the GPU cannot run vello's
-# compute pipeline (Mali Bifrost under panvk).
-tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }

@@ -317,6 +317,7 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
             let offer = Offer {
                 app: route.app_id.clone(),
                 broker_peer_id: None,
+                broker_provider: None,
                 descriptor: noted(descriptor),
             };
             targets
@@ -347,6 +348,7 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
             let offer = Offer {
                 app: app.clone(),
                 broker_peer_id: None,
+                broker_provider: None,
                 descriptor: noted(descriptor),
             };
             targets
@@ -369,6 +371,7 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
             let offer = Offer {
                 app: app.clone(),
                 broker_peer_id: None,
+                broker_provider: None,
                 descriptor: open_record_descriptor(app, &route.record, title.as_deref()),
             };
             targets.insert(offer.id(), Target::OpenRecord(route.clone()));
@@ -380,6 +383,7 @@ fn catalogue(context: &PlanContext) -> (Catalogue, BTreeMap<String, Target>) {
         let offer = Offer {
             app: app.clone(),
             broker_peer_id: None,
+            broker_provider: None,
             descriptor: ActionDescriptor {
                 semantic_identity: None,
                 address: ActionAddress::new(format!("app.{app}"), surface::OPEN_ACTION),
@@ -501,6 +505,7 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
             let offer = Offer {
                 app: app.clone(),
                 broker_peer_id: None,
+                broker_provider: None,
                 descriptor: noted(descriptor),
             };
             let id = offer.id();
@@ -1488,8 +1493,11 @@ pub(crate) fn carried_gap(
         let fed = match before.map(|before| (before, offer(before))) {
             None => false,
             Some((_, Some(before))) => {
-                before.produces_content()
-                    || before.descriptor.kind != tilo_actions::OperationKind::Document
+                matches!(
+                    &before.descriptor.contract.result,
+                    tilo_actions::ResultSpec::Resource { resource_kind }
+                        if resource_kind == tilo_actions::CONTENT_RESOURCE_KIND
+                ) || before.descriptor.kind != tilo_actions::OperationKind::Document
             }
             Some((_, None)) => true,
         };
@@ -2917,6 +2925,7 @@ mod tests {
             let offer = Offer {
                 app: app.to_owned(),
                 broker_peer_id: None,
+                broker_provider: None,
                 descriptor: open_record_descriptor(app, record, None),
             };
             assert_eq!(tilo_agent::tools::opened_app(&offer), Some(app));

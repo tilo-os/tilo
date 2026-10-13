@@ -5,31 +5,11 @@
 //! is no build step and no runtime file I/O — a `--shots` render and a unit test
 //! resolve the same strings a live session does.
 
-use ui::i18n::{ArgValue, EmbeddedCatalog};
-
-/// Loaded per thread on first use; a host's manager is joined, never replaced.
-/// The probe is a key every catalogue revision defines.
-pub(crate) static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", &[("en-US", include_str!("../locales/en-US.ftl"))]);
+ui::embedded_catalog!(pub fn, ["en-US"]);
 
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
     CATALOG.ensure();
-}
-
-/// Resolve a Chat string key.
-pub fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-/// Resolve a Chat string key that interpolates variables.
-///
-/// The values are the app's own words — an operation's label, a participant's
-/// name — so the *sentence* around them stays in the catalogue and only the
-/// nouns are substituted. Building the line with `format!` instead would put
-/// English word order in the source and leave nothing to translate.
-pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
 }
 
 /// The emoji catalogue in the desktop's language: names, group labels and
@@ -135,6 +115,7 @@ mod tests {
         "chat-agent-task-loading",
         "chat-agent-task-none",
         "chat-agent-task-queued",
+        "chat-agent-task-saved",
         "chat-agent-task-unavailable",
         "chat-agent-task-choose",
         "chat-agent-task-more",
@@ -153,6 +134,8 @@ mod tests {
         "chat-agent-direction-refused",
         "chat-agent-direction-outcome-unknown",
         "chat-agent-task-status",
+        "chat-agent-task-output",
+        "chat-agent-task-author",
         "chat-agent-open-task",
         "chat-agent-open-current-task",
         "chat-agent-open-task-center",

@@ -152,7 +152,7 @@ pub fn request_phone_tethering(
         .cloned()
         .filter(|snapshot| snapshot.presence.online && snapshot.presence.kind == DeviceKind::Phone)
         .ok_or_else(|| crate::shell::i18n::t("tethering-error-choose-phone"))?;
-    let request_id = random_id();
+    let request_id = crate::random::nonzero::<16>();
     let mut state = shell_state()
         .lock()
         .map_err(|_| crate::shell::i18n::t("tethering-error-unavailable"))?;
@@ -698,7 +698,7 @@ impl PersonalTetheringRuntime {
             credential,
         } = decision;
         let accepted = credential.is_some();
-        let nonce = accepted.then(random_id);
+        let nonce = accepted.then(crate::random::nonzero::<16>);
         let Ok(signals) =
             self.protocol
                 .decide(local, request_id, accepted, nonce, credential, now_unix_ms)
@@ -1111,14 +1111,6 @@ fn signal_expiry(signal: &TetheringSignal) -> u64 {
         } => *expires_unix_ms,
         TetheringSignal::Stop { .. } | TetheringSignal::Cancel { .. } => 0,
     }
-}
-
-fn random_id() -> [u8; 16] {
-    let mut value = [0; 16];
-    while value == [0; 16] {
-        UnwrapErr(SysRng).fill_bytes(&mut value);
-    }
-    value
 }
 
 #[cfg(test)]

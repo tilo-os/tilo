@@ -11,7 +11,7 @@ use crate::model::{
 
 fn portable_photo(path: &str, width: u32, height: u32) -> LibraryPhoto {
     let hash = tilo_content::hash_bytes(path.as_bytes());
-    LibraryPhoto::from_image(OpenImage::from_path(path, width, height).with_content(hash))
+    LibraryPhoto::from_image(OpenImage::new(path, width, height, hash))
 }
 
 /// A library holding `photos`, imported through the door.
@@ -115,14 +115,14 @@ fn an_import_is_content_addressed_portable_idempotent_and_bounded() {
     let mut library = Replica::<PhotoLibrary>::new();
     let origin = "/var/home/alice/Private/harbour.png";
     let hash = "a".repeat(64);
-    let image = OpenImage::from_path(origin, 800, 600).with_content(hash.clone());
+    let image = OpenImage::new(origin, 800, 600, hash.clone());
     library
         .apply(PhotoLibrary::IMPORT_PHOTO.with((image.clone(), None, None)))
         .expect("a content-addressed photograph imports");
     let id = format!("photos.photo:{hash}");
     let imported = photo(&library, &id);
     assert_eq!(
-        imported.image.path, "harbour.png",
+        imported.image.name, "harbour.png",
         "the origin path stays home"
     );
     assert!(!String::from_utf8_lossy(&library.save()).contains(origin));
@@ -135,11 +135,11 @@ fn an_import_is_content_addressed_portable_idempotent_and_bounded() {
     assert!(photo(&library, &id).favorite);
     assert_eq!(library.state().unwrap().photos.len(), 1);
 
-    // A path with no content would ask other devices to probe it.
-    let path_only = OpenImage::from_path("/private/should-not-be-probed.png", 20, 10);
+    // Content that is not a hash names no bytes any device could resolve.
+    let unaddressed = OpenImage::new("/private/unaddressed.png", 20, 10, "unaddressed");
     assert!(
         library
-            .apply(PhotoLibrary::IMPORT_PHOTO.with((path_only, None, None)))
+            .apply(PhotoLibrary::IMPORT_PHOTO.with((unaddressed, None, None)))
             .is_err()
     );
     // A photograph that claims another's identity is refused wherever it
@@ -613,7 +613,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase shared_analysis_is_bounded_readable_and_removable");
     {
         let item = portable_photo("analysis.png", 40, 20);
-        let content = item.image.content.clone().unwrap();
+        let content = item.image.content.clone();
         let mut library = library_of(std::slice::from_ref(&item));
         merge(
             &mut library,
@@ -652,7 +652,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase text_then_image_and_image_then_text_keep_each_component");
     {
         let item = portable_photo("ocr-then-vision.png", 40, 20);
-        let content = item.image.content.clone().unwrap();
+        let content = item.image.content.clone();
         let mut library = library_of(std::slice::from_ref(&item));
         merge(
             &mut library,
@@ -677,7 +677,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase a_new_vision_pass_refreshes_only_incidental_text");
     {
         let item = portable_photo("vision-refresh.png", 40, 20);
-        let content = item.image.content.clone().unwrap();
+        let content = item.image.content.clone();
         let mut library = library_of(std::slice::from_ref(&item));
         let mut first = vision(&content);
         first.ocr_text = "old sign".into();
@@ -696,7 +696,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase a_component_of_other_bytes_is_replaced_not_kept");
     {
         let item = portable_photo("stale-analysis.png", 40, 20);
-        let content = item.image.content.clone().unwrap();
+        let content = item.image.content.clone();
         let mut replaced = item.clone();
         replaced.set_analysis(Some(vision(&"f".repeat(64))));
         let mut library = Replica::<PhotoLibrary>::new();
@@ -716,17 +716,11 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         assert!(merged.vision_provenance.is_none());
     }
 
-    eprintln!("phase analysis_needs_content_and_a_pinned_model_but_keeps_an_empty_scene");
+    eprintln!("phase analysis_needs_a_pinned_model_but_keeps_an_empty_scene");
     {
-        let path_only = LibraryPhoto::from_image(OpenImage::from_path("legacy.png", 40, 20));
         let item = portable_photo("blank-vision.png", 40, 20);
-        let content = item.image.content.clone().unwrap();
+        let content = item.image.content.clone();
         let mut library = library_of(std::slice::from_ref(&item));
-        let mut with_legacy = library.state().unwrap();
-        with_legacy.add_photo(path_only.clone());
-        ui::tilo_resource::Fields::write_fields(&with_legacy, library.doc_mut(), &automerge::ROOT)
-            .unwrap();
-        assert!(merge(&mut library, &path_only.id, ocr("", "unbound text")).is_err());
 
         let mut unpinned = vision(&content);
         unpinned.provenance.model_revision.clear();
@@ -751,7 +745,7 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
     eprintln!("phase concurrent_text_and_image_analysis_both_survive");
     {
         let item = portable_photo("concurrent-analysis.png", 40, 20);
-        let content = item.image.content.clone().unwrap();
+        let content = item.image.content.clone();
         let mut text = library_of(std::slice::from_ref(&item));
         let mut image = text.fork();
         merge(&mut text, &item.id, ocr(&content, "concurrent receipt")).unwrap();
@@ -1225,4 +1219,48 @@ fn history_entries_render_as_the_apps_sentences() {
         (ActorKind::Agent, Some("ada")),
         "the entry names the agent and the person it acted for"
     );
+}
+
+#[test]
+fn upgrading_drops_origin_paths_and_photos_kept_only_by_path() {
+    use ui::tilo_resource::{Collection, Fields as _, Model};
+
+    /// The library as version 1 stored it: a picture named its origin path
+    /// and had a content address only when one was known.
+    #[derive(Model, Clone, Debug, Default, PartialEq)]
+    struct V1Image {
+        name: String,
+        path: String,
+        content: Option<String>,
+    }
+    #[derive(Model, Clone, Debug, Default, PartialEq)]
+    struct V1Photo {
+        image: V1Image,
+    }
+    #[derive(Model, Clone, Debug, Default, PartialEq)]
+    struct V1Library {
+        photos: Collection<V1Photo>,
+    }
+
+    let mut v1 = V1Library::default();
+    for (id, content) in [("kept", Some("a".repeat(64))), ("path-only", None)] {
+        let image = V1Image {
+            name: format!("{id}.jpg"),
+            path: format!("/home/someone/{id}.jpg"),
+            content,
+        };
+        v1.photos.push(Id::from(id), V1Photo { image });
+    }
+    let mut doc = automerge::AutoCommit::new();
+    v1.write_fields(&mut doc, &automerge::ROOT).unwrap();
+
+    upgrade_library(&mut doc, 1).unwrap();
+
+    let upgraded = V1Library::read_fields(&doc, &automerge::ROOT).unwrap();
+    let ids: Vec<&str> = upgraded.photos.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["kept"]);
+    let kept = &upgraded.photos.iter().next().unwrap().1.image;
+    assert_eq!(kept.path, "", "the origin path is gone");
+    assert_eq!(kept.content.as_deref(), Some("a".repeat(64).as_str()));
+    assert!(upgrade_library(&mut doc, 2).is_err());
 }

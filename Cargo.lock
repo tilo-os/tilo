@@ -4349,7 +4349,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-copy-lint",
- "tilo-doc-codecs",
  "tilo-files",
  "tilo-fs",
  "tilo-history",
@@ -10911,7 +10910,6 @@ name = "pdf-viewer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "blake3",
  "fnv",
  "image",
  "runtime-dylib",
@@ -17730,6 +17728,7 @@ name = "tilo-reference"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "proptest",
  "serde",
  "serde_json",
  "tilo-actions",

@@ -695,21 +695,9 @@ impl ScrollRegion {
         &mut self,
         action: super::PrimaryScrollAction,
     ) -> super::PrimaryScrollResult {
-        use super::PrimaryScrollResult;
-        let Some(region) = self.primary_vertical_scroll() else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        let Some(next) = action.offset(region.metrics) else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        if (next - region.metrics.offset).abs() < f64::EPSILON {
-            return PrimaryScrollResult::Unchanged(region);
-        }
-        self.scroll_by(Vec2::new(0.0, next - self.offset.y));
-        self.primary_vertical_scroll().map_or(
-            PrimaryScrollResult::Unsupported,
-            PrimaryScrollResult::Changed,
-        )
+        action.apply_to(self, Self::primary_vertical_scroll, |region, _, next| {
+            region.scroll_by(Vec2::new(0.0, next - region.offset.y));
+        })
     }
 }
 

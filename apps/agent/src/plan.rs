@@ -268,6 +268,7 @@ mod tests {
         Offer {
             app: app.to_string(),
             broker_peer_id: None,
+            broker_provider: None,
             descriptor: tilo_actions::door::ActionDescriptor {
                 semantic_identity: None,
                 address: tilo_actions::door::ActionAddress::new(resource, action),

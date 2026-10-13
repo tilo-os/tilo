@@ -2976,23 +2976,6 @@ pub fn split_block_action(
     }
 }
 
-/// [`split_block_action`], naming the block that follows `block`, as a view
-/// holding the document's order knows it.
-pub fn split_block_before_action(
-    region: RegionKind,
-    block: &str,
-    at: usize,
-    kind: &str,
-    ordered: Option<bool>,
-    next: Option<String>,
-) -> RichTextAction {
-    let mut action = split_block_action(region, block, at, kind, ordered);
-    if let RichTextAction::SplitBlock { next: slot, .. } = &mut action {
-        *slot = next;
-    }
-    action
-}
-
 /// An image already in the caller's content store, as an [`RichTextAction::InsertImage`] refers to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageInput {

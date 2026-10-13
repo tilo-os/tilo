@@ -18,13 +18,9 @@ fn links_fixture() -> std::path::PathBuf {
 /// with its markup record checked out. `None` (with a message) without an
 /// engine on this host.
 fn open_links() -> Option<(PdfApp, ui::State)> {
-    let mut app = PdfApp::open(links_fixture());
-    if app.raster.is_none() {
-        eprintln!("SKIPPING: no PDF engine on this host; link handling went unverified");
-        return None;
-    }
+    let mut app = tests::open_settled(links_fixture())?;
     let mut state = ui::State::new();
-    app.sync_settled(&mut state.doc, &state.root);
+    tests::settle_record(&mut app, &mut state);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.recompute_regions();
     app.sync_viewport_frame();
@@ -37,6 +33,7 @@ fn open_links() -> Option<(PdfApp, ui::State)> {
 /// matches `want`, after loading that page's links.
 fn link_centre(app: &mut PdfApp, page: usize, want: impl Fn(&LinkTarget) -> bool) -> Point {
     app.ensure_page_links(page);
+    tests::drain_until(app, |app| app.raster_links.contains_key(&page));
     let map = app.page_map(page);
     let link = app.raster_links[&page]
         .iter()
@@ -131,7 +128,9 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
             &mut Edits::lend(&mut state.doc),
             move_page_plan_action("source-3", None),
         );
-        app.sync_settled(&mut state.doc, &state.root);
+        tests::settle_until(&mut app, &mut state, |app| {
+            app.pending_worker_plan.is_none()
+        });
         assert_eq!(app.resource_page_sources, vec![3, 1, 2, 4]);
         app.go_to_page(2);
         let at = link_centre(&mut app, 2, is_internal);
@@ -143,7 +142,9 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
             &mut Edits::lend(&mut state.doc),
             delete_page_plan_action("source-3"),
         );
-        app.sync_settled(&mut state.doc, &state.root);
+        tests::settle_until(&mut app, &mut state, |app| {
+            app.pending_worker_plan.is_none()
+        });
         assert_eq!(app.resource_page_sources, vec![1, 2, 4]);
         app.go_to_page(1);
         let at = link_centre(&mut app, 1, is_internal);

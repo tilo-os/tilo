@@ -783,15 +783,13 @@ pub fn clock(ts: i64) -> String {
 }
 
 /// Human relative label for a message timestamp relative to `now` —
-/// "Today" / "Yesterday" / "{n}d ago". Used for the date divider.
+/// "Today" / "Yesterday" / "3 days ago", in the desktop's language. Used
+/// for the date divider.
 pub fn day_label(ts: i64, now: i64) -> String {
     let day = ts.div_euclid(86_400);
     let today = now.div_euclid(86_400);
-    match today - day {
-        d if d <= 0 => "Today".to_string(),
-        1 => "Yesterday".to_string(),
-        d => format!("{d} days ago"),
-    }
+    let ago = (today - day).max(0);
+    ui::format::near_day(-ago).unwrap_or_else(|| ui::format::relative(ago * 86_400))
 }
 
 #[cfg(test)]
