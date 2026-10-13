@@ -2295,6 +2295,86 @@ fn invitation_actions_return_their_network_output_to_the_caller() {
     }
 }
 
+/// Every footer button of the invitation sheet is as wide as its face needs,
+/// so a label such as "Cancel" is never elided to "Ca...", and the row stays
+/// inside the sheet, in English and in German copy.
+#[test]
+fn peer_sync_sheet_buttons_fit_their_labels() {
+    let (mut h, _) = host_with_chrome();
+    h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let snapshots = [
+        PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_name: Some("Xaver".to_string()),
+            invite_review_open: true,
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            connect_input: Some(String::new()),
+            ..PeerSyncSnapshot::default()
+        },
+        PeerSyncSnapshot {
+            invite_token: Some("tilo-invite-token".to_string()),
+            ..PeerSyncSnapshot::default()
+        },
+    ];
+    // Resolve one string first so the catalogue is loaded on this thread.
+    let _ = crate::shell::i18n::t("peer-sync-cancel");
+    for locale in ["en-US", "de-DE"] {
+        ui::i18n::I18nManager::set_locale(locale);
+        for snapshot in snapshots.clone() {
+            h.set_peer_sync_snapshot_for_tests(snapshot);
+            let mut scene = Scene::new();
+            h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            let (sheet, labels) = h.peer_sync_overlay.drawn_labels_for_tests();
+            let rects = h.peer_sync_prompt_rects_for_tests();
+            assert_eq!(labels.len(), rects.len());
+            let footer: Vec<_> = labels
+                .iter()
+                .zip(&rects)
+                .filter(|(_, (id, _))| {
+                    matches!(
+                        *id,
+                        "create"
+                            | "review"
+                            | "back"
+                            | "join"
+                            | "cancel"
+                            | "copy"
+                            | "paste"
+                            | "paste-identity"
+                            | "copy-identity"
+                    )
+                })
+                .collect();
+            assert!(!footer.is_empty(), "{locale}: the sheet drew no footer");
+            for (label, (id, rect)) in footer {
+                let mut face = ui::widget::ButtonFace::new(Rect::ZERO, label)
+                    .control_size(ui::widget::ControlSize::Large);
+                if matches!(*id, "create" | "join" | "copy") {
+                    face = face.role(ui::widget::ButtonRole::Primary);
+                }
+                let need = face.intrinsic_width(&mut tr, &theme);
+                assert!(
+                    rect.width() + 0.5 >= need,
+                    "{locale}: {label:?} is {}px wide but its face needs {need}px",
+                    rect.width()
+                );
+                assert!(
+                    rect.x0 >= sheet.x0 && rect.x1 <= sheet.x1,
+                    "{locale}: {label:?} at {rect:?} leaves the sheet {sheet:?}"
+                );
+            }
+        }
+    }
+    ui::i18n::I18nManager::set_locale("en-US");
+}
+
 fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static str> {
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();

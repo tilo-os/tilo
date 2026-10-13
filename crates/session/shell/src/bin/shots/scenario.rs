@@ -2900,6 +2900,44 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "overlay_edges",
+            description: "Open every top-bar chip and hover its affordances so the popovers and tooltips are reviewed anchored at the top, left and right screen edges.",
+            actions: vec![
+                Action::Wait(4),
+                Action::Relayout,
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(18),
+                Action::Snapshot("00-desktop"),
+                // Named targets, not coordinates: the scenario runs across
+                // the viewport sweep, where every chip moves. Hover dwell
+                // shows the tooltip of the tray pill against the right
+                // screen edge, then the overview button's against the left.
+                Action::MoveCursorNamed("topbar_tray_pill"),
+                Action::Wait(40),
+                Action::Snapshot("01-tooltip-right-edge"),
+                Action::MoveCursorNamed("topbar_overview_button"),
+                Action::Wait(40),
+                Action::Snapshot("02-tooltip-left-edge"),
+                Action::ClickNamed("topbar_workspace_pill"),
+                Action::Wait(4),
+                Action::Snapshot("03-workspace-chip"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::ClickNamed("topbar_center_clock"),
+                Action::Wait(4),
+                Action::Snapshot("04-clock-chip"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::ClickNamed("topbar_tray_pill"),
+                Action::Wait(4),
+                Action::Snapshot("05-status-chip"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::SeedInvitePending,
+                Action::Wait(3),
+                Action::ClickNamed("topbar_avatar_stack"),
+                Action::Wait(4),
+                Action::Snapshot("06-people-with-pending-invite"),
+            ],
+        },
+        Scenario {
             name: "solo_and_shared_shell_states",
             description: "Compare the quiet solo desktop with the same workspace after collaborators arrive, then open its roster.",
             actions: vec![
