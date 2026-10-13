@@ -266,12 +266,25 @@ mod tests {
         std::fs::write(
             &host,
             format!(
-                "#!/bin/sh\nprintf '{encoded}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nexit 9\n",
+                "#!/bin/sh\n[ \"$1\" = --warm ] && exit 0\nprintf '{encoded}'\n\
+                 while [ ! -e '{}' ]; do sleep 0.01; done\nexit 9\n",
                 trigger.display()
             ),
         )
         .unwrap();
         std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // macOS assesses a newly written executable on its first launch, and
+        // while the system is busy (as it is under a parallel test run) that
+        // has been measured at over thirty seconds — longer than the engine
+        // waits for a host to come up. Launch the helper once beforehand, so
+        // what is bounded below is the engine's start-up, not the assessment.
+        assert!(
+            std::process::Command::new(&host)
+                .arg("--warm")
+                .status()
+                .unwrap()
+                .success()
+        );
         let engine = ui::webview::chromium::ChromiumEngine::with_private_host(&host, &root).unwrap()
             as SharedEngine;
 

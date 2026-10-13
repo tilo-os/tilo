@@ -350,10 +350,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn causal_frontier_detects_persists_and_unions_changes() {
         // Phase `causal_frontier_detects_new_record_changes_and_scoped_tree_exceptions`.
         {

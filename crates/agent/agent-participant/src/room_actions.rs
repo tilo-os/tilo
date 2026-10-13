@@ -191,6 +191,16 @@ pub trait RoomRecordsLink: Send + Sync {
     ) -> Option<tilo_actions::remote::ResourceViewLocator> {
         None
     }
+    /// Whether the bot installed as `installation` in `workspace` may show
+    /// other names on what it writes. Absence refuses.
+    fn bot_personas(&self, _workspace: u64, _installation: &str) -> bool {
+        false
+    }
+    /// The bytes `workspace`'s content store holds under `hash`, for an
+    /// avatar an appearance names. Absence refuses the appearance.
+    fn content_blob(&self, _workspace: u64, _hash: &str) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 struct Entry {
@@ -1066,7 +1076,7 @@ impl Worker {
                 &route.app_id,
                 &route.cluster_id,
                 &self.participant,
-                false,
+                &crate::ReplicaActor::Owner,
                 Seed::Existing {
                     record: reads::record_id(&route.record)?,
                     changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
@@ -1355,6 +1365,32 @@ impl Worker {
         InvocationState::new(invocation, update).receipt()
     }
 
+    /// The appearance `request` may show: only a bot whose installation
+    /// allows it, and only on a record's own actions.
+    fn admit_appearance(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Option<tilo_actions::Appearance>, ActionHostError> {
+        let Some(appearance) = &request.appearance else {
+            return Ok(None);
+        };
+        let link = self.shared.link.get();
+        let admitted = tilo_actions::appearance::admit(
+            caller,
+            appearance,
+            |installation| link.is_some_and(|link| link.bot_personas(workspace_id, installation)),
+            |hash| link.and_then(|link| link.content_blob(workspace_id, hash)),
+        )?;
+        if workspace_provider_room(&request.target.provider).is_some() {
+            return Err(ActionHostError::Refused {
+                reason: "an appearance is shown only on a record's own actions".into(),
+            });
+        }
+        Ok(Some(admitted))
+    }
+
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -1365,6 +1401,9 @@ impl Worker {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<ActionOutput, Outcome> {
+        let appearance = self
+            .admit_appearance(workspace_id, caller, request)
+            .map_err(Outcome::Rejected)?;
         if let Some(output) = self
             .try_registered_read(workspace_id, caller, request)
             .map_err(|error| *error)?
@@ -1435,7 +1474,7 @@ impl Worker {
         };
         let output = mounted
             .app
-            .invoke(&target.address, &arguments, confirmed)
+            .invoke_appearing(&target.address, &arguments, confirmed, appearance.as_ref())
             .map_err(|error| door_outcome(&error))?;
         let mutation = mounted.app.take_mutation().map_err(|error| {
             Outcome::Failed(ActionFailure {
@@ -1545,7 +1584,7 @@ impl Worker {
             app,
             room,
             &self.participant,
-            false,
+            &crate::ReplicaActor::Owner,
             Seed::New,
         )
         .map_err(|error| refused(error.to_string()))?;

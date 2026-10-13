@@ -1140,7 +1140,6 @@ pub fn add_app_artifact(request: AddRequest) -> Result<AddOutcome> {
             (writes, Some("tilo-app dev".into()))
         }
     };
-    follow_source_catalog(&app_dir, &mut writes)?;
     format_pending_rust(&mut writes)?;
     let updated = writes
         .iter()
@@ -1206,12 +1205,9 @@ fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<V
     let source_path = app_dir.join("locales/en-US.ftl");
     let source_catalog = std::fs::read_to_string(&source_path)
         .with_context(|| format!("reading source catalog {}", source_path.display()))?;
-    let source_contract = parse_fluent_catalog(&source_catalog)
+    parse_fluent_catalog(&source_catalog)
         .with_context(|| format!("source catalog {} is invalid", source_path.display()))?;
-    let registry_source = rustfmt_source(
-        &locale_registry_source(&locales, &catalog_message_ids(&source_contract)),
-        &registry_path,
-    )?;
+    let registry_source = rustfmt_source(&locale_registry_source(&locales), &registry_path)?;
 
     let mut writes = vec![PendingWrite {
         path,
@@ -1329,7 +1325,6 @@ pub fn sync_locale_catalogs(request: &LocaleSyncRequest) -> Result<LocaleSyncOut
             });
         }
     }
-    writes.extend(registry_key_write(&app_dir, &source_contract)?);
     if !request.dry_run {
         write_batch(&writes)?;
     }
@@ -1340,76 +1335,6 @@ pub fn sync_locale_catalogs(request: &LocaleSyncRequest) -> Result<LocaleSyncOut
         unresolved,
         dry_run: request.dry_run,
     })
-}
-
-/// Keep a generated registry's label keys in step with a pending change of
-/// `locales/en-US.ftl` (a screen or component adding its messages).
-fn follow_source_catalog(app_dir: &Path, writes: &mut Vec<PendingWrite>) -> Result<()> {
-    let source_path = app_dir.join("locales/en-US.ftl");
-    let registry_path = app_dir.join("src/locales.rs");
-    let Some(source) = writes
-        .iter()
-        .find(|write| write.path == source_path)
-        .map(|write| write.source.clone())
-    else {
-        return Ok(());
-    };
-    let pending = writes.iter().position(|write| write.path == registry_path);
-    let registry = match pending.and_then(|index| writes.get(index)) {
-        Some(write) => write.source.clone(),
-        None => match std::fs::read_to_string(&registry_path) {
-            Ok(registry) => registry,
-            Err(_) => return Ok(()),
-        },
-    };
-    let ids = catalog_message_ids(&parse_fluent_catalog(&source)?);
-    let Some(rewritten) = registry_rewrite(&registry, &ids)? else {
-        return Ok(());
-    };
-    match pending.and_then(|index| writes.get_mut(index)) {
-        Some(write) => write.source = rewritten,
-        None => writes.push(PendingWrite {
-            path: registry_path,
-            source: rewritten,
-            description: "locale registry",
-        }),
-    }
-    Ok(())
-}
-
-/// The rewrite of a generated locale registry whose label keys differ from
-/// the source catalog's messages, if any.
-fn registry_key_write(
-    app_dir: &Path,
-    source: &FluentCatalogContract,
-) -> Result<Option<PendingWrite>> {
-    let registry_path = app_dir.join("src/locales.rs");
-    let Ok(registry) = std::fs::read_to_string(&registry_path) else {
-        return Ok(None);
-    };
-    let Some(rewritten) = registry_rewrite(&registry, &catalog_message_ids(source))? else {
-        return Ok(None);
-    };
-    Ok(Some(PendingWrite {
-        source: rustfmt_source(&rewritten, &registry_path)?,
-        path: registry_path,
-        description: "locale registry",
-    }))
-}
-
-/// A generated locale `registry` rewritten for the source catalog's message
-/// `ids`, when its label keys differ from them. An app-owned registry is
-/// never rewritten.
-fn registry_rewrite(registry: &str, ids: &[String]) -> Result<Option<String>> {
-    if !registry.starts_with(LOCALE_REGISTRY_HEADER)
-        || label_key_drift(registry, ids).is_ok_and(|drift| drift.is_empty())
-    {
-        return Ok(None);
-    }
-    Ok(Some(locale_registry_source(
-        &parse_locale_registry(registry)?,
-        ids,
-    )))
 }
 
 fn parse_editable_fluent(
@@ -1496,13 +1421,11 @@ fn synchronize_fluent_entry(
             changed
         }
         (Entry::Term(source), Entry::Term(translation)) => {
-            let mut changed = false;
-            if reset_variables
+            let changed = reset_variables
                 && fluent_pattern_variables(&source.value)
-                    != fluent_pattern_variables(&translation.value)
-            {
+                    != fluent_pattern_variables(&translation.value);
+            if changed {
                 translation.value = source.value.clone();
-                changed = true;
             }
             changed
                 | synchronize_fluent_attributes(
@@ -1598,25 +1521,6 @@ fn parse_locale_registry(source: &str) -> Result<Vec<String>> {
     Ok(locales)
 }
 
-/// The constant `tilo-app` generates for the source catalog's message `id`:
-/// `notes-add` is `NOTES_ADD`.
-fn label_key_constant(id: &str) -> String {
-    let mut name: String = id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if name.starts_with(|c: char| c.is_ascii_digit()) {
-        name.insert(0, '_');
-    }
-    name
-}
-
 /// The messages (not terms) of a source catalog, in catalog order of ids.
 pub(crate) fn catalog_message_ids(contract: &FluentCatalogContract) -> Vec<String> {
     contract
@@ -1625,81 +1529,6 @@ pub(crate) fn catalog_message_ids(contract: &FluentCatalogContract) -> Vec<Strin
         .filter(|id| !id.starts_with('-'))
         .cloned()
         .collect()
-}
-
-/// The label keys a generated registry declares, by constant name.
-fn registry_label_keys(registry: &str) -> Result<BTreeMap<String, String>> {
-    let file = syn::parse_file(registry).context("generated locale registry is not valid Rust")?;
-    let Some(keys) = file.items.iter().find_map(|item| match item {
-        syn::Item::Mod(module) if module.ident == "keys" => module.content.as_ref(),
-        _ => None,
-    }) else {
-        bail!("the registry has no `keys` module");
-    };
-    let mut declared = BTreeMap::new();
-    for item in &keys.1 {
-        let syn::Item::Const(constant) = item else {
-            continue;
-        };
-        let syn::Expr::Call(call) = constant.expr.as_ref() else {
-            bail!("key {} is not a LabelKey::new call", constant.ident);
-        };
-        let Some(syn::Expr::Lit(syn::ExprLit {
-            lit: syn::Lit::Str(id),
-            ..
-        })) = call.args.first()
-        else {
-            bail!("key {} does not name its message", constant.ident);
-        };
-        declared.insert(constant.ident.to_string(), id.value());
-    }
-    Ok(declared)
-}
-
-/// Whether a generated registry's keys are exactly the source catalog's
-/// messages; the difference otherwise.
-fn label_key_drift(registry: &str, ids: &[String]) -> Result<Vec<String>> {
-    let declared = registry_label_keys(registry)?;
-    let expected: BTreeMap<String, String> = ids
-        .iter()
-        .map(|id| (label_key_constant(id), id.clone()))
-        .collect();
-    let mut drift = Vec::new();
-    for (name, id) in &expected {
-        match declared.get(name) {
-            Some(declared) if declared == id => {}
-            Some(declared) => drift.push(format!("{name} names {declared:?}, not {id:?}")),
-            None => drift.push(format!("missing {name} for {id:?}")),
-        }
-    }
-    for name in declared.keys() {
-        if !expected.contains_key(name) {
-            drift.push(format!("stale {name}"));
-        }
-    }
-    Ok(drift)
-}
-
-/// Rewrite a generated locale registry whose label keys no longer match
-/// `locales/en-US.ftl`: the build step that keeps `locales::keys` current.
-/// App-owned registries are left alone. Returns whether it was rewritten.
-///
-/// # Errors
-///
-/// Returns an error when the source catalog or registry cannot be read or
-/// the rewritten registry cannot be formatted or written.
-pub fn refresh_locale_registry(app_dir: &Path) -> Result<bool> {
-    let source_path = app_dir.join("locales/en-US.ftl");
-    let Ok(source) = std::fs::read_to_string(&source_path) else {
-        return Ok(false);
-    };
-    let source = parse_fluent_catalog(&source)
-        .with_context(|| format!("source catalog {} is invalid", source_path.display()))?;
-    let Some(write) = registry_key_write(app_dir, &source)? else {
-        return Ok(false);
-    };
-    write_batch(&[write])?;
-    Ok(true)
 }
 
 /// The registry's catalog: every registered locale, embedded, for the app's
@@ -1715,24 +1544,13 @@ fn catalog_declaration(locales: &[String]) -> String {
     )
 }
 
-fn locale_registry_source(locales: &[String], keys: &[String]) -> String {
+fn locale_registry_source(locales: &[String]) -> String {
     let mut source = String::from(LOCALE_REGISTRY_HEADER);
     source.push_str("// Edit Fluent catalogs under locales/; tilo-app maintains this registry.\n");
     for locale in locales {
         let _ = writeln!(source, "{LOCALE_ENTRY_PREFIX}{locale}");
     }
     let _ = writeln!(source, "\n{}", catalog_declaration(locales));
-    source.push_str(
-        "\n/// One constant per message of locales/en-US.ftl, for labels and placeholders.\npub mod keys {\n    use ui::i18n::LabelKey;\n",
-    );
-    for id in keys {
-        let _ = writeln!(
-            source,
-            "    pub const {}: LabelKey = LabelKey::new({id:?});",
-            label_key_constant(id)
-        );
-    }
-    source.push_str("}\n");
     source
 }
 
@@ -4396,13 +4214,7 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
         .as_ref()
         .map(|manifest| manifest.package.id.clone());
 
-    check_source_file(
-        &app_dir,
-        "src/lib.rs",
-        "app root",
-        &["impl ResourceApp for", "pub fn app_root"],
-        &mut checks,
-    );
+    check_app_root(&app_dir, &mut checks);
     check_source_file(
         &app_dir,
         "src/main.rs",
@@ -4445,24 +4257,131 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
     DoctorReport { app_dir, checks }
 }
 
-fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
-    fn append_rust_sources(dir: &Path, source: &mut String) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                append_rust_sources(&path, source)?;
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                source.push_str(&std::fs::read_to_string(path)?);
-                source.push('\n');
+/// The Rust sources under `dir`, as (path relative to `root`, text), in a
+/// stable order.
+fn rust_sources(
+    root: &Path,
+    dir: &Path,
+    sources: &mut Vec<(PathBuf, String)>,
+) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            rust_sources(root, &path, sources)?;
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            let text = std::fs::read_to_string(&path)?;
+            let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            sources.push((relative, text));
+        }
+    }
+    Ok(())
+}
+
+/// Where an app's sources use the app framework, read from the parsed items
+/// rather than their text, so `#[resource(..)]`,
+/// `#[ui::tilo_resource::resource(..)]` and
+/// `impl ui::framework::ResourceApp for` are all recognised.
+#[derive(Debug, Default)]
+struct FrameworkUse {
+    /// The first file with a `#[resource]` impl or an `impl Resource for`.
+    resource: Option<PathBuf>,
+    /// The first file with an `impl ResourceApp for`.
+    host: Option<PathBuf>,
+}
+
+impl FrameworkUse {
+    fn of(sources: &[(PathBuf, String)]) -> Self {
+        let mut found = Self::default();
+        for (file, text) in sources {
+            // A file that does not parse fails the build, which reports it
+            // better than this check could.
+            if let Ok(parsed) = syn::parse_file(text) {
+                found.visit(&parsed.items, file);
             }
         }
-        Ok(())
+        found
     }
 
-    let mut source = String::new();
-    if append_rust_sources(&app_dir.join("src"), &mut source).is_err() {
+    fn visit(&mut self, items: &[syn::Item], file: &Path) {
+        fn last_segment(path: &syn::Path) -> Option<String> {
+            path.segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+        }
+        for item in items {
+            match item {
+                syn::Item::Impl(item) => {
+                    let attribute = item.attrs.iter().any(|attribute| {
+                        last_segment(attribute.path()).as_deref() == Some("resource")
+                    });
+                    let implemented = item
+                        .trait_
+                        .as_ref()
+                        .and_then(|(_, path, _)| last_segment(path));
+                    if attribute || implemented.as_deref() == Some("Resource") {
+                        self.resource.get_or_insert_with(|| file.to_path_buf());
+                    }
+                    if implemented.as_deref() == Some("ResourceApp") {
+                        self.host.get_or_insert_with(|| file.to_path_buf());
+                    }
+                }
+                syn::Item::Mod(module) => {
+                    if let Some((_, items)) = &module.content {
+                        self.visit(items, file);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The app's root: `src/lib.rs` declares `pub fn app_root`, or the crate
+/// implements `ResourceApp`, in whichever module it keeps it.
+fn check_app_root(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let (status, detail) = match std::fs::read_to_string(app_dir.join("src/lib.rs")) {
+        Err(error) => (DoctorStatus::Fail, format!("src/lib.rs: {error}")),
+        Ok(source) if rust_code_only(&source).contains("pub fn app_root") => {
+            (DoctorStatus::Pass, "src/lib.rs".to_owned())
+        }
+        Ok(_) => {
+            let mut sources = Vec::new();
+            // An unreadable source directory leaves the host unfound, which
+            // the warning below reports.
+            let _ = rust_sources(app_dir, &app_dir.join("src"), &mut sources);
+            match FrameworkUse::of(&sources).host {
+                Some(file) => (
+                    DoctorStatus::Pass,
+                    format!("{} implements ResourceApp", file.display()),
+                ),
+                None => (
+                    DoctorStatus::Warning,
+                    "src/lib.rs does not use the generated impl ResourceApp for contract"
+                        .to_owned(),
+                ),
+            }
+        }
+    };
+    checks.push(DoctorCheck {
+        status,
+        label: "app root",
+        detail,
+    });
+}
+
+fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let mut sources = Vec::new();
+    if rust_sources(app_dir, &app_dir.join("src"), &mut sources).is_err() {
         return;
     }
+    let source = sources
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     let code = rust_code_only(&source);
     let toolkit_host = code.contains("ui::widget::resource_actions::immediate(")
         || code.contains("ui::widget::resource_actions::form(")
@@ -4484,9 +4403,8 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
     // methods into verbs, the replayable catalogue `ResourceApp` hosts; a
     // hand-written `impl Resource` (a custom storage layout) is the same
     // contract.
-    let framework_surface = code.contains("#[resource(") || code.contains("impl Resource for");
-    let framework_host = code.contains("impl ResourceApp for");
-    let framework = framework_surface && framework_host;
+    let framework_use = FrameworkUse::of(&sources);
+    let framework = framework_use.resource.is_some() && framework_use.host.is_some();
     let (status, detail) = if framework || toolkit_surface || custom_surface {
         (
             DoctorStatus::Pass,
@@ -4689,7 +4607,6 @@ pub(crate) fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
 /// Returns an error when no app can be resolved or its doctor checks fail.
 pub fn plan_app_task(start: &Path, task: AppTask, forwarded: &[OsString]) -> Result<CargoPlan> {
     let app_dir = resolve_app_dir(start)?;
-    refresh_locale_registry(&app_dir)?;
     let report = doctor_resolved_app(app_dir.clone());
     if !report.is_ready() {
         bail!("app preflight failed\n\n{}", report.summary());
@@ -8786,14 +8703,12 @@ fn check_locale_artifacts(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
             });
         }
     }
-    let source_ids = catalogs.get("en-US").map(catalog_message_ids);
-    check_locale_registry(&registry_path, &catalog_ids, source_ids.as_deref(), checks);
+    check_locale_registry(&registry_path, &catalog_ids, checks);
 }
 
 fn check_locale_registry(
     registry_path: &Path,
     catalog_ids: &[String],
-    source_ids: Option<&[String]>,
     checks: &mut Vec<DoctorCheck>,
 ) {
     let Ok(registry) = std::fs::read_to_string(registry_path) else {
@@ -8818,15 +8733,6 @@ fn check_locale_registry(
         syn::parse_file(&registry).context("generated locale registry is not valid Rust")?;
         if !registry.contains(&catalog_declaration(&registered)) {
             bail!("the embedded catalog does not hold exactly the registered locales");
-        }
-        if let Some(source) = source_ids {
-            let drift = label_key_drift(&registry, source)?;
-            if !drift.is_empty() {
-                bail!(
-                    "label keys differ from locales/en-US.ftl ({}); any `tilo-app` build or `tilo-app locale sync` regenerates them",
-                    drift.join(", ")
-                );
-            }
         }
         for locale in &registered {
             if !catalog_ids.iter().any(|catalog| catalog == locale) {
@@ -9969,10 +9875,7 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
         (PathBuf::from("src/lib.rs"), app_lib(spec)),
         (
             PathBuf::from("src/locales.rs"),
-            locale_registry_source(
-                &["en-US".to_owned()],
-                &catalog_message_ids(&parse_fluent_catalog(&app_catalog(spec))?),
-            ),
+            locale_registry_source(&["en-US".to_owned()]),
         ),
         (PathBuf::from("src/main.rs"), app_main(spec)),
         (PathBuf::from("tests/app.rs"), app_test(spec)),

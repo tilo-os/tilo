@@ -3202,14 +3202,14 @@ impl Widget for OnboardingView {
 
         // Choosing the nearby flow is the explicit request to pair, so the
         // screen opens with pairing already under way.
-        let mut start_nearby = false;
-        if self.pressed.take(KEY_CHOOSE_NEARBY) && self.flow.screen() == Screen::Existing {
+        let mut start_nearby =
+            self.pressed.take(KEY_CHOOSE_NEARBY) && self.flow.screen() == Screen::Existing;
+        if start_nearby {
             self.error = None;
             self.nearby_failure = None;
             self.nearby_status = None;
             self.nearby_code = None;
             self.flow.choose_nearby();
-            start_nearby = true;
         }
 
         if self.pressed.take(KEY_CONNECT_BROWSE)
@@ -3723,10 +3723,7 @@ impl Widget for OnboardingView {
             flex_direction: taffy::FlexDirection::Column,
             justify_content: Some(taffy::JustifyContent::Center),
             align_items: Some(taffy::AlignItems::Center),
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
                 left: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
                 right: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
@@ -4312,11 +4309,7 @@ mod tests {
             None,
             ElementState::Pressed,
         );
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     fn dispatch_escape(view: &mut OnboardingView, document: &mut AutoCommit) -> bool {
@@ -4327,10 +4320,7 @@ mod tests {
     }
 
     fn pointer_event(position: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(position.x, position.y),
-        }
+        ui::synthetic_input::cursor_moved(position.x, position.y)
     }
 
     use ui::synthetic_input::mouse_press;

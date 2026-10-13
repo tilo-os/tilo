@@ -657,10 +657,6 @@ mod tests {
 
     /// Card controls win over the dismiss hit, close clears stale geometry, and the editor writes the comment as typed.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case"
-    )]
     fn comment_overlay_hit_testing_and_editing() {
         // --- phase: card_controls_win_over_the_full_window_dismiss_hit ---
         {

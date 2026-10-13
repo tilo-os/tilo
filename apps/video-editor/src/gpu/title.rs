@@ -47,10 +47,6 @@ pub struct TitleRaster {
 const CACHE_LIMIT: usize = 12;
 
 impl TitleRaster {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// The picture for `text` at `width × height`, as tightly-packed
     /// straight-alpha RGBA.
     ///
@@ -359,7 +355,7 @@ mod tests {
         }
         // Case `a_title_rasters_visible_glyphs_on_a_transparent_field`.
         {
-            let mut raster = TitleRaster::new();
+            let mut raster = TitleRaster::default();
             let text = TextSource {
                 content: "HELLO".into(),
                 size: 0.4,
@@ -385,7 +381,7 @@ mod tests {
         }
         // Case `an_empty_title_rasters_nothing_rather_than_a_block`.
         {
-            let mut raster = TitleRaster::new();
+            let mut raster = TitleRaster::default();
             let text = TextSource::new("");
             let Some(rgba) = raster.raster(&text, 32, 32) else {
                 panic!("the title raster tests need a wgpu adapter (llvmpipe is enough)");
@@ -401,7 +397,7 @@ mod tests {
     fn title_alignment_backdrop_and_cache_follow_the_style() {
         // Case `alignment_moves_the_glyphs_across_the_frame`.
         {
-            let mut raster = TitleRaster::new();
+            let mut raster = TitleRaster::default();
             let centre_of_mass = |rgba: &[u8], w: u32| {
                 let (mut sum, mut n) = (0f64, 0f64);
                 for (i, p) in rgba.chunks_exact(4).enumerate() {
@@ -436,7 +432,7 @@ mod tests {
         }
         // Case `the_backdrop_fills_the_field_behind_the_text`.
         {
-            let mut raster = TitleRaster::new();
+            let mut raster = TitleRaster::default();
             let t = TextSource {
                 content: "x".into(),
                 backdrop: 0.8,
@@ -453,7 +449,7 @@ mod tests {
         }
         // Case `rasters_are_cached_per_style_and_size`.
         {
-            let mut raster = TitleRaster::new();
+            let mut raster = TitleRaster::default();
             let a = TextSource::new("same");
             assert!(raster.raster(&a, 64, 32).is_some());
             assert_eq!(raster.cache.len(), 1);

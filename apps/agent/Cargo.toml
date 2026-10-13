@@ -37,9 +37,7 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The descriptor client for the desktop-owned hosted model gateway. This has
 # no vault access and never exposes a bearer token to the agent process.
 tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
-tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-content = { path = "../../crates/system/content", features = ["device"] }
-automerge.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
@@ -52,11 +50,15 @@ workspace-hack = { version = "0.1" }
 tilo-action-policy = { path = "../../crates/collab/action-policy" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
-shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+
+# The broker tests (typed_peer and the tests built on it) drive the shell's
+# in-process broker, which runs on Linux.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+shell = { path = "../../crates/session/shell", default-features = false, features = ["test-support"] }
 
 [[test]]
 name = "it"

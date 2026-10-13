@@ -1022,9 +1022,10 @@ fn message_range_navigation_preserves_unicode_and_refuses_stale_offsets() {
         .first()
         .expect("seeded message")
         .clone();
+    // Only its author edits a message.
     crate::testing::apply_as(
         &mut doc,
-        &identity.id,
+        &message.author,
         crate::resource::Chat::EDIT_MESSAGE.with(crate::record::chat::EditMessage {
             message: ui::tilo_resource::Id::from_raw(message.id.clone()),
             text: "café notes".into(),

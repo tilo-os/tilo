@@ -23,10 +23,7 @@ impl Widget for Intrinsic {
     ) -> NodeId {
         self.0.builds.set(self.0.builds.get() + 1);
         let node = tree.leaf_node(taffy::Style {
-            size: Size {
-                width: Dimension::length(self.0.width.get()),
-                height: Dimension::length(20.0),
-            },
+            size: Size::from_lengths(self.0.width.get(), 20.0),
             ..Default::default()
         });
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));

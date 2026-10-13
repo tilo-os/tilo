@@ -2,7 +2,6 @@
     clippy::expect_used,
     clippy::many_single_char_names,
     clippy::map_unwrap_or,
-    clippy::panic,
     clippy::too_many_lines,
     clippy::unwrap_used,
     reason = "diagnostic compositor probe intentionally favours a compact command-line fixture"

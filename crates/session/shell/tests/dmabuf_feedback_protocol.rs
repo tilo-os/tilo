@@ -18,9 +18,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -225,10 +223,6 @@ fn walk() -> Option<(ClientAppState, std::path::PathBuf)> {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn dmabuf_feedback_advertises_the_render_node_and_compositable_formats() {
     // Phase `dmabuf_global_is_advertised_with_feedback`.
     // Version 3 carries no feedback and therefore no device, and Mesa

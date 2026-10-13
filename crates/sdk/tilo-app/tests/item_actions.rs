@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! Actions on the items of a collection are offered on the items: in the
 //! published tree (palette, agents) and in a row's context menu.
 

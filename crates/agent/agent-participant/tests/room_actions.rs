@@ -109,7 +109,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         "so.tilo.chat",
         &room.room,
         "ada",
-        false,
+        tilo_agent_participant::ReplicaActor::Owner,
         Seed::New,
     )
     .unwrap();
@@ -499,6 +499,9 @@ async fn start_browser(
             },
             allowed_origins: page.into_iter().map(str::to_owned).collect(),
             plain_listen: None,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
         .await
         .unwrap();
@@ -672,7 +675,7 @@ impl Browser {
             app,
             &self.room,
             "ada",
-            false,
+            tilo_agent_participant::ReplicaActor::Owner,
             Seed::New,
         )
         .unwrap();
@@ -705,7 +708,7 @@ impl Browser {
             &route.app_id,
             &self.room,
             "ada",
-            false,
+            tilo_agent_participant::ReplicaActor::Owner,
             Seed::Existing {
                 record: if route.record.is_empty() {
                     ui::record::RecordId::package_primary()
@@ -754,6 +757,7 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
         confirmation: None,
         revision: None,
         wait_ms: None,
+        appearance: None,
     }
 }
 
@@ -1305,4 +1309,51 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     drop(hosted.web);
     hosted.agents.shutdown();
     hosted.relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let hosted = start(&root, &host, state.path()).await;
+    let _steward = steward::Steward::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+
+    let sheets = browser.create(SHEETS);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let provider = record_provider(&sheets);
+    let new_sheet = browser
+        .catalogue(CatalogueQuery {
+            provider: Some(provider.clone()),
+            max_results: 200,
+            ..CatalogueQuery::default()
+        })
+        .await
+        .unwrap()
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .find(|action| action.address.action == "new-sheet")
+        .expect("Sheets offers New sheet")
+        .address
+        .clone();
+
+    let mut posing = request(&provider, new_sheet, sheet_named("Budget"));
+    posing.appearance = Some(tilo_actions::Appearance::new("Owner", None, None).unwrap());
+    let receipt = browser.invoke(posing).await;
+    assert!(
+        matches!(
+            receipt.status,
+            ReceiptStatus::Rejected {
+                error: ActionHostError::Refused { .. }
+            }
+        ),
+        "{receipt:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    browser.pump();
+    let app = browser.mount(&sheets);
+    assert!(!sheet_names(&app).contains(&"Budget".to_owned()));
 }

@@ -58,7 +58,7 @@ use std::cell::Cell;
 use std::future::Future;
 
 pub use app::{AppRuntime, app, try_app};
-pub use caps::{Availability, Feature, availability};
+pub use caps::{Availability, Feature, availability, available};
 pub use cpu::{CpuTask, cpu, cpu_pool};
 #[cfg(not(target_family = "wasm"))]
 pub use daemon::{Daemon, daemon};

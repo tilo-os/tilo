@@ -1,15 +1,17 @@
 //! Typed bounded jobs on an existing acknowledged record channel.
-use runtime_collab::approved_checks::{Receipt, Request};
+use runtime_collab::approved_checks::{Receipt, Report, ReportedProgressUpdate, Request};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 const MAX_ROUTES: usize = 16;
 const MAX_PENDING: usize = 2;
 type Reply = Result<Receipt, String>;
+type ReportedReply = (oneshot::Receiver<Reply>, watch::Receiver<Option<Report>>);
 struct Job {
     request: Request,
     reply: oneshot::Sender<Reply>,
+    reports: Option<watch::Sender<Option<Report>>>,
 }
 struct Endpoint(mpsc::Sender<Job>);
 pub(super) struct Registration {
@@ -38,9 +40,34 @@ pub(crate) fn enqueue(route: &str, request: Request) -> Result<oneshot::Receiver
     let (reply, receive) = oneshot::channel();
     endpoint
         .0
-        .try_send(Job { request, reply })
+        .try_send(Job {
+            request,
+            reply,
+            reports: None,
+        })
         .map_err(|_| "approved-check bounded lane unavailable or full")?;
     Ok(receive)
+}
+
+pub(crate) fn enqueue_reported(route: &str, request: Request) -> Result<ReportedReply, String> {
+    request.encode()?;
+    let endpoint = registry()
+        .lock()
+        .map_err(|_| "approved-check bridge unavailable")?
+        .get(route)
+        .and_then(Weak::upgrade)
+        .ok_or("no acknowledged approved-check route")?;
+    let (reply, receive) = oneshot::channel();
+    let (reports, observe) = watch::channel(None);
+    endpoint
+        .0
+        .try_send(Job {
+            request,
+            reply,
+            reports: Some(reports),
+        })
+        .map_err(|_| "approved-check bounded lane unavailable or full")?;
+    Ok((receive, observe))
 }
 
 fn admit(route: String, endpoint: &Arc<Endpoint>) -> Result<(), String> {
@@ -69,8 +96,35 @@ pub(super) fn register(
     let endpoint = Arc::new(Endpoint(send));
     admit(route, &endpoint)?;
     let worker = tokio::task::spawn_local(async move {
-        while let Some(job) = receive.recv().await {
+        while let Some(mut job) = receive.recv().await {
             if job.reply.is_closed() {
+                continue;
+            }
+            if job.reports.is_some() {
+                let result = async {
+                    let mut stream = channel
+                        .approved_check_reported_progress(&job.request)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    loop {
+                        let update = tokio::select! {
+                            biased;
+                            () = job.reply.closed() => return Err("approved-check observer retired".into()),
+                            update = stream.read() => update.map_err(|error| error.to_string())?,
+                        };
+                        match update {
+                            ReportedProgressUpdate::Report(report) => {
+                                if let Some(reports) = &job.reports {
+                                    reports.send_replace(Some(report));
+                                }
+                            }
+                            ReportedProgressUpdate::Receipt(receipt) => return Ok(*receipt),
+                        }
+                    }
+                }
+                .await;
+                // Closing the sender after terminal delivery freezes the bounded latest report.
+                let _ = job.reply.send(result);
                 continue;
             }
             let result = channel
@@ -89,6 +143,74 @@ pub(super) fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn approved_check_reported_bridge_forwards_before_terminal_and_freezes_late_reports() {
+        use runtime_collab::approved_checks::{ACTION_ID, ReportObservation};
+        let route = crate::collaboration::RouteSpec::record(
+            "so.tilo.git-client",
+            uuid::Uuid::new_v4(),
+            "reported-record",
+        );
+        let (send, mut receive) = mpsc::channel(MAX_PENDING);
+        let endpoint = Arc::new(Endpoint(send));
+        admit(route.channel_id(), &endpoint).unwrap();
+        let target = crate::host_operation::OperationTarget::new(
+            route,
+            tilo_actions::ActionAddress::new("repository", ACTION_ID),
+        );
+        let invocation = tilo_actions::InvocationId::new();
+        let work = target
+            .approved_check_reported(invocation, "regression")
+            .unwrap();
+        let (forward, mut forwarded) = mpsc::unbounded_channel();
+        let running = tokio::spawn(work(Box::new(move |observation| {
+            forward
+                .send(observation)
+                .map_err(|_| "observer retired".into())
+        })));
+        let job = receive.recv().await.unwrap();
+        assert_eq!(job.request.invocation, invocation.0.to_string());
+        let reports = job.reports.unwrap();
+        for (sequence, phase) in [(1, "Synthesis"), (2, "Routing")] {
+            let observation = ReportObservation::Reported {
+                phase: phase.into(),
+                completed: Some(sequence),
+                total: Some(2),
+            };
+            reports.send_replace(Some(Report {
+                invocation: invocation.0.to_string(),
+                check_id: "regression".into(),
+                sequence,
+                observation: observation.clone(),
+            }));
+            assert_eq!(forwarded.recv().await.unwrap(), observation);
+            assert!(
+                !running.is_finished(),
+                "reported phases cannot finish a check"
+            );
+        }
+        job.reply.send(Err("terminal refusal".into())).unwrap();
+        assert_eq!(running.await.unwrap(), Err("terminal refusal".into()));
+        reports.send_replace(Some(Report {
+            invocation: invocation.0.to_string(),
+            check_id: "regression".into(),
+            sequence: 3,
+            observation: ReportObservation::Reported {
+                phase: "Late".into(),
+                completed: None,
+                total: None,
+            },
+        }));
+        assert!(
+            forwarded.recv().await.is_none(),
+            "terminal completion closes forwarding"
+        );
+        drop(reports);
+        drop(target);
+        drop(endpoint);
+        drop(receive);
+    }
 
     #[test]
     fn approved_check_bridge_routes_two_live_records_of_one_app_by_actual_dispatch_target() {

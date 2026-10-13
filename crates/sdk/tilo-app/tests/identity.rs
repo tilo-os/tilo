@@ -1,6 +1,5 @@
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::float_cmp,
     reason = "test assertions; levels are whole numbers, exact in f64"
 )]
@@ -200,8 +199,7 @@ impl<R: Resource<Action = LevelAction>> Widget for LevelSlider<R> {
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if self.dragging {
                     let level = ((self.cursor.x - self.rect.x0) / self.rect.width() * 100.0)
                         .clamp(0.0, 100.0)

@@ -1275,7 +1275,6 @@ fn run_bench_scroll(
     loaded: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use tube::model::{Route, TubeModel};
-    use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 
     const CARDS: usize = 80;
     let (w, h) = (1280u32, 900u32);
@@ -1357,10 +1356,7 @@ fn run_bench_scroll(
         let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
         let root = taffy.new_with_children(
             Style {
-                size: Size {
-                    width: length(w as f32),
-                    height: length(h as f32),
-                },
+                size: Size::from_lengths(w as f32, h as f32),
                 ..Default::default()
             },
             &[child],
@@ -1414,11 +1410,7 @@ fn run_bench_scroll(
 
             // Real scroll: a wheel notch routed through the widget tree, exactly
             // as the live event loop delivers it.
-            let wheel = WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-                phase: TouchPhase::Moved,
-            };
+            let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
             let mut handled = false;
             let mut focus_target = None;
             widget.handle_event(

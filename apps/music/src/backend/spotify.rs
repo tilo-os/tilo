@@ -16,7 +16,7 @@ mod control;
 use super::{
     AlbumHit, AlbumKind, AlbumPage, ArtistAlbum, ArtistHit, ArtistPage, BackendError, HomeContent,
     HomeItem, HomeItemKind, HomeSection, MusicBackend, PlaylistHit, PlaylistPage, ResolveOutcome,
-    SearchBundle, SearchKind, SearchOutcome, SearchTop, TrackHit,
+    SearchBundle, SearchOutcome, SearchTop, TrackHit,
 };
 
 const USE: OAuthUse = OAuthUse::new(OAuthIssuer::Spotify, Capability::Music);
@@ -495,17 +495,6 @@ impl MusicBackend for SpotifyBackend {
     }
     fn search_all(&self, query: &str) -> Result<SearchBundle, BackendError> {
         self.search(query, "track,album,artist,playlist")
-    }
-    fn search_more(&self, query: &str, kind: SearchKind) -> Result<SearchBundle, BackendError> {
-        self.search(
-            query,
-            match kind {
-                SearchKind::Songs => "track",
-                SearchKind::Albums => "album",
-                SearchKind::Artists => "artist",
-                SearchKind::Playlists => "playlist",
-            },
-        )
     }
     fn resolve_audio(&self, _id: &str) -> ResolveOutcome {
         Err(BackendError("Spotify playback is not connected in Tilo. Spotify's Web API does not supply audio streams. Native playback needs a separate streaming session and Premium.".into()))

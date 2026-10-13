@@ -25,5 +25,6 @@ pub mod slots;
 pub mod systemd;
 pub mod targets;
 
+pub use cohort::SelectedApps;
 pub use daemon::Daemon;
 pub use error::DaemonError;

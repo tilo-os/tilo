@@ -5,8 +5,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -36,7 +34,15 @@ impl PlanModel for Canned {
 
 fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
     let catalogue = common::catalogue();
-    let app = Replica::open(&catalogue, app_id, ROOM, "agent", true, Seed::New).unwrap();
+    let app = Replica::open(
+        &catalogue,
+        app_id,
+        ROOM,
+        "agent",
+        tilo_agent_participant::ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap();
     let route = DocumentRoute {
         app_id: app_id.into(),
         cluster_id: ROOM.into(),

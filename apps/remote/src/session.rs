@@ -124,12 +124,6 @@ pub fn connection_readiness(connection: &Connection) -> TransportReadiness {
     TransportReadiness::Ready
 }
 
-/// Whether this connection kind may start its transport now. Tilo is a
-/// production broker capability; SSH/VNC retain the explicit developer gate.
-pub fn can_attempt_live(kind: ConnectionKind) -> bool {
-    transport_readiness(kind).can_connect()
-}
-
 /// The state of a live transport, shared from the background I/O thread to
 /// the UI thread. The UI reads this every frame to choose what to draw:
 /// a spinner while connecting, the session surface once up, or the error text
@@ -185,14 +179,14 @@ mod tests {
     fn session_readiness_and_preflight_fail_closed() {
         eprintln!("phase tilo_broker_transport_is_production_on");
         {
-            assert!(can_attempt_live(ConnectionKind::Tilo));
-            assert!(!can_attempt_live(ConnectionKind::Rdp));
+            assert!(transport_readiness(ConnectionKind::Tilo).can_connect());
+            assert!(!transport_readiness(ConnectionKind::Rdp).can_connect());
             assert_eq!(
-                can_attempt_live(ConnectionKind::Ssh),
+                transport_readiness(ConnectionKind::Ssh).can_connect(),
                 live_sessions_enabled()
             );
             assert_eq!(
-                can_attempt_live(ConnectionKind::Vnc),
+                transport_readiness(ConnectionKind::Vnc).can_connect(),
                 live_sessions_enabled()
             );
         }

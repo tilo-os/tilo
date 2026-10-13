@@ -69,7 +69,6 @@ pub(crate) trait RootApp {
     fn app_kind(&self) -> AppKind;
     fn app_title(&self) -> &str;
     fn app_icon(&self) -> IconDescriptor;
-    fn permission_hint(&self) -> Option<AppKind>;
     fn device_shell_operation(
         &mut self,
         operation: &ui_core::floating_surface::DeviceShellOperation,
@@ -278,10 +277,6 @@ impl AppWidget for RootWidget {
         self.0.app_icon()
     }
 
-    fn permission_hint(&self) -> Option<AppKind> {
-        self.0.permission_hint()
-    }
-
     fn device_shell_operation(
         &mut self,
         operation: &ui_core::floating_surface::DeviceShellOperation,
@@ -383,24 +378,11 @@ impl SearchSource for RootWidget {
 
 impl ActionControls for RootWidget {
     fn action_control_bindings(&self) -> Vec<ui_core::widget::ControlBindingMetadata> {
-        let mut bindings = Vec::new();
-        Widget::for_each_child(self, &mut |child| {
-            bindings.extend(ui_core::widget::controls::action_control_bindings(child));
-        });
-        bindings
+        ui_core::widget::controls::children_action_control_bindings(self)
     }
 
     fn has_action_control_bindings(&self) -> bool {
-        // The default inventory contributes semantic bindings for this wrapper
-        // and action bindings from its exposed children. Preserve that scope
-        // while avoiding an allocation of the complete accessibility tree.
-        let mut found = false;
-        Widget::for_each_child(self, &mut |child| {
-            if !found {
-                found = ui_core::widget::controls::has_action_control_bindings(child);
-            }
-        });
-        found
+        ui_core::widget::controls::children_have_action_control_bindings(self)
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

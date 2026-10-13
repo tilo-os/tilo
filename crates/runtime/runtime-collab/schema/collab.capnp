@@ -267,7 +267,8 @@ interface ChannelHandle {
   invokeTaskAction @30 (runId :UInt64, lease :Text, peerId :UInt64,
                         resource :Text, action :Text, argument :Text,
                         hasArgument :Bool, confirmationJson :Text,
-                        invocation :Text, waitMs :UInt32, seenJson :Text)
+                        invocation :Text, waitMs :UInt32, seenJson :Text,
+                        provider :Text)
       -> (id :UInt64, updateJson :Text);
   # Cooperative cancellation for a leased task. The broker reflects a Task
   # Center cancellation; it never lets an agent cancel a task by itself.
@@ -418,6 +419,10 @@ interface ChannelHandle {
   # a timer. A host without a channel service answers unimplemented, and the
   # endpoint asks on a timer as before.
   channelKeysChanged @59 (after :UInt64) -> (change :UInt64);
+  # Informational bounded reports, correlated to that same original invocation.
+  # Final receipt remains authoritative. No fallback to raw execution or @58.
+  approvedCheckReportedProgress @60 (request :Data) -> (stream :ApprovedCheckReportedProgressStream);
+
 
 }
 
@@ -964,4 +969,9 @@ struct ResourceViewRangeSpec {
   startParam @1 :Text;
   endParam @2 :Text;
   unitParam @3 :Text;
+}
+
+# Each read returns exactly one nonempty field. Receipt/error freezes the lane.
+interface ApprovedCheckReportedProgressStream {
+  read @0 () -> (report :Data, receipt :Data, error :Text);
 }

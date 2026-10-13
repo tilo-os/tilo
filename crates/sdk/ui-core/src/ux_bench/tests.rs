@@ -1,8 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
 use super::*;
 
 #[test]
@@ -143,10 +138,10 @@ fn wheel(driver: &mut crate::headless::FrameHarness, physical_y: f64, scale: f64
         event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent},
     };
     driver.set_input_scale(scale).unwrap();
-    driver.send(&WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: PhysicalPosition::new(60.0 * scale, 60.0 * scale),
-    });
+    driver.send(&crate::synthetic_input::cursor_moved(
+        60.0 * scale,
+        60.0 * scale,
+    ));
     driver.send(&WindowEvent::MouseWheel {
         device_id: DeviceId::dummy(),
         delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, physical_y)),

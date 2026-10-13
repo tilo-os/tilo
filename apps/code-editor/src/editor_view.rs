@@ -19,7 +19,7 @@
 use crate::app::replace_chars;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::gesture::{DragSelect, Granularity};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -223,10 +223,6 @@ struct BufferProjection {
 const EAGER_HIGHLIGHT_BYTES: usize = 256 * 1024;
 const INACTIVE_SOURCE_BYTES: usize = 48 * 1024 * 1024;
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent, unrelated flag (focus, dirty, popup state, zero-state click) rather than a set of options that combine — a bitflag/enum would not read better"
-)]
 pub struct EditorView {
     rect: Rect,
     /// The buffer's lines (cache of the CRDT Text split on '\n').
@@ -2407,12 +2403,12 @@ impl EditorView {
     /// F12 (go to definition) and F1 (hover — instant for an on-caret
     /// diagnostic, plus an LSP request). Returns `true` when consumed.
     fn handle_lsp_trigger_keys(&mut self, logical_key: &Key, handled: &mut bool) -> bool {
-        if let Key::Named(NamedKey::F12) = logical_key {
+        if matches!(logical_key, Key::Named(NamedKey::F12)) {
             self.lsp_ask = Some(LspAsk::Definition);
             *handled = true;
             return true;
         }
-        if let Key::Named(NamedKey::F1) = logical_key {
+        if matches!(logical_key, Key::Named(NamedKey::F1)) {
             // Instant, server-free hover: if the caret sits on a diagnostic,
             // show its message immediately. Also ask the LSP for a richer
             // hover (which supersedes this when it arrives).
@@ -2655,19 +2651,14 @@ impl Widget for EditorView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -2780,7 +2771,7 @@ impl Widget for EditorView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let next = ctx.logical(position);
                 self.handle_cursor_moved(next, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => self.handle_mouse_wheel(*delta, ctx.handled),
@@ -2806,17 +2797,13 @@ impl Widget for EditorView {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Document)
                 .with_name("Code editor")
-                .with_state(ui::a11y::AccessState {
-                    focusable: true,
-                    focused: self.is_focused,
-                    multiline: true,
-                    ..Default::default()
-                }),
+                .with_state(
+                    ui::a11y::AccessState::new()
+                        .focusable(true)
+                        .focused(self.is_focused)
+                        .multiline(true),
+                ),
         )
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2884,13 +2871,7 @@ impl Widget for EditorView {
         self.is_focused
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    ui::redraw_flag!();
 }
 
 impl EditorView {
@@ -3197,11 +3178,7 @@ mod tests {
         let row = ev.completion_list.row_rect(1).expect("second row in view");
         ev.last_cursor = row.center();
         let mut handled = false;
-        let press = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        let press = ui::synthetic_input::mouse_press();
         assert!(ev.handle_completion_pointer(
             &press,
             1.0,
@@ -3437,23 +3414,19 @@ mod tests {
     }
 
     fn move_to(ev: &mut EditorView, doc: &mut AutoCommit, p: Point) {
-        let win_ev = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        };
+        let win_ev = ui::synthetic_input::cursor_moved(p.x, p.y);
         ui::testing::Dispatch::new().doc(doc).send(ev, &win_ev);
     }
 
     fn left(ev: &mut EditorView, doc: &mut AutoCommit, pressed: bool, shift: bool) {
-        let win_ev = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: if pressed {
+        let win_ev = ui::synthetic_input::mouse_input(
+            if pressed {
                 ElementState::Pressed
             } else {
                 ElementState::Released
             },
-            button: MouseButton::Left,
-        };
+            MouseButton::Left,
+        );
         ui::testing::Dispatch::new()
             .modifiers(mods(false, shift))
             .doc(doc)
@@ -3462,11 +3435,7 @@ mod tests {
 
     fn key(ev: &mut EditorView, doc: &mut AutoCommit, k: Key, ctrl: bool, shift: bool) {
         let ke = ui::synthetic_input::key_event(k, None, ElementState::Pressed);
-        let win_ev = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ke,
-            is_synthetic: false,
-        };
+        let win_ev = ui::synthetic_input::keyboard_input(ke);
         ui::testing::Dispatch::new()
             .modifiers(mods(ctrl, shift))
             .doc(doc)

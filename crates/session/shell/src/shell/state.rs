@@ -2,6 +2,7 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::ReadTyped as _;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
@@ -506,22 +507,11 @@ pub struct GovernedPeerIdentity {
     /// remove an already-governed revocation.
     #[serde(default)]
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
-    /// Set when governance admitted the device as a delegated agent of its
-    /// person (`tilo-peer-state`'s agent members). Absent from every other
-    /// identity's bytes.
+    /// Set when governance admitted the device as a delegate of its person,
+    /// an agent or an installed bot. Absent from every other identity's
+    /// bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<GovernedAgentRow>,
-}
-
-/// The delegation a governed agent identity carries, as room governance
-/// records it beside the agent's certificate.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GovernedAgentRow {
-    /// The person's root-signed delegation naming the device an agent.
-    pub delegation: tilo_relay_protocol::agents::AgentDelegation,
-    /// When the governor withdrew it. Its earlier work stays attributed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub withdrawn_at_ns: Option<u64>,
+    pub delegate: Option<tilo_peer_state::GovernedDelegateRow>,
 }
 
 impl GovernedPeerIdentity {
@@ -530,14 +520,15 @@ impl GovernedPeerIdentity {
     /// this device. Withdrawn and expired agents are still named, so the
     /// work they did stays attributed to them.
     fn projected_agent(&self) -> Option<tilo_user_identity::GovernedAgentIdentityV2> {
-        let delegation = &self.agent.as_ref()?.delegation;
+        let delegation = &self.delegate.as_ref()?.delegation;
+        let agent_id = delegation.delegate.agent_id()?;
         let cert = &self.device_cert;
-        (delegation.agent_device_public_key == cert.device_public_key
+        (delegation.device_public_key == cert.device_public_key
             && delegation
                 .verify(&cert.user_public_key, delegation.issued_at_ns)
                 .is_ok())
         .then(|| tilo_user_identity::GovernedAgentIdentityV2 {
-            agent_id: delegation.agent_id.clone(),
+            agent_id: agent_id.to_owned(),
             label: delegation.label.clone(),
             color: delegation.color,
         })
@@ -1430,14 +1421,14 @@ impl WorkspaceTree {
             .sort_by_key(|entry| (entry.revoked_device_public_key, entry.revoked_at_ns));
         governed_revocations.dedup_by_key(|entry| entry.revoked_device_public_key);
         // Re-certifying a device keeps what governance knows it as.
-        let agent = identities
+        let delegate = identities
             .get(peer_id)
             .filter(|known| known.device_cert == device_cert)
-            .and_then(|known| known.agent.clone());
+            .and_then(|known| known.delegate.clone());
         let row = GovernedPeerIdentity {
             device_cert,
             revocations: governed_revocations,
-            agent,
+            delegate,
         };
         let changed = identities.insert(peer_id.to_string(), row.clone()).as_ref() != Some(&row);
         if changed {
@@ -1479,7 +1470,7 @@ impl WorkspaceTree {
             if revoked.contains(&(root_key, identity.device_cert.device_public_key)) {
                 continue;
             }
-            if identity.agent.is_some() {
+            if identity.delegate.is_some() {
                 if let Some(agent) = identity.projected_agent() {
                     agents.entry(root_key).or_default().push(
                         tilo_user_identity::GovernedDeviceIdentityV2 {
@@ -1820,7 +1811,7 @@ impl WorkspaceTree {
         reason = "room-document projection keeps all capability map updates in one Automerge transaction"
     )]
     fn try_sync_room_doc(&mut self, room: RoomId) -> bool {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        use automerge::{ROOT, transaction::Transactable};
         use tilo_peer_state::room::media;
 
         if self.requires_native_owner(room) {
@@ -1872,24 +1863,12 @@ impl WorkspaceTree {
         // Identity first: the receiver checks this field against the
         // room it asked for, so an unlabelled document could be applied
         // to the wrong one.
-        let current_room = match doc.get(&ROOT, "room").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let current_room = doc.str_at(&ROOT, "room");
         if current_room.as_deref() != Some(room_str.as_str()) {
             let _ = doc.put(&ROOT, "room", room_str.clone());
         }
 
-        let current_name = match doc.get(&ROOT, "name").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let current_name = doc.str_at(&ROOT, "name");
         // The name is governed like the owner: only the governing machine
         // writes it. A member's local name (a device's "From another
         // device" placeholder before its first sync) would otherwise race
@@ -5799,6 +5778,27 @@ mod automerge_foundation_tests {
     use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 
     #[test]
+    fn appended_workspace_rebuilds_with_the_same_default_grants() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let id = tree.append_empty_workspace("Project X");
+        let created = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .unwrap();
+        let mut restored = DesktopTree::default();
+        tilo_desktop_model::desktop_doc::rebuild(&tree.doc, &mut restored);
+        let reconstructed = restored
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .unwrap();
+        assert_eq!(reconstructed.room, created.room);
+        assert_eq!(reconstructed.policy, created.policy);
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -7069,17 +7069,11 @@ mod automerge_foundation_tests {
     /// The owner and capability ids the receiver's own **room document**
     /// records — not its cache, so a divergent fold can't hide behind it.
     fn governance_in_room_doc(tree: &WorkspaceTree, room: RoomId) -> (Option<String>, Vec<String>) {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        use automerge::{ROOT, ReadDoc};
         let Some(doc) = tree.room_docs.get(&room) else {
             return (None, Vec::new());
         };
-        let owner = match doc.get(&ROOT, "owner").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let owner = doc.str_at(&ROOT, "owner");
         let mut caps: Vec<String> =
             match doc.get(&ROOT, projection::ROOM_SANDBOX_KEY).ok().flatten() {
                 Some((_, caps_id)) => doc.keys(&caps_id).collect(),
@@ -7464,7 +7458,7 @@ mod automerge_foundation_tests {
                 let bytes = serde_json::to_vec(&GovernedPeerIdentity {
                     device_cert: spoofed,
                     revocations: Vec::new(),
-                    agent: None,
+                    delegate: None,
                 })
                 .unwrap();
                 doc.put(&identities, endpoint.to_string(), ScalarValue::Bytes(bytes))
@@ -7575,13 +7569,15 @@ mod automerge_foundation_tests {
         };
         tilo_user_identity::sign_device_cert(&mut agent_certificate, &root_key).unwrap();
         let delegation = |signer: &ed25519_dalek::SigningKey| {
-            tilo_relay_protocol::agents::AgentDelegation::sign(
+            tilo_relay_protocol::delegation::Delegation::sign(
                 signer,
                 *agent_device.as_bytes(),
-                "scribe",
+                tilo_relay_protocol::delegation::Delegate::Agent {
+                    agent_id: "scribe".into(),
+                },
                 "Scribe",
                 [10, 20, 30],
-                tilo_relay_protocol::agents::AgentScope {
+                tilo_relay_protocol::delegation::DelegateScope {
                     rooms: vec![uuid::Uuid::from_u128(7).to_string()],
                     apps: Vec::new(),
                 },
@@ -7596,9 +7592,10 @@ mod automerge_foundation_tests {
                 GovernedPeerIdentity {
                     device_cert: agent_certificate.clone(),
                     revocations: Vec::new(),
-                    agent: Some(GovernedAgentRow {
+                    delegate: Some(tilo_peer_state::GovernedDelegateRow {
                         delegation: delegation(signer),
                         withdrawn_at_ns: None,
+                        installation: None,
                     }),
                 },
             );
@@ -7681,13 +7678,15 @@ mod automerge_foundation_tests {
             )
         ));
         let scribe = iroh::SecretKey::generate().public();
-        let delegation = tilo_relay_protocol::agents::AgentDelegation::sign(
+        let delegation = tilo_relay_protocol::delegation::Delegation::sign(
             signer,
             *scribe.as_bytes(),
-            "scribe",
+            tilo_relay_protocol::delegation::Delegate::Agent {
+                agent_id: "scribe".into(),
+            },
             "Scribe",
             [10, 20, 30],
-            tilo_relay_protocol::agents::AgentScope {
+            tilo_relay_protocol::delegation::DelegateScope {
                 rooms: vec![room.to_string()],
                 apps: Vec::new(),
             },
@@ -7704,9 +7703,10 @@ mod automerge_foundation_tests {
                     tilo_user_identity::CertificationPolicy::agent().ceiling,
                 ),
                 revocations: Vec::new(),
-                agent: Some(GovernedAgentRow {
+                delegate: Some(tilo_peer_state::GovernedDelegateRow {
                     delegation,
                     withdrawn_at_ns: None,
+                    installation: None,
                 }),
             },
         );
