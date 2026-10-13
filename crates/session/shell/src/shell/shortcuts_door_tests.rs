@@ -635,6 +635,7 @@ fn invoke_step(id: &str, action: &str, args: &[(&str, Binding)]) -> Step {
                 .iter()
                 .map(|(name, binding)| ((*name).to_string(), binding.clone()))
                 .collect(),
+            appearance: None,
         },
     )
 }

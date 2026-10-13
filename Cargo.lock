@@ -16139,6 +16139,7 @@ dependencies = [
 name = "tilo-automation"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -16424,6 +16425,22 @@ name = "tilo-clock"
 version = "0.1.0"
 dependencies = [
  "web-time",
+]
+
+[[package]]
+name = "tilo-connector"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "blake3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-secrets",
+ "tokio",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
