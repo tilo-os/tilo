@@ -157,6 +157,18 @@ pub fn admit_invited_member(
     if exact_redemption {
         return Ok(AdmissionOutcome::AlreadyApplied);
     }
+    // A banned person stays out whatever invitation they hold, an older one
+    // or a new one, until the room unbans them.
+    let banned = tilo_action_policy::roles::block_grant_id(&hex::encode(
+        redemption.certificate().user_public_key,
+    ));
+    if crate::room::policy::legacy(document)
+        .grants
+        .iter()
+        .any(|grant| grant.id == banned)
+    {
+        return Err("this person is banned from the room".into());
+    }
     let cert = redemption.certificate();
     let id = hex::encode(cert.device_public_key);
     let prior = governance

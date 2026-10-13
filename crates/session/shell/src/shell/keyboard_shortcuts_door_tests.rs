@@ -133,6 +133,7 @@ impl Door {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         ))
         .map(|receipt| receipt.status)
@@ -417,6 +418,7 @@ fn a_helper_asked_first_rebinds_on_the_persons_confirmation() {
         confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
         revision: None,
         wait_ms: None,
+        appearance: None,
     };
     assert_eq!(
         answer(door.host.invoke(&agent, request())).err(),

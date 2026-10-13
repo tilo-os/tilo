@@ -482,6 +482,7 @@ impl LocalStart {
             confirmation,
             revision: None,
             wait_ms: None,
+            appearance: None,
         })
     }
 }
@@ -2017,6 +2018,7 @@ impl LiveAppActionsProvider {
                         confirmation,
                         revision: Some(revision.clone()),
                         wait_ms: None,
+                        appearance: None,
                     });
                 let ticket = directory_start_ticket(
                     admission,
