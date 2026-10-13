@@ -1310,9 +1310,7 @@ impl Widget for ToastStack {
         self.laid_out != self.toasts.len()
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1384,10 +1382,6 @@ impl Widget for ToastStack {
 
     fn name(&self) -> &'static str {
         "ToastStack"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

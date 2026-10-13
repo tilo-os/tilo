@@ -290,9 +290,7 @@ impl Widget for RangeChart {
         };
         taffy.widget_leaf(style, map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
     #[allow(
         clippy::too_many_lines,
         reason = "axis, intervals, milestones, progress, and inspector share a projection"
@@ -515,9 +513,6 @@ impl Widget for RangeChart {
     }
     fn name(&self) -> &'static str {
         "RangeChart"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
     fn is_focusable(&self) -> bool {
         true

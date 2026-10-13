@@ -24,18 +24,7 @@ macro_rules! chart_leaf {
             crate::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
         }
 
-        fn apply_layout(
-            &mut self,
-            taffy: &taffy::TaffyTree<()>,
-            node: taffy::NodeId,
-            origin: vello::kurbo::Point,
-        ) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
-
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            self.rect
-        }
+        crate::rect_geometry!();
 
         fn is_layout_dirty(&self) -> bool {
             self.rect == vello::kurbo::Rect::ZERO
