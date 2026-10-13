@@ -648,6 +648,16 @@ readers = [
 ]
 
 [[cargo]]
+package = "discord-worker"
+# The bridge test and the live example install the bridge bot from its
+# program file, beside the worker in the connector app.
+inputs = ["apps/discord/bridge/program.json"]
+readers = [
+  "apps/discord/worker/tests/bridge.rs",
+  "apps/discord/worker/examples/live_bridge.rs",
+]
+
+[[cargo]]
 package = "greeter"
 # The greeter offers exactly the sessions the image ships.
 inputs = ["os/usr/share/wayland-sessions/*.desktop"]
@@ -1069,6 +1079,11 @@ by = "tools/tests/test_focused_test.py"
 [[unrequired]]
 suite = "tools/ci/test_airdrop_sender.py"
 reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Python dependencies, system libarchive/OpenSSL and loopback TLS sockets; the offline ci-fast image cannot fetch the oracle; run explicitly as documented in continuity-interop.md, failing if prerequisites are absent"
+
+[[unrequired]]
+suite = "crates/hosting/tilo-room-service/container/test-image.sh"
+reason = "needs the built room-service image"
+workflow = "room-service-image.yml"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"

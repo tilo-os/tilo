@@ -541,20 +541,17 @@ fn read_u64(doc: &AutoCommit, obj: &ObjId, key: &str) -> u64 {
 }
 
 impl Namespace {
-    /// # Errors
-    ///
-    /// Returns an error if the fresh document's root `nodes` map cannot be created.
-    pub fn new(author: impl Into<String>) -> Result<Self, automerge::AutomergeError> {
-        let mut doc = AutoCommit::new();
-        let nodes = doc.put_object(&ROOT, "nodes", ObjType::Map)?;
+    /// A namespace over `doc` whose `nodes` map is already in place, with
+    /// only the root bound and every derived index empty.
+    fn over(doc: AutoCommit, nodes: ObjId, author: String, next_id: u64) -> Self {
         let mut ns = Self {
             doc: ChangeTrackedDoc::new(doc),
             nodes,
             ino_to_id: HashMap::new(),
             id_to_ino: HashMap::new(),
             next_ino: ROOT_INO + 1,
-            author: author.into(),
-            next_id: 0,
+            author,
+            next_id,
             content_authority: ContentAuthority::LegacyNamespace,
             verified_records: HashMap::new(),
             record_index: BTreeMap::new(),
@@ -585,6 +582,16 @@ impl Namespace {
         };
         ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
         ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
+        ns
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error if the fresh document's root `nodes` map cannot be created.
+    pub fn new(author: impl Into<String>) -> Result<Self, automerge::AutomergeError> {
+        let mut doc = AutoCommit::new();
+        let nodes = doc.put_object(&ROOT, "nodes", ObjType::Map)?;
+        let mut ns = Self::over(doc, nodes, author.into(), 0);
         let root_record_id = FileRecordId::new();
         let _ = ns
             .doc
@@ -616,44 +623,7 @@ impl Namespace {
                 max_local = max_local.max(v.saturating_add(1));
             }
         }
-        let mut ns = Self {
-            doc: ChangeTrackedDoc::new(doc),
-            nodes,
-            ino_to_id: HashMap::new(),
-            id_to_ino: HashMap::new(),
-            next_ino: ROOT_INO + 1,
-            author,
-            next_id: max_local,
-            content_authority: ContentAuthority::LegacyNamespace,
-            verified_records: HashMap::new(),
-            record_index: BTreeMap::new(),
-            record_index_order: Vec::new(),
-            record_index_revision: String::new(),
-            record_index_by_node: HashMap::new(),
-            record_index_children: HashMap::new(),
-            record_index_ambiguous: HashSet::new(),
-            record_index_digest: RecordIndexDigest::default(),
-            tree: TreeIndex::default(),
-            record_ids_complete: false,
-            resolved_heads: None,
-            incremental_batch: None,
-            peer_sync_states: HashMap::new(),
-            peer_sync_generation: 0,
-            #[cfg(test)]
-            sync_bytes_generated: 0,
-            #[cfg(test)]
-            record_index_rebuilds: 0,
-            verified_generation: next_verified_generation(),
-            merge_generation: next_verified_generation(),
-            #[cfg(test)]
-            conflict_scans: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            #[cfg(test)]
-            record_index_page_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            #[cfg(test)]
-            node_entry_reads: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        };
-        ns.ino_to_id.insert(ROOT_INO, ROOT_ID.to_string());
-        ns.id_to_ino.insert(ROOT_ID.to_string(), ROOT_INO);
+        let mut ns = Self::over(doc, nodes, author, max_local);
         ns.ensure_record_ids();
         ns.rebuild_record_index();
         Ok(ns)
