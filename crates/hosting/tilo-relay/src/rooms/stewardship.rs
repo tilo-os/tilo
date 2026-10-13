@@ -40,6 +40,68 @@ pub(super) struct Stewardship {
     delivery: u64,
 }
 
+/// A governed room's channel stewards, and the readers its governance lets
+/// in as the room last handed them over.
+pub(super) struct Steward {
+    /// The newest governance generation handed over and its readers. Apart
+    /// from the channels: governance that only lets devices in moves no
+    /// channel, so the room hands its readers over without waiting for an
+    /// admission in progress.
+    readers: std::sync::Mutex<Option<(u64, BTreeSet<Ed25519PublicKey>)>>,
+    pub(super) channels: tokio::sync::Mutex<Stewardship>,
+}
+
+impl Steward {
+    pub(super) fn new(channels: Stewardship) -> Self {
+        Self {
+            readers: std::sync::Mutex::new(None),
+            channels: tokio::sync::Mutex::new(channels),
+        }
+    }
+
+    fn handed_over(&self) -> std::sync::MutexGuard<'_, Option<(u64, BTreeSet<Ed25519PublicKey>)>> {
+        self.readers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether governance whose readers are `readers` must move the
+    /// channels: it removed a reader handed over before, or none were yet
+    /// (the channels' published state is then unknown). A device let in is
+    /// admitted to a channel when it asks.
+    pub(super) fn moves_channels(&self, readers: &BTreeSet<Ed25519PublicKey>) -> bool {
+        self.handed_over()
+            .as_ref()
+            .is_none_or(|(_, before)| !before.is_subset(readers))
+    }
+
+    /// Hand over `readers`, those of governance `generation`.
+    pub(super) fn hand_over(&self, generation: u64, readers: &BTreeSet<Ed25519PublicKey>) {
+        let mut handed = self.handed_over();
+        if handed
+            .as_ref()
+            .is_none_or(|(known, _)| *known <= generation)
+        {
+            *handed = Some((generation, readers.clone()));
+        }
+    }
+
+    /// The readers of the newer of governance `generation`, whose readers
+    /// are `taken`, and the generation handed over last. An admission reads
+    /// the room before it waits for the channels; a governance change
+    /// handed over meanwhile let in devices whose requests it now takes.
+    pub(super) fn readers(
+        &self,
+        generation: u64,
+        taken: BTreeSet<Ed25519PublicKey>,
+    ) -> BTreeSet<Ed25519PublicKey> {
+        match &*self.handed_over() {
+            Some((handed, readers)) if *handed > generation => readers.clone(),
+            _ => taken,
+        }
+    }
+}
+
 impl Stewardship {
     /// The stewardship of `room`, kept under `dir`, when `key`'s certificate
     /// lets it own workspaces; channels already stewarded there are opened
@@ -179,7 +241,8 @@ impl Stewardship {
         }
     }
 
-    /// Move every open channel to `allowed`, after governance changed.
+    /// Move every open channel to `allowed`, after governance removed a
+    /// reader.
     pub(super) fn reconcile_all(
         &mut self,
         allowed: &BTreeSet<Ed25519PublicKey>,
@@ -251,5 +314,41 @@ impl Stewardship {
         }
         self.published.insert(channel, published);
         Ok(messages)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn readers(devices: &[u8]) -> BTreeSet<Ed25519PublicKey> {
+        devices
+            .iter()
+            .map(|device| Ed25519PublicKey::from_bytes([*device; 32]))
+            .collect()
+    }
+
+    #[test]
+    fn only_a_removed_reader_moves_the_channels() {
+        let tmp = tempfile::tempdir().unwrap();
+        let steward = Steward::new(Stewardship::new(
+            "room",
+            tmp.path().join("room.channels"),
+            &SigningKey::from_bytes(&[9; 32]),
+        ));
+        // Nothing handed over yet: the channels' published state is unknown.
+        assert!(steward.moves_channels(&readers(&[1])));
+        steward.hand_over(1, &readers(&[1]));
+        // A join only lets a device in.
+        assert!(!steward.moves_channels(&readers(&[1, 2])));
+        steward.hand_over(2, &readers(&[1, 2]));
+        assert!(steward.moves_channels(&readers(&[2])));
+        // An admission that read the room at generation 1 takes the readers
+        // handed over since; one that read the newest keeps its own.
+        assert_eq!(steward.readers(1, readers(&[1])), readers(&[1, 2]));
+        assert_eq!(steward.readers(2, readers(&[1])), readers(&[1]));
+        // An older generation handed over late replaces nothing.
+        steward.hand_over(1, &readers(&[1]));
+        assert_eq!(steward.readers(0, BTreeSet::new()), readers(&[1, 2]));
     }
 }
