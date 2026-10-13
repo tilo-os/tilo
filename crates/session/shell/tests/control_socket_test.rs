@@ -94,7 +94,7 @@ fn spawn_with_control() -> (Child, PathBuf, tempfile::TempDir) {
         }
     });
 
-    if let Ok(()) = rx.recv_timeout(tilo_test_env::hang_bound()) {
+    if rx.recv_timeout(tilo_test_env::hang_bound()) == Ok(()) {
         (child, socket_path, control_dir)
     } else {
         let _ = child.kill();

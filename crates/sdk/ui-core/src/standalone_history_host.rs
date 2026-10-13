@@ -591,7 +591,7 @@ impl StandaloneHistoryHost {
         command: HistoryCommand,
         context: &HistoryReadContext<'_>,
     ) -> Result<(), HistoryHostError> {
-        if let HistoryCommand::Hide = command {
+        if command == HistoryCommand::Hide {
             if self.session.is_some() {
                 self.close();
             }
@@ -608,7 +608,7 @@ impl StandaloneHistoryHost {
                 context,
             );
         }
-        if let HistoryCommand::Open = command {
+        if command == HistoryCommand::Open {
             // Repeated Open retains the original captured document and focus.
             if self.session.is_some() {
                 self.refresh(context)?;

@@ -960,17 +960,17 @@ impl GstState {
     /// freshly opened) the preroll is the only picture that exists, so it has
     /// to be asked for first.
     fn drain_samples(&mut self) -> bool {
-        let mut got = false;
-
         // Paused, or playing but not yet seeded: the preroll is the picture.
-        if (!self.playing || self.latest.is_none())
+        let mut got = if (!self.playing || self.latest.is_none())
             && let Some(sample) = self.appsink.try_pull_preroll(gst::ClockTime::ZERO)
             && let Some(frame) = frame_from_sample(&sample, self.acceptance)
         {
             self.record_caps(&sample);
             self.store(frame);
-            got = true;
-        }
+            true
+        } else {
+            false
+        };
 
         // Playing: drain to the newest so the surface never lags the pipeline.
         if self.playing {

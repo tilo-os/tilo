@@ -52,12 +52,13 @@ impl FilePickerOverlay {
     /// unattributed modals later in the session.
     pub(crate) fn pump(&mut self, chrome: Option<&Chrome>) -> bool {
         let mut dirty = self.pump_semantic(chrome);
-        if self.active.as_ref().is_some_and(|active| {
+        let abandoned = self.active.as_ref().is_some_and(|active| {
             active
                 .reply
                 .as_ref()
                 .is_some_and(tokio::sync::oneshot::Sender::is_closed)
-        }) {
+        });
+        if abandoned {
             self.active = None;
             dirty = true;
         }
