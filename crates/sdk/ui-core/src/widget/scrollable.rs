@@ -1359,29 +1359,13 @@ impl Widget for Scrollable {
             metrics: self.v_metrics(),
         })
     }
-    #[expect(
-        clippy::float_cmp,
-        reason = "an offset that resolves to exactly the current one is a no-op scroll"
-    )]
     fn apply_primary_vertical_scroll(
         &mut self,
         action: crate::widget::PrimaryScrollAction,
     ) -> crate::widget::PrimaryScrollResult {
-        use crate::widget::PrimaryScrollResult;
-        let Some(region) = self.primary_vertical_scroll() else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        let Some(next) = action.offset(region.metrics) else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        if next == region.metrics.offset {
-            return PrimaryScrollResult::Unchanged(region);
-        }
-        self.set_offset_y(next as f32);
-        self.primary_vertical_scroll().map_or(
-            PrimaryScrollResult::Unsupported,
-            PrimaryScrollResult::Changed,
-        )
+        action.apply_to(self, Self::primary_vertical_scroll, |s, _, next| {
+            s.set_offset_y(next as f32);
+        })
     }
 
     fn child_clip_rect(&self) -> Option<Rect> {

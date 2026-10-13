@@ -740,7 +740,7 @@ fn start_calibration(
         microphones,
         listening,
         timed_source(network, local, &peers),
-        Box::new(crate::shell::speaker_group_runtime::random_nonzero_16),
+        Box::new(crate::random::nonzero::<16>),
         Instant::now(),
     )?;
     state()

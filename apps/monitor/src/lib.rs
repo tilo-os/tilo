@@ -49,4 +49,4 @@ pub mod tree;
 pub mod view;
 
 pub use app::MonitorApp;
-pub use resource::{LOCALES, Monitor, MonitorEffect, MonitorShell};
+pub use resource::{Monitor, MonitorEffect, MonitorShell};
