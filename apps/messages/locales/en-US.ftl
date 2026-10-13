@@ -24,7 +24,6 @@ messages-not-selected = Choose a service and account before writing a message.
 messages-contact-missing = This contact is unavailable.
 messages-association-conflict = This service address has conflicting contact associations. Review them in Contacts.
 messages-recipient = Service recipient
-messages-confirm-recipient = Confirm this person's service address
 messages-confirm-hint = Verify this address belongs to the person above. Similar names or phone numbers are not proof.
 
 messages-identity-unavailable = A verified service identity is required before this contact can be connected.
