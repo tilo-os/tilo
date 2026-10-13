@@ -678,6 +678,18 @@ fn entries_are_stamped_capped_and_stably_addressed() {
         // The first capped row still describes a delta, since the window opens
         // against the snapshot just before it.
         assert_eq!(capped[0].summary, "+1 -0 chars");
+        // Exact reads are independent of the source's current page, and use
+        // the same structural predecessor snapshot as the full projection.
+        let selected = source()
+            .with_max_entries(1)
+            .selected_entries(&mut doc, &[all[0].id, all[2].id]);
+        assert_eq!(selected.len(), 2);
+        for (actual, expected) in selected.iter().zip([&all[0], &all[2]]) {
+            assert_eq!(actual.id, expected.id);
+            assert_eq!(actual.summary, expected.summary);
+            assert_eq!(actual.text_delta, expected.text_delta);
+            assert_eq!(actual.entry_kind, expected.entry_kind);
+        }
     }
     // phase: entry_ids_are_stable_across_peers
     // Entry ids are the change's own content address, so two peers building a

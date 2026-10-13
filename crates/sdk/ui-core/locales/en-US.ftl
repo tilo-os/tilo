@@ -503,3 +503,4 @@ history-browse-all = All
 history-browse-clear = Clear filters
 history-browse-owner = Filters narrow changes, not the captured document. Preview shows the owning document.
 history-compare-pinned = Compare pinned versions · { $changes }. Before shows the causal parents; After includes the selected changes. These are read-only views, not a pixel diff. Media is shown only when historical content is available.
+history-compare-metadata-unavailable = Selected change metadata is unavailable from this history source

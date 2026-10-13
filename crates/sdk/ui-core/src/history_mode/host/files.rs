@@ -775,6 +775,12 @@ mod tests {
         source.open(Some(selected));
         host.refresh(&AutoCommit::new());
         assert_eq!(host.files.as_ref().unwrap().selected(), Some(selected));
+        assert!(
+            host.compare_description()
+                .contains(&I18nManager::lookup_plain(
+                    "history-compare-metadata-unavailable"
+                ))
+        );
         assert_eq!(
             host.files.as_ref().unwrap().confirmation_token(),
             active_nonce,

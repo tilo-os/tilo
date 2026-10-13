@@ -500,3 +500,4 @@ history-browse-all = Alle
 history-browse-clear = Filter zurücksetzen
 history-browse-owner = Filter grenzen Änderungen ein, nicht das erfasste Dokument. Die Vorschau zeigt das zugehörige Dokument.
 history-compare-pinned = Fixierte Versionen vergleichen · { $changes }. Vorher zeigt die kausalen Vorgänger; Nachher enthält die ausgewählten Änderungen. Dies sind schreibgeschützte Ansichten, kein Pixelvergleich. Medien werden nur bei verfügbaren historischen Inhalten angezeigt.
+history-compare-metadata-unavailable = Metadaten der ausgewählten Änderung sind bei dieser Verlaufsquelle nicht verfügbar

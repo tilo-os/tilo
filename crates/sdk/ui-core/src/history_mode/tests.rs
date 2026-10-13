@@ -198,6 +198,50 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
 }
 
 #[test]
+fn older_selection_retrieves_exact_metadata_after_page_eviction() {
+    let (mut doc, oldest, _) = two_titles();
+    let mut raced = HistoryController::new(resource("profile-a", "workspace-a"), &doc).unwrap();
+    let expected = raced
+        .entries()
+        .iter()
+        .find(|entry| entry.id == oldest)
+        .unwrap()
+        .clone();
+    for i in 0..=HISTORY_PAGE {
+        doc.put(ROOT, "later", i.to_string()).unwrap();
+        doc.commit().unwrap();
+    }
+    let heads = doc.base_heads();
+    let mut unseen = HistoryController::new(resource("profile-a", "workspace-a"), &doc).unwrap();
+    assert!(!unseen.entries().iter().any(|entry| entry.id == oldest));
+    let exact = unseen.source.selected_entries(&mut doc.clone(), &[oldest]);
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0].summary, expected.summary);
+    assert_eq!(exact[0].author, expected.author);
+    assert_eq!(exact[0].timestamp, expected.timestamp);
+    assert_eq!(exact[0].context, expected.context);
+    for history in [&mut unseen, &mut raced] {
+        // The latter receives incoming changes before select, without refresh.
+        history.select(&doc, &[oldest]).unwrap();
+        assert!(!history.entries().iter().any(|entry| entry.id == oldest));
+        assert_eq!(
+            history.selected_summaries(),
+            std::slice::from_ref(&expected.summary)
+        );
+        let pinned = history.snapshot().unwrap().clone();
+        assert_eq!(value(&load(&pinned), "title").as_deref(), Some("one"));
+        assert_eq!(value(&load(&pinned), "later"), None);
+        history.refresh(&doc).unwrap();
+        assert_eq!(history.snapshot(), Some(&pinned));
+        assert_eq!(
+            history.selected_summaries(),
+            std::slice::from_ref(&expected.summary)
+        );
+    }
+    assert_eq!(doc.base_heads(), heads);
+}
+
+#[test]
 fn the_pinned_preview_survives_refresh_until_back_to_live() {
     // phase: refresh_keeps_the_pinned_preview_and_back_to_live_clears_it
     {

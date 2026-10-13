@@ -198,7 +198,8 @@ impl HistoryHost {
             .controller
             .as_ref()
             .map(|controller| controller.selected_summaries().join(" · "))
-            .unwrap_or_default();
+            .filter(|summaries| !summaries.is_empty())
+            .unwrap_or_else(|| I18nManager::lookup_plain("history-compare-metadata-unavailable"));
         I18nManager::format("history-compare-pinned", &[("changes", summaries.into())])
     }
 }

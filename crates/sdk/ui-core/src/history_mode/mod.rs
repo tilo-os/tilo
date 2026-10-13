@@ -379,13 +379,6 @@ impl HistoryController {
         let factual_entries = refreshed_projection
             .as_ref()
             .map_or(self.entries.as_slice(), |(entries, _)| entries.as_slice());
-        let effect_only = entries.iter().all(|id| {
-            factual_entries
-                .iter()
-                .find(|entry| entry.id == *id)
-                .is_some_and(is_effect_receipt)
-        });
-
         // Retain the admitted projection's metadata with the pinned frontiers,
         // not the paged list that can evict these rows on a later refresh.
         let all_entries;
@@ -395,16 +388,29 @@ impl HistoryController {
         {
             factual_entries
         } else {
-            all_entries = self.source.entries(&mut projection);
+            all_entries = self.source.selected_entries(&mut projection, entries);
             &all_entries
         };
+        let effect_only = entries.iter().all(|id| {
+            factual_entries
+                .iter()
+                .find(|entry| entry.id == *id)
+                .is_some_and(is_effect_receipt)
+        });
         let summaries = entries
             .iter()
-            .filter_map(|id| {
+            .map(|id| {
                 factual_entries
                     .iter()
                     .find(|entry| entry.id == *id)
-                    .map(|entry| entry.summary.clone())
+                    .map_or_else(
+                        || {
+                            crate::i18n::I18nManager::lookup_plain(
+                                "history-compare-metadata-unavailable",
+                            )
+                        },
+                        |entry| entry.summary.clone(),
+                    )
             })
             .collect();
         let before_heads = sorted_heads(comparison.before_heads);

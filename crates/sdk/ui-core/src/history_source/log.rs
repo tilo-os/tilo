@@ -309,6 +309,15 @@ impl HistoryLog {
     /// The rows of the window, as of the last [`Self::follow`].
     fn entries(&self, source: &HistorySource, doc: &AutoCommit) -> Vec<HistoryEntry> {
         let start = self.changes.len().saturating_sub(source.max_entries);
+        self.entries_from(source, doc, start)
+    }
+
+    fn entries_from(
+        &self,
+        source: &HistorySource,
+        doc: &AutoCommit,
+        start: usize,
+    ) -> Vec<HistoryEntry> {
         let genesis_actor = crate::record::genesis_actor(doc).map(|actor| actor.to_hex_string());
         let schema_genesis = tilo_doc::model::schema_genesis_actor_hex();
         let mut out = Vec::with_capacity(self.changes.len().saturating_sub(start));
@@ -380,6 +389,62 @@ impl HistorySource {
         super::with_committed_history(doc, |doc| {
             log.follow(self, doc);
             log.entries(self, doc)
+        })
+    }
+
+    /// Retrieve factual metadata for exact IDs, including changes outside the
+    /// current page. Only selected changes are described; walking the cheap
+    /// metadata index preserves the same prefix frontiers as the paged reader.
+    /// Hidden markers have no row and are deliberately not synthesized.
+    pub fn selected_entries(
+        &self,
+        doc: &mut AutoCommit,
+        ids: &[HistoryEntryId],
+    ) -> Vec<HistoryEntry> {
+        super::with_committed_history(doc, |doc| {
+            let structural = tilo_doc::model::open(doc, &automerge::ROOT).is_ok();
+            let mut log = HistoryLog::default();
+            let hashes = doc.committed_document().change_hashes().to_vec();
+            for hash in hashes {
+                let Some(meta) = doc
+                    .get_change_meta_by_hash(&hash)
+                    .map(|meta| Meta::of(&meta))
+                else {
+                    continue;
+                };
+                let id = entry_id_from_hash(&meta.hash.to_string());
+                if ids.contains(&id) {
+                    // Reconstruct only this change's predecessor state, not a
+                    // full history log or summaries for all intervening rows.
+                    if let Ok(replica) = doc.fork_at(&log.heads)
+                        && let Some(change) = doc.get_change_by_hash(&meta.hash)
+                    {
+                        log.replica = replica;
+                        log.failed = false;
+                        log.replica.update_diff_cursor();
+                        log.snapshot = if log.heads.is_empty() {
+                            Some(DocSnapshot::default())
+                        } else if structural {
+                            tilo_doc::snapshot::of(&log.replica)
+                        } else {
+                            None
+                        };
+                        log.basis = Some(Basis {
+                            max_entries: self.max_entries,
+                            field_paths: self.field_paths,
+                            structural,
+                            locale: crate::i18n::I18nManager::current_locale(),
+                            catalogue: crate::i18n::I18nManager::revision(),
+                        });
+                        log.read(self, doc, meta, change.clone());
+                        continue;
+                    }
+                }
+                // Only selected rows belong to this temporary metadata log.
+                log.heads.retain(|head| !meta.deps.contains(head));
+                log.heads.push(meta.hash);
+            }
+            log.entries_from(self, doc, 0)
         })
     }
 
