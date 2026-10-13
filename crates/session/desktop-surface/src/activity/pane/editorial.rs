@@ -404,7 +404,15 @@ mod tests {
                     entry_kind: EntryKind::Text,
                     artifact_kind: ArtifactKind::File,
                     timestamp: SystemTime::UNIX_EPOCH
-                        + Duration::from_secs(u64::from(n) * 10 + if n >= 3 { 600 } else { 0 }),
+                        .checked_add(Duration::from_secs(
+                            u64::from(n)
+                                .checked_mul(10)
+                                .and_then(|seconds| {
+                                    seconds.checked_add(if n >= 3 { 600 } else { 0 })
+                                })
+                                .unwrap(),
+                        ))
+                        .unwrap(),
                     summary: "Edited text".into(),
                     text_delta: None,
                     diff_payload: None,
