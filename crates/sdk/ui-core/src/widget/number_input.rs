@@ -838,10 +838,7 @@ impl Widget for NumberInput {
         self.field_padding = f32_of_f64(self.field.text_padding_x(theme));
         self.value_style = self.value_style_in(theme);
         let style = Style {
-            size: Size {
-                width: Dimension::length(size.width),
-                height: Dimension::length(size.height),
-            },
+            size: Size::from_lengths(size.width, size.height),
             // A fixed target: in a row that overflows, the fluid field beside
             // it gives, not the stepper (taffy would otherwise squeeze this
             // leaf below its own size — see `Toggle::build_layout`).
@@ -1108,12 +1105,12 @@ impl Widget for NumberInput {
             .with_semantic_key(self.test_id().unwrap_or("number_input"))
             .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
             .with_value(self.format_value())
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.effectively_enabled(),
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.effectively_enabled()),
+            );
         if self.action.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("number_input"));
         }

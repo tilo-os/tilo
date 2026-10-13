@@ -22,7 +22,7 @@
 //! the toolkit's `Dropdown` uses. `draw` itself is a no-op.
 
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -319,10 +319,7 @@ impl Widget for AddressSuggestions {
         // returns a bare `NodeId` across every implementor, so there is
         // nowhere to surface a theoretical error.
         let style = Style {
-            size: Size {
-                width: Dimension::length(self.width),
-                height: Dimension::length(self.panel_height() as f32),
-            },
+            size: Size::from_lengths(self.width, self.panel_height() as f32),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -440,12 +437,12 @@ impl Widget for AddressSuggestions {
                         row_top + self.row_height(),
                     ))
                     .with_position(index.saturating_add(1), self.items.len())
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: index == self.selected,
-                        selected: index == self.selected,
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(index == self.selected)
+                            .selected(index == self.selected),
+                    )
             })
             .collect();
         Some(

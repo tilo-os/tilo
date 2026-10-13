@@ -19,7 +19,7 @@
 use crate::app::replace_chars;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::gesture::{DragSelect, Granularity};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -2655,10 +2655,7 @@ impl Widget for EditorView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             ..Default::default()
         };
@@ -2806,12 +2803,12 @@ impl Widget for EditorView {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Document)
                 .with_name("Code editor")
-                .with_state(ui::a11y::AccessState {
-                    focusable: true,
-                    focused: self.is_focused,
-                    multiline: true,
-                    ..Default::default()
-                }),
+                .with_state(
+                    ui::a11y::AccessState::new()
+                        .focusable(true)
+                        .focused(self.is_focused)
+                        .multiline(true),
+                ),
         )
     }
 

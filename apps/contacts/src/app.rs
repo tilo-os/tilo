@@ -20,7 +20,7 @@ use ui::tilo_resource::Invoke;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::ObjId;
-use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
+use taffy::{NodeId, Position, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -1747,10 +1747,7 @@ impl Widget for ContactsApp {
         let style = Style {
             display: taffy::Display::Flex,
             flex_grow: 1.0,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &children, node_map, self)

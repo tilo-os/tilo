@@ -16,7 +16,7 @@
 //! immediate [`AvatarFace`] painter for rows, gutters and clusters that a
 //! caller lays out itself.
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{self, Color, Fill};
@@ -673,10 +673,7 @@ impl Widget for Avatar {
         self.side = self.size.side(theme);
         let side = crate::num::f32_of_f64(self.side);
         let style = Style {
-            size: Size {
-                width: Dimension::length(side),
-                height: Dimension::length(side),
-            },
+            size: Size::from_lengths(side, side),
             flex_shrink: 0.0,
             ..Default::default()
         };
@@ -745,19 +742,12 @@ impl Widget for Avatar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format};
+    use vello::peniko::ImageData as PenikoImage;
     use vello_encoding::DrawTag;
 
     fn image(width: u32, height: u32) -> PenikoImage {
         let pixels = usize::try_from(width * height * 4).unwrap();
-        PenikoImage {
-            data: Blob::new(Arc::new(vec![200; pixels])),
-            format: Format::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width,
-            height,
-        }
+        crate::raster::rgba8(vec![200; pixels], width, height)
     }
 
     fn paint_face(face: AvatarFace<'_>, theme: &Theme) -> Scene {

@@ -3793,12 +3793,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     .or_else(|| self.heading.clone()),
             )
             .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.is_enabled(),
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.is_enabled()),
+            );
         if let Some(sel) = self.selected()
             && let Some(idx) = self.visible_index_of(sel)
             && let Some((TreeRowKey::Node(_), depth)) = self.index.row_at(&self.model, idx)
@@ -5443,10 +5443,7 @@ mod tests {
             let node = view.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
             let root_taffy = taffy.parent_node(
                 Style {
-                    size: Size {
-                        width: Dimension::length(200.0),
-                        height: Dimension::length(80.0),
-                    },
+                    size: Size::from_lengths(200.0, 80.0),
                     ..Default::default()
                 },
                 &[node],

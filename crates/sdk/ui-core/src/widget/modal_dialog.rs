@@ -38,7 +38,7 @@ use automerge::ObjId;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -2038,10 +2038,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     right: taffy::LengthPercentageAuto::auto(),
                     bottom: taffy::LengthPercentageAuto::auto(),
                 },
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             &children,

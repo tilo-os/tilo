@@ -17,7 +17,7 @@ use std::rc::Rc;
 use ui::widget::ModelPath;
 use ui::widget::TaffyTreeExt;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -68,10 +68,7 @@ fn leaf(
 ) -> NodeId {
     taffy.widget_leaf(
         Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         },
         node_map,

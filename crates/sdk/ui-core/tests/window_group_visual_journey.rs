@@ -22,7 +22,7 @@
 
 use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
@@ -116,10 +116,7 @@ fn render_group_themed(
     // the canvas, and the "maximized" frame proves nothing about them.
     let root = taffy.parent_node(
         Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
+            size: Size::from_lengths(w as f32, h as f32),
             ..Style::default()
         },
         &[node],

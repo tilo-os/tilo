@@ -1696,10 +1696,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
                 let root = taffy
                     .new_with_children(
                         Style {
-                            size: Size {
-                                width: Dimension::length(w),
-                                height: Dimension::length(h),
-                            },
+                            size: Size::from_lengths(w, h),
                             ..Default::default()
                         },
                         &[child],
@@ -2106,10 +2103,7 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
             let root = taffy
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(1200.0),
-                            height: Dimension::length(800.0),
-                        },
+                        size: Size::from_lengths(1200.0, 800.0),
                         ..Default::default()
                     },
                     &[child],

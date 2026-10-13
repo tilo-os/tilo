@@ -672,10 +672,7 @@ impl Widget for PopoverPrompt {
         self.theme = theme.clone();
         let (w, h) = self.size(theme);
         let style = Style {
-            size: Size {
-                width: Dimension::length(crate::num::f32_of_f64(w)),
-                height: Dimension::length(crate::num::f32_of_f64(h)),
-            },
+            size: Size::from_lengths(crate::num::f32_of_f64(w), crate::num::f32_of_f64(h)),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -975,10 +972,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
             // gap there. Registered so the host's sweeps reach it.
             let node = taffy.leaf_node(Style {
                 position: taffy::Position::Absolute,
-                size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
+                size: Size::from_lengths(0.0, 0.0),
                 ..Default::default()
             });
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -1292,12 +1286,12 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                 AccessNode::new(Role::MenuItem)
                     .with_name(label.clone())
                     .with_position(i.saturating_add(1), n)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.open && i == options.highlighted,
-                        selected: options.selected == Some(i),
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.open && i == options.highlighted)
+                            .selected(options.selected == Some(i)),
+                    )
             })
             .collect();
         Some(

@@ -1102,28 +1102,25 @@ impl Widget for EmptyState {
             node = node.with_description(msg.clone());
         }
         if self.spinner.is_some() {
-            node = node.with_state(AccessState {
-                busy: true,
-                ..Default::default()
-            });
+            node = node.with_state(AccessState::new().busy(true));
         }
         if let Some(action) = &self.resolved.2 {
             node = node
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.action_focused,
-                    busy: self.spinner.is_some(),
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.action_focused)
+                        .busy(self.spinner.is_some()),
+                )
                 .with_children(vec![
                     AccessNode::new(Role::Button)
                         .with_name(action.clone())
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.action_focused,
-                            disabled: !self.is_enabled(),
-                            ..Default::default()
-                        })
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.action_focused)
+                                .disabled(!self.is_enabled()),
+                        )
                         .with_action_target(self.action_control_id()),
                 ]);
         }

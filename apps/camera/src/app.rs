@@ -31,7 +31,7 @@ use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::ObjId;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -2877,10 +2877,7 @@ impl Widget for CameraApp {
         let node = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
+                    size: Size::from_percent(1.0, 1.0),
                     ..Default::default()
                 },
                 &self.document_controls.nodes,

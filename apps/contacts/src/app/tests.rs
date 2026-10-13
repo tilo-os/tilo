@@ -11,7 +11,7 @@ use automerge::AutoCommit;
 use automerge::ROOT;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use taffy::{AvailableSpace, Dimension, Size, Style};
+use taffy::{AvailableSpace, Size, Style};
 use ui::a11y::{AccessNode, Role};
 use ui::tilo_resource::{Invoke, Replica};
 use ui::time::Duration;
@@ -868,10 +868,7 @@ fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) 
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
+                size: Size::from_lengths(w as f32, h as f32),
                 ..Default::default()
             },
             &[child],

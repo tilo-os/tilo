@@ -2433,10 +2433,7 @@ impl Widget for NotesApp {
         });
 
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &[shell_node], node_map, self)
@@ -2840,10 +2837,7 @@ impl NotesApp {
             let _ = taffy.set_style(
                 node,
                 Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
+                    size: Size::from_percent(1.0, 1.0),
                     flex_grow: 0.0,
                     flex_shrink: 0.0,
                     flex_basis: Dimension::auto(),

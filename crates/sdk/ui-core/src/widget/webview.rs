@@ -18,10 +18,10 @@ use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Blob, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
+use vello::peniko::{Blob, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
@@ -498,10 +498,7 @@ impl Widget for WebView {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             ..Default::default()
         };
@@ -584,13 +581,11 @@ impl Widget for WebView {
                     .saturating_mul(frame.height as usize)
                     .saturating_mul(4);
                 if frame.rgba.len() == expected && expected > 0 {
-                    self.cached_image = Some(PenikoImage {
-                        data: Blob::new(frame.rgba.clone()),
-                        format: ImageFormat::Rgba8,
-                        alpha_type: ImageAlphaType::Alpha,
-                        width: frame.width,
-                        height: frame.height,
-                    });
+                    self.cached_image = Some(crate::raster::rgba8(
+                        Blob::new(frame.rgba.clone()),
+                        frame.width,
+                        frame.height,
+                    ));
                     self.cached_key = key;
                     self.cached_trace_id = frame.trace_id;
                 }
@@ -796,11 +791,11 @@ impl Widget for WebView {
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Document)
                 .with_name(self.accessible_name.clone())
-                .with_state(crate::a11y::AccessState {
-                    focusable: true,
-                    focused: self.focused,
-                    ..Default::default()
-                }),
+                .with_state(
+                    crate::a11y::AccessState::new()
+                        .focusable(true)
+                        .focused(self.focused),
+                ),
         )
     }
 

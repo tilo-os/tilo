@@ -12,7 +12,6 @@ use ui::widget::ModelPath;
 
 use automerge::transaction::Transactable as _;
 use automerge::{ObjId, ReadDoc as _, ScalarValue, Value};
-use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::color_compat::ColorCompat;
@@ -619,14 +618,8 @@ impl Widget for CollaborationLaunchpad {
     ) -> NodeId {
         let style = Style {
             flex_grow: 1.0,
-            size: taffy::Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
-            },
-            min_size: taffy::Size {
-                width: percent(0.0_f32),
-                height: percent(0.0_f32),
-            },
+            size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
+            min_size: taffy::Size::from_percent(0.0_f32, 0.0_f32),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -938,22 +931,22 @@ impl Widget for CollaborationLaunchpad {
                                 .with_bounds(bounds)
                                 .with_description(action.detail())
                                 .with_action_target(action.path())
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.focused && self.selected == index,
-                                    ..Default::default()
-                                })
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(self.focused && self.selected == index),
+                                )
                         })
                         .chain(std::iter::once(
                             AccessNode::new(Role::Button)
                                 .with_name(t("launchpad-open-app"))
                                 .with_action_target(EMPTY_WORKSPACE_OPEN_APP)
                                 .with_bounds(self.app_button_rect())
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.focused && self.selected == 6,
-                                    ..Default::default()
-                                }),
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(self.focused && self.selected == 6),
+                                ),
                         ))
                         .collect(),
                 ),

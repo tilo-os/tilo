@@ -1318,10 +1318,7 @@ impl Widget for FindScope {
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
+                size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
                 flex_grow: 1.0,
                 ..Default::default()
             },

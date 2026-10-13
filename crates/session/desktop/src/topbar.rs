@@ -4536,13 +4536,11 @@ impl TopBarChrome {
                 let image = match self.app_tray_images.get(&item.key) {
                     Some((cached, image)) if *cached == identity => image.clone(),
                     _ => {
-                        let image = vello::peniko::ImageData {
-                            data: vello::peniko::Blob::new(rgba.clone()),
-                            format: vello::peniko::ImageFormat::Rgba8,
-                            alpha_type: vello::peniko::ImageAlphaType::Alpha,
-                            width: *width,
-                            height: *height,
-                        };
+                        let image = ui::raster::rgba8(
+                            vello::peniko::Blob::new(rgba.clone()),
+                            *width,
+                            *height,
+                        );
                         self.app_tray_images
                             .insert(item.key.clone(), (identity, image.clone()));
                         image
@@ -6296,10 +6294,7 @@ mod tests {
         let viewport = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(width),
-                        height: Dimension::length(TOPBAR_HEIGHT_PX),
-                    },
+                    size: Size::from_lengths(width, TOPBAR_HEIGHT_PX),
                     ..Default::default()
                 },
                 &[node],
@@ -7374,10 +7369,7 @@ mod tests {
         let vp = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(1600.0),
-                        height: Dimension::length(TOPBAR_HEIGHT_PX),
-                    },
+                    size: Size::from_lengths(1600.0, TOPBAR_HEIGHT_PX),
                     ..Default::default()
                 },
                 &[node],
@@ -7437,10 +7429,7 @@ mod tests {
         let vp = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(1600.0),
-                        height: Dimension::length(40.0),
-                    },
+                    size: Size::from_lengths(1600.0, 40.0),
                     ..Default::default()
                 },
                 &[node],
@@ -7524,10 +7513,7 @@ mod tests {
         let vp = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(800.0),
-                        height: Dimension::length(TOPBAR_HEIGHT_PX),
-                    },
+                    size: Size::from_lengths(800.0, TOPBAR_HEIGHT_PX),
                     ..Default::default()
                 },
                 &[node],
@@ -8102,10 +8088,7 @@ mod tests {
         let mut taffy = TaffyTree::new();
         let node = taffy
             .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(1280.0),
-                    height: Dimension::length(0.0),
-                },
+                size: Size::from_lengths(1280.0, 0.0),
                 ..Default::default()
             })
             .expect("hidden top-bar leaf");

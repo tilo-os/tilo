@@ -1995,10 +1995,7 @@ impl Widget for ToggleGroup {
             self.stacked = (side, gap);
             let n = f64_of_usize(self.segments.len().max(1));
             let node = taffy.leaf_node(Style {
-                size: Size {
-                    width: Dimension::length(f32_of_f64(side)),
-                    height: Dimension::length(f32_of_f64(side * n + gap * (n - 1.0))),
-                },
+                size: Size::from_lengths(f32_of_f64(side), f32_of_f64(side * n + gap * (n - 1.0))),
                 flex_shrink: 0.0,
                 ..Default::default()
             });
@@ -2391,11 +2388,11 @@ impl Widget for ToggleGroup {
                 let node = AccessNode::new(Role::ToggleButton)
                     .with_action_target(self.segment_id(i))
                     .with_name(s.label.clone())
-                    .with_state(AccessState {
-                        checked: Some(on),
-                        disabled: !self.is_enabled() || s.disabled,
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .checked(on)
+                            .disabled(!self.is_enabled() || s.disabled),
+                    )
                     .with_position(i.saturating_add(1), count);
                 // Where the segment is drawn, so pointing at it lands on it.
                 match self.segment_rects.get(i) {
@@ -2413,12 +2410,12 @@ impl Widget for ToggleGroup {
             AccessNode::new(Role::Group)
                 .with_optional_name(name)
                 .with_optional_value(value)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    disabled: !self.is_enabled(),
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.is_focused())
+                        .disabled(!self.is_enabled()),
+                )
                 .with_children(seg_children),
         )
     }

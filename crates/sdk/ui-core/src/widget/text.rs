@@ -864,10 +864,7 @@ impl Widget for Text {
         self.observe_theme(theme);
         let style = Style {
             display: self.flow_display(),
-            size: Size {
-                width: taffy::Dimension::auto(),
-                height: taffy::Dimension::auto(),
-            },
+            size: Size::auto(),
             // flex_shrink 1.0 lets Taffy propose a smaller width than
             // natural_w — critical for wrapping.
             flex_shrink: 1.0,

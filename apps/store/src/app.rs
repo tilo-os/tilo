@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_actions::{ActionSpec, ResourcePresentation};
@@ -1094,10 +1094,7 @@ impl Widget for StoreApp {
             Style {
                 flex_direction: taffy::FlexDirection::Column,
                 flex_grow: 1.0,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             &[child],
@@ -4319,10 +4316,7 @@ mod tests {
         let root = tree
             .new_with_children(
                 taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::length(width),
-                        height: taffy::Dimension::length(900.0),
-                    },
+                    size: taffy::Size::from_lengths(width, 900.0),
                     ..Default::default()
                 },
                 &[node],
