@@ -17,6 +17,7 @@ pub mod document;
 pub mod installation;
 #[cfg(test)]
 mod join_contract_tests;
+mod postcard_sink;
 pub mod room;
 mod state;
 pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};

@@ -76,7 +76,7 @@ test('two profiles on one origin hold two device keys', async () => {
   a.close(); b.close();
 });
 
-test('a resource-link recipient requires existing custody without creating a key', async () => {
+test('a link recipient requires existing custody without creating a key', async () => {
   const storage = memoryStorage();
   const locks = fakeLocks();
   let generations = 0;

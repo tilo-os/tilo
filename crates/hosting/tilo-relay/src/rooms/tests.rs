@@ -1068,6 +1068,26 @@ async fn assert_unprepared_authoring_refused(
     }
 }
 
+fn revoke_governor(rooms: &Rooms, cert: &DeviceCert) {
+    let mut revoked = tilo_user_identity::RevocationEntry {
+        user_public_key: cert.user_public_key,
+        revoked_device_public_key: cert.device_public_key,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revoked, &SigningKey::from_bytes(&[1; 32]))
+        .unwrap();
+    rooms
+        .inner
+        .host
+        .revocations
+        .write()
+        .unwrap()
+        .insert(revoked)
+        .unwrap();
+}
+
 #[tokio::test]
 #[cfg_attr(
     feature = "agents",
@@ -1093,23 +1113,7 @@ async fn a_revoked_governor_refuses_queued_channel_notices_and_renames() {
     assert!(rooms.queue_channel_notice(&created.room, notice()).unwrap());
     rooms.steward_notices(&created.room).await.unwrap();
 
-    let mut revoked = tilo_user_identity::RevocationEntry {
-        user_public_key: cert.user_public_key,
-        revoked_device_public_key: cert.device_public_key,
-        revoked_at_ns: tilo_clock::unix_now_ns(),
-        reason: tilo_user_identity::RevocationReason::Lost,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut revoked, &SigningKey::from_bytes(&[1; 32]))
-        .unwrap();
-    rooms
-        .inner
-        .host
-        .revocations
-        .write()
-        .unwrap()
-        .insert(revoked)
-        .unwrap();
+    revoke_governor(&rooms, &cert);
     let state = rooms.room(&created.room).await.unwrap();
     let path = state.lock().await.path.clone();
     let before = std::fs::read(&path).unwrap();
@@ -1123,6 +1127,61 @@ async fn a_revoked_governor_refuses_queued_channel_notices_and_renames() {
     assert_eq!(std::fs::read(path).unwrap(), before);
     drop(state);
     drop(rooms);
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+#[cfg_attr(
+    feature = "agents",
+    expect(
+        clippy::significant_drop_tightening,
+        reason = "Relay::shutdown consumes the relay after the assertions; the suggested earlier drop would use a moved value"
+    )
+)]
+async fn a_governor_revoked_while_waiting_for_channels_refuses_its_notices() {
+    use std::future::Future as _;
+    use std::task::Poll;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, mut cert) = governor();
+    cert.capabilities.can_own_workspaces = true;
+    let root = SigningKey::from_bytes(&[1; 32]);
+    sign_device_cert(&mut cert, &root).unwrap();
+    let relay = view_read_relay(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Demo").await.unwrap();
+    let state = rooms.room(&created.room).await.unwrap();
+    let (steward, path) = {
+        let governed = state.lock().await;
+        (governed.stewardship.clone().unwrap(), governed.path.clone())
+    };
+    let before = std::fs::read(&path).unwrap();
+    let channels = steward.channels.lock().await;
+    let channel = collab_types::document_channel_id("so.tilo.chat", &created.room, "");
+    let ack = collab_types::MlsGovernanceAckV1::signed(channel, [0; 32], &key).unwrap();
+    assert!(
+        rooms
+            .queue_channel_notice(
+                &created.room,
+                (
+                    cert.device_public_key,
+                    ChannelNoticeKind::Ack(Box::new(ack))
+                ),
+            )
+            .unwrap()
+    );
+    let mut pass = std::pin::pin!(rooms.steward_notices(&created.room));
+    std::future::poll_fn(|cx| {
+        assert!(pass.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    revoke_governor(&rooms, &cert);
+    drop(channels);
+    let error = pass.await.unwrap_err();
+    assert!(error.contains("revoked"), "{error}");
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    drop(state);
     relay.shutdown().await;
 }
 
@@ -1197,23 +1256,7 @@ async fn a_revoked_governor_refuses_queued_page_admissions_and_waiting_retries()
     let before = std::fs::read(&path).unwrap();
     let before_record = postcard::to_stdvec(&state.lock().await.record).unwrap();
     let before_generation = rooms.summary(&created.room).await.unwrap().generation;
-    let mut revoked = tilo_user_identity::RevocationEntry {
-        user_public_key: cert.user_public_key,
-        revoked_device_public_key: cert.device_public_key,
-        revoked_at_ns: tilo_clock::unix_now_ns(),
-        reason: tilo_user_identity::RevocationReason::Lost,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut revoked, &SigningKey::from_bytes(&[1; 32]))
-        .unwrap();
-    rooms
-        .inner
-        .host
-        .revocations
-        .write()
-        .unwrap()
-        .insert(revoked)
-        .unwrap();
+    revoke_governor(rooms, &cert);
     let answers = n0_future::join_all(
         proofs
             .into_iter()

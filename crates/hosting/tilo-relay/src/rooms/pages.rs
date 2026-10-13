@@ -899,12 +899,7 @@ impl Rooms {
                             outcome = "pre-admitted",
                             "workspace join admitted under the owner's pre-admission"
                         );
-                        JoinReply::Admitted {
-                            room: room.room().to_owned(),
-                            workspace_id: room.workspace_id(),
-                            name: room.record.name.clone(),
-                            role,
-                        }
+                        admitted_reply(room, role)
                     });
                     if let Some(slot) = answers.get_mut(index) {
                         *slot = Some(answer);
@@ -1024,13 +1019,19 @@ impl Rooms {
                 },
                 Err(_) => return Ok(JoinReply::Declined),
             };
-            return Ok(JoinReply::Admitted {
-                room: room.room().to_owned(),
-                workspace_id: room.workspace_id(),
-                name: room.record.name.clone(),
-                role,
-            });
+            let reply = admitted_reply(&room, role);
+            drop(room);
+            return Ok(reply);
         }
         Err(CollaborationError::new("no such join request"))
+    }
+}
+
+fn admitted_reply(room: &GovernedRoom, role: RoomRole) -> JoinReply {
+    JoinReply::Admitted {
+        room: room.room().to_owned(),
+        workspace_id: room.workspace_id(),
+        name: room.record.name.clone(),
+        role,
     }
 }
