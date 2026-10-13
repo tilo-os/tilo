@@ -138,7 +138,7 @@ impl NativeAirDropTransfer {
             return Err(error("airdrop-error-source"));
         }
         let permit = ActiveTransfer::reserve(&self.active)?;
-        let id = super::nearby_transfer::fresh_handle_bytes();
+        let id = crate::random::bytes::<16>();
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut jobs = self

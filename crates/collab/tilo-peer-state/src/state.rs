@@ -31,6 +31,7 @@ pub use bounded::{
 pub(crate) mod json_resource_tests;
 use backend::{LegacyNative, PeerCore, PeerDocument};
 mod agent_members;
+mod bans;
 pub use agent_members::GovernedAgent;
 mod local_admission;
 mod local_outbox;
@@ -1628,6 +1629,17 @@ impl StatePeer {
     /// The authority of `source` for the change `envelope` makes on `record`
     /// of `app_id`, refused when the change is not granted; `None` while
     /// the app surface it is decided against is not here.
+    /// The bot actor `source` may show other names as. None yet: until bot
+    /// installations are governed rows a peer can read, a change carrying an
+    /// appearance is refused from every device.
+    #[expect(
+        clippy::unused_self,
+        reason = "reads the device's installation once installations are rows"
+    )]
+    fn appearance_author(&self, _source: &[u8; 32], _now: SystemTime) -> Option<String> {
+        None
+    }
+
     fn authorize_document(
         &self,
         source: &[u8; 32],
@@ -2404,6 +2416,12 @@ impl StatePeer {
             },
         };
         candidate.channel = validated_channel;
+        if let DocumentMutation::Incremental(bytes) = &mutation {
+            let changes = collab_types::parse_changes(bytes).map_err(err)?;
+            let shows = self.appearance_author(&source, authorization_time);
+            collab_types::check_appearances(&changes, shows.as_deref())
+                .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
+        }
         if let DocumentMutation::Snapshot(bytes) = &mutation
             && !local_app
         {
@@ -3664,6 +3682,7 @@ fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
         Role::Viewer => Some(crate::join::MemberRole::Viewer),
         Role::Commenter => Some(crate::join::MemberRole::Commenter),
         Role::Editor => Some(crate::join::MemberRole::Editor),
+        Role::Moderator => Some(crate::join::MemberRole::Moderator),
         Role::Owner => None,
     }
 }

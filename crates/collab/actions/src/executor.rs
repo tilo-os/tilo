@@ -199,6 +199,17 @@ fn envelope_for(
         context.change = change;
     }
     context.kind = Some(action.action_kind());
+    if action.incoming_message()
+        && !context
+            .facets
+            .iter()
+            .any(|facet| facet.key == crate::INCOMING_MESSAGE_FACET)
+    {
+        context.facets.push(crate::ActionFacet::new(
+            crate::INCOMING_MESSAGE_FACET,
+            "true",
+        ));
+    }
     if context.gesture.is_none() {
         context.gesture = current_step();
     }

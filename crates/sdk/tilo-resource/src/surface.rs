@@ -17,6 +17,10 @@ fn verb_of(decl: &Declaration) -> VerbSurface {
         description: decl.description.clone(),
         kind: decl.kind,
         destructive: decl.destructive,
+        incoming_message: decl
+            .tags
+            .iter()
+            .any(|tag| tag == tilo_actions::INCOMING_MESSAGE_TAG),
         params: decl
             .params
             .iter()

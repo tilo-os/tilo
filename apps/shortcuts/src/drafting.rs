@@ -17,7 +17,7 @@ use tilo_automation::{
 use ui::tilo_actions::remote::RemoteActionTarget;
 
 use crate::editor;
-use crate::grant;
+use tilo_automation::grant;
 
 /// Largest description a person may give.
 pub const MAX_DESCRIPTION: usize = 2 * 1024;
