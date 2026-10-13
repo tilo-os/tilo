@@ -127,6 +127,7 @@ members = [
 
     # Agent
     "crates/agent/agent-participant",
+    "crates/agent/connector",
     "crates/agent/local-model-service",
     "crates/agent/model-gateway",
     "crates/agent/provider-config",
