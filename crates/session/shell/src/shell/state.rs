@@ -4213,9 +4213,6 @@ impl WorkspaceTree {
             ..Workspace::new(ws_id, String::new())
         };
         ws.set_room(room);
-        // The room document stores grants by id, so keep the local cache in
-        // the same deterministic order a reader reconstructs from its map.
-        ws.policy.grants.sort_by(|a, b| a.id.cmp(&b.id));
         self.desktop.active_strip.insert(ws_id, strip_id);
         self.desktop.workspaces.push(ws);
 
