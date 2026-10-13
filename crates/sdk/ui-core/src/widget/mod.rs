@@ -1359,8 +1359,18 @@ pub trait Widget {
         }
     }
 
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        false
+    /// Notice, between frames, state that lives outside the document (a
+    /// chrome revision, a momentum scroll still ticking) and report whether
+    /// anything changed. The default updates every child
+    /// [`Widget::children_mut`] returns, without short-circuiting, so a
+    /// container never freezes its descendants at build-time state; a widget
+    /// overrides it to check state of its own and then forward.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
     }
 
     /// Apply, after the sync pass, what the widget took up there and must
