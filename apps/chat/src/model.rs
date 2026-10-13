@@ -336,6 +336,9 @@ pub struct Message {
     /// ordinary message, which is what keeps it honest as "an agent took this
     /// on" rather than a field every message carries an empty version of.
     pub work: Option<AgentWork>,
+    /// The name and avatar a bot showed for this message instead of its own
+    /// (a bridge posting an outside user's line). The author stays the bot.
+    pub appearance: Option<tilo_actions::Appearance>,
 }
 
 impl Message {
@@ -814,6 +817,7 @@ mod tests {
             attachment: None,
             pinned: false,
             work: None,
+            appearance: None,
         }
     }
 

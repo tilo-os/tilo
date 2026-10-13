@@ -323,12 +323,15 @@ async fn post_decoded<T: serde::de::DeserializeOwned>(
 #[serde(rename_all = "camelCase")]
 struct JsHostInfo {
     host_cert: DeviceCert,
-    webtransport_port: u16,
+    webtransport_port: Option<u16>,
     certificate_sha256: Option<String>,
+    webtransport_origin: Option<String>,
 }
 
 /// What the host publishes before certification: its certificate, the
-/// WebTransport port and, for a development certificate, its SHA-256 for
+/// WebTransport port (absent behind an HTTPS-only proxy without a direct
+/// origin), the origin to dial WebTransport at when it is not the page's
+/// and, for a development certificate, its SHA-256 for
 /// `serverCertificateHashes`. Resolves to JSON.
 ///
 /// # Errors
@@ -342,6 +345,7 @@ pub async fn host_info(post: Function) -> Result<String, JsError> {
         host_cert: info.host_cert,
         webtransport_port: info.webtransport_port,
         certificate_sha256: info.certificate_sha256,
+        webtransport_origin: info.webtransport_origin,
     })
     .map_err(js_error)
 }
@@ -1241,7 +1245,7 @@ pub fn verify_agent_delegation(
 ) -> Result<String, JsError> {
     let bytes = hex::decode(delegation_hex).map_err(js_error)?;
     let delegation =
-        tilo_relay_protocol::agents::AgentDelegation::decode(&bytes).map_err(js_error)?;
+        tilo_relay_protocol::delegation::Delegation::decode(&bytes).map_err(js_error)?;
     let user: [u8; 32] = hex::decode(user_public_key_hex)
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
@@ -1253,11 +1257,16 @@ pub fn verify_agent_delegation(
     )]
     let now_ns = (now_ms.max(0.0) as u64).saturating_mul(1_000_000);
     delegation.verify(&user, now_ns).map_err(js_error)?;
+    let agent_id = delegation
+        .delegate
+        .agent_id()
+        .ok_or_else(|| js_error("the delegation is not an agent's"))?
+        .to_owned();
     serde_json::to_string(&JsDelegation {
-        agent_id: delegation.agent_id,
+        agent_id,
         label: delegation.label,
         color: tilo_relay_protocol::agents::color_hex(delegation.color),
-        device: hex::encode(delegation.agent_device_public_key),
+        device: hex::encode(delegation.device_public_key),
         rooms: delegation.scope.rooms,
         apps: delegation.scope.apps,
         expires_at_ns: delegation.expires_at_ns,

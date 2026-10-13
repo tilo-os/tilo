@@ -984,8 +984,10 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 )
         app_name = manifest_path.parent.name
         # The headless agent publishes nothing of its own: it acts only
-        # through the broker's task-bound action surfaces.
-        if app_name != "agent":
+        # through the broker's task-bound action surfaces. An `apps/*-model`
+        # crate is a record shape apps embed (the portability rules let apps
+        # depend on it), not an app: the apps embedding it publish its actions.
+        if app_name != "agent" and not app_name.endswith("-model"):
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
                 and FRAMEWORK_RESOURCE.search(combined) is not None

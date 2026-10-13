@@ -90,20 +90,29 @@ impl Authority {
         self.active() && self.session_guard().is_some()
     }
 }
+/// How long a subscription waits for one of the host's replay slots before
+/// its session gives up. A join burst queues behind the replays in flight
+/// instead of ending every session past the slot count.
+const TICKET_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl ReplayTicket {
-    pub(crate) fn reserve(
+    /// A replay slot for `device`, waiting up to [`TICKET_WAIT`] for one to
+    /// free up.
+    pub(crate) async fn reserve(
         device: [u8; 32],
         connection: Option<Arc<AtomicBool>>,
     ) -> Result<Self, StoreError> {
         static TICKETS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-        Self::reserve_from(
-            device,
-            connection,
-            TICKETS
-                .get_or_init(|| Arc::new(Semaphore::new(DEFAULT_REPLAY_TICKETS)))
-                .clone(),
-        )
+        let slots = TICKETS
+            .get_or_init(|| Arc::new(Semaphore::new(DEFAULT_REPLAY_TICKETS)))
+            .clone();
+        let permit = tokio::time::timeout(TICKET_WAIT, slots.acquire_owned())
+            .await
+            .map_err(|_| error("replay ticket backpressure"))?
+            .map_err(|_| error("replay tickets closed"))?;
+        Ok(Self::with_permit(device, connection, permit))
     }
+    #[cfg(test)]
     fn reserve_from(
         device: [u8; 32],
         connection: Option<Arc<AtomicBool>>,
@@ -112,7 +121,14 @@ impl ReplayTicket {
         let permit = slots
             .try_acquire_owned()
             .map_err(|_| error("replay ticket backpressure"))?;
-        Ok(Self {
+        Ok(Self::with_permit(device, connection, permit))
+    }
+    fn with_permit(
+        device: [u8; 32],
+        connection: Option<Arc<AtomicBool>>,
+        permit: OwnedSemaphorePermit,
+    ) -> Self {
+        Self {
             authority: Arc::new(Authority {
                 id: ReplayId(*uuid::Uuid::new_v4().as_bytes()),
                 device,
@@ -122,7 +138,7 @@ impl ReplayTicket {
                 reclaim: OnceLock::new(),
                 _permit: permit,
             }),
-        })
+        }
     }
 }
 // Only the sole writer constructs this after dropping a fully written batch.
