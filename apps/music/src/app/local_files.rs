@@ -261,7 +261,6 @@ impl MusicApp {
         Some(crate::actions::CatalogTrackResource {
             id: file.track.id.clone(),
             label: file.track.title.clone(),
-            artist: String::new(),
             album_id: String::new(),
             artist_id: String::new(),
             offline: false,
