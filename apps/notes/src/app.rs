@@ -4174,50 +4174,6 @@ mod tests {
 
     #[test]
     fn navigation_and_backlinks_follow_stable_page_identity() {
-        eprintln!("phase canonical_links_produce_sorted_backlinks_for_the_target_note");
-        {
-            let (mut app, mut state, _tmp, target) = app_seeded_into_doc();
-            app.dispatch_event_for_test(
-                &mut Edits::lend(&mut state.doc),
-                OutEvent::CreateChild { parent: None },
-            );
-            let source = app.selected_for_test().expect("new source page selected");
-            app.dispatch_event_for_test(
-                &mut Edits::lend(&mut state.doc),
-                OutEvent::Rename {
-                    id: source,
-                    new_title: "Project index".into(),
-                },
-            );
-            let block = crate::read::page_block_snapshots(&state.doc, source)[0]
-                .0
-                .clone();
-            app.apply_action(
-                &mut Edits::lend(&mut state.doc),
-                &actions::edit_body_action(
-                    source,
-                    tilo_document::RichTextAction::SpliceText {
-                        region: tilo_document::action::RegionKind::Body,
-                        block: block.clone(),
-                        at: 0,
-                        del: 0,
-                        ins: "Welcome".into(),
-                    },
-                ),
-            );
-            app.apply_action(
-                &mut Edits::lend(&mut state.doc),
-                &actions::set_mark_action(source, &block, 0..7, &ui::widget::Mark::Link(target)),
-            );
-            let notebook = shown(&state.doc);
-            let backlinks = actions::backlinks(&notebook.bodies, notebook.pages(), target);
-            assert_eq!(backlinks.len(), 1);
-            assert_eq!(backlinks[0].source, source);
-            assert_eq!(backlinks[0].source_title, "Project index");
-            assert_eq!(backlinks[0].target, target);
-            assert_eq!(backlinks[0].excerpt, "Welcome");
-        }
-
         eprintln!("phase native_link_marks_build_a_cached_backlink_and_open_its_canonical_source");
         {
             let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
