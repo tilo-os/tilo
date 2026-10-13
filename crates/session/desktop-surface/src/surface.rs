@@ -34,7 +34,7 @@ use ui::widget::{
     GroupRow, OutputSpan, TabDescriptor, TaffyTreeExt as _, TileContent, TileHost, Widget,
     WindowGroup,
 };
-use ui::winit::event::{MouseScrollDelta, WindowEvent};
+use ui::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use ui::{TextRenderer, Theme};
 
 use crate::navigation::{
@@ -798,6 +798,32 @@ impl DesktopSurface {
         self.unbuilt.clear();
         self.shown = None;
         self.structure_dirty = true;
+    }
+
+    /// A press anywhere in a window, its body included and not only its tab
+    /// bar, makes that window the active one. It stays where it is: it was
+    /// on screen to be clicked, and panning would move it from under the
+    /// pointer.
+    fn focus_clicked_group(&self) {
+        let Some(strip_id) = self.shown else {
+            return;
+        };
+        let Some(group) = self
+            .rows
+            .get(&strip_id)
+            .and_then(GroupRow::group_under_cursor)
+        else {
+            return;
+        };
+        let mut shared = self.shared.borrow_mut();
+        if shared.tree.active_group_for(strip_id) == Some(group)
+            || find_group(&mut shared.tree, strip_id, group).is_none()
+        {
+            return;
+        }
+        shared.tree.set_active_group(strip_id, group);
+        shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
+        shared.changed();
     }
 
     /// Mirror gestures the shown row performed into the tree.
@@ -1732,6 +1758,14 @@ impl Widget for DesktopSurface {
             .unwrap_or_default()
             .first()
             .copied();
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            self.focus_clicked_group();
+        }
         if let (Some(row), Some(child)) = (self.shown_row(), child) {
             let path = ctx.path.clone();
             row.handle_event(event, &mut ctx.reborrow(&path, child));
@@ -1957,6 +1991,98 @@ mod tests {
             .collect();
         let tree = seed_tree(&mut minter, "Desk", tabs);
         DesktopSurface::new(tree, 7, Box::new(Notices))
+    }
+
+    /// Each select a host sends applies in the frame its wake draws, in
+    /// order, while the strip pans between windows.
+    #[test]
+    fn selects_apply_in_the_frame_they_wake() {
+        let (surface, handle) = desktop(3);
+        let mut frame = ui::headless::FrameHarness::new(
+            ui::state::State::new(),
+            Box::new(surface),
+            (1280, 800),
+        );
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        let entries = handle.snapshot("g", vec![]).entries;
+        for target in [0, 2, 1, 2] {
+            let route = entries[target].route.clone();
+            handle
+                .dispatch(
+                    &Command::Select {
+                        generation: "g".into(),
+                        route: route.clone(),
+                    },
+                    "g",
+                )
+                .unwrap();
+            frame.relayout();
+            assert_eq!(
+                handle.snapshot("g", vec![]).active,
+                Some(route),
+                "select {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn closing_a_window_keeps_every_frame_settling() {
+        let (surface, handle) = desktop(3);
+        let mut frame = ui::headless::FrameHarness::new(
+            ui::state::State::new(),
+            Box::new(surface),
+            (1280, 800),
+        );
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        let route = handle.snapshot("g", vec![]).entries[0].route.clone();
+        handle
+            .dispatch(
+                &Command::Close {
+                    generation: "g".into(),
+                    route,
+                },
+                "g",
+            )
+            .unwrap();
+        for _ in 0..40 {
+            assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        assert_eq!(handle.snapshot("g", vec![]).entries.len(), 2);
+    }
+
+    #[test]
+    fn clicking_a_window_body_makes_it_active() {
+        let (surface, handle) = desktop(3);
+        let mut frame = ui::headless::FrameHarness::new(
+            ui::state::State::new(),
+            Box::new(surface),
+            (1280, 800),
+        );
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        let active = || handle.read(|tree| navigation::active_route(tree).map(|ids| ids.group));
+        let first = active();
+        let device_id = ui::winit::event::DeviceId::dummy();
+        frame.send_host_event(&WindowEvent::CursorMoved {
+            device_id,
+            position: PhysicalPosition::new(1270.0, 500.0),
+        });
+        for state in [ElementState::Pressed, ElementState::Released] {
+            frame.send_host_event(&WindowEvent::MouseInput {
+                device_id,
+                state,
+                button: MouseButton::Left,
+            });
+        }
+        let clicked = active();
+        assert!(clicked.is_some());
+        assert_ne!(clicked, first, "the window under the pointer takes focus");
     }
 
     #[test]
