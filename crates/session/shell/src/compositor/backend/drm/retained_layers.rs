@@ -603,6 +603,42 @@ mod tests {
         }
     }
 
+    fn source_over_sample(views: &[LayerView<'_>], x: u32, y: u32) -> [u8; 4] {
+        let mut premultiplied = [0.0_f32; 4];
+        for view in views {
+            for (dest, scroll_x) in &view.pieces {
+                if x < dest.x
+                    || x >= dest.x.saturating_add(dest.width)
+                    || y < dest.y
+                    || y >= dest.y.saturating_add(dest.height)
+                {
+                    continue;
+                }
+                let at = usize::try_from(y).unwrap() * view.stride
+                    + usize::try_from(x.saturating_add(*scroll_x)).unwrap() * 4;
+                let pixel = &view.pixels[at..at + 4];
+                let alpha = f32::from(pixel[3]) / 255.0;
+                for channel in 0..3 {
+                    let source = f32::from(pixel[channel]) / 255.0;
+                    premultiplied[channel] =
+                        source * alpha + premultiplied[channel] * (1.0 - alpha);
+                }
+                premultiplied[3] = alpha + premultiplied[3] * (1.0 - alpha);
+            }
+        }
+        assert!(premultiplied[3] > 0.0, "the backdrop must cover the sample");
+        // The compositor blends premultiplied source-over, then stores
+        // straight RGBA8, as the dense fine stage does.
+        let mut actual = [0_u8; 4];
+        for channel in 0..3 {
+            actual[channel] = ui::num::u8_of_f64(f64::from(
+                (premultiplied[channel] / premultiplied[3] * 255.0).round(),
+            ));
+        }
+        actual[3] = ui::num::u8_of_f64(f64::from((premultiplied[3] * 255.0).round()));
+        actual
+    }
+
     #[test]
     fn retained_translucent_layers_match_dense_source_over() {
         let mut cache = cache(24);
@@ -668,39 +704,12 @@ mod tests {
             "the fractional strip edge must be antialiased"
         );
         for (x, y) in (0..32_u32).flat_map(|y| (0..64_u32).map(move |x| (x, y))) {
-            let mut premultiplied = [0.0_f32; 4];
-            for view in &views {
-                for (dest, scroll_x) in &view.pieces {
-                    if x < dest.x
-                        || x >= dest.x.saturating_add(dest.width)
-                        || y < dest.y
-                        || y >= dest.y.saturating_add(dest.height)
-                    {
-                        continue;
-                    }
-                    let at = usize::try_from(y).unwrap() * view.stride
-                        + usize::try_from(x.saturating_add(*scroll_x)).unwrap() * 4;
-                    let pixel = &view.pixels[at..at + 4];
-                    let alpha = f32::from(pixel[3]) / 255.0;
-                    for channel in 0..3 {
-                        let source = f32::from(pixel[channel]) / 255.0;
-                        premultiplied[channel] =
-                            source * alpha + premultiplied[channel] * (1.0 - alpha);
-                    }
-                    premultiplied[3] = alpha + premultiplied[3] * (1.0 - alpha);
-                }
-            }
-            // The compositor blends premultiplied source-over, then stores
-            // straight RGBA8, as the dense fine stage does.
-            let mut actual = [0_u8; 4];
-            for channel in 0..3 {
-                actual[channel] = ui::num::u8_of_f64(f64::from(
-                    (premultiplied[channel] / premultiplied[3] * 255.0).round(),
-                ));
-            }
-            actual[3] = ui::num::u8_of_f64(f64::from((premultiplied[3] * 255.0).round()));
             let at = (usize::try_from(y).unwrap() * 64 + usize::try_from(x).unwrap()) * 4;
-            assert_eq!(actual, oracle.screen_rgba()[at..at + 4], "pixel {x},{y}");
+            assert_eq!(
+                source_over_sample(&views, x, y),
+                oracle.screen_rgba()[at..at + 4],
+                "pixel {x},{y}"
+            );
         }
     }
 
