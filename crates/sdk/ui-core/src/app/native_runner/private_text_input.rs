@@ -155,16 +155,17 @@ impl Bridge {
                 self.cancel();
             }
         }
-        let mut next = allowed.then(|| self.scope(app)).flatten();
         // Natural retirement during an asynchronous transaction is settled by its
         // receipt. A focus move still revokes the original scope immediately.
-        if let Some(pending) = self.pending.as_ref()
+        let next = if let Some(pending) = self.pending.as_ref()
             && pending.kind == PrivateImeKind::Final
             && allowed
             && app.focused_node == Some(pending.scope.node)
         {
-            next = Some(pending.scope);
-        }
+            Some(pending.scope)
+        } else {
+            allowed.then(|| self.scope(app)).flatten()
+        };
         if self.advertised != next {
             self.cancel();
             self.advertised = next;

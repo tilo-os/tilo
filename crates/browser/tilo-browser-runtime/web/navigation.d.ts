@@ -24,7 +24,8 @@ export type WorkspaceActivityCloseReason = 'dismissed' | 'workspace-changed' | '
 export interface DesktopNavigationSnapshot {
   version: 1;
   generation: string;
-  entries: Array<{route: DesktopRoute; label: string; stripLabel: string; workspaceLabel: string}>;
+  /** `app`: the package id the window shows, as links name it; null for a surface of no app. */
+  entries: Array<{route: DesktopRoute; app: string | null; label: string; stripLabel: string; workspaceLabel: string}>;
   workspaces: Array<{id: string; label: string; room: string; owner: string | null; strips: Array<{id: string; label: string}>}>;
   /** What `launch` can open. */
   applications: Array<{id: string; label: string}>;
@@ -69,7 +70,9 @@ export type DesktopNavigationCommand = {generation: string} & (
   {kind: "scroll"; region: string; action: DesktopScrollAction} |
   {kind: "commands"; query: string} |
   /** Open an app of the snapshot's `applications` in a new window beside the focused one. */
-  {kind: "launch"; app: string}
+  {kind: "launch"; app: string} |
+  /** Show an app as following a link to it does: focus its window on the shown strip, else open one. */
+  {kind: "open"; app: string}
 );
 export interface DesktopNavigationV1 {
   readonly version: 1;

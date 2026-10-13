@@ -10,8 +10,7 @@ use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
-use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::headless::FrameHarness;
 use crate::icons::Icon;
@@ -28,18 +27,11 @@ type Build = fn(&Clicks, &'static str) -> Box<dyn Widget>;
 const VIEWPORT: (u32, u32) = (480, 320);
 
 fn moved(point: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: PhysicalPosition::new(point.x, point.y),
-    }
+    crate::synthetic_input::cursor_moved(point.x, point.y)
 }
 
 fn button(state: ElementState) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state,
-        button: MouseButton::Left,
-    }
+    crate::synthetic_input::mouse_input(state, MouseButton::Left)
 }
 
 fn log(clicks: &Clicks, generation: &'static str) -> impl FnMut() + 'static {
@@ -485,10 +477,7 @@ impl Widget for Keypad {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(120.0),
-                height: taffy::Dimension::length(80.0),
-            },
+            size: taffy::Size::from_lengths(120.0, 80.0),
             ..taffy::Style::default()
         };
         taffy.widget_node(style, &[], node_map, self)

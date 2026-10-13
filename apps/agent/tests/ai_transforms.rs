@@ -8,7 +8,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
@@ -262,6 +261,7 @@ fn run_shortcut(host: &AgentHost, shortcut: &Shortcut, inputs: Map<String, Value
             mode: RunMode::Unattended,
             trigger: RunTrigger::Manual,
             inputs,
+            caused_by: None,
         },
     ))
 }

@@ -1,6 +1,7 @@
 //! Selecting a picture's subject, and refining a selection's edge to the
-//! picture: found where the action is authored, in the artwork as the
-//! window shows it, like the magic wand.
+//! picture: found by the find-area job in the artwork as the window shows
+//! it, like the magic wand, drawn on the window's thread ([`prepare`]) and
+//! worked out on a background one ([`Prepared::finish`]).
 //!
 //! The subject is found by the on-device segmentation model the person set
 //! up (through the model gateway; nothing leaves the device). Its edge, or
@@ -13,7 +14,6 @@
     reason = "kurbo's float geometry and pixel sizes bounded by the render's"
 )]
 
-use std::cell::RefCell;
 use ui::num::usize_of_f64;
 
 use ui::TextRenderer;
@@ -35,8 +35,8 @@ pub use crate::content_geometry::REFINE_PIXELS;
 /// pixels.
 use crate::content_geometry::SIDE;
 
-/// What the model said about the last subject found, for the answer an
-/// agent gets.
+/// What the model said about a subject it found, for the answer the
+/// find-area job gives its caller.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Found {
     pub model: String,
@@ -45,37 +45,8 @@ pub struct Found {
     pub refine_ms: u64,
 }
 
-thread_local! {
-    static LAST: RefCell<Option<Found>> = const { RefCell::new(None) };
-}
-
-/// What the last subject found on this thread took, once.
-pub fn take_found() -> Option<Found> {
-    LAST.with_borrow_mut(Option::take)
-}
-
 /// Where to find the model when none is set up, said in a refusal.
 pub const SET_UP: &str = "settings://models/u2net-subject";
-
-/// The area `select` asks for by subject or refine, and its soft edge,
-/// found here and now (an agent's action waits for it).
-///
-/// # Errors
-/// Returns why: no model is set up (and where to set it up), no subject
-/// was found, the reach is out of range, or the artwork cannot be seen.
-pub fn find(
-    select: &Select,
-    renderer: &mut Renderer,
-    text: &mut TextRenderer,
-    art: &Artwork,
-) -> Result<(Region, Option<Matte>), String> {
-    let subject = select.subject == Some(true);
-    let (area, matte, found) = prepare(select, renderer, text, art)?.finish()?;
-    if subject {
-        LAST.with_borrow_mut(|last| *last = Some(found));
-    }
-    Ok((area, matte))
-}
 
 /// What the artwork shows, ready for the model and the edge filter: the
 /// part drawn on the window's thread; [`Prepared::finish`] does the slow

@@ -2,6 +2,7 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::ReadTyped as _;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
@@ -506,22 +507,11 @@ pub struct GovernedPeerIdentity {
     /// remove an already-governed revocation.
     #[serde(default)]
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
-    /// Set when governance admitted the device as a delegated agent of its
-    /// person (`tilo-peer-state`'s agent members). Absent from every other
-    /// identity's bytes.
+    /// Set when governance admitted the device as a delegate of its person,
+    /// an agent or an installed bot. Absent from every other identity's
+    /// bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<GovernedAgentRow>,
-}
-
-/// The delegation a governed agent identity carries, as room governance
-/// records it beside the agent's certificate.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GovernedAgentRow {
-    /// The person's root-signed delegation naming the device an agent.
-    pub delegation: tilo_relay_protocol::agents::AgentDelegation,
-    /// When the governor withdrew it. Its earlier work stays attributed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub withdrawn_at_ns: Option<u64>,
+    pub delegate: Option<tilo_peer_state::GovernedDelegateRow>,
 }
 
 impl GovernedPeerIdentity {
@@ -530,14 +520,15 @@ impl GovernedPeerIdentity {
     /// this device. Withdrawn and expired agents are still named, so the
     /// work they did stays attributed to them.
     fn projected_agent(&self) -> Option<tilo_user_identity::GovernedAgentIdentityV2> {
-        let delegation = &self.agent.as_ref()?.delegation;
+        let delegation = &self.delegate.as_ref()?.delegation;
+        let agent_id = delegation.delegate.agent_id()?;
         let cert = &self.device_cert;
-        (delegation.agent_device_public_key == cert.device_public_key
+        (delegation.device_public_key == cert.device_public_key
             && delegation
                 .verify(&cert.user_public_key, delegation.issued_at_ns)
                 .is_ok())
         .then(|| tilo_user_identity::GovernedAgentIdentityV2 {
-            agent_id: delegation.agent_id.clone(),
+            agent_id: agent_id.to_owned(),
             label: delegation.label.clone(),
             color: delegation.color,
         })
@@ -1430,14 +1421,14 @@ impl WorkspaceTree {
             .sort_by_key(|entry| (entry.revoked_device_public_key, entry.revoked_at_ns));
         governed_revocations.dedup_by_key(|entry| entry.revoked_device_public_key);
         // Re-certifying a device keeps what governance knows it as.
-        let agent = identities
+        let delegate = identities
             .get(peer_id)
             .filter(|known| known.device_cert == device_cert)
-            .and_then(|known| known.agent.clone());
+            .and_then(|known| known.delegate.clone());
         let row = GovernedPeerIdentity {
             device_cert,
             revocations: governed_revocations,
-            agent,
+            delegate,
         };
         let changed = identities.insert(peer_id.to_string(), row.clone()).as_ref() != Some(&row);
         if changed {
@@ -1479,7 +1470,7 @@ impl WorkspaceTree {
             if revoked.contains(&(root_key, identity.device_cert.device_public_key)) {
                 continue;
             }
-            if identity.agent.is_some() {
+            if identity.delegate.is_some() {
                 if let Some(agent) = identity.projected_agent() {
                     agents.entry(root_key).or_default().push(
                         tilo_user_identity::GovernedDeviceIdentityV2 {
@@ -1527,6 +1518,35 @@ impl WorkspaceTree {
         } else {
             tilo_user_identity::TrustedIdentityProjectionV2::empty()
         }
+    }
+
+    /// The delegated agents on `room`'s roster as history names them: each
+    /// device governance admitted as an agent whose person's root signed the
+    /// delegation for exactly that device, under the person's governed name.
+    /// The same devices, by the same check, that
+    /// [`Self::trusted_identity_projection`] marks as agents for Files, so
+    /// the workspace's Activity, an app's own history and Files name an
+    /// agent alike. Presentation only: nothing is admitted by it.
+    pub fn verified_agents(&self, room: RoomId) -> Vec<ui::history_source::RosterAgent> {
+        self.trusted_identity_projection(room)
+            .humans
+            .into_iter()
+            .flat_map(|human| {
+                let person = human.root_public_key;
+                let person_name = human.display_name;
+                human.devices.into_iter().filter_map(move |device| {
+                    let agent = device.agent?;
+                    Some(ui::history_source::RosterAgent {
+                        device: device.certificate.device_public_key,
+                        person,
+                        person_name: person_name.clone(),
+                        agent_id: agent.agent_id,
+                        label: agent.label,
+                        color: agent.color,
+                    })
+                })
+            })
+            .collect()
     }
 
     /// The names `room` carries, keyed by the peer **handle** the
@@ -1791,7 +1811,7 @@ impl WorkspaceTree {
         reason = "room-document projection keeps all capability map updates in one Automerge transaction"
     )]
     fn try_sync_room_doc(&mut self, room: RoomId) -> bool {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        use automerge::{ROOT, transaction::Transactable};
         use tilo_peer_state::room::media;
 
         if self.requires_native_owner(room) {
@@ -1843,24 +1863,12 @@ impl WorkspaceTree {
         // Identity first: the receiver checks this field against the
         // room it asked for, so an unlabelled document could be applied
         // to the wrong one.
-        let current_room = match doc.get(&ROOT, "room").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let current_room = doc.str_at(&ROOT, "room");
         if current_room.as_deref() != Some(room_str.as_str()) {
             let _ = doc.put(&ROOT, "room", room_str.clone());
         }
 
-        let current_name = match doc.get(&ROOT, "name").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let current_name = doc.str_at(&ROOT, "name");
         // The name is governed like the owner: only the governing machine
         // writes it. A member's local name (a device's "From another
         // device" placeholder before its first sync) would otherwise race
@@ -5822,6 +5830,27 @@ mod automerge_foundation_tests {
     use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 
     #[test]
+    fn appended_workspace_rebuilds_with_the_same_default_grants() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let id = tree.append_empty_workspace("Project X");
+        let created = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .unwrap();
+        let mut restored = DesktopTree::default();
+        tilo_desktop_model::desktop_doc::rebuild(&tree.doc, &mut restored);
+        let reconstructed = restored
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)
+            .unwrap();
+        assert_eq!(reconstructed.room, created.room);
+        assert_eq!(reconstructed.policy, created.policy);
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -7153,17 +7182,11 @@ mod automerge_foundation_tests {
     /// The owner and capability ids the receiver's own **room document**
     /// records — not its cache, so a divergent fold can't hide behind it.
     fn governance_in_room_doc(tree: &WorkspaceTree, room: RoomId) -> (Option<String>, Vec<String>) {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        use automerge::{ROOT, ReadDoc};
         let Some(doc) = tree.room_docs.get(&room) else {
             return (None, Vec::new());
         };
-        let owner = match doc.get(&ROOT, "owner").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
+        let owner = doc.str_at(&ROOT, "owner");
         let mut caps: Vec<String> =
             match doc.get(&ROOT, projection::ROOM_SANDBOX_KEY).ok().flatten() {
                 Some((_, caps_id)) => doc.keys(&caps_id).collect(),
@@ -7548,7 +7571,7 @@ mod automerge_foundation_tests {
                 let bytes = serde_json::to_vec(&GovernedPeerIdentity {
                     device_cert: spoofed,
                     revocations: Vec::new(),
-                    agent: None,
+                    delegate: None,
                 })
                 .unwrap();
                 doc.put(&identities, endpoint.to_string(), ScalarValue::Bytes(bytes))
@@ -7659,13 +7682,15 @@ mod automerge_foundation_tests {
         };
         tilo_user_identity::sign_device_cert(&mut agent_certificate, &root_key).unwrap();
         let delegation = |signer: &ed25519_dalek::SigningKey| {
-            tilo_relay_protocol::agents::AgentDelegation::sign(
+            tilo_relay_protocol::delegation::Delegation::sign(
                 signer,
                 *agent_device.as_bytes(),
-                "scribe",
+                tilo_relay_protocol::delegation::Delegate::Agent {
+                    agent_id: "scribe".into(),
+                },
                 "Scribe",
                 [10, 20, 30],
-                tilo_relay_protocol::agents::AgentScope {
+                tilo_relay_protocol::delegation::DelegateScope {
                     rooms: vec![uuid::Uuid::from_u128(7).to_string()],
                     apps: Vec::new(),
                 },
@@ -7680,9 +7705,10 @@ mod automerge_foundation_tests {
                 GovernedPeerIdentity {
                     device_cert: agent_certificate.clone(),
                     revocations: Vec::new(),
-                    agent: Some(GovernedAgentRow {
+                    delegate: Some(tilo_peer_state::GovernedDelegateRow {
                         delegation: delegation(signer),
                         withdrawn_at_ns: None,
+                        installation: None,
                     }),
                 },
             );
@@ -7725,6 +7751,178 @@ mod automerge_foundation_tests {
 
         ship(&mut host, &mut guest, room, 1);
         assert_eq!(guest.trusted_identity_projection(room), projection);
+    }
+
+    /// A room whose governance names Ada's laptop and admits Scribe, an
+    /// agent device of Ada's, with a delegation `signer` signed. Returns the
+    /// host, the room and Scribe's device key.
+    fn room_with_ada_and_scribe(
+        signer: &ed25519_dalek::SigningKey,
+    ) -> (WorkspaceTree, RoomId, [u8; 32]) {
+        let (mut host, _guest, room) = two_in_a_room();
+        let root_key = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
+        let certified = |device: [u8; 32], label: &str, capabilities| {
+            let mut certificate = tilo_user_identity::DeviceCert {
+                user_public_key: root_key.verifying_key().to_bytes(),
+                device_public_key: device,
+                device_label: label.into(),
+                capabilities,
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+            certificate
+        };
+        let laptop = iroh::SecretKey::generate().public();
+        assert!(host.name_peer(
+            room,
+            &"quinten".to_string(),
+            &laptop.to_string(),
+            "Ada Lovelace"
+        ));
+        assert!(host.certify_peer_identity(
+            room,
+            &laptop.to_string(),
+            certified(
+                *laptop.as_bytes(),
+                "Studio laptop",
+                tilo_user_identity::DeviceCapabilities::member()
+            )
+        ));
+        let scribe = iroh::SecretKey::generate().public();
+        let delegation = tilo_relay_protocol::delegation::Delegation::sign(
+            signer,
+            *scribe.as_bytes(),
+            tilo_relay_protocol::delegation::Delegate::Agent {
+                agent_id: "scribe".into(),
+            },
+            "Scribe",
+            [10, 20, 30],
+            tilo_relay_protocol::delegation::DelegateScope {
+                rooms: vec![room.to_string()],
+                apps: Vec::new(),
+            },
+            1,
+            2,
+        )
+        .unwrap();
+        host.room_peer_identities.entry(room).or_default().insert(
+            scribe.to_string(),
+            GovernedPeerIdentity {
+                device_cert: certified(
+                    *scribe.as_bytes(),
+                    "Agent: Scribe",
+                    tilo_user_identity::CertificationPolicy::agent().ceiling,
+                ),
+                revocations: Vec::new(),
+                delegate: Some(tilo_peer_state::GovernedDelegateRow {
+                    delegation,
+                    withdrawn_at_ns: None,
+                    installation: None,
+                }),
+            },
+        );
+        host.sync_room_doc(room);
+        (host, room, *scribe.as_bytes())
+    }
+
+    /// The workspace's Activity, as the compositor refreshes it, over one
+    /// record of the active room whose latest change `device` signed: the
+    /// author of that change.
+    fn activity_author_of_a_change_by(
+        mut tree: WorkspaceTree,
+        room: RoomId,
+        device: [u8; 32],
+    ) -> ui::widget::HistoryAuthor {
+        struct Record(ui::record::RecordId, automerge::AutoCommit);
+        impl tilo_desktop::activity::PersistedRecordHistory for Record {
+            fn load_record(&self, id: &ui::record::RecordId) -> Option<automerge::AutoCommit> {
+                (id == &self.0).then(|| self.1.clone())
+            }
+        }
+        let record = ui::record::RecordId::for_file("scribe.qdoc");
+        let kind = ui::RecordKind::new("document");
+        tree.room_records_held
+            .entry(room)
+            .or_default()
+            .insert(record.to_string(), kind.to_string());
+        tree.commit_room_change();
+        let mut document = automerge::AutoCommit::new();
+        ui::record::init(&mut document, &record, &kind, &room.to_string());
+        document.set_actor(automerge::ActorId::from(device.as_slice()));
+        document
+            .put(automerge::ROOT, "draft", "Written by an agent")
+            .unwrap();
+        tilo_resource::history::commit_stamped_with_message(&mut document, None);
+        let handle = WorkspaceTreeHandle::new(tree);
+        let mut pane =
+            crate::shell::room_activity::RoomActivityPane::with_local_user("quinten".into());
+        pane.refresh_observed(
+            &handle,
+            &ui::record::RecordStore::in_memory(),
+            &Record(record, document),
+        );
+        let short = ui::history_source::short_id(&hex::encode(device));
+        pane.entries()
+            .iter()
+            .find(|entry| entry.author.identity_short == short)
+            .map(|entry| entry.author.clone())
+            .expect("the agent's change is in the workspace's history")
+    }
+
+    /// A change an agent's own key signed reads as the agent's, for its
+    /// person, in the workspace's Activity and in what apps' own history is
+    /// told, once the room's governance verified the person's delegation
+    /// for exactly that device. A delegation another root signed names
+    /// nobody: the change stays an unknown participant's.
+    #[test]
+    fn an_agents_own_key_change_is_named_only_once_its_delegation_verifies() {
+        use tilo_action_broker::services::WorkspaceAuthority as _;
+        let ada = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
+        let forger = ed25519_dalek::SigningKey::from_bytes(&[98; 32]);
+
+        let (host, room, scribe) = room_with_ada_and_scribe(&forger);
+        assert!(host.verified_agents(room).is_empty());
+        let authority = crate::shell::broker_services::NativeWorkspaceAuthority(
+            WorkspaceTreeHandle::new(host.clone()),
+        );
+        assert!(authority.history_agents(&room.to_string()).is_empty());
+        let author = activity_author_of_a_change_by(host, room, scribe);
+        assert_eq!(author.name, ui::history_source::UNKNOWN_AUTHOR_NAME);
+        assert_eq!(author.attribution, None);
+
+        let (host, room, scribe) = room_with_ada_and_scribe(&ada);
+        let verified = ui::history_source::RosterAgent {
+            device: scribe,
+            person: ada.verifying_key().to_bytes(),
+            person_name: "Ada Lovelace".into(),
+            agent_id: "scribe".into(),
+            label: "Scribe".into(),
+            color: [10, 20, 30],
+        };
+        assert_eq!(host.verified_agents(room), std::slice::from_ref(&verified));
+        let authority = crate::shell::broker_services::NativeWorkspaceAuthority(
+            WorkspaceTreeHandle::new(host.clone()),
+        );
+        assert_eq!(
+            authority.history_agents(&room.to_string()),
+            [verified],
+            "apps' own history is told the same agents"
+        );
+        let author = activity_author_of_a_change_by(host, room, scribe);
+        assert_eq!(author.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
+        assert_eq!(
+            author.attribution,
+            Some(ui::widget::history::HistoryAttribution {
+                actor: "agent:scribe".into(),
+                kind: tilo_actions::ActorKind::Agent,
+                actor_name: "Scribe".into(),
+                on_behalf_of: Some(hex::encode(ada.verifying_key().to_bytes())),
+                on_behalf_of_name: Some("Ada Lovelace".into()),
+            })
+        );
     }
 
     #[test]

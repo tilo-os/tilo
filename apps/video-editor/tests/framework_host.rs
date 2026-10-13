@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! The editor hosted by the app framework: its custom timeline keeps its own
 //! rendering and input, and every edit it makes takes the host's path —

@@ -7,10 +7,10 @@
 //!   dragged the floating overlay, whether the participant list is expanded,
 //!   and local presentation controls. Current stream state comes from the
 //!   native service; durable voice rows are replayable history.
-//! * [`CallPermissions`] — a small policy seam for isolated call-state tests
-//!   and embedding. Chat's live UI uses [`crate::permissions::ChatPermissions`]
-//!   from the host-provided permission context; this module does not grant
-//!   access or implement an ACL.
+//! * [`CallAction`] — the enumerable surface of call actions. Chat's live UI
+//!   gates them through [`crate::permissions::ChatPermissions`] from the
+//!   host-provided permission context; this module does not grant access or
+//!   implement an ACL.
 
 use vello::kurbo::{Rect, Size};
 
@@ -29,42 +29,6 @@ pub enum CallAction {
     Camera,
     /// Start sharing the screen (portal `ScreenCast`).
     ShareScreen,
-}
-
-impl CallAction {
-    pub fn label(self) -> &'static str {
-        match self {
-            CallAction::Join => "Join call",
-            CallAction::Leave => "Leave call",
-            CallAction::Speak => "Use microphone",
-            CallAction::Camera => "Use camera",
-            CallAction::ShareScreen => "Share screen",
-        }
-    }
-}
-
-/// The permission seam for call actions.
-///
-/// This is intentionally small and does not represent an authentication,
-/// encryption, or access-control system. The app binds its real controls to
-/// [`crate::permissions::ChatPermissions`]; callers that use this seam remain
-/// responsible for supplying their own policy.
-pub trait CallPermissions {
-    /// Whether `action` is allowed right now according to this caller-owned
-    /// policy. Implementations may return `true`; that is not a security
-    /// guarantee and must not be presented as one.
-    fn allows(&self, action: CallAction) -> bool;
-}
-
-/// Test/example policy that grants every action. It is never an authorization
-/// decision for Chat's live UI.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct AllowAll;
-
-impl CallPermissions for AllowAll {
-    fn allows(&self, _action: CallAction) -> bool {
-        true
-    }
 }
 
 /// Per-peer call view state. A fresh app is **not** in a call — the user
@@ -170,23 +134,6 @@ impl CallState {
         self.audio_only = true;
     }
 
-    /// Toggle mute. Un-muting also un-deafens (you can't speak while
-    /// deafened in the usual Discord model).
-    pub fn toggle_mute(&mut self) {
-        self.muted = !self.muted;
-        if !self.muted {
-            self.deafened = false;
-        }
-    }
-
-    /// Toggle deafen. Deafening also mutes; un-deafening leaves mute as-is.
-    pub fn toggle_deafen(&mut self) {
-        self.deafened = !self.deafened;
-        if self.deafened {
-            self.muted = true;
-        }
-    }
-
     /// Whether to auto-expand the participant list for `n` participants.
     /// Small calls show every face; big calls collapse until summoned.
     pub fn auto_participants_expanded(n: usize) -> bool {
@@ -217,38 +164,14 @@ mod tests {
     }
 
     #[test]
-    fn call_policy_helpers_allow_all_and_expand_small_rosters() {
-        // Phase: allow_all_grants_everything.
-        {
-            let p = AllowAll;
-            for a in [
-                CallAction::Join,
-                CallAction::Leave,
-                CallAction::Speak,
-                CallAction::Camera,
-                CallAction::ShareScreen,
-            ] {
-                assert!(p.allows(a), "{a:?} should be allowed by AllowAll");
-            }
-        }
-        // Phase: participant_list_auto_expands_only_for_small_calls.
-        {
-            assert!(CallState::auto_participants_expanded(3));
-            assert!(CallState::auto_participants_expanded(8));
-            assert!(!CallState::auto_participants_expanded(9));
-        }
+    fn participant_list_auto_expands_only_for_small_calls() {
+        assert!(CallState::auto_participants_expanded(3));
+        assert!(CallState::auto_participants_expanded(8));
+        assert!(!CallState::auto_participants_expanded(9));
     }
 
     #[test]
     fn join_leave_and_deafen_reset_audio_overlay_and_share_state() {
-        // Phase: deafen_implies_mute_and_unmute_undeafens.
-        {
-            let mut c = CallState::default();
-            c.toggle_deafen();
-            assert!(c.deafened && c.muted, "deafen mutes");
-            c.toggle_mute(); // unmute
-            assert!(!c.muted && !c.deafened, "unmuting clears deafen");
-        }
         // Phase: join_and_leave_reset_overlay_layout.
         {
             let mut c = CallState {

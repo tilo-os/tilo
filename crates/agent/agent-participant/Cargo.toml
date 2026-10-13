@@ -16,6 +16,9 @@ path = "src/lib.rs"
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-actions = { path = "../../collab/actions" }
+# A bot's record events: the dispatcher's event shape and its reader of
+# recorded entries, shared with the shell.
+tilo-automation = { path = "../../collab/automation" }
 # Purpose-specific receipt validation; app projection remains confined.
 tilo-desktop = { path = "../../session/desktop" }
 # `apps/agent`'s model planner: action discovery tools over a catalogue, and
@@ -100,6 +103,8 @@ tilo-sandbox = { path = "../../platform/tilo-sandbox" }
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
 seccompiler.workspace = true
 libc.workspace = true
+# A connector app, mounted only where a room's host runs its worker.
+discord = { path = "../../../apps/discord" }
 
 [dev-dependencies]
 tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
@@ -124,6 +129,8 @@ tokio = { workspace = true, features = ["full"] }
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }
+# Reads the links the host mints back the way a page does.
+tilo-reference = { path = "../../collab/reference" }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.

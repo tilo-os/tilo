@@ -2,14 +2,14 @@
 //! mapping, re-emit every preserved part verbatim, and synthesise the content-types/rels/
 //! numbering parts a from-scratch document lacks.
 
-use super::container::DocxContainer;
 use crate::format::CodecError;
+use crate::package::ZipPackage;
 use crate::preserve::{MARK_DOCX_XML, merge_root_namespaces};
 use crate::resolved::Resolved;
 use crate::xml_escape::{escape_attr, push_text};
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_content::ContentSource;
-use tilo_doc::export::InlinePlan;
+use tilo_doc::export::{CellGrid, ExportBlock, InlinePlan};
 use tilo_doc::model::DocRef;
 use tilo_doc::schema::{
     STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
@@ -75,7 +75,7 @@ struct PartFlags {
 fn copy_preserved_parts(
     doc: &DocRef,
     content: &dyn ContentSource,
-    c: &mut DocxContainer,
+    c: &mut ZipPackage,
 ) -> (PartFlags, Option<Vec<u8>>, Option<Vec<u8>>) {
     let mut flags = PartFlags::default();
     let mut original_core: Option<Vec<u8>> = None;
@@ -201,12 +201,7 @@ fn link_relationship_xml(id: &str, url: &str) -> String {
 }
 
 /// Builds/extends `[Content_Types].xml` with an `Override`/`Default` for every newly-wired part.
-fn build_content_types(
-    c: &mut DocxContainer,
-    flags: &PartFlags,
-    w: &Wireups,
-    images: &ImageExport,
-) {
+fn build_content_types(c: &mut ZipPackage, flags: &PartFlags, w: &Wireups, images: &ImageExport) {
     if flags.had_content_types {
         let mut overrides: Vec<(String, String)> = w
             .regions
@@ -294,7 +289,7 @@ fn build_content_types(
 }
 
 /// docProps relationships live in the root rels, not the document's; generated fresh or injected into an existing part.
-fn build_root_rels(c: &mut DocxContainer, flags: &PartFlags, w: &Wireups) {
+fn build_root_rels(c: &mut ZipPackage, flags: &PartFlags, w: &Wireups) {
     if !flags.had_root_rels {
         let mut s = ROOT_RELS.to_string();
         if w.wrote_core {
@@ -319,12 +314,7 @@ fn build_root_rels(c: &mut DocxContainer, flags: &PartFlags, w: &Wireups) {
 }
 
 /// Needed once there's a numbering, freshly-synthesised styles, a header/footer, and/or a notes part.
-fn build_document_rels(
-    c: &mut DocxContainer,
-    flags: &PartFlags,
-    w: &Wireups,
-    images: &ImageExport,
-) {
+fn build_document_rels(c: &mut ZipPackage, flags: &PartFlags, w: &Wireups, images: &ImageExport) {
     if !(w.has_lists
         || w.need_styles
         || !w.regions.is_empty()
@@ -417,7 +407,7 @@ fn build_document_rels(
 /// export freshly synthesised into `c`; the content-types/rels overrides for them are wired up
 /// separately, once every "did we just add this part" flag is known.
 fn copy_fixed_parts(
-    c: &mut DocxContainer,
+    c: &mut ZipPackage,
     hf_parts: super::headers::ExportedParts,
     section: &super::section::SectionPlan,
     notes: &super::notes::ExportedNotes,
@@ -443,7 +433,7 @@ fn copy_fixed_parts(
 /// Regenerates `docProps/core.xml`/`app.xml` from canonical properties (merging any preserved
 /// original's unmodeled children) and writes them into `c`. Returns whether each was written.
 fn write_doc_props(
-    c: &mut DocxContainer,
+    c: &mut ZipPackage,
     doc: &DocRef,
     original_core: Option<&[u8]>,
     original_app: Option<&[u8]>,
@@ -466,7 +456,7 @@ fn write_doc_props(
 /// Writes `word/numbering.xml` (if the doc has any list) and merges referenced CRDT styles into
 /// `word/styles.xml` (if any named style is referenced or a doc-default language is set).
 fn write_lists_and_styles(
-    c: &mut DocxContainer,
+    c: &mut ZipPackage,
     has_lists: bool,
     has_styles: bool,
     numbering: &Numbering,
@@ -497,7 +487,7 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
     let snap = &Resolved::new(&snapshot, content);
     let cols = super::columns::section_columns_xml(&doc).unwrap_or_default();
 
-    let mut c = DocxContainer { parts: Vec::new() };
+    let mut c = ZipPackage { parts: Vec::new() };
     let (flags, original_core, original_app) = copy_preserved_parts(&doc, content, &mut c);
 
     // The imported section properties arrive as a body fidelity block; they are rebuilt around
@@ -595,7 +585,7 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
     build_root_rels(&mut c, &flags, &w);
     build_document_rels(&mut c, &flags, &w, &images);
 
-    c.write()
+    c.write_opc()
 }
 
 /// Which imported default header/footer parts are written back as they are: those whose region
@@ -603,7 +593,7 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
 /// way import found them, from the section properties and the carried relationships.
 fn kept_regions(
     doc: &DocRef,
-    c: &DocxContainer,
+    c: &ZipPackage,
     section_breaks: &[&str],
     final_sectpr: Option<&str>,
 ) -> super::headers::KeptRegions {
@@ -1198,21 +1188,6 @@ fn spacing_xml(b: &BlockView) -> String {
     }
 }
 
-fn cell_table(b: &BlockView) -> Option<String> {
-    match b.attrs.get("table") {
-        Some(AttrVal::Str(s)) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn cell_rc(b: &BlockView) -> (usize, usize) {
-    let g = |k: &str| match b.attrs.get(k) {
-        Some(AttrVal::Int(n)) => usize::try_from(*n).unwrap_or(0),
-        _ => 0,
-    };
-    (g("row"), g("col"))
-}
-
 /// Map the model's numbering format onto `w:numFmt w:val` (inverse of `styles::map_num_format`).
 fn ooxml_num_format(fmt: &str) -> &'static str {
     match fmt {
@@ -1245,16 +1220,12 @@ struct Numbering {
 
 /// What a list item numbers: `(ordered, format, start)`.
 fn list_key(b: &BlockView) -> (bool, String, i64) {
-    let ordered = matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
-    let fmt = match b.attrs.get("num_format") {
-        Some(AttrVal::Str(s)) => s.clone(),
-        _ => "decimal".to_string(),
-    };
-    let start = match b.attrs.get("num_start") {
-        Some(AttrVal::Int(n)) => *n,
-        _ => 1,
-    };
-    (ordered, fmt, start)
+    let item = ExportBlock::new(b);
+    (
+        item.ordered(),
+        item.num_format().to_string(),
+        item.num_start(),
+    )
 }
 
 /// The largest numeric value of the attribute `key` (`w:numId=`) in `xml`.
@@ -1494,22 +1465,6 @@ impl ImageExport {
     }
 }
 
-/// The model `anchor` value of an image block (default `inline`).
-fn image_anchor(b: &BlockView) -> &str {
-    match b.attrs.get("anchor") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "inline",
-    }
-}
-
-/// The model `wrap` value of an image block (default `none`).
-fn image_wrap(b: &BlockView) -> &str {
-    match b.attrs.get("wrap") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "none",
-    }
-}
-
 /// An image block's display size in EMU, defaulting to a 1-inch square when unset.
 fn image_extent_emu(b: &BlockView) -> (i64, i64) {
     let px = |k: &str, dflt: i64| match b.attrs.get(k) {
@@ -1549,7 +1504,7 @@ fn image_drawing_xml(b: &BlockView, snap: &Resolved<'_>, imgs: &mut ImageExport)
     let graphic = format!(
         r#"<wp:docPr id="{docpr_id}" name="{name}"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="{docpr_id}" name="{name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{rel_id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>"#
     );
-    let anchor = image_anchor(b);
+    let anchor = ExportBlock::new(b).image_anchor();
     if anchor == "inline" {
         Some(format!(
             r#"<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>{graphic}</wp:inline></w:drawing></w:r>"#
@@ -1562,7 +1517,7 @@ fn image_drawing_xml(b: &BlockView, snap: &Resolved<'_>, imgs: &mut ImageExport)
         } else {
             "paragraph"
         };
-        let wrap = match image_wrap(b) {
+        let wrap = match ExportBlock::new(b).image_wrap() {
             "left" => r#"<wp:wrapSquare wrapText="left"/>"#.to_string(),
             "right" => r#"<wp:wrapSquare wrapText="right"/>"#.to_string(),
             "both" => r#"<wp:wrapSquare wrapText="bothSides"/>"#.to_string(),
@@ -1583,44 +1538,18 @@ fn index_to_i64(i: usize) -> i64 {
 /// Renders one contiguous run of `cell` blocks sharing a `table` id as a `w:tbl`, returning the
 /// index just past the run.
 fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &RunIds) -> usize {
-    let Some(b) = snap.blocks.get(i) else {
-        return i.saturating_add(1);
-    };
-    let tid = cell_table(b).unwrap_or_default();
-    let start = i;
-    let mut i = i;
-    while snap
-        .blocks
-        .get(i)
-        .is_some_and(|blk| cell_table(blk).as_deref() == Some(tid.as_str()))
-    {
-        i = i.saturating_add(1);
-    }
-    let Some(cells) = snap.blocks.get(start..i) else {
-        return i;
-    };
-    // Cells by grid position; the rows below a vertically merged cell hold a continuation
-    // cell as wide as it.
-    let mut at: BTreeMap<(usize, usize), &BlockView> = BTreeMap::new();
-    let mut continued: BTreeMap<(usize, usize), &BlockView> = BTreeMap::new();
-    let (mut nrows, mut ncols) = (0usize, 0usize);
-    for cell in cells {
-        let (r, c) = cell_rc(cell);
-        let (cols, rows) = (cell_span(cell, "colspan"), cell_span(cell, "rowspan"));
-        at.entry((r, c)).or_insert(cell);
-        for dr in 1..rows {
-            continued.insert((r.saturating_add(dr), c), cell);
-        }
-        nrows = nrows.max(r.saturating_add(rows));
-        ncols = ncols.max(c.saturating_add(cols));
-    }
+    let grid = CellGrid::run(&snap.blocks, i);
+    let cells = grid.cells();
+    let (nrows, ncols) = (grid.rows(), grid.cols());
     body.push_str("<w:tbl>");
     push_table_props(body, cells.first(), ncols);
     // A row's properties ride on its first cell.
     let mut row_props: BTreeMap<usize, &str> = BTreeMap::new();
     for cell in cells {
         if let Some(AttrVal::Str(xml)) = cell.attrs.get(super::paragraph::ATTR_TRPR) {
-            row_props.entry(cell_rc(cell).0).or_insert(xml.as_str());
+            row_props
+                .entry(ExportBlock::new(cell).cell_position().0)
+                .or_insert(xml.as_str());
         }
     }
     for r in 0..nrows {
@@ -1630,22 +1559,30 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
         }
         let mut c = 0;
         while c < ncols {
-            let own = at.get(&(r, c)).copied();
-            // A vertical merge's continuation cells look like its first one.
-            let cell = own.or_else(|| continued.get(&(r, c)).copied());
+            let own = grid.origin(r, c);
+            // The rows below a vertically merged cell hold a continuation cell as wide as it,
+            // which looks like its first one.
+            let cell = own.or_else(|| {
+                grid.covering(r, c)
+                    .filter(|first| ExportBlock::new(first).cell_position().1 == c)
+            });
             let (span, merge, inner) = if let Some(cl) = own {
-                let merge = if cell_span(cl, "rowspan") > 1 {
+                let merge = if ExportBlock::new(cl).row_span() > 1 {
                     r#"<w:vMerge w:val="restart"/>"#
                 } else {
                     ""
                 };
                 (
-                    cell_span(cl, "colspan"),
+                    ExportBlock::new(cl).col_span(),
                     merge,
                     render_runs(&cl.text, &cl.marks, ids),
                 )
             } else if let Some(first) = cell {
-                (cell_span(first, "colspan"), "<w:vMerge/>", String::new())
+                (
+                    ExportBlock::new(first).col_span(),
+                    "<w:vMerge/>",
+                    String::new(),
+                )
             } else {
                 (1, "", String::new())
             };
@@ -1677,7 +1614,7 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
         body.push_str("</w:tr>");
     }
     body.push_str("</w:tbl>");
-    i
+    i.saturating_add(cells.len().max(1))
 }
 
 /// A table's `w:tblPr` and `w:tblGrid`: the ones kept from import on its `first` cell (the
@@ -1701,14 +1638,6 @@ fn push_table_props(body: &mut String, first: Option<&BlockView>, ncols: usize) 
     body.push_str("</w:tblGrid>");
 }
 
-/// A cell's `colspan`/`rowspan` (1 when absent).
-fn cell_span(b: &BlockView, key: &str) -> usize {
-    match b.attrs.get(key) {
-        Some(AttrVal::Int(n)) if *n > 1 => usize::try_from(*n).unwrap_or(1).min(1024),
-        _ => 1,
-    }
-}
-
 /// Renders one block (or, for `cell`, a whole contiguous table run) into `body`, returning the
 /// index of the next unprocessed block.
 fn render_block(
@@ -1725,10 +1654,7 @@ fn render_block(
     };
     match b.kind.as_str() {
         "heading" => {
-            let level = match b.attrs.get("level") {
-                Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
-                _ => 1,
-            };
+            let level = ExportBlock::new(b).heading_level();
             let style = format!(r#"<w:pStyle w:val="Heading{level}"/>"#);
             named_refs.insert(format!("Heading{level}"));
             let ppr = block_ppr(b, &[(b"w:pStyle", style)], ids);
@@ -1741,10 +1667,7 @@ fn render_block(
         }
         "list_item" => {
             let numid = numbering.num_id(b);
-            let level = match b.attrs.get("level") {
-                Some(AttrVal::Int(n)) => (*n).clamp(0, 8),
-                _ => 0,
-            };
+            let level = ExportBlock::new(b).list_level().min(8);
             // A list item keeps its own paragraph style when it had one.
             let style = match b.attrs.get(super::paragraph::ATTR_PPR) {
                 Some(AttrVal::Str(kept)) if super::paragraph::has_style(kept) => String::new(),
@@ -1945,8 +1868,9 @@ fn first_free_bookmark_id(snap: &DocSnapshot) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::super::DocxCodec;
-    use super::super::container::{DocxContainer, minimal_docx, minimal_docx_styled};
+    use super::super::container::{minimal_docx, minimal_docx_styled};
     use crate::FormatProvider;
+    use crate::package::ZipPackage;
     use std::collections::BTreeMap;
     use tilo_doc::document::MarkValue;
     use tilo_doc::{AttrVal, DocSnapshot, Document};
@@ -2027,7 +1951,7 @@ mod tests {
             let m1 = norm(&d.materialize());
 
             let exported = export_docx(&d);
-            let c = DocxContainer::read(&exported).unwrap();
+            let c = ZipPackage::read(&exported).unwrap();
             assert!(c.get("word/document.xml").is_some());
             assert!(c.get("[Content_Types].xml").is_some());
             assert!(c.get("_rels/.rels").is_some());
@@ -2043,7 +1967,7 @@ mod tests {
             let h = d.insert_block(None, "heading");
             d.splice_text(&h, 0, 0, "Q3 Planning");
             d.as_mut().set_attr(&h, "level", 2_i64);
-            let c = DocxContainer::read(&export_docx(&d)).unwrap();
+            let c = ZipPackage::read(&export_docx(&d)).unwrap();
             let styles = String::from_utf8(c.get("word/styles.xml").unwrap().to_vec()).unwrap();
             assert!(styles.contains(r#"w:styleId="Heading2""#), "{styles}");
             assert!(
@@ -2119,7 +2043,7 @@ mod tests {
             }
 
             let exported = export_docx(&d);
-            let c = DocxContainer::read(&exported).unwrap();
+            let c = ZipPackage::read(&exported).unwrap();
             let xml = std::str::from_utf8(c.get("word/document.xml").unwrap()).unwrap();
             assert!(
                 xml.contains(r#"w:shd w:val="clear" w:color="auto" w:fill="FFFF00""#),
@@ -2196,7 +2120,7 @@ mod tests {
                 dm.add_mark(&p, 0, 6, "fontSize", 20_i64);
             }
             let exported = export_docx(&d);
-            let cont = DocxContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
             assert!(
                 document.contains(r#"<w:jc w:val="both"/>"#),
@@ -2256,7 +2180,7 @@ mod tests {
             }
 
             let exported = export_docx(&d);
-            let cont = DocxContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
             assert!(
                 document.contains(r#"<w:pStyle w:val="Fancy"/>"#),
@@ -2359,7 +2283,7 @@ mod tests {
             }
 
             let exported = DocxCodec.export(d.as_ref(), &inputs).unwrap();
-            let cont = DocxContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let media = cont
                 .parts
                 .iter()
@@ -2449,7 +2373,7 @@ mod tests {
             }
 
             let exported = DocxCodec.export(d.as_ref(), &inputs).unwrap();
-            let cont = DocxContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
             assert!(
                 document.contains("<wp:anchor"),
@@ -2550,7 +2474,7 @@ mod tests {
             }
 
             let exported = export_docx(&d);
-            let cont = DocxContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let numbering = std::str::from_utf8(cont.get("word/numbering.xml").unwrap()).unwrap();
             assert!(
                 numbering.contains(r#"<w:numFmt w:val="upperRoman"/>"#),
@@ -2643,7 +2567,7 @@ mod tests {
             d.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
 
             let exported = export_docx(&d);
-            let cont = DocxContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
             assert!(
                 document.contains(r#"<w:bookmarkStart w:id="0" w:name="intro"/>"#),
@@ -2723,7 +2647,7 @@ mod tests {
             d.set_doc_prop("generator", "qdoc/1.0");
 
             let exported = export_docx(&d);
-            let cont = DocxContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let core =
                 std::str::from_utf8(cont.get("docProps/core.xml").expect("core.xml written"))
                     .unwrap();
@@ -2811,9 +2735,9 @@ mod tests {
             let core = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/"><dc:title>Old</dc:title><cp:revision>4</cp:revision></cp:coreProperties>"#;
             let base = minimal_docx_styled("", "<w:p><w:r><w:t>hi</w:t></w:r></w:p>");
-            let mut c = DocxContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set("docProps/core.xml", core.as_bytes().to_vec());
-            let docx = c.write().unwrap();
+            let docx = c.write_opc().unwrap();
 
             let mut d = Document::new();
             import_docx(&docx, &mut d);
@@ -2825,7 +2749,7 @@ mod tests {
             d.set_doc_prop("title", "New");
 
             let exported = export_docx(&d);
-            let out = DocxContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             let core_out = std::str::from_utf8(out.get("docProps/core.xml").unwrap()).unwrap();
             assert!(
                 core_out.contains("<dc:title>New</dc:title>"),
@@ -2846,7 +2770,7 @@ mod tests {
             let p = d.insert_block(None, "paragraph");
             d.splice_text(&p, 0, 0, "plain");
             let exported = export_docx(&d);
-            let cont = DocxContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             assert!(
                 cont.get("docProps/core.xml").is_none(),
                 "no core.xml for a doc with no properties"
@@ -2859,15 +2783,15 @@ mod tests {
         // Phase `preserves_unmodeled_parts`.
         {
             let base = minimal_docx_styled("", "<w:p><w:r><w:t>hi</w:t></w:r></w:p>");
-            let mut c = DocxContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set("customXml/item1.xml", b"<root>custom</root>".to_vec());
-            let docx = c.write().unwrap();
+            let docx = c.write_opc().unwrap();
 
             let mut d = Document::new();
             import_docx(&docx, &mut d);
             let exported = export_docx(&d);
 
-            let out = DocxContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             assert_eq!(
                 out.get("customXml/item1.xml"),
                 Some(&b"<root>custom</root>"[..]),
@@ -2898,7 +2822,7 @@ mod tests {
             d.insert_footer_page_number(&f, 5);
 
             let exported = export_docx(&d);
-            let cont = DocxContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let hdr =
                 std::str::from_utf8(cont.get("word/header1.xml").expect("header1.xml written"))
                     .unwrap();
@@ -3003,7 +2927,7 @@ mod tests {
                 r#"<w:sectPr><w:headerReference w:type="default" r:id="rId7"/></w:sectPr>"#,
             );
             let base = minimal_docx_styled("", body);
-            let mut c = DocxContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set("word/header1.xml", header.as_bytes().to_vec());
             let rels = std::str::from_utf8(c.get("word/_rels/document.xml.rels").unwrap())
                 .unwrap()
@@ -3013,7 +2937,7 @@ mod tests {
             r#"<Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/></Relationships>"#,
         );
             c.set("word/_rels/document.xml.rels", rels.into_bytes());
-            let docx = c.write().unwrap();
+            let docx = c.write_opc().unwrap();
 
             let mut d = Document::new();
             import_docx(&docx, &mut d);
@@ -3065,9 +2989,9 @@ mod tests {
                 r#"</w:footnotes>"#,
             );
             let base = minimal_docx(body);
-            let mut c = DocxContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set("word/footnotes.xml", footnotes.as_bytes().to_vec());
-            let docx = c.write().unwrap();
+            let docx = c.write_opc().unwrap();
 
             let mut d = Document::new();
             import_docx(&docx, &mut d);
@@ -3159,9 +3083,9 @@ mod tests {
                 r#"</w:comments>"#,
             );
             let base = minimal_docx(body);
-            let mut c = DocxContainer::read(&base).unwrap();
+            let mut c = ZipPackage::read(&base).unwrap();
             c.set("word/comments.xml", comments.as_bytes().to_vec());
-            let docx = c.write().unwrap();
+            let docx = c.write_opc().unwrap();
 
             let mut d = Document::new();
             import_docx(&docx, &mut d);
@@ -3207,7 +3131,7 @@ mod tests {
             d.add_comment(&p, 11, 20, "Ada Lovelace", "note: fix"); // over "this word"
 
             let exported = export_docx(&d);
-            let cont = DocxContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let cmts =
                 std::str::from_utf8(cont.get("word/comments.xml").expect("comments.xml written"))
                     .unwrap();
@@ -3310,7 +3234,7 @@ mod tests {
             let _ = (ins, del);
 
             let exported = export_docx(&d);
-            let cont = DocxContainer::read(&exported).unwrap();
+            let cont = ZipPackage::read(&exported).unwrap();
             let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
             assert_docx_shows_tracked_changes(document);
 
@@ -3382,7 +3306,7 @@ mod tests {
     /// the content-types/rels registrations (part of
     /// [`footnote_and_endnote_roundtrip_through_docx`]).
     fn assert_footnote_endnote_docx_xml(exported: &[u8]) {
-        let cont = DocxContainer::read(exported).unwrap();
+        let cont = ZipPackage::read(exported).unwrap();
         let ftn = std::str::from_utf8(
             cont.get("word/footnotes.xml")
                 .expect("footnotes.xml written"),
@@ -3558,7 +3482,7 @@ mod tests {
             d.set_columns(2, Some(24.0)); // 24 px gap → 360 twips
 
             let exported = export_docx(&d);
-            let out = DocxContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
             assert!(
                 document.contains("<w:sectPr>"),
@@ -3595,7 +3519,7 @@ mod tests {
             d.set_columns(3, None);
 
             let exported = export_docx(&d);
-            let out = DocxContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
             assert_eq!(
                 document.matches("<w:sectPr>").count(),
@@ -3632,7 +3556,7 @@ mod tests {
             d.splice_text(&p, 0, 0, "plain");
 
             let exported = export_docx(&d);
-            let out = DocxContainer::read(&exported).unwrap();
+            let out = ZipPackage::read(&exported).unwrap();
             let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
             assert!(
                 !document.contains("<w:cols"),
@@ -3661,7 +3585,7 @@ mod tests {
             r#"<w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr><w:p/></w:tc>"#,
             r#"<w:tc><w:p><w:r><w:t>f</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#,
         );
-        let mut c = DocxContainer::read(&super::super::container::minimal_docx_numbered(
+        let mut c = ZipPackage::read(&super::super::container::minimal_docx_numbered(
             "", numbering, body,
         ))
         .unwrap();
@@ -3675,7 +3599,7 @@ mod tests {
         let mut d = Document::new();
         DocxCodec
             .import(
-                &c.write().unwrap(),
+                &c.write_opc().unwrap(),
                 &mut d.as_mut(),
                 &mut tilo_content::ContentInputs::new(),
             )
@@ -3697,7 +3621,7 @@ mod tests {
         let out = DocxCodec
             .export(d.as_ref(), &tilo_content::NoContent)
             .unwrap();
-        let c = DocxContainer::read(&out).unwrap();
+        let c = ZipPackage::read(&out).unwrap();
         let text = |part: &str| String::from_utf8(c.get(part).unwrap().to_vec()).unwrap();
         let xml = text("word/document.xml");
         for kept in [

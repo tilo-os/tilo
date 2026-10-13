@@ -1066,9 +1066,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn opening_trash_refuses_a_symlink_without_populating_its_target() {
-        let home = tilo_test_env::TestHome::new().expect("private test home");
+        let _home = tilo_test_env::TestHome::new().expect("private test home");
         let outside = tempfile::tempdir().expect("unrelated directory");
-        host_fs::symlink(outside.path(), &home.data().join("Trash")).expect("symlink fixture");
+        // The Trash root lives under the platform data dir, which is not
+        // `$XDG_DATA_HOME` everywhere (macOS uses `~/Library/Application Support`).
+        let files = trash_dir().expect("test Trash path");
+        let trash = files.parent().expect("Trash root");
+        fs::create_dir_all(trash.parent().expect("data directory")).expect("data directory");
+        host_fs::symlink(outside.path(), trash).expect("symlink fixture");
         assert!(ensure_trash_dir().is_none());
         assert_eq!(
             fs::read_dir(outside.path())

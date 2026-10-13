@@ -150,15 +150,23 @@ impl StoreApp {
                     )),
             ));
         }
-        self.operation_error.as_ref().map(|error| {
+        let source_error = self
+            .remotes
+            .iter()
+            .find_map(|remote| remote.catalogue_error.as_ref());
+        self.operation_error.as_ref().or(source_error).map(|error| {
             let mut refresh = Button::new("store.error.refresh", &ui::i18n!("store-error-refresh"));
             if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
                 refresh = refresh.on_action(binding);
             }
             Box::new(
-                Banner::error(ui::i18n!("store-operation-failed"))
-                    .with_message(visible_operation_status(error))
-                    .with_action(refresh),
+                (if self.operation_error.is_some() {
+                    Banner::error(ui::i18n!("store-operation-failed"))
+                } else {
+                    Banner::warning(ui::i18n!("store-source-partial"))
+                })
+                .with_message(visible_operation_status(error))
+                .with_action(refresh),
             ) as Element
         })
     }
@@ -308,7 +316,11 @@ impl StoreApp {
         // refreshing. The visible action goes through the same one-shot
         // `store.refresh` resource action as the pointer, keyboard, assistive
         // technology and agents, so each requests one serialized operation.
-        let empty = if let Some(error) = &self.operation_error {
+        let empty = if let Some(error) = self.operation_error.as_ref().or_else(|| {
+            self.remotes
+                .iter()
+                .find_map(|remote| remote.catalogue_error.as_ref())
+        }) {
             EmptyState::error("Catalogues offline", visible_operation_status(error))
         } else {
             EmptyState::new("No apps available")
@@ -615,6 +627,9 @@ impl StoreApp {
                 )],
             )));
         }
+        if let Some(bot) = &item.bot {
+            children.push(bot_section(bot));
+        }
         if !item.description.trim().is_empty() && item.description.trim() != item.tagline.trim() {
             children.push(Box::new(Section::titled(
                 ui::i18n!("store-about-app"),
@@ -874,7 +889,7 @@ impl StoreApp {
                 let mut row =
                     ListRow::new(format!("store.{}", remote.resource_id()), &remote.title)
                         .icon(Icon::Globe)
-                        .secondary(&remote.url)
+                        .secondary(remote.catalogue_error.as_deref().unwrap_or(&remote.url))
                         .meta(remote_state_label(remote));
                 if !remote.disabled
                     && let Some(binding) = bindings::effect(&StoreEffect::BrowseRemote {
@@ -968,6 +983,65 @@ fn trust_explanation(item: &StoreItem, locally_retained: bool) -> String {
 /// Every fact the details page lists, in one reading order: what the package
 /// is, where it comes from, what it is doing on this device and where the
 /// project lives.
+/// What a directory bot does and needs, as its signed listing says.
+fn bot_section(bot: &crate::model::BotListing) -> Element {
+    let mut lines: Vec<Element> = bot
+        .triggers
+        .iter()
+        .enumerate()
+        .map(|(index, trigger)| {
+            let key = match trigger.as_str() {
+                "connector" => Some("store-bot-trigger-connector"),
+                "record_changed" => Some("store-bot-trigger-record-changed"),
+                "schedule" => Some("store-bot-trigger-schedule"),
+                "manual" => Some("store-bot-trigger-manual"),
+                "incoming_message" => Some("store-bot-trigger-incoming-message"),
+                _ => None,
+            };
+            let text = key.map_or_else(|| trigger.clone(), ui::i18n::I18nManager::lookup_plain);
+            Box::new(
+                Text::new(&text)
+                    .with_id(format!("store.bot.trigger.{index}"))
+                    .with_role(TextRole::Body),
+            ) as Element
+        })
+        .collect();
+    if !bot.apps.is_empty() {
+        lines.push(Box::new(
+            Text::new(&ui::i18n::I18nManager::format(
+                "store-bot-needs-apps",
+                &[("apps", ui::i18n::ArgValue::Text(bot.apps.join(", ")))],
+            ))
+            .with_id("store.bot.apps")
+            .with_role(TextRole::Body),
+        ));
+    }
+    if !bot.connectors.is_empty() {
+        let connectors = bot
+            .connectors
+            .iter()
+            .map(|c| format!("{} \u{2265} {}", c.package_id, c.min_version))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(Box::new(
+            Text::new(&ui::i18n::I18nManager::format(
+                "store-bot-needs-connectors",
+                &[("connectors", ui::i18n::ArgValue::Text(connectors))],
+            ))
+            .with_id("store.bot.connectors")
+            .with_role(TextRole::Body),
+        ));
+    }
+    if bot.appearance {
+        lines.push(Box::new(
+            Text::new(&ui::i18n!("store-bot-appearance"))
+                .with_id("store.bot.appearance")
+                .with_role(TextRole::Body),
+        ));
+    }
+    Box::new(Section::titled(ui::i18n!("store-bot-what-it-does"), lines))
+}
+
 fn detail_properties(item: &StoreItem) -> Vec<Property> {
     let mut rows = package_properties(item);
     rows.extend(publisher_properties(item));

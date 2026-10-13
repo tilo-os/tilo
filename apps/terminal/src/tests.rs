@@ -280,7 +280,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
     // Case `a_session_that_marks_its_runs_opens_and_keeps_the_key`.
     {
         use std::io::BufRead as _;
-        use std::os::fd::AsRawFd;
 
         // The supervisor's reply byte for byte as `ServeResponse::Session`
         // serialises it for a bash session whose request named a key (ush's
@@ -298,9 +297,10 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 .openpty(PtySize::default())
                 .unwrap();
             runtime_portal::fd_transport::send_with_fd(
-                supervisor_end.as_raw_fd(),
+                &supervisor_end,
                 REPLY,
-                pair.master.as_raw_fd().unwrap(),
+                // SAFETY: `pair` owns the master and outlives this call.
+                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
             )
             .unwrap();
             (request, supervisor_end, pair)
@@ -381,7 +381,6 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
     // Case `hosted_services_discover_and_use_a_healthy_ush_socket`.
     {
         use std::io::{BufRead, BufReader};
-        use std::os::fd::AsRawFd;
 
         let runtime = tempfile::tempdir().unwrap();
         let listener = private_ush_listener(runtime.path());
@@ -400,9 +399,10 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                 .openpty(portable_pty::PtySize::default())
                 .unwrap();
             runtime_portal::fd_transport::send_with_fd(
-                stream.as_raw_fd(),
+                &stream,
                 b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
-                pair.master.as_raw_fd().unwrap(),
+                // SAFETY: `pair` owns the master and outlives this call.
+                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
             )
             .unwrap();
         });
@@ -502,32 +502,17 @@ pub(crate) fn drain_writes(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
 }
 
 fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-    use winit::event::{ElementState, MouseButton, WindowEvent};
-    let ev = WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    };
+    let ev = ui::synthetic_input::mouse_press();
     ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
 fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-    use winit::event::{ElementState, MouseButton, WindowEvent};
-    let ev = WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    };
+    let ev = ui::synthetic_input::mouse_release();
     ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
 fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y: f64) {
-    use winit::dpi::PhysicalPosition;
-    use winit::event::WindowEvent;
-    let ev = WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: PhysicalPosition::new(x, y),
-    };
+    let ev = ui::synthetic_input::cursor_moved(x, y);
     ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
@@ -538,18 +523,13 @@ fn send_mouse_button_mods(
     state: winit::event::ElementState,
     shift: bool,
 ) {
-    use winit::event::WindowEvent;
     use winit::keyboard::ModifiersState;
     let modifiers = if shift {
         ModifiersState::SHIFT
     } else {
         ModifiersState::empty()
     };
-    let ev = WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state,
-        button,
-    };
+    let ev = ui::synthetic_input::mouse_input(state, button);
     ui::testing::Dispatch::new()
         .modifiers(modifiers)
         .doc(doc)
@@ -602,7 +582,7 @@ fn send_key_with_modifiers(
     key: winit::keyboard::Key,
     state: winit::keyboard::ModifiersState,
 ) {
-    use winit::event::{ElementState, WindowEvent};
+    use winit::event::ElementState;
 
     let mut ev = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
     // Real winit delivers the committed text alongside a character key; the
@@ -613,11 +593,7 @@ fn send_key_with_modifiers(
         _ => None,
     };
 
-    let win_ev = WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event: ev,
-        is_synthetic: false,
-    };
+    let win_ev = ui::synthetic_input::keyboard_input(ev);
     ui::testing::Dispatch::new()
         .modifiers(state)
         .doc(doc)
@@ -632,19 +608,12 @@ pub(crate) fn send_key_without_text(
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
 ) -> bool {
-    use winit::event::{ElementState, WindowEvent};
+    use winit::event::ElementState;
 
     let ev = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
     ui::testing::Dispatch::new()
         .doc(doc)
-        .send(
-            widget,
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            },
-        )
+        .send(widget, &ui::synthetic_input::keyboard_input(ev))
         .handled
 }
 
@@ -693,7 +662,7 @@ fn typed_text_reaches_the_pty_without_keyevent_text() {
 /// Physical and named Space must preserve Readline's mark command.
 #[test]
 fn control_space_reaches_the_native_editor_as_nul() {
-    use winit::event::{ElementState, WindowEvent};
+    use winit::event::ElementState;
     use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
     let (mut widget, writes) = build_test_widget();
@@ -717,14 +686,7 @@ fn control_space_reaches_the_native_editor_as_nul() {
                 ui::testing::Dispatch::new()
                     .modifiers(modifiers)
                     .doc(&mut doc)
-                    .send(
-                        &mut widget,
-                        &WindowEvent::KeyboardInput {
-                            device_id: winit::event::DeviceId::dummy(),
-                            event,
-                            is_synthetic: false,
-                        },
-                    )
+                    .send(&mut widget, &ui::synthetic_input::keyboard_input(event),)
                     .handled,
                 "the terminal must consume modified Space"
             );
@@ -3577,17 +3539,12 @@ fn keyboard_encoding_sends_expected_sequences() {
 
 /// Send a left press with explicit modifiers (for shift-extend).
 fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift: bool) {
-    use winit::event::{ElementState, MouseButton, WindowEvent};
     use winit::keyboard::ModifiersState;
     let mut state = ModifiersState::empty();
     if shift {
         state |= ModifiersState::SHIFT;
     }
-    let ev = WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    };
+    let ev = ui::synthetic_input::mouse_press();
     ui::testing::Dispatch::new()
         .modifiers(state)
         .doc(doc)
@@ -3596,12 +3553,8 @@ fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift
 
 /// Send a middle-button press (primary-selection paste).
 fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
-    use winit::event::{ElementState, MouseButton, WindowEvent};
-    let ev = WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Middle,
-    };
+    use winit::event::{ElementState, MouseButton};
+    let ev = ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Middle);
     ui::testing::Dispatch::new().doc(doc).send(widget, &ev);
 }
 
@@ -3766,9 +3719,6 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
 
     // Case `selection_highlight_is_produced_synchronously_on_drag`.
     {
-        use winit::dpi::PhysicalPosition;
-        use winit::event::WindowEvent;
-
         let (mut widget, _) = build_test_widget();
         let mut doc = AutoCommit::new();
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 600.0), 10.0, 20.0);
@@ -3781,10 +3731,7 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
         // back whether it was `handled` (the App's incremental-redraw gate only
         // repaints a pointer move when the widget reports it, so a drag that
         // isn't handled would leave the highlight invisible until the next tick).
-        let ev = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(4.0 + 20.0 * 10.0 + 1.0, 20.0 + 1.0),
-        };
+        let ev = ui::synthetic_input::cursor_moved(4.0 + 20.0 * 10.0 + 1.0, 20.0 + 1.0);
         let handled = ui::testing::Dispatch::new()
             .doc(&mut doc)
             .send(&mut widget, &ev)
@@ -4594,7 +4541,7 @@ fn typing_damages_only_its_row_and_the_cursor() {
     );
     let area: f64 = damage.iter().map(Rect::area).sum();
     eprintln!(
-        "TIL-579 terminal keystroke damage: {area} of {} px",
+        "#3892 terminal keystroke damage: {area} of {} px",
         viewport.area()
     );
     assert!(

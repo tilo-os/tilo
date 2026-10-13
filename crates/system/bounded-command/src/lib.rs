@@ -12,7 +12,7 @@ use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
@@ -247,14 +247,58 @@ pub enum Error {
     Cancelled,
 }
 
+/// An informational copy of bytes already read by the owned stderr capture.
+/// Capture remains authoritative; overflow disables only this observation lane.
+#[derive(Debug)]
+pub enum StderrObservation {
+    /// At most 4096 captured bytes, in stream order.
+    Bytes(Vec<u8>),
+    /// The bounded observation queue overflowed; no subsequent bytes are exposed.
+    Overflow,
+}
+
+/// Maximum chunks retained by the optional informational stderr observer.
+pub const STDERR_OBSERVATION_CHUNKS: usize = 16;
+
+struct StderrCapture {
+    sender: SyncSender<Vec<u8>>,
+    overflow: Arc<AtomicBool>,
+}
+
+struct StderrObservations {
+    receiver: Receiver<Vec<u8>>,
+    overflow: Arc<AtomicBool>,
+    disabled: bool,
+}
+
 /// A nonblocking bounded command which cancels its process group when dropped.
 pub struct AsyncCommand {
     cancel: Arc<AtomicBool>,
     result: Receiver<Result<Output, Error>>,
     worker: Option<std::thread::JoinHandle<()>>,
+    stderr_observations: Option<StderrObservations>,
 }
 
 impl AsyncCommand {
+    /// Poll the optional bounded informational stderr lane without blocking.
+    /// On overflow, pending copies are discarded and this lane stays disabled.
+    pub fn try_stderr(&mut self) -> Option<StderrObservation> {
+        let observations = self.stderr_observations.as_mut()?;
+        if observations.disabled {
+            return None;
+        }
+        if observations.overflow.load(Ordering::Acquire) {
+            observations.disabled = true;
+            while observations.receiver.try_recv().is_ok() {}
+            return Some(StderrObservation::Overflow);
+        }
+        observations
+            .receiver
+            .try_recv()
+            .ok()
+            .map(StderrObservation::Bytes)
+    }
+
     /// Return a completed result without blocking, or `None` while it runs.
     pub fn try_wait(&mut self) -> Option<Result<Output, Error>> {
         match self.result.try_recv() {
@@ -295,6 +339,33 @@ pub fn spawn_prepared(
     output_limit: usize,
     timeout: Duration,
 ) -> Result<AsyncCommand, Error> {
+    spawn_prepared_inner(command, input, output_limit, timeout, false)
+}
+
+/// Spawn with a bounded nonblocking copy of owned stderr capture.
+///
+/// Up to sixteen 4096-byte chunks await observation. A slow observer disables
+/// this informational lane instead of blocking the child or capture readers.
+/// Output bytes, limits, cancellation and process-tree ownership are unchanged.
+///
+/// # Errors
+/// Returns the same input failures as [`spawn_prepared`].
+pub fn spawn_prepared_observing_stderr(
+    command: Command,
+    input: Option<&[u8]>,
+    output_limit: usize,
+    timeout: Duration,
+) -> Result<AsyncCommand, Error> {
+    spawn_prepared_inner(command, input, output_limit, timeout, true)
+}
+
+fn spawn_prepared_inner(
+    command: Command,
+    input: Option<&[u8]>,
+    output_limit: usize,
+    timeout: Duration,
+    observe_stderr: bool,
+) -> Result<AsyncCommand, Error> {
     if input.is_some_and(|bytes| bytes.len() > MAX_INPUT_BYTES) {
         return Err(Error::InputTooLarge);
     }
@@ -302,6 +373,23 @@ pub fn spawn_prepared(
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
     let (sender, result) = std::sync::mpsc::channel();
+    let (capture, stderr_observations) = if observe_stderr {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(STDERR_OBSERVATION_CHUNKS);
+        let overflow = Arc::new(AtomicBool::new(false));
+        (
+            Some(StderrCapture {
+                sender,
+                overflow: Arc::clone(&overflow),
+            }),
+            Some(StderrObservations {
+                receiver,
+                overflow,
+                disabled: false,
+            }),
+        )
+    } else {
+        (None, None)
+    };
     let worker = std::thread::spawn(move || {
         let outcome = run_prepared_inner(
             command,
@@ -310,6 +398,7 @@ pub fn spawn_prepared(
             output_limit,
             timeout,
             Some(&worker_cancel),
+            capture,
         );
         let _ = sender.send(outcome);
     });
@@ -317,6 +406,7 @@ pub fn spawn_prepared(
         cancel,
         result,
         worker: Some(worker),
+        stderr_observations,
     })
 }
 
@@ -324,6 +414,32 @@ fn read_bounded(pipe: impl Read, limit: usize) -> Vec<u8> {
     let read_limit = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
     let mut bytes = Vec::new();
     let _ = pipe.take(read_limit).read_to_end(&mut bytes);
+    bytes
+}
+
+fn read_bounded_observed(pipe: impl Read, limit: usize, capture: Option<StderrCapture>) -> Vec<u8> {
+    let Some(capture) = capture else {
+        return read_bounded(pipe, limit);
+    };
+    let read_limit = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    let mut pipe = pipe.take(read_limit);
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 4096];
+    loop {
+        let count = match pipe.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => count,
+        };
+        let Some(captured) = chunk.get(..count) else {
+            break;
+        };
+        bytes.extend_from_slice(captured);
+        if !capture.overflow.load(Ordering::Acquire)
+            && capture.sender.try_send(captured.to_vec()).is_err()
+        {
+            capture.overflow.store(true, Ordering::Release);
+        }
+    }
     bytes
 }
 
@@ -454,6 +570,7 @@ pub fn run_prepared_with_input_limit(
         stderr_limit,
         timeout,
         None,
+        None,
     )
 }
 
@@ -464,6 +581,7 @@ fn run_prepared_inner(
     stderr_limit: usize,
     timeout: Duration,
     cancel: Option<&AtomicBool>,
+    stderr_capture: Option<StderrCapture>,
 ) -> Result<Output, Error> {
     command
         .stdin(if input.is_some() {
@@ -494,7 +612,8 @@ fn run_prepared_inner(
         .take()
         .ok_or_else(|| Error::Process(std::io::Error::other("command stderr is unavailable")))?;
     let out_reader = std::thread::spawn(move || read_bounded(stdout, stdout_limit));
-    let err_reader = std::thread::spawn(move || read_bounded(stderr, stderr_limit));
+    let err_reader =
+        std::thread::spawn(move || read_bounded_observed(stderr, stderr_limit, stderr_capture));
     let deadline = Instant::now()
         .checked_add(timeout)
         .unwrap_or_else(Instant::now);
@@ -753,6 +872,106 @@ mod tests {
             still_running,
             "refused group ownership must not signal the child"
         );
+    }
+
+    #[test]
+    fn stderr_observation_is_live_bounded_and_preserves_exact_capture() {
+        let directory = tempfile::tempdir().unwrap();
+        let first_gate = directory.path().join("first-gate");
+        let second_gate = directory.path().join("second-gate");
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "printf 'first\\n' >&2; while [ ! -f \"$1\" ]; do sleep 0.01; done; printf 'second\\n' >&2; while [ ! -f \"$2\" ]; do sleep 0.01; done; printf stdout; exit 7",
+            "owned-observer-fixture",
+        ]).arg(&first_gate).arg(&second_gate);
+        let mut child =
+            spawn_prepared_observing_stderr(command, None, 4096, UNTESTED_TIMEOUT).unwrap();
+        let mut observed = Vec::new();
+        for (expected, gate) in [
+            (b"first\n".as_slice(), first_gate),
+            (b"first\nsecond\n".as_slice(), second_gate),
+        ] {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while observed.len() < expected.len() && Instant::now() < deadline {
+                match child.try_stderr() {
+                    Some(StderrObservation::Bytes(bytes)) => observed.extend(bytes),
+                    Some(StderrObservation::Overflow) => panic!("small gated output overflowed"),
+                    None => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+            assert_eq!(
+                observed, expected,
+                "the phase is observable before its gate is released"
+            );
+            assert!(
+                child.try_wait().is_none(),
+                "the same owned invocation is still running"
+            );
+            fs::write(gate, b"release").unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let output = loop {
+            if let Some(result) = child.try_wait() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline, "owned child did not complete");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout, b"stdout");
+        assert_eq!(
+            output.stderr, observed,
+            "observation never removes or rewrites capture bytes"
+        );
+    }
+
+    #[test]
+    fn a_slow_stderr_observer_does_not_block_capture_or_change_output_limits() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "head -c 262144 /dev/zero >&2"]);
+        let mut child =
+            spawn_prepared_observing_stderr(command, None, 262_144, UNTESTED_TIMEOUT).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let output = loop {
+            if let Some(result) = child.try_wait() {
+                break result.unwrap();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a full observation queue blocked the capture"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(output.status.success());
+        assert_eq!(output.stderr, vec![0; 262_144]);
+        assert!(matches!(
+            child.try_stderr(),
+            Some(StderrObservation::Overflow)
+        ));
+        assert!(
+            child.try_stderr().is_none(),
+            "overflow permanently disables only this lane"
+        );
+        let mut overflowing = Command::new("sh");
+        overflowing.args(["-c", "head -c 8192 /dev/zero >&2"]);
+        let mut child =
+            spawn_prepared_observing_stderr(overflowing, None, 1024, UNTESTED_TIMEOUT).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let error = loop {
+            if let Some(result) = child.try_wait() {
+                break result.unwrap_err();
+            }
+            assert!(Instant::now() < deadline, "bounded child did not complete");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(matches!(
+            error,
+            Error::OutputTooLarge {
+                stream: "stderr",
+                limit: 1024
+            }
+        ));
     }
 
     #[test]

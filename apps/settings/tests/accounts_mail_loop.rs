@@ -8,16 +8,6 @@
 //! disk: the typed account record, its flattened connection config, and the
 //! sealed password. No mocks: the two apps meet at that store.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use settings::accounts::AccountKind;
 use settings::accounts::AccountRoot;
 use settings::panes::accounts::{AccountViewCommand, AccountsPane};

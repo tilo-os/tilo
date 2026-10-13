@@ -584,10 +584,6 @@ pub(crate) mod tests {
 
     /// FAT12/FAT32 placeholders, corrupt structures and masking.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn fat_placeholders_are_found_and_masked_precisely() {
         // Phase `finds_fragmented_long_named_placeholders_on_fat12`.
         {

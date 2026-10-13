@@ -19,8 +19,6 @@ use uuid::Uuid;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::tilo_actions::Resource;
-
 use crate::link::{ConnectionRow, Dialog, Intent, Link, ViewModel};
 use crate::model::{DatabaseSchema, QueryResult, TableInfo};
 use crate::navigator::Navigator;
@@ -31,18 +29,6 @@ use crate::workspace::Workspace;
 
 /// What a saved connection's keyring entry holds.
 const PASSWORD_PURPOSE: &str = "password";
-
-/// `resource`, a live catalog entity, as the row the surface publishes.
-fn live_row(resource: Resource) -> LiveRow {
-    let mut row = LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
-    for action in resource.actions {
-        row = row.operation(action);
-    }
-    for child in resource.children {
-        row = row.row(live_row(child));
-    }
-    row
-}
 
 /// Encode arbitrary catalog text into a path component without the ambiguity
 /// of delimiter-joined ids (`a:b` vs `a`, `b`). Labels remain human-readable;
@@ -404,7 +390,6 @@ impl DbClientApp {
             data_generation: session.data_gen,
             data_total: session.selected_table_rows(),
             data_offset: session.data_offset,
-            data_page_size: session.data_page_size,
             table,
             dialog: self.dialog,
             pending_sql: self.pending_query_confirmation.clone().unwrap_or_default(),
@@ -647,7 +632,12 @@ impl DbClientApp {
         if let Some(label) = self.live_job_label() {
             rows.push(LiveRow::new("database.job", "database.job", label));
         }
-        rows.extend(self.search_index.rows().into_iter().map(live_row));
+        rows.extend(
+            self.search_index
+                .rows()
+                .into_iter()
+                .map(LiveRow::from_resource),
+        );
         rows
     }
 
@@ -658,7 +648,7 @@ impl DbClientApp {
 
     /// The live entity `id`, at any depth of the open connection's catalog.
     pub(crate) fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.search_index.resource(id).map(live_row)
+        self.search_index.resource(id).map(LiveRow::from_resource)
     }
 
     /// In-flight connect / query / export job label.
@@ -1289,6 +1279,7 @@ mod tests {
     use automerge::ROOT;
     use ui::headless::FrameHarness;
     use ui::theme::Theme;
+    use ui::tilo_actions::Resource;
 
     use crate::model::{ConnectionProfile, Engine};
 

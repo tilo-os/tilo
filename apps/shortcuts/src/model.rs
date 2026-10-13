@@ -120,6 +120,7 @@ impl Head {
                 action,
                 resource,
                 args,
+                ..
             } => (
                 Self::Invoke {
                     action: action.clone(),
@@ -183,6 +184,7 @@ impl Head {
                 action,
                 resource,
                 args,
+                appearance: None,
             },
             Self::If { cond } => StepKind::If {
                 cond,

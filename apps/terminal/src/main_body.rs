@@ -1281,10 +1281,7 @@ impl TerminalWidget {
                         .with_name(link_resource_label(url))
                         .with_description("Link in visible terminal output")
                         .with_action_target(self.terminal_link_resource_id(link_id))
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                 })
             })
             .collect()
@@ -1297,11 +1294,11 @@ impl TerminalWidget {
                 .with_name(self.chip_label()?)
                 .with_action_target(format!("terminal.target:{}", self.pane_id))
                 .with_bounds(self.chip_rect)
-                .with_state(AccessState {
-                    focusable: true,
-                    expanded: Some(self.target_menu_rows.is_some()),
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .expanded(self.target_menu_rows.is_some()),
+                ),
         )
     }
 
@@ -1330,21 +1327,13 @@ impl TerminalWidget {
                             .with_name(label)
                             .with_action_target(format!("terminal.menu:{}:{index}", self.pane_id))
                             .with_position(position, action_count)
-                            .with_state(AccessState {
-                                focusable: !disabled,
-                                disabled,
-                                ..Default::default()
-                            }),
+                            .with_state(AccessState::new().focusable(!disabled).disabled(disabled)),
                     )
                 })
                 .collect();
             AccessNode::new(Role::Menu)
                 .with_hashed_key("terminal-context-menu")
-                .with_state(AccessState {
-                    expanded: Some(true),
-                    modal: true,
-                    ..Default::default()
-                })
+                .with_state(AccessState::new().expanded(true).modal(true))
                 .with_children(children)
         })
     }
@@ -3382,14 +3371,14 @@ impl Widget for TerminalWidget {
             .with_value(value)
             .with_bounds(self.rect)
             .with_action_target(self.terminal_transcript_target())
-            .with_state(AccessState {
-                focusable: true,
-                focused: self.focused,
-                multiline: true,
-                read_only: true,
-                context_menu: true,
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.focused)
+                    .multiline(true)
+                    .read_only(true)
+                    .context_menu(true),
+            );
         if let Some(picker) = self.target_picker_accessibility() {
             transcript.children.push(picker);
         }
@@ -3950,9 +3939,7 @@ impl TerminalWidget {
         handled: &mut bool,
     ) {
         // Escape dismisses an open context menu before the app sees it.
-        if self.context_menu.is_open()
-            && let Key::Named(NamedKey::Escape) = logical_key
-        {
+        if self.context_menu.is_open() && matches!(logical_key, Key::Named(NamedKey::Escape)) {
             self.context_menu.close();
             *handled = true;
             return;
@@ -7229,11 +7216,10 @@ pub(crate) fn ush_backend_on(
     requested_by: Requester,
     relay_session: Option<&str>,
 ) -> Result<TerminalBackend, OpenError> {
-    use std::os::fd::AsRawFd;
     // How long the answer may take. Before it answers, the supervisor checks
     // that the environment can be built, which on a device's first open reads
     // the system store's images: ~400 ms on the CI VM, past the 250 ms a
-    // hosted connection is given to connect (TIL-708). Never shorten a longer
+    // hosted connection is given to connect. Never shorten a longer
     // bound, nor add one where the connection has none.
     const USH_OPEN_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
     let failed = |error: &dyn std::fmt::Display| OpenError::Failed(error.to_string());
@@ -7262,8 +7248,7 @@ pub(crate) fn ush_backend_on(
     }
 
     let (payload, mut descriptors) =
-        runtime_portal::fd_transport::recv_with_owned_fds(stream.as_raw_fd())
-            .map_err(|e| failed(&e))?;
+        runtime_portal::fd_transport::recv_with_fds(stream).map_err(|e| failed(&e))?;
     if descriptors.is_empty() {
         return Err(refusal(&payload));
     }

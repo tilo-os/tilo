@@ -3,7 +3,7 @@
 [[resources]]
 kind = "music.library"
 label = "Music"
-version = 1
+version = 2
 fields = [
   { path = "recommendations", type = "crate::recommendations::Preferences", stored = "record" },
   { path = "recommendations.likes", type = "bool" },

@@ -2,7 +2,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     reason = "test fixtures pin original checked admission and owner custody"
 )]
 use std::{
@@ -61,9 +60,6 @@ impl AppWidget for Root {
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("R")
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
     }
 }
 fn factory(

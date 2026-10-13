@@ -4,7 +4,7 @@ use crate::history::FileHistoryStore;
 use crate::namespace::ROOT_INO;
 use crate::record_publisher::RecordPublisher;
 use crate::record_replication::{
-    RecordAction, RecordAuthorizer, RecordEnvelopeV1, RecordOperationV1,
+    RecordEnvelopeV1, RecordOperationV1, test_authorizers::AllowActor,
 };
 use collab_types::{Access, CapOverride, Ed25519PublicKey, Effect, Scope, Subject};
 use fs_protocol::{
@@ -1680,7 +1680,7 @@ async fn structure_content_and_transactions_propagate_between_peers() {
                 person: Ed25519PublicKey(server_root.verifying_key().to_bytes()),
                 device: Ed25519PublicKey(server_identity.device_public_key()),
             };
-            let authorizer = AllowRecordActor(actor);
+            let authorizer = AllowActor(actor);
 
             let mut server_namespace = Namespace::new("live-record-mesh-server").unwrap();
             let source_ino = server_namespace
@@ -2539,19 +2539,6 @@ async fn three_live_peers_require_a_fresh_exact_replica_before_eviction_and_rehy
         .verify_durable_revision(&current_revision)
         .await
         .unwrap();
-}
-
-#[derive(Clone, Copy)]
-struct AllowRecordActor(FileActor);
-
-impl RecordAuthorizer for AllowRecordActor {
-    fn actor_is_certified(&self, actor: &FileActor) -> bool {
-        *actor == self.0
-    }
-
-    fn allows(&self, actor: &FileActor, _record_id: FileRecordId, _action: RecordAction) -> bool {
-        *actor == self.0
-    }
 }
 
 #[test]
@@ -3810,7 +3797,7 @@ async fn namespace_session_pass(
     Ok(generated().saturating_sub(before))
 }
 
-/// TIL-584. Two writers in sync, with 5,000 namespace changes behind them.
+/// #3858. Two writers in sync, with 5,000 namespace changes behind them.
 /// Every pass used to start both ends from a fresh Automerge sync state,
 /// whose first message carries a Bloom filter over the document's whole
 /// history (10 bits a change): 6 KB here, 62 KB at 50,000 changes, every
@@ -3935,7 +3922,7 @@ async fn revoked_writer_is_cut_off_with_persisted_state() {
     router.shutdown().await.unwrap();
 }
 
-/// TIL-745. The idle timer: three seconds after anything happens, doubling
+/// #4113. The idle timer: three seconds after anything happens, doubling
 /// per quiet timer pass to thirty; a change, a pass something started, or
 /// activity outside a pass brings it back to three; a failing exchange
 /// holds three seconds for a minute, then backs off as well.
@@ -4003,7 +3990,7 @@ fn idle_backoff_doubles_to_the_ceiling_and_resets_on_activity() {
     );
 }
 
-/// TIL-745. An idle exchange's replies carry the peer's heads; only one
+/// #4113. An idle exchange's replies carry the peer's heads; only one
 /// that brings changes reports any, so idle timer passes neither count as
 /// changes nor stop the timer backing off.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4044,7 +4031,7 @@ async fn idle_namespace_exchange_reports_no_change() {
     router.shutdown().await.unwrap();
 }
 
-/// TIL-745. A peer's own pass that brings changes wakes this device's
+/// #4113. A peer's own pass that brings changes wakes this device's
 /// loop as an announcement does, so the records behind them are pulled now
 /// rather than at an idle timer pass up to 30 s later; an idle one does not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4098,7 +4085,7 @@ async fn a_peers_exchange_that_brings_changes_starts_a_pass() {
     router.shutdown().await.unwrap();
 }
 
-/// TIL-745. A timer pass skips the namespace exchange with a peer that
+/// #4113. A timer pass skips the namespace exchange with a peer that
 /// agreed on this device's heads at its last exchange in this loop: no sync
 /// message on either side. It never skips on the loop's first exchange with
 /// a peer, nor on a pass something started, nor once this device has a
@@ -4189,7 +4176,7 @@ async fn quiet_timer_pass_skips_the_namespace_exchange_with_a_peer_in_sync() {
     router.shutdown().await.unwrap();
 }
 
-/// TIL-745. A device restarted with its persisted sync progress resumes
+/// #4113. A device restarted with its persisted sync progress resumes
 /// its exchange with a peer over the production session: heads only,
 /// where a restart used to resend a summary of the whole history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4215,7 +4202,7 @@ async fn persisted_sync_progress_resumes_a_session_exchange_after_restart() {
         (device.save(), device.encode_peer_sync_states())
     };
     let restarted = || (Namespace::from_bytes("device", &saved).unwrap(), &progress);
-    // Without its progress (before TIL-745) the restart syncs in full.
+    // Without its progress (before #4113) the restart syncs in full.
     let (forgetful, _) = restarted();
     let forgetful = Arc::new(Mutex::new(forgetful));
     let full = namespace_session_pass(pass, &forgetful, &host, &None)
@@ -4618,7 +4605,7 @@ async fn idle_workspace_cost_measurement() {
     eprintln!("MEASURE window begins");
     let before = direct_bytes_sent(&[&host_ep, &device_ep]);
     // Per-thread wakeups of this process (both nodes) over the window, on
-    // Linux, where /proc has them (TIL-750).
+    // Linux, where /proc has them.
     let threads_before = tilo_test_env::idle::sample_process(std::process::id());
     tokio::time::sleep(window).await;
     let sent = direct_bytes_sent(&[&host_ep, &device_ep]) - before;

@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! Typed settings reach views and surfaces from their context, follow writes
 //! made elsewhere, persist with the profile and never enter the document.

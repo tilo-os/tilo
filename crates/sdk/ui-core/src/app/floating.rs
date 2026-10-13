@@ -44,6 +44,9 @@ pub(super) struct FloatingRuntime {
     pub presentations: HashMap<String, FloatingSurfacePresentation>,
     pub active_ids: HashSet<String>,
     pub prepared_ids: HashSet<String>,
+    /// Exact app-owned Present requests accepted on the current connection,
+    /// whose retained editors await the host's PrepareSurface response.
+    pub pending_ime_ids: HashSet<String>,
     pub coordinate_offsets: HashMap<String, Vec2>,
     pub suspended_ids: HashSet<String>,
     pub host_messages: Vec<FloatingSurfaceHostMessage>,
@@ -61,6 +64,9 @@ pub(super) struct FloatingRuntime {
     /// that the compositor replaced its last secret buffer.
     pub presented_secret: bool,
     pub submitted_secrets: std::collections::VecDeque<(u64, bool)>,
+    pub drawn_action_markers: Vec<crate::app::PaintedActionMarker>,
+    pub submitted_action_markers:
+        std::collections::VecDeque<(u64, Vec<crate::app::PaintedActionMarker>)>,
     pub auxiliary_capture_frames: HashMap<String, AuxiliaryCaptureFrames>,
     /// The shell was told this app can stream its page.
     pub paint_capable_sent: bool,
@@ -69,6 +75,28 @@ pub(super) struct FloatingRuntime {
 }
 
 impl FloatingRuntime {
+    #[cfg(any(feature = "native", test))]
+    pub(super) fn complete_action_marker_frame(
+        &mut self,
+        completed: u64,
+        presented: bool,
+    ) -> Option<Vec<crate::app::PaintedActionMarker>> {
+        let mut result = None;
+        while self
+            .submitted_action_markers
+            .front()
+            .is_some_and(|(frame, _)| *frame <= completed)
+        {
+            if let Some((frame, markers)) = self.submitted_action_markers.pop_front()
+                && frame == completed
+                && presented
+            {
+                result = Some(markers);
+            }
+        }
+        result
+    }
+
     pub(super) fn new(client: Option<FloatingSurfaceServiceClient>) -> Self {
         Self {
             capture_host_required: client.is_some(),
@@ -81,6 +109,7 @@ impl FloatingRuntime {
             presentations: HashMap::new(),
             active_ids: HashSet::new(),
             prepared_ids: HashSet::new(),
+            pending_ime_ids: HashSet::new(),
             coordinate_offsets: HashMap::new(),
             suspended_ids: HashSet::new(),
             host_messages: Vec::new(),
@@ -91,10 +120,33 @@ impl FloatingRuntime {
             capture_acknowledged: None,
             presented_secret: false,
             submitted_secrets: std::collections::VecDeque::new(),
+            drawn_action_markers: Vec::new(),
+            submitted_action_markers: std::collections::VecDeque::new(),
             auxiliary_capture_frames: HashMap::new(),
             paint_capable_sent: false,
             close_window_requested: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod marker_frame_tests {
+    use super::FloatingRuntime;
+
+    #[test]
+    fn only_an_exact_successfully_presented_frame_exports_its_inventory() {
+        let mut runtime = FloatingRuntime::new(None);
+        runtime.submitted_action_markers.push_back((1, Vec::new()));
+        runtime.submitted_action_markers.push_back((2, Vec::new()));
+        assert!(runtime.complete_action_marker_frame(1, false).is_none());
+        assert_eq!(runtime.submitted_action_markers.len(), 1);
+        assert_eq!(
+            runtime.complete_action_marker_frame(2, true),
+            Some(Vec::new()),
+            "an actually presented empty inventory withdraws prior markers"
+        );
+        assert!(runtime.complete_action_marker_frame(2, true).is_none());
+        assert!(runtime.submitted_action_markers.is_empty());
     }
 }
 
@@ -115,6 +167,33 @@ impl App {
         let _entry = self.enter_wake_scope();
         self.pump_floating_surface_service();
         self.floating.client.is_some()
+    }
+
+    #[cfg(feature = "native")]
+    fn pending_floating_ime_source(&self) -> Option<&str> {
+        self.floating.client.as_ref()?;
+        let active_ids = self.root_widget.active_floating_surface_ids();
+        let mut sources = self.floating.pending_ime_ids.iter().filter(|id| {
+            active_ids.contains(id) && self.root_widget.floating_surface_ime(id).is_some()
+        });
+        let source = sources.next()?;
+        sources.next().is_none().then_some(source.as_str())
+    }
+
+    /// Publish queued Present requests before comparing the composing source's
+    /// IME projection. This deliberately does not read host lifecycle messages:
+    /// Prepare must be applied by the native runner before pending custody ends.
+    #[cfg(feature = "native")]
+    fn flush_floating_present_requests_before_ime(&mut self) {
+        let Some(mut client) = self.floating.client.take() else {
+            return;
+        };
+        if let Err(error) = self.send_floating_present_requests(&mut client) {
+            tracing::warn!(%error, "floating-surface request failed; keeping app UI local");
+            self.reattach_after_floating_service_loss();
+            return;
+        }
+        self.floating.client = Some(client);
     }
 
     /// Withhold this app's windows from screenshots, recordings, screen
@@ -161,6 +240,19 @@ impl App {
 }
 
 impl App {
+    /// Attach an explicit host-service connection to the actual native pump in a fixture.
+    /// Existing production dispatch, connection retention and outcome serialization are unchanged.
+    #[cfg(all(feature = "native", feature = "test-support"))]
+    pub fn test_floating_service_connection(&mut self, client: FloatingSurfaceServiceClient) {
+        self.floating.client = Some(client);
+    }
+
+    /// Poll the actual native host-service pump without running a window event loop.
+    #[cfg(all(feature = "native", feature = "test-support"))]
+    pub fn test_pump_floating_service(&mut self) -> bool {
+        self.pump_floating_surface_service()
+    }
+
     /// A queued request is insufficient: the compositor must have applied it
     /// before the render worker can present any secret pixels.
     #[cfg(feature = "native")]
@@ -277,6 +369,9 @@ impl App {
             .active_floating_surface_ids()
             .into_iter()
             .collect();
+        self.floating
+            .pending_ime_ids
+            .retain(|id| self.floating.active_ids.contains(id));
         changed || geometry_changed
     }
 
@@ -288,8 +383,8 @@ impl App {
 
     #[cfg(feature = "native")]
     fn drain_unhosted_floating_requests(&mut self) -> bool {
-        let mut changed = false;
-        if let Some(intent) = self.take_native_host_intent() {
+        self.floating.pending_ime_ids.clear();
+        let mut changed = if let Some(intent) = self.take_native_host_intent() {
             match intent {
                 crate::widget::AppHostIntent::AllowHostShell { reply } => {
                     if let Some(reply) = reply.upgrade() {
@@ -306,8 +401,10 @@ impl App {
                 }
                 _ => {}
             }
-            changed = true;
-        }
+            true
+        } else {
+            false
+        };
         // Outside a Tilo session there is no trusted shell chooser to open.
         // Drain the edge so reconnecting later cannot replay a stale gesture.
         while self.root_widget.take_capture_studio_request().is_some() {}
@@ -424,14 +521,7 @@ impl App {
             )?;
             *changed = true;
         }
-        while let Some(request) = self.root_widget.take_floating_surface_request() {
-            self.floating.suspended_ids.remove(&request.id);
-            client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::Present {
-                    request: (&request).into(),
-                },
-            )?;
-        }
+        self.send_floating_present_requests(client)?;
         for (id, region) in self.root_widget.take_floating_surface_source_updates() {
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::UpdateRegion {
@@ -439,6 +529,31 @@ impl App {
                     region: crate::floating_surface::protocol_rect_array(region),
                 },
             )?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "native")]
+    fn send_floating_present_requests(
+        &mut self,
+        client: &mut FloatingSurfaceServiceClient,
+    ) -> Result<(), String> {
+        while let Some(request) = self.root_widget.take_floating_surface_request() {
+            self.floating.suspended_ids.remove(&request.id);
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::Present {
+                    request: (&request).into(),
+                },
+            )?;
+            if request.role.uses_app_owned_host()
+                && matches!(
+                    request.source,
+                    crate::floating_surface::FloatingSource::AppElement { .. }
+                )
+                && self.root_widget.floating_surface_ime(&request.id).is_some()
+            {
+                self.floating.pending_ime_ids.insert(request.id);
+            }
         }
         Ok(())
     }
@@ -506,6 +621,9 @@ impl App {
                         content_rect: crate::floating_surface::protocol_rect_array(
                             presentation.content_rect,
                         ),
+                        input_rect: presentation
+                            .input_rect
+                            .map(crate::floating_surface::protocol_rect_array),
                     },
                 )?;
             }
@@ -623,6 +741,7 @@ impl App {
                     coordinate_offset,
                     ..
                 } => {
+                    self.floating.pending_ime_ids.remove(id);
                     self.floating.coordinate_offsets.insert(
                         id.clone(),
                         Vec2::new(coordinate_offset[0], coordinate_offset[1]),
@@ -640,11 +759,13 @@ impl App {
                 }
                 FloatingSurfaceHostMessage::Reattach { id }
                 | FloatingSurfaceHostMessage::Closed { id } => {
+                    self.floating.pending_ime_ids.remove(id);
                     self.floating.prepared_ids.remove(id);
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.remove(id);
                 }
                 FloatingSurfaceHostMessage::Suspended { id } => {
+                    self.floating.pending_ime_ids.remove(id);
                     self.floating.prepared_ids.remove(id);
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.insert(id.clone());
@@ -721,6 +842,7 @@ impl App {
             .floating
             .presentations
             .keys()
+            .chain(self.floating.pending_ime_ids.iter())
             .chain(self.floating.suspended_ids.iter())
             .cloned()
             .collect::<std::collections::HashSet<_>>()
@@ -729,6 +851,7 @@ impl App {
         self.floating.presentations.clear();
         self.floating.active_ids.clear();
         self.floating.prepared_ids.clear();
+        self.floating.pending_ime_ids.clear();
         self.floating.coordinate_offsets.clear();
         self.floating.suspended_ids.clear();
         for id in ids {
@@ -773,7 +896,7 @@ impl App {
                 position,
             } => Some(WindowEvent::CursorMoved {
                 device_id: *device_id,
-                position: PhysicalPosition::new(position.x + dx, position.y + dy),
+                position: winit::dpi::PhysicalPosition::new(position.x + dx, position.y + dy),
             }),
             WindowEvent::Touch(touch) => {
                 let mut translated = *touch;

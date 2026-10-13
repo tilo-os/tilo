@@ -21,7 +21,15 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
     use ui::permissions::{PermissionContext, Role};
     let catalogue = catalogue();
     let app = "so.tilo.chat";
-    let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
+    let mut page = Replica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
     chat::demo::apply_as(
         &mut doc,
@@ -91,7 +99,15 @@ fn bytes(mutation: DocumentMutation) -> Vec<u8> {
 fn an_agent_mount_and_a_person_mount_converge() {
     let catalogue = catalogue();
     let app = "so.tilo.scratchpad";
-    let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
+    let mut page = Replica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let snapshot = page
         .take_mutation()
         .expect("a new record is published whole");
@@ -101,7 +117,7 @@ fn an_agent_mount_and_a_person_mount_converge() {
         app,
         ROOM,
         "writer",
-        true,
+        tilo_agent_participant::ReplicaActor::Agent,
         Seed::Existing {
             record: page.record_id().clone(),
             changes: vec![bytes(snapshot)],
@@ -180,7 +196,7 @@ fn joined(
         page.app_id(),
         ROOM,
         "writer",
-        true,
+        tilo_agent_participant::ReplicaActor::Agent,
         Seed::Existing {
             record: page.record_id().clone(),
             changes: vec![changes],
@@ -209,7 +225,15 @@ fn only_the_creator_seeds_a_record() {
         .filter(|definition| !definition.keeps_room_record())
     {
         let app = definition.app_id;
-        let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
+        let mut page = Replica::open(
+            &catalogue,
+            app,
+            ROOM,
+            "ada",
+            tilo_agent_participant::ReplicaActor::Owner,
+            Seed::New,
+        )
+        .unwrap();
         let snapshot = page.take_mutation().expect("a new record is published");
         let created = content(&page);
 
@@ -257,7 +281,15 @@ fn only_the_creator_seeds_a_record() {
 fn an_agents_presence_is_where_its_last_operation_left_it() {
     let catalogue = catalogue();
     let app = "so.tilo.word-processor";
-    let mut agent = Replica::open(&catalogue, app, ROOM, "writer", true, Seed::New).unwrap();
+    let mut agent = Replica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "writer",
+        tilo_agent_participant::ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap();
     assert!(
         agent.presence().is_none(),
         "nothing done, nowhere in particular"
@@ -297,4 +329,203 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
         "{key:?}"
     );
     assert_eq!((start, end), (5, 5), "a caret after its five characters");
+}
+
+fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::policy::Standing {
+    use ui::permissions::policy::{Answer, Grant, RoomPolicy, Standing, Subject, TreePath};
+    let bot = Subject::bot("b1");
+    let grant = Grant::new(
+        "bot:b1",
+        bot.clone(),
+        TreePath::room(ROOM),
+        kinds,
+        Answer::Allow,
+        Subject::person("ada"),
+    );
+    Standing::person(RoomPolicy::new(ROOM, "ada"), "ada").bounded_by(bot, vec![grant])
+}
+
+/// Ada's new scratchpad, and the same record held by her bot `b1` granted
+/// `kinds` in the room.
+fn ada_and_her_bot(kinds: ui::permissions::policy::KindSet) -> (Replica, Replica) {
+    let mut page = Replica::open(
+        &catalogue(),
+        "so.tilo.scratchpad",
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let snapshot = page.take_mutation().unwrap();
+    let bot = Replica::open(
+        &catalogue(),
+        page.app_id(),
+        ROOM,
+        "bot:b1",
+        tilo_agent_participant::ReplicaActor::Bot {
+            installation: "b1".into(),
+            installer: "ada".into(),
+            standing: bot_standing(kinds),
+        },
+        Seed::Existing {
+            record: page.record_id().clone(),
+            changes: vec![bytes(snapshot)],
+        },
+    )
+    .unwrap();
+    (page, bot)
+}
+
+#[test]
+fn a_bot_replica_edits_within_its_grant_for_its_installer() {
+    let (mut page, mut bot) = ada_and_her_bot(ui::permissions::policy::KindSet::READ_UNDOABLE);
+    if let Some(opened) = bot.take_mutation() {
+        page.apply(&opened).unwrap();
+    }
+    let (note, arguments) = common::scratchpad_body("Mirrored by the bot");
+    let context =
+        tilo_actions::ActionContext::default().with_caused_by(Some(tilo_actions::context::Cause {
+            installation: "b1".into(),
+            event: "e1".into(),
+            depth: 1,
+        }));
+    let context =
+        context
+            .with_group("r1", "Mirror", "shortcut")
+            .with_facet(tilo_actions::ActionFacet::new(
+                tilo_automation::STEP_FACET,
+                "0",
+            ));
+    bot.invoke_with(None, Some(context), &note, &arguments, false)
+        .unwrap();
+    page.apply(&bot.take_mutation().unwrap()).unwrap();
+    assert!(
+        body(&page).contains("Mirrored by the bot"),
+        "{}",
+        body(&page)
+    );
+    // History names the bot for its installer, the run's cause and the run
+    // step, which is how a restarted run finds the step it took.
+    let entry = page
+        .read(|doc| {
+            doc.clone()
+                .get_changes(&[])
+                .iter()
+                .filter_map(|change| {
+                    tilo_actions::ActionContext::from_change_message(change.message()?)
+                })
+                .find(|context| context.caused_by.is_some())
+        })
+        .flatten()
+        .expect("the bot's change records its entry");
+    let invoker = entry.invoker.clone().unwrap();
+    assert_eq!(invoker.actor, "bot:b1");
+    assert_eq!(invoker.kind, tilo_actions::ActorKind::Bot);
+    assert_eq!(invoker.on_behalf_of.as_deref(), Some("ada"));
+    assert_eq!(entry.caused_by.as_ref().unwrap().event, "e1");
+    assert_eq!(
+        tilo_agent_participant::bot::door::RunStep::of(&entry),
+        Some(tilo_agent_participant::bot::door::RunStep {
+            run: "r1".into(),
+            step: "0".into()
+        })
+    );
+}
+
+#[test]
+fn a_bot_without_a_write_grant_is_offered_only_reads() {
+    let (_page, mut bot) = ada_and_her_bot(ui::permissions::policy::KindSet::READ);
+    let (note, arguments) = common::scratchpad_body("Not allowed");
+    assert!(
+        bot.survey().iter().all(|entry| entry.address != note),
+        "an edit outside the bot's grant is not offered"
+    );
+    assert!(bot.invoke(&note, &arguments, false).is_err());
+    assert!(!body(&bot).contains("Not allowed"));
+}
+
+#[test]
+fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
+    let catalogue = catalogue();
+    let mut page = Replica::open(
+        &catalogue,
+        "so.tilo.chat",
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let mut doc = page.read(Clone::clone).unwrap();
+    chat::demo::apply_as(
+        &mut doc,
+        "ada",
+        chat::Chat::CREATE_WORKSPACE.with(chat::record::chat::CreateWorkspace {
+            name: "Bridged".into(),
+        }),
+    )
+    .unwrap();
+    let projection = chat::projection::read(&doc);
+    let workspace = projection.workspace_rows()[0].id.clone();
+    let channel = projection.channel_rows()[0].id.clone();
+    page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
+    let mut bot = Replica::open(
+        &catalogue,
+        page.app_id(),
+        ROOM,
+        "bot:b1",
+        tilo_agent_participant::ReplicaActor::Bot {
+            installation: "b1".into(),
+            installer: "ada".into(),
+            standing: {
+                use ui::permissions::policy::{
+                    Answer, Grant, KindSet, Level, RoomPolicy, Standing, Subject, TreePath,
+                };
+                let bot = Subject::bot("b1");
+                let read = Grant::new(
+                    "bot:b1:0",
+                    bot.clone(),
+                    TreePath::root()
+                        .any(Level::Room)
+                        .any(Level::App)
+                        .kind("chat.workspace".to_owned()),
+                    KindSet::READ,
+                    Answer::Allow,
+                    Subject::person("ada"),
+                );
+                Standing::person(RoomPolicy::new(ROOM, "ada"), "ada").bounded_by(bot, vec![read])
+            },
+        },
+        Seed::Existing {
+            record: page.record_id().clone(),
+            changes: vec![doc.save()],
+        },
+    )
+    .unwrap();
+    chat::demo::say(&mut doc, "ada", &channel, "hello").unwrap();
+    bot.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
+    let read = bot
+        .survey()
+        .into_iter()
+        .find(|action| action.address.action == "read-workspace")
+        .expect("a bot is offered Chat's read");
+    // A post names its channel, so a bot finds the message among the
+    // channel's latest.
+    let arguments = serde_json::json!({ "workspace": workspace, "channel": channel });
+    let output = bot
+        .invoke_with(
+            None,
+            None,
+            &read.address,
+            arguments.as_object().unwrap(),
+            false,
+        )
+        .unwrap();
+    let value = output.value.unwrap();
+    assert_eq!(
+        value.pointer("/messages/0/value/text"),
+        Some(&serde_json::json!("hello")),
+        "{value:#}"
+    );
 }

@@ -47,23 +47,14 @@ pub mod seed;
 
 pub use app::SnippetsApp;
 pub use model::{Language, Selection, SmartFolder, Snippet, SnippetId, Snippets};
-pub use resource::{LOCALES, SnippetsShell, SnippetsView};
+pub use resource::{SnippetsShell, SnippetsView};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(SnippetsShell)
 }
 
-/// The catalogs, loaded on first use on each thread: a host's manager gets
-/// them added, a thread without one starts in the person's locale.
-#[cfg(not(test))]
-pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
-
-/// Tests read the source copy on every machine.
-#[cfg(test)]
-pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
-    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES).with_pinned_locale("en-US");
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
 /// A message of the app's catalogs in the person's language.
 pub(crate) fn tr(key: &str) -> String {

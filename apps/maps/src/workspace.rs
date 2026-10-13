@@ -70,7 +70,7 @@ pub struct Workspace {
     pub transit_plan: ActivePlan,
 }
 
-#[resource(kind = "maps.workspace", label = "Maps")]
+#[resource(kind = "maps.workspace", label = "Maps", scopes = Workspace::saved_scope)]
 impl Workspace {
     /// Accept places.
     ///
@@ -180,6 +180,17 @@ impl Workspace {
 }
 
 impl Workspace {
+    /// The saved places, a part of the map search can be narrowed to once
+    /// there are any.
+    fn saved_scope(&self) -> Vec<ui::search::ScopeDecl> {
+        self.places
+            .iter()
+            .any(|place| place.saved)
+            .then(|| ui::search::ScopeDecl::new(crate::place_search::SAVED_SCOPE, "Saved places"))
+            .into_iter()
+            .collect()
+    }
+
     /// The place `id`.
     pub fn place(&self, id: &str) -> Option<&Place> {
         self.places.iter().find(|place| place.id == id)

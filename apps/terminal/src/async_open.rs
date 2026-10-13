@@ -184,7 +184,6 @@ mod tests {
 
     #[test]
     fn accepted_open_keeps_lifetime_until_tab_closes_even_with_reader_clone() {
-        use std::os::fd::AsRawFd;
         let (client, mut server) = UnixStream::pair().unwrap();
         server
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -198,9 +197,10 @@ mod tests {
                 .openpty(portable_pty::PtySize::default())
                 .unwrap();
             runtime_portal::fd_transport::send_with_fd(
-                server.as_raw_fd(),
+                &server,
                 b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
-                pair.master.as_raw_fd().unwrap(),
+                // SAFETY: `pair` owns the master and outlives this call.
+                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
             ).unwrap();
             assert_eq!(
                 server.read(&mut [0]).unwrap(),
@@ -220,7 +220,6 @@ mod tests {
 
     #[test]
     fn repeated_successful_opens_replace_and_disconnect_previous_sessions() {
-        use std::os::fd::AsRawFd;
         let (mut widget, _writes, _output) = crate::tests::build_test_widget_io();
         let doc = automerge::AutoCommit::new();
         let mut supervisors = Vec::new();
@@ -234,9 +233,10 @@ mod tests {
                 std::io::BufReader::new(&server).read_line(&mut request).unwrap();
                 let pair = portable_pty::native_pty_system().openpty(portable_pty::PtySize::default()).unwrap();
                 runtime_portal::fd_transport::send_with_fd(
-                    server.as_raw_fd(),
+                    &server,
                     b"{\"result\":\"session\",\"session\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment\":\"default\"}\n",
-                    pair.master.as_raw_fd().unwrap(),
+                    // SAFETY: `pair` owns the master and outlives this call.
+                    unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
                 ).unwrap();
                 assert_eq!(server.read(&mut [0]).unwrap(), 0, "every replaced or closed session must disconnect");
             }));
@@ -260,7 +260,6 @@ mod tests {
 
     #[test]
     fn a_queued_success_is_discarded_when_the_attempt_is_cancelled() {
-        use std::os::fd::AsRawFd;
         let (client, mut server) = UnixStream::pair().unwrap();
         server
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -275,9 +274,10 @@ mod tests {
                 .openpty(portable_pty::PtySize::default())
                 .unwrap();
             runtime_portal::fd_transport::send_with_fd(
-                server.as_raw_fd(),
+                &server,
                 b"{\"result\":\"session\",\"session\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"environment\":\"default\"}\n",
-                pair.master.as_raw_fd().unwrap(),
+                // SAFETY: `pair` owns the master and outlives this call.
+                unsafe { std::os::fd::BorrowedFd::borrow_raw(pair.master.as_raw_fd().unwrap()) },
             ).unwrap();
             sent.send(()).unwrap();
             assert_eq!(server.read(&mut [0]).unwrap(), 0);

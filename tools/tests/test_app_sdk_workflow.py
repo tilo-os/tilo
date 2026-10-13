@@ -37,7 +37,10 @@ class AppSdkWorkflow(unittest.TestCase):
         builder = job('builder')
         self.assertIn('linux_affected: ${{ steps.affected.outputs.linux_affected }}', builder)
         self.assertIn('echo linux_affected=true >> "$GITHUB_OUTPUT"', builder)
-        self.assertIn('--lane linux --github-output "$GITHUB_OUTPUT"', builder)
+        self.assertIn('affected: ${{ steps.affected.outputs.affected }}', builder)
+        self.assertIn('echo affected=true >> "$GITHUB_OUTPUT"', builder)
+        self.assertEqual(builder.count('python3 tools/ci/app_sdk_affected.py'), 1)
+        self.assertIn('--lane both --github-output "$GITHUB_OUTPUT"', builder)
 
     def test_pull_requests_and_pushes_share_one_path_list(self) -> None:
         def paths(event: str) -> list[str]:
@@ -64,8 +67,9 @@ class AppSdkWorkflow(unittest.TestCase):
             self.assertIn("needs.policy.result == 'success'", body)
         self.assertNotIn(selector, job('linux'))
 
-    def test_macos_stays_disabled_until_a_runner_serves_it(self) -> None:
-        self.assertIn("    if: false\n", job("macos"))
+    def test_macos_lane_lives_on_the_development_mac(self) -> None:
+        self.assertNotIn("macos", JOBS)
+        self.assertIn("dev-apps-macos.yml", SOURCE)
 
     def test_linux_uses_portable_native_prs_and_keeps_main_x86_qualification(self) -> None:
         body = job("linux")

@@ -4,22 +4,15 @@
 //! rather than written at the call site, so the app translates without
 //! touching the layout code and `--pseudo-locale` exercises every label.
 //! The bundle is the app's [`CATALOG`], loaded in every host that mounts the
-//! app and on first use in any other thread; it is embedded with
-//! `include_str!` (as `photos`, `chat` and `word-processor` do), so a
-//! `--shots` render and a unit test resolve the same strings a live session
-//! does. Keys are `slides-*` so they cannot collide with another app's
+//! app and on first use in any other thread. Keys are `slides-*` so they cannot collide with another app's
 //! resources in the shared registry.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use ui::i18n::{ArgValue, EmbeddedCatalog, I18nManager, PseudoLocale};
+use ui::i18n::{ArgValue, I18nManager, PseudoLocale};
 
-/// The English bundle.
-const EN_US: &str = include_str!("../locales/en-US.ftl");
-
-/// The app's messages.
-pub static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", &[("en-US", EN_US)]);
+ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
 /// Look up `key`. Loads the catalogue on first use on a thread whose host
 /// has not, so text is real rather than a raw key.

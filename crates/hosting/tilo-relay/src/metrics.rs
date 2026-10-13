@@ -93,7 +93,7 @@ pub struct SessionEgress {
     /// Bytes written to the session's stream since it was authenticated.
     pub bytes_sent: u64,
     /// Writes that put those bytes on the stream. Each is handed to QUIC
-    /// whole, so frames written together can share a packet (TIL-776).
+    /// whole, so frames written together can share a packet.
     pub writes: u64,
 }
 
@@ -235,6 +235,13 @@ impl Metrics {
                 .load(Ordering::Relaxed),
             bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
             bytes_sent_live: self.bytes_sent_live.load(Ordering::Relaxed),
+            sessions_open: u64::try_from(
+                self.sessions
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .len(),
+            )
+            .unwrap_or(u64::MAX),
             rooms: self.room_egress(),
         }
     }

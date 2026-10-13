@@ -207,7 +207,6 @@ pub struct GrayjaySession {
     stream: Stream,
     transport: TransportState,
     remote_public_key: String,
-    local_public_key: String,
     remote_version: i32,
     remote_authorized: bool,
     streams: HashMap<i32, Reasm>,
@@ -219,10 +218,6 @@ impl GrayjaySession {
     /// The peer's authenticated Noise static public key (base64).
     pub fn remote_public_key(&self) -> &str {
         &self.remote_public_key
-    }
-
-    pub fn local_public_key(&self) -> &str {
-        &self.local_public_key
     }
 
     pub fn remote_version(&self) -> i32 {
@@ -337,7 +332,6 @@ impl GrayjaySession {
             stream,
             transport,
             remote_public_key: remote_static_b64,
-            local_public_key: device.public_base64(),
             remote_version,
             remote_authorized: false,
             streams: HashMap::new(),
@@ -452,7 +446,6 @@ impl GrayjaySession {
             stream,
             transport,
             remote_public_key: remote_static_b64,
-            local_public_key: device.public_base64(),
             remote_version,
             remote_authorized: false,
             streams: HashMap::new(),
@@ -958,16 +951,6 @@ pub struct GrayjaySyncTransport {
 }
 
 impl GrayjaySyncTransport {
-    /// Create a transport with a freshly generated device identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the Noise implementation cannot generate the
-    /// device identity.
-    pub fn new(device_name: impl Into<String>) -> SyncResult<Self> {
-        Ok(Self::with_device(DeviceKey::generate()?, device_name))
-    }
-
     /// Create a transport with a specific (e.g. persisted) device identity.
     pub fn with_device(device: DeviceKey, device_name: impl Into<String>) -> Self {
         GrayjaySyncTransport {
@@ -978,11 +961,6 @@ impl GrayjaySyncTransport {
             io_timeout: Duration::from_secs(15),
             sync_deadline: Duration::from_secs(20),
         }
-    }
-
-    /// This device's public key (base64) — put it in our own pairing QR.
-    pub fn device_public_key(&self) -> String {
-        self.device.public_base64()
     }
 
     /// Register a paired peer's connection info (address/port) without dialing.
@@ -1070,14 +1048,6 @@ impl GrayjaySyncTransport {
 }
 
 impl SyncTransport for GrayjaySyncTransport {
-    fn name(&self) -> &'static str {
-        "grayjay-sync (Noise IK over TCP 12315)"
-    }
-
-    fn is_available(&self) -> bool {
-        true
-    }
-
     fn pair(&mut self, pairing_blob: &str) -> SyncResult<PeerId> {
         let mut info = Self::parse_blob(pairing_blob)?;
         let pairing_code = Zeroizing::new(info.pairing_code.take().unwrap_or_default());

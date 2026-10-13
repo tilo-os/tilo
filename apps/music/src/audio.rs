@@ -1006,8 +1006,7 @@ struct Inner {
 
 /// Whether the platform plays media without `GStreamer` (the web).
 fn element_playback() -> bool {
-    !cfg!(feature = "audio")
-        && media::availability(media::Feature::Playback) == media::Availability::Available
+    !cfg!(feature = "audio") && media::available(media::Feature::Playback)
 }
 
 impl AudioBackend {

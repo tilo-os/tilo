@@ -3,10 +3,3 @@
 // tilo-app:locale=en-US
 
 ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
-
-/// One constant per message of locales/en-US.ftl, for labels and placeholders.
-pub mod keys {
-    use ui::i18n::LabelKey;
-    pub const DISKS_DISKS_NAMES: LabelKey = LabelKey::new("disks-disks-names");
-    pub const DISKS_NAME_DRIVE: LabelKey = LabelKey::new("disks-name-drive");
-}

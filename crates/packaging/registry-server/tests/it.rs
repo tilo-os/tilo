@@ -7,6 +7,8 @@
 pub mod add_publisher_cli;
 #[path = "application_review_cli.rs"]
 pub mod application_review_cli;
+#[path = "bot_directory.rs"]
+pub mod bot_directory;
 #[path = "delegated_promotion_cli.rs"]
 pub mod delegated_promotion_cli;
 #[path = "full_entry.rs"]

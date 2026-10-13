@@ -4,14 +4,6 @@
 //! act for you", Allow once or Deny) and the relay hands the agent the
 //! witnessed answer for that one invocation.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::too_many_lines,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -20,7 +12,7 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, Confirmation, InvokeArgument, InvokeRequest,
     RemoteActionTarget,
 };
-use tilo_relay_protocol::agents::{AgentDelegation, AgentScope};
+use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::{HostIdentity, Reach, ShellNetwork};
@@ -80,6 +72,7 @@ fn clear_history() -> InvokeRequest {
         revision: None,
         on_behalf_of: None,
         wait_ms: None,
+        appearance: None,
     }
 }
 
@@ -142,13 +135,15 @@ fn the_persons_device_answers_a_relay_agents_question_on_its_sheet() {
     // The agent the relay runs for Ada, and the relay's side of asking her.
     let agent_key = key(3);
     let now = tilo_clock::unix_now_ns();
-    let delegation = AgentDelegation::sign(
+    let delegation = Delegation::sign(
         &root,
         agent_key.verifying_key().to_bytes(),
-        "careful",
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "careful".into(),
+        },
         "Careful agent",
         [0x7c, 0x3a, 0xed],
-        AgentScope {
+        DelegateScope {
             rooms: vec![ROOM.into()],
             apps: vec!["so.tilo.calculator".into()],
         },

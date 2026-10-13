@@ -342,12 +342,9 @@ LC_ALL=C sort -t $'\t' -k1,1 -k4,4 -o "$publication_plan" "$publication_plan"
 # has to synthesize or re-sign publisher data. This also upgrades an
 # already-published single-architecture entry append-only.
 # One snapshot serves every id; only a refused attempt re-reads it.
-fetch_snapshot() {
-  curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
-    --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
-  jq -e '.entries | type == "array"' "$snapshot" >/dev/null
-}
+source tools/apps/registry-runtime-readiness.sh
 fetch_snapshot
+runtime_readiness_deadline=$((SECONDS + 1200))
 while IFS= read -r id; do
   accepted=false
   architectures=$(awk -F $'\t' -v id="$id" '$1 == id {print $4}' \
@@ -358,7 +355,8 @@ while IFS= read -r id; do
     previous="$RUNNER_TEMP/tilo-registry-previous.json"
     aggregate="$RUNNER_TEMP/tilo-registry-aggregate.json"
     request="$RUNNER_TEMP/tilo-registry-request.json"
-    rm -f "$previous" "$aggregate" "$request"
+    missing_runtime="$RUNNER_TEMP/tilo-registry-missing-runtime.json"
+    rm -f "$previous" "$aggregate" "$request" "$missing_runtime"
     # A request still waiting for review is replaced by this one and
     # must keep its versions, so build on it when there is one.
     "$registry_cli" pending --registry "$registry_url" \
@@ -386,9 +384,11 @@ while IFS= read -r id; do
       args=(entry --arch "$arch" --identity "$registry_identity" \
         --metadata "$metadata" --action "$action" --url "$tapp_url"
         --runtime-catalogue "$snapshot"
-        --registry-owner-pubkey "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY")
+        --registry-owner-pubkey "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY"
+        --missing-runtime-output "$missing_runtime")
       [[ -f $aggregate ]] && args+=(--previous-entry "$aggregate")
-      "$registry_cli" "${args[@]}" "$tapp" > "$request"
+      await_registry_runtime_ready "$runtime_readiness_deadline" "$request" "$missing_runtime" \
+        "$registry_cli" "${args[@]}" "$tapp"
       jq -e --arg id "$id" '.entry | select(.package_id == $id)' \
         "$request" > "$aggregate.next"
       mv "$aggregate.next" "$aggregate"

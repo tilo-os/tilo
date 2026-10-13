@@ -9,7 +9,7 @@ use crate::widget::ModelPath;
 use automerge::ObjId;
 use std::collections::HashSet;
 use std::sync::Arc;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_search::FieldWeight;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -1862,9 +1862,9 @@ impl CommandPalette {
         );
         let avail = (text_right - text_x).max(0.0);
 
+        let label =
+            text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
         if let Some(desc) = &entry.description {
-            let label =
-                text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
             let sub = elide_middle(text_renderer, desc, &desc_style, avail);
             let (_, label_height) = text_renderer.measure_style(&label, None, &label_style);
             let (_, desc_height) = text_renderer.measure_style(&sub, None, &desc_style);
@@ -1888,8 +1888,6 @@ impl CommandPalette {
                 &desc_style,
             );
         } else {
-            let label =
-                text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
             let (_, height) = text_renderer.measure_style(&label, None, &label_style);
             let ly = row.y0 + (row.height() - f64::from(height)) / 2.0;
             text_renderer.draw_style(
@@ -2089,18 +2087,13 @@ impl Widget for CommandPalette {
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();
         let style = Style {
-            size: Size {
-                width: Dimension::length(f32_of_f64(width)),
-                height: Dimension::length(f32_of_f64(height)),
-            },
+            size: Size::from_lengths(f32_of_f64(width), f32_of_f64(height)),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -2318,10 +2311,6 @@ impl Widget for CommandPalette {
         Some("command_palette_input")
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn is_focusable(&self) -> bool {
         true
     }
@@ -2421,11 +2410,7 @@ impl Widget for CommandPalette {
             .with_value(query.1.clone())
             .with_text_selection(anchor, caret)
             .with_bounds(self.input_row_rect())
-            .with_state(AccessState {
-                focusable: true,
-                focused: self.is_focused,
-                ..Default::default()
-            });
+            .with_state(AccessState::new().focusable(true).focused(self.is_focused));
 
         let total = self.visible.len();
         let mut result_children: Vec<AccessNode> = (0..total)
@@ -2440,12 +2425,12 @@ impl Widget for CommandPalette {
                     .with_name(entry.label.clone())
                     .with_position(visible_index.saturating_add(1), total)
                     .with_bounds(rect)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.is_focused && visible_index == self.cursor,
-                        selected: visible_index == self.cursor,
-                        ..Default::default()
-                    });
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.is_focused && visible_index == self.cursor)
+                            .selected(visible_index == self.cursor),
+                    );
                 if let Some(description) = &entry.description {
                     item = item.with_description(description.clone());
                 }
@@ -2898,10 +2883,7 @@ mod tests {
             let mut doc = automerge::AutoCommit::new();
 
             assert!(p.handle_overlay_key(
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(row.center().x, row.center().y),
-                },
+                &crate::synthetic_input::cursor_moved(row.center().x, row.center().y),
                 &modifiers,
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
@@ -2912,11 +2894,7 @@ mod tests {
                 Some(winit::window::CursorIcon::Pointer)
             );
             assert!(p.handle_overlay_key(
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
+                &crate::synthetic_input::mouse_press(),
                 &modifiers,
                 &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,

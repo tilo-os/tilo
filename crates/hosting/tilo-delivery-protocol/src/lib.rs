@@ -21,6 +21,7 @@ pub mod auth;
 pub mod bootstrap;
 pub mod capabilities;
 pub mod descriptor;
+mod origin;
 pub mod peer_actions;
 pub mod transport_v2;
 pub mod workspace_join;

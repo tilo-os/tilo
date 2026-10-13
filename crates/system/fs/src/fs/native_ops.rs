@@ -11,7 +11,7 @@
 
 use std::path::{Component, Path};
 
-use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, now_ms};
+use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, document_codec_for, now_ms};
 use crate::namespace::{
     ContentAuthority, LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease,
 };
@@ -540,14 +540,15 @@ impl QuickFS {
         if let Err(error) = rt.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
-        let mut durable = true;
-        if let Some(deferral) = deferral
+        let mut durable = if let Some(deferral) = deferral
             && let Err(error) = deferral.finish()
         {
             // The records wait for the history that describes them.
             eprintln!("history stays pending: {error}");
-            durable = false;
-        }
+            false
+        } else {
+            true
+        };
         if durable && let Some(publisher) = publisher {
             match publisher.commit_changeset() {
                 Ok(Some(changeset)) if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() => {
@@ -816,9 +817,7 @@ impl QuickFS {
         if self.signed() || self.ns().content_authority() != ContentAuthority::LegacyNamespace {
             return None;
         }
-        std::str::from_utf8(name)
-            .ok()
-            .and_then(|name| self.document_codec_for(name))
+        std::str::from_utf8(name).ok().and_then(document_codec_for)
     }
 
     /// Creates the document `name` in `parent` with `data` as its content,

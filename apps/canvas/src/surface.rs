@@ -2317,7 +2317,7 @@ impl CanvasSurface {
         select: crate::selection::Select,
         cx: &mut Reading,
     ) -> ui::framework::EffectAnswer {
-        if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
+        if !ui::rt::available(ui::rt::Feature::Threads) {
             return Err("image area finding needs background threads on this platform".into());
         }
         if self.finding.get() {
@@ -3123,10 +3123,7 @@ impl Widget for CanvasSurface {
         // The room its parent leaves along either axis: in a column under
         // the header it takes the width and the height left over.
         let style = Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             flex_basis: taffy::Dimension::length(0.0),
             flex_grow: 1.0,
             flex_shrink: 1.0,
@@ -3245,8 +3242,7 @@ impl Widget for CanvasSurface {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.stylus = ctx.pen();
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 if self.drag.is_some() {
                     self.drag_to(self.cursor);
                     *ctx.handled = true;
@@ -3497,7 +3493,7 @@ impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
         cx: &mut ui::framework::EffectCx<Artwork, Self>,
     ) -> ui::framework::EffectAnswer {
         if matches!(op, ViewOp::Look { .. } | ViewOp::Export { .. })
-            && ui::rt::availability(ui::rt::Feature::Threads) == ui::rt::Availability::Available
+            && ui::rt::available(ui::rt::Feature::Threads)
         {
             return self.picture_job(op, cx);
         }
@@ -3621,11 +3617,6 @@ fn saved(
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        reason = "test assertions over exact, hand-written fixtures"
-    )]
 
     use super::*;
     use crate::panels::shortcuts::{GROUPS, tools};
