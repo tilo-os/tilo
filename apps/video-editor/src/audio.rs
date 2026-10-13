@@ -516,11 +516,6 @@ impl DecodedPcm {
         }
     }
 
-    /// How many media this source could read audio from.
-    pub fn readable(&self) -> usize {
-        self.paths.len()
-    }
-
     fn pcm_for(&mut self, media: MediaId) -> Option<std::sync::Arc<Vec<f32>>> {
         if let Some(hit) = self.loaded.get(&media) {
             return hit.clone();
@@ -1021,8 +1016,7 @@ impl MonitorSink for NullSink {
 /// [`NullSink`] where none does.
 ///
 /// A box with no audio device is a normal state, not a failure — a headless
-/// CI runner is one — so it plays silently rather than refusing to play. The
-/// caller can tell which it got from [`output_is_audible`].
+/// CI runner is one — so it plays silently rather than refusing to play.
 #[cfg(any(feature = "gst", feature = "decode"))]
 pub fn open_output() -> Box<dyn MonitorSink> {
     if let Some(s) = SystemSink::open() {
@@ -1031,14 +1025,6 @@ pub fn open_output() -> Box<dyn MonitorSink> {
         tracing::info!("no audio output available; monitoring silently");
         Box::new(NullSink)
     }
-}
-
-/// Whether this machine has an audio output at all, for an honest UI: the
-/// transport can then say it is playing *silently* rather than implying
-/// sound the user is not getting.
-#[cfg(any(feature = "gst", feature = "decode"))]
-pub fn output_is_audible() -> bool {
-    SystemSink::open().is_some()
 }
 
 /// What the monitor thread reads and the UI writes.
