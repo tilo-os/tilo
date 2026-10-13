@@ -899,6 +899,35 @@ impl tilo_automation::RunHooks for NoPolling {
     }
 }
 
+/// A shortcut of one step that updates the test block.
+fn export_shortcut() -> tilo_automation::Shortcut {
+    use tilo_action_policy as policy;
+    tilo_automation::Shortcut {
+        id: "export".into(),
+        name: "Export".into(),
+        inputs: Vec::new(),
+        steps: vec![tilo_automation::Step::new(
+            "update",
+            tilo_automation::StepKind::Invoke {
+                action: tilo_actions::ActionKey::new("so.tilo.test", "test.block", "update"),
+                resource: tilo_automation::Selector::Fixed("test:block-a".into()),
+                args: std::collections::BTreeMap::new(),
+                appearance: None,
+            },
+        )],
+        output: None,
+        grant: vec![policy::Rule::new(
+            policy::TreePath::root()
+                .any(policy::Level::Room)
+                .app("so.tilo.test"),
+            policy::KindSet::ALL,
+            policy::Answer::Allow,
+        )],
+        triggers: Vec::new(),
+        saved_by: None,
+    }
+}
+
 /// A shortcut step that runs in the background is observed once per change
 /// it makes, not once per poll interval for as long as it runs.
 #[tokio::test]
@@ -909,29 +938,7 @@ async fn shortcut_step_observes_once_per_change() {
     const MOST_OBSERVES: usize = 6;
     let (state, caller, mut app) = fixture();
     let observes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let shortcut = tilo_automation::Shortcut {
-        id: "export".into(),
-        name: "Export".into(),
-        inputs: Vec::new(),
-        steps: vec![tilo_automation::Step::new(
-            "update",
-            tilo_automation::StepKind::Invoke {
-                action: tilo_actions::ActionKey::new("so.tilo.test", "test.block", "update"),
-                resource: tilo_automation::Selector::Fixed("test:block-a".into()),
-                args: std::collections::BTreeMap::new(),
-            },
-        )],
-        output: None,
-        grant: vec![tilo_action_policy::Rule::new(
-            tilo_action_policy::TreePath::root()
-                .any(tilo_action_policy::Level::Room)
-                .app("so.tilo.test"),
-            tilo_action_policy::KindSet::ALL,
-            tilo_action_policy::Answer::Allow,
-        )],
-        triggers: Vec::new(),
-        saved_by: None,
-    };
+    let shortcut = export_shortcut();
     let hooks = NoPolling(crate::automation::DoorHooks::new(
         None,
         tokio::runtime::Handle::current(),
@@ -954,6 +961,7 @@ async fn shortcut_step_observes_once_per_change() {
                     mode: tilo_automation::RunMode::Unattended,
                     trigger: tilo_automation::RunTrigger::Manual,
                     inputs: serde_json::Map::new(),
+                    caused_by: None,
                 },
             )
             .await

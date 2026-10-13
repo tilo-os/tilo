@@ -21,7 +21,6 @@
 pub mod door;
 pub mod drafting;
 pub mod editor;
-pub mod grant;
 pub mod locales;
 pub mod model;
 mod samples;
