@@ -521,11 +521,9 @@ notification-center-title = Notifications
 notification-center-empty = No recent notifications
 notification-center-cleared = Notifications cleared
 notification-center-clear-all = Clear all
-notification-center-position = Newest { $first }–{ $last } of { $total }
-notification-center-count = { $count ->
-        [one] { $count } notification
-       *[other] { $count } notifications
-    }
+notification-center-position = { $first }–{ $last } of { $total }
+notification-center-close = Close notifications
+notification-center-back-to-list = Back to notifications
 notification-center-newer = ↑ Newer
 notification-center-at-newest = At newest
 notification-center-older = ↓ Older
@@ -1006,7 +1004,6 @@ overview-panel-go-to = Go to
 overview-panel-new-workspace = New workspace
 browser-new-workspace-name = Workspace { $number }
 
-notification-center-read = Read
 notification-center-read-description = Read complete notification
 notification-preview-hidden = Notification preview hidden
 activity-catch-up-goals = Workspace tasks · { $done } completed · { $unfinished } unfinished · updated { $when }

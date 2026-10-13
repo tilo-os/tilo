@@ -64,21 +64,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     for (name, theme, width, height) in variants {
         let host = Fixture::default();
+        // A background failure with a full explanation: the reader is
+        // where a notification too long for its row is read.
         let body = concat!(
-            "The app stopped before opening. Try again. Your document is safe.\n\n",
-            "If it stops again, reopen the app from Search. Changes already synchronized remain available on this device. ",
-            "You can return to your workspace and continue with another app while this one recovers.\n\n",
-            "Recovery step 1: close the failed launch and open Search. Enter the application name and select its result. ",
-            "If the app is still downloading, let that download finish before trying again.\n\n",
-            "Recovery step 2: check whether the document is available in Files. Keep the original document while recovery completes. ",
-            "An interrupted launch does not require deleting the document or clearing notification history.\n\n",
-            "Recovery step 3: if the issue continues, keep this complete message for troubleshooting. ",
-            "This reading page can be scrolled using the pointer, Page Down, End or accessible scrolling.\n\n",
-            "Recovery complete: your document is safe."
+            "Last night's backup stopped at 62 % because the backup disk was disconnected. ",
+            "Nothing on this computer was changed, and the earlier backups on the disk are intact.\n\n",
+            "What was saved: Documents, Pictures and the Notes library up to 02:14. ",
+            "What was not: Music, Videos and anything changed after 02:14.\n\n",
+            "To finish it, reconnect the disk. The next backup starts on its own and picks up ",
+            "where this one stopped, so nothing is copied twice. You can also start it now from Backups.\n\n",
+            "If the disk keeps disconnecting, try another cable or port: a disk that loses power during ",
+            "a backup can be slow to come back. Backups checks every file it copied, so an interrupted ",
+            "backup never leaves a damaged copy behind.\n\n",
+            "This reading page scrolls with the pointer, Page Down, End or accessible scrolling."
         );
         host.0.borrow_mut().retain(
-            Notification::new("Couldn't open Notes — complete recovery instructions", body)
-                .with_app_name("Applications")
+            Notification::new("Backup couldn't finish", body)
+                .with_app_name("Backups")
                 .with_severity(NotificationSeverity::Error),
         );
         let mut center = NotificationCenter::new();

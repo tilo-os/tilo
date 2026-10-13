@@ -10083,7 +10083,7 @@ impl ShellOverlayHost {
     /// The notification centre's geometry for the current panel and text
     /// scale — the one oracle paint, hit-testing and sizing read.
     fn qs_notification_layout(&self) -> CenterLayout {
-        CenterLayout::new(self.quick_settings_rect(), self.qs_type_lines)
+        CenterLayout::new(self.quick_settings_rect(), self.qs_type_lines).drill_in()
     }
 
     /// Scroll the notification centre from a pointer wheel over the open

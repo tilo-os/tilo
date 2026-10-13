@@ -44,8 +44,8 @@ impl NotificationReader {
             .with_bounds(layout.panel())
             .with_children(vec![
                 AccessNode::new(Role::Button)
-                    .with_name(t("drill-in-back"))
-                    .with_bounds(layout.back())
+                    .with_name(t("notification-center-back-to-list"))
+                    .with_bounds(layout.reader_back())
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -139,9 +139,12 @@ impl NotificationReader {
             transform,
             text,
             theme,
-            &ButtonFace::new(layout.back(), &t("drill-in-back"))
+            // "‹ Notifications": the way back names the list it returns to.
+            &ButtonFace::new(layout.reader_back(), &t("notification-center-title"))
                 .role(ui::widget::ButtonRole::Plain)
-                .hovered(cursor.is_some_and(|p| layout.back().contains(p)))
+                .icon(ui::icons::Icon::ChevronLeft)
+                .accessible_name(&t("notification-center-back-to-list"))
+                .hovered(cursor.is_some_and(|p| layout.reader_back().contains(p)))
                 .focused(self.back_focused),
         );
         let viewport = layout.reading_viewport();

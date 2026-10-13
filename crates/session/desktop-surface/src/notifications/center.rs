@@ -35,6 +35,50 @@ use ui::TextRole;
 
 /// Rows the panel asks room for before it starts paging.
 const PREFERRED_ROWS: usize = 7;
+/// Lines of body a row shows before the rest is left to the reader: enough
+/// for a message or a failure's reason, short enough that a list scans.
+const BODY_LINES: usize = 2;
+
+/// `text` wrapped at `width` into at most `lines` lines, the last elided
+/// when the text runs on. Whitespace is normalised as in [`preview_line`].
+fn preview_lines(
+    renderer: &mut TextRenderer,
+    text: &str,
+    width: f32,
+    style: &ui::text_render::TextStyle,
+    lines: usize,
+) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let one = renderer.measure_style("Ag", None, style).1;
+    let limit = one * (f32::from(u8::try_from(lines).unwrap_or(u8::MAX)) + 0.5);
+    let fits = |renderer: &mut TextRenderer, candidate: &str| {
+        renderer.measure_style(candidate, Some(width), style).1 <= limit
+    };
+    if lines <= 1 || fits(renderer, &line) {
+        return if lines <= 1 {
+            renderer.elide_to_width_style(&line, width, style)
+        } else {
+            line
+        };
+    }
+    // The longest prefix, in whole characters, that still fits with its
+    // ellipsis.
+    let chars: Vec<char> = line.chars().collect();
+    let with_ellipsis = |count: usize| {
+        let prefix: String = chars.iter().take(count).collect();
+        format!("{}…", prefix.trim_end())
+    };
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = lo.saturating_add(hi.saturating_sub(lo).div_ceil(2));
+        if fits(renderer, &with_ellipsis(mid)) {
+            lo = mid;
+        } else {
+            hi = mid.saturating_sub(1);
+        }
+    }
+    with_ellipsis(lo)
+}
 
 /// Rows promise one line per field; the complete text remains in their
 /// accessible description. Use toolkit shaping/elision, including graphemes.
@@ -56,9 +100,10 @@ pub struct CenterMetrics {
     title_width: f64,
     cleared_width: f64,
     back_width: f64,
+    /// The reader's way back, which names the list it returns to.
+    reader_back_width: f64,
     clear_width: f64,
     undo_width: f64,
-    read_width: f64,
     height: f64,
 }
 
@@ -69,9 +114,9 @@ impl From<(f64, f64)> for CenterMetrics {
             title_width: 0.0,
             cleared_width: 0.0,
             back_width: 2.0 * qs::TARGET,
+            reader_back_width: 3.0 * qs::TARGET,
             clear_width: 2.0 * qs::TARGET,
             undo_width: 2.0 * qs::TARGET,
-            read_width: 2.0 * qs::TARGET,
             height: qs::TARGET,
         }
     }
@@ -88,6 +133,10 @@ pub struct CenterLayout {
     caption_lh: f64,
     label_lh: f64,
     actions: CenterMetrics,
+    /// The centre is a level of a drill-in panel (the native quick
+    /// settings): its leading control goes back there. Otherwise the centre
+    /// stands alone and the control closes it.
+    drill_in: bool,
 }
 
 impl CenterLayout {
@@ -110,7 +159,7 @@ impl CenterLayout {
     fn wrapped_header(&self) -> bool {
         self.panel.width() > 0.0
             && self.panel.width() - 2.0 * qs::PANEL_PAD
-                < self.actions.back_width
+                < self.leading_width()
                     + self.actions.clear_width
                     + self.actions.title_width
                     + 2.0 * qs::RELATED_GAP
@@ -143,6 +192,13 @@ impl CenterLayout {
                 .intrinsic_width(text, theme)
                 .max(2.0 * qs::TARGET)
         };
+        let back = |key: &str, text: &mut TextRenderer| {
+            ButtonFace::new(Rect::ZERO, &t(key))
+                .role(ButtonRole::Plain)
+                .icon(ui::icons::Icon::ChevronLeft)
+                .intrinsic_width(text, theme)
+                .max(2.0 * qs::TARGET)
+        };
         CenterMetrics {
             lines: Self::type_lines(theme),
             title_width: f64::from(
@@ -163,10 +219,10 @@ impl CenterLayout {
                 )
                 .0,
             ),
-            back_width: width("drill-in-back", ButtonRole::Plain, text),
+            back_width: back("drill-in-back", text),
+            reader_back_width: back("notification-center-title", text),
             clear_width: width("notification-center-clear-all", ButtonRole::Plain, text),
             undo_width: width("notification-center-undo", ButtonRole::Secondary, text),
-            read_width: width("notification-center-read", ButtonRole::Plain, text),
             height: ButtonFace::height(ControlSize::Regular, theme),
         }
     }
@@ -187,20 +243,56 @@ impl CenterLayout {
             caption_lh: actions.lines.0,
             label_lh: actions.lines.1,
             actions,
+            drill_in: false,
+        }
+    }
+    /// This centre is a level of a drill-in panel: its leading control
+    /// reads "Back" and returns there, instead of closing the centre.
+    #[must_use]
+    pub fn drill_in(mut self) -> Self {
+        self.drill_in = true;
+        self
+    }
+    /// Whether the leading control goes back to a drill-in panel.
+    pub fn is_drill_in(&self) -> bool {
+        self.drill_in
+    }
+    fn leading_width(&self) -> f64 {
+        if self.drill_in {
+            self.actions.back_width
+        } else {
+            self.actions.height
         }
     }
     pub fn panel(&self) -> Rect {
         self.panel
     }
-    /// The "Back" chip: two pointer floors wide, on the panel padding,
-    /// centred in the title band. A textual Back survives enlarged text
-    /// where a small icon would not.
+    /// The leading header control, on the panel padding and centred in the
+    /// title band: "‹ Back" in a drill-in panel (a textual Back survives
+    /// enlarged text where a small icon would not), a square close button
+    /// where the centre stands alone and there is nowhere to go back to.
     pub fn back(&self) -> Rect {
         let p = self.panel;
         Rect::new(
             p.x0 + qs::PANEL_PAD,
             p.y0 + qs::RELATED_GAP,
-            p.x0 + qs::PANEL_PAD + self.actions.back_width,
+            p.x0 + qs::PANEL_PAD + self.leading_width(),
+            p.y0 + qs::RELATED_GAP + self.actions.height,
+        )
+    }
+    /// The reader's way back to the list: "‹ Notifications", naming where
+    /// it goes.
+    pub fn reader_back(&self) -> Rect {
+        let p = self.panel;
+        let width = self
+            .actions
+            .reader_back_width
+            .min(p.width() - 2.0 * qs::PANEL_PAD)
+            .max(0.0);
+        Rect::new(
+            p.x0 + qs::PANEL_PAD,
+            p.y0 + qs::RELATED_GAP,
+            p.x0 + qs::PANEL_PAD + width,
             p.y0 + qs::RELATED_GAP + self.actions.height,
         )
     }
@@ -254,17 +346,19 @@ impl CenterLayout {
         };
         Rect::new(x0, y0, x1, y0 + self.caption_lh)
     }
-    /// Top of the position line ("Newest 1–4 of 9"): where a list starts.
-    fn position_y(&self) -> f64 {
+    /// Top of the first row: one related step under the header. The list
+    /// carries no "2 notifications" line: what fits is plain to see, and a
+    /// list that pages says where it is in its pager.
+    fn rows_top(&self) -> f64 {
         self.panel.y0 + self.header_height() + qs::RELATED_GAP
     }
-    /// Top of the first row: one related step under the position line.
-    fn rows_top(&self) -> f64 {
-        self.position_y() + self.caption_lh + qs::RELATED_GAP
-    }
-    /// One row: source/time, title and body lines on the control padding.
+    /// One row: source/time, title and up to [`BODY_LINES`] lines of body
+    /// on the control padding, so a notification is read where it is listed.
     pub fn row_h(&self) -> f64 {
-        2.0 * qs::CONTROL_PAD + 2.0 * self.caption_lh + self.label_lh
+        2.0 * qs::CONTROL_PAD
+            + self.caption_lh
+            + self.label_lh
+            + f64_of_usize(BODY_LINES) * self.caption_lh
     }
     fn pitch(&self) -> f64 {
         self.row_h() + qs::RELATED_GAP
@@ -311,7 +405,7 @@ impl CenterLayout {
     pub fn preferred_height(rows: usize, total: usize, metrics: impl Into<CenterMetrics>) -> f64 {
         let l = Self::new(Rect::ZERO, metrics);
         if rows == 0 {
-            return DrillInList::list_height(l.header_height() + qs::RELATED_GAP, 0)
+            return DrillInList::list_height(l.header_height(), 0)
                 .max(l.rows_top() + l.caption_lh + qs::PANEL_PAD);
         }
         let foot = if total > rows {
@@ -337,10 +431,13 @@ impl CenterLayout {
         )
     }
 
+    /// The "read in full" control: a square expand button inboard of the
+    /// row's other icon buttons, so it reads as opening the notification,
+    /// never as marking it read.
     fn read_control(&self, row: Rect, with_agent: bool) -> Rect {
         let (dismiss, agent) = self.row_controls(row, with_agent);
         let end = agent.unwrap_or(dismiss).x0 - qs::RELATED_GAP;
-        Rect::new(end - self.actions.read_width, dismiss.y0, end, dismiss.y1)
+        Rect::new(end - dismiss.width(), dismiss.y0, end, dismiss.y1)
     }
 
     pub fn row_controls(&self, row: Rect, with_agent: bool) -> (Rect, Option<Rect>) {
@@ -355,6 +452,15 @@ impl CenterLayout {
             Rect::new(x1 - size, y0, x1, y0 + size)
         });
         (dismiss, agent)
+    }
+}
+
+/// The leading header control's name: where it goes.
+fn leading_label(layout: &CenterLayout) -> String {
+    if layout.is_drill_in() {
+        t("drill-in-back")
+    } else {
+        t("notification-center-close")
     }
 }
 
@@ -769,7 +875,7 @@ impl NotificationCenter {
         p: Point,
     ) -> CenterOutcome {
         if self.is_reading() {
-            if self.reading_notification(host).is_none() || layout.back().contains(p) {
+            if self.reading_notification(host).is_none() || layout.reader_back().contains(p) {
                 self.close_reader();
                 host.changed();
             }
@@ -1005,7 +1111,7 @@ impl NotificationCenter {
     ) -> Vec<(String, Rect)> {
         if self.is_reading() {
             return vec![
-                (format!("{prefix}notifications_back"), layout.back()),
+                (format!("{prefix}notifications_back"), layout.reader_back()),
                 (
                     format!("{prefix}notification_reading"),
                     layout.reading_viewport(),
@@ -1105,7 +1211,7 @@ impl NotificationCenter {
         }
         children.push(
             AccessNode::new(Role::Button)
-                .with_name(t("drill-in-back"))
+                .with_name(leading_label(layout))
                 .with_bounds(layout.back())
                 .with_state(
                     AccessState::new()
@@ -1146,7 +1252,7 @@ impl NotificationCenter {
         if self.is_reading() {
             return match path {
                 [] => Some(layout.panel()),
-                [0] => Some(layout.back()),
+                [0] => Some(layout.reader_back()),
                 [1] => Some(layout.reading_viewport()),
                 _ => None,
             };
@@ -1427,14 +1533,23 @@ impl NotificationCenter {
         let colors = &theme.tokens.colors;
         let caption_style = theme.text(TextRole::Caption);
         let label_style = theme.text(TextRole::Label);
-        Self::chip(
+        let back = layout.back();
+        let label = leading_label(layout);
+        let face = if layout.is_drill_in() {
+            ButtonFace::new(back, &label)
+                .role(ButtonRole::Plain)
+                .icon(ui::icons::Icon::ChevronLeft)
+        } else {
+            ButtonFace::icon_only(back, ui::icons::Icon::X, &label)
+        };
+        Button::paint(
             scene,
             transform,
             text_renderer,
             theme,
-            (layout.back(), cursor, self.back_focused),
-            &t("drill-in-back"),
-            ButtonRole::Plain,
+            &face
+                .hovered(cursor.is_some_and(|point| back.contains(point)))
+                .focused(self.back_focused),
         );
         let title_style = label_style.clone().with_weight(TextWeight::Semibold);
         let title_rect = layout.title_rect();
@@ -1473,7 +1588,7 @@ impl NotificationCenter {
                 theme,
                 rect,
                 &t("notification-center-empty"),
-                layout.position_y() - rect.y0,
+                layout.rows_top() - rect.y0,
             );
             if can_undo {
                 Self::draw_cleared_band(
@@ -1511,29 +1626,6 @@ impl NotificationCenter {
             (layout.clear(), cursor, self.action_focus == Some(false)),
             &t("notification-center-clear-all"),
             ButtonRole::Plain,
-        );
-        let position = if rows.len() > visible_rows {
-            t_args(
-                "notification-center-position",
-                &[
-                    ("first", start.saturating_add(1).into()),
-                    ("last", start.saturating_add(shown).into()),
-                    ("total", rows.len().into()),
-                ],
-            )
-        } else {
-            t_args(
-                "notification-center-count",
-                &[("count", history.len().into())],
-            )
-        };
-        text_renderer.draw_style(
-            scene,
-            &position,
-            colors.text_dim,
-            transform.pre_translate((rect.x0 + qs::PANEL_PAD, layout.position_y()).into()),
-            Some(f32_of_f64(rect.width() - 2.0 * qs::PANEL_PAD)),
-            &caption_style,
         );
 
         let now = ui::time::now();
@@ -1602,22 +1694,26 @@ impl NotificationCenter {
                 qs::control_radius(theme, row),
                 qs::control_fill(theme, hovered(row)),
             );
-            // Keep severity scannable without taking another line. The
-            // accessibility description also names it, so colour is not the
+            // A warning or failure keeps a rail, scannable without taking
+            // another line; plain information carries no colour, so the
+            // rail means something wherever it appears. The accessibility
+            // description names the severity too, so colour is never the
             // only signal.
-            let severity_rail = Rect::new(
-                row.x0,
-                row.y0 + qs::CONTROL_PAD,
-                row.x0 + 3.0,
-                row.y1 - qs::CONTROL_PAD,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                notification.severity.color(theme),
-                None,
-                &RoundedRect::from_rect(severity_rail, 1.5),
-            );
+            if notification.severity != super::model::NotificationSeverity::Info {
+                let severity_rail = Rect::new(
+                    row.x0,
+                    row.y0 + qs::CONTROL_PAD,
+                    row.x0 + 3.0,
+                    row.y1 - qs::CONTROL_PAD,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    notification.severity.color(theme),
+                    None,
+                    &RoundedRect::from_rect(severity_rail, 1.5),
+                );
+            }
             let source = source_label(notification);
             let age = relative_time(notification, now);
             let (time_width, _) = text_renderer.measure_style(&age, None, &caption_style);
@@ -1626,6 +1722,16 @@ impl NotificationCenter {
             // grouped notification sits one glyph in, under its header's
             // label, so the fold reads as a hierarchy.
             let x = row.x0 + qs::CONTROL_INSET + if grouped { qs::GLYPH } else { 0.0 };
+            let preview_width = f32_of_f64((text_right - x).max(0.0));
+            let body = (notification.show_preview && !notification.body.is_empty()).then(|| {
+                preview_lines(
+                    text_renderer,
+                    &notification.body,
+                    preview_width,
+                    &caption_style,
+                    BODY_LINES,
+                )
+            });
             let source_y = row.y0 + qs::CONTROL_PAD;
             let source_width = f32_of_f64(
                 (row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x).max(0.0),
@@ -1652,7 +1758,6 @@ impl NotificationCenter {
                 &caption_style,
             );
             let title_y = source_y + layout.caption_lh;
-            let preview_width = f32_of_f64((text_right - x).max(0.0));
             let title_style = label_style.clone().with_weight(TextWeight::Semibold);
             let title = preview_line(
                 text_renderer,
@@ -1668,13 +1773,7 @@ impl NotificationCenter {
                 Some(f32_of_f64(text_right - x)),
                 &label_style.clone().with_weight(TextWeight::Semibold),
             );
-            if notification.show_preview && !notification.body.is_empty() {
-                let body = preview_line(
-                    text_renderer,
-                    &notification.body,
-                    preview_width,
-                    &caption_style,
-                );
+            if let Some(body) = body {
                 text_renderer.draw_style(
                     scene,
                     &body,
@@ -1692,14 +1791,20 @@ impl NotificationCenter {
                 controls,
                 (focused_control, cursor),
             );
-            Self::chip(
+            Self::quiet_icon_button(
                 scene,
                 transform,
                 text_renderer,
                 theme,
-                (read, cursor, focused_control == Some(RowControl::Read)),
-                &t("notification-center-read"),
-                ButtonRole::Plain,
+                (
+                    read,
+                    ui::icons::Icon::Maximize2,
+                    &t("notification-center-read-description"),
+                ),
+                (
+                    cursor.is_some_and(|point| read.contains(point)),
+                    focused_control == Some(RowControl::Read),
+                ),
             );
 
             if row_selected && self.row_control.is_none() {
@@ -1735,7 +1840,22 @@ impl NotificationCenter {
                 qs::control_radius(theme, footer),
                 qs::control_fill(theme, false),
             );
-            let hint = format!("{newer}   \u{00b7}   {older}");
+            // The pager says where the list is, in place of a count line
+            // over a list that fits.
+            let position = t_args(
+                "notification-center-position",
+                &[
+                    ("first", start.saturating_add(1).into()),
+                    ("last", start.saturating_add(shown).into()),
+                    ("total", rows.len().into()),
+                ],
+            );
+            // Enlarged type keeps the directions and lets the position go.
+            let room = f32_of_f64(footer.width() - 2.0 * qs::CONTROL_INSET);
+            let mut hint = format!("{newer}   \u{00b7}   {position}   \u{00b7}   {older}");
+            if text_renderer.measure_style(&hint, None, &caption_style).0 > room {
+                hint = format!("{newer}   \u{00b7}   {older}");
+            }
             let (hint_w, hint_h) = text_renderer.measure_style(&hint, None, &caption_style);
             text_renderer.draw_style(
                 scene,
@@ -1908,14 +2028,16 @@ impl NotificationCenter {
         (focused, cursor): (Option<RowControl>, Option<Point>),
     ) {
         let mut paint = |rect: Rect, icon: ui::icons::Icon, control, name: &str| {
-            Button::paint(
+            Self::quiet_icon_button(
                 scene,
                 transform,
                 text_renderer,
                 theme,
-                &ButtonFace::icon_only(rect, icon, name)
-                    .hovered(cursor.is_some_and(|point| rect.contains(point)))
-                    .focused(focused == Some(control)),
+                (rect, icon, name),
+                (
+                    cursor.is_some_and(|point| rect.contains(point)),
+                    focused == Some(control),
+                ),
             );
         };
         paint(
@@ -1932,6 +2054,42 @@ impl NotificationCenter {
                 &t("notification-center-hand-to-description"),
             );
         }
+    }
+
+    /// A row's icon button, quiet until it is pointed at or focused: at
+    /// rest only its glyph, in the dim ink of the row's secondary text, so
+    /// a column of rows reads as notifications rather than as a grid of
+    /// controls, and no control outweighs the title beside it. Hovered or
+    /// focused, it is the toolkit's full button.
+    fn quiet_icon_button(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        (rect, icon, name): (Rect, ui::icons::Icon, &str),
+        (hovered, focused): (bool, bool),
+    ) {
+        if hovered || focused {
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::icon_only(rect, icon, name)
+                    .hovered(hovered)
+                    .focused(focused),
+            );
+            return;
+        }
+        let size = f64::from(theme.tokens.metrics.icon_md).min(rect.width());
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            Rect::from_center_size(rect.center(), (size, size)),
+            icon,
+            theme.tokens.colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
     }
 
     /// Ring the keyboard-selected row.
