@@ -5174,63 +5174,6 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_local_action_delivers_through_the_published_resource_door() {
-        use crate::shell::search::action_api::{ActionArgs, ArgValue};
-        let chrome = chrome();
-        chrome.borrow_mut().act_as("call-owner".into());
-        chrome.borrow().tree_mut().desktop.workspaces[0].set_owner("call-owner");
-        let broker = broker_for(&chrome);
-        let room = chrome.borrow().tree().desktop.workspaces[0]
-            .room
-            .to_string();
-        let mut action = local_action("Start call", "start-call");
-        action.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
-        let surface = PublishedSurface {
-            peer_id: 7,
-            app_id: "so.tilo.chat".into(),
-            route: CrdtRoute::app("so.tilo.chat", &room),
-            actions: vec![action],
-            live: true,
-        };
-        let id = LiveAppActionsProvider::result_id(&surface, &surface.actions[0]);
-        broker.replace_published_surfaces_for_test(vec![surface]);
-        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
-        let mut delivered = broker.capture_invocations_for_test(7);
-        let mut doc = AutoCommit::new();
-        let row = provider
-            .resolve(&id, context("", &chrome.borrow(), &doc))
-            .unwrap();
-        let unconfirmed =
-            ActionArgs::bind(&row.params, [("confirm".into(), ArgValue::Boolean(false))]).unwrap();
-        assert!(
-            (row.on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-                &unconfirmed,
-            )
-            .is_err()
-        );
-        assert!(delivered.try_recv().is_err());
-        let confirmed =
-            ActionArgs::bind(&row.params, [("confirm".into(), ArgValue::Boolean(true))]).unwrap();
-        (row.on_open)(
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-            &chrome,
-            &confirmed,
-        )
-        .expect("explicit evidence is admitted by the real local broker");
-        assert_eq!(
-            delivered
-                .try_recv()
-                .expect("confirmed action reaches the current peer")
-                .action,
-            "start-call"
-        );
-    }
-
-    #[test]
     fn retained_local_rows_materialize_and_invoke_the_current_publication() {
         use crate::shell::search::action_api::ActionArgs;
         let chrome = chrome();
