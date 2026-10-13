@@ -146,10 +146,10 @@ pub fn week_range_short(start: NaiveDate, end: NaiveDate) -> String {
 /// A human "relative" label for a due date against `today`.
 pub fn relative_label(due: NaiveDate, today: NaiveDate) -> String {
     let d = (due - today).num_days();
+    if let Some(near) = ui::format::near_day(d) {
+        return near;
+    }
     match d {
-        0 => "Today".into(),
-        1 => "Tomorrow".into(),
-        -1 => "Yesterday".into(),
         2..=6 => weekday_short(due).into(),
         _ if d < 0 => format!("{} d overdue", -d),
         _ => fmt_day_long(due),
