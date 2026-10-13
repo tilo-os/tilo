@@ -693,8 +693,11 @@ inputs = [
   "scripts/headless-examples/_control.py",
   # The NetHost grant vectors apps must answer like environments do.
   "crates/collab/collab-types/tests/net_host_vectors.txt",
+  # The session script that starts the compositor without huge pages.
+  "os/usr/libexec/tilo-session",
 ]
 readers = [
+  "crates/packaging/launcher/src/hardening.rs",
   "crates/packaging/launcher/src/manifest.rs",
   "crates/packaging/launcher/src/netgate.rs",
   "crates/packaging/launcher/src/seccomp.rs",
@@ -998,8 +1001,12 @@ inputs = [
   "scripts/headless-examples/",
   "apps/store/fixtures/published/snapshot379.json.gz.b64",
   "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64",
+  # The search relevance table runs over every app's manifest and keywords.
+  "apps/*/tilo-app.toml",
+  "apps/*/search/*.ftl",
 ]
 readers = [
+  "crates/session/shell/src/shell/search/relevance_tests.rs",
   "crates/session/shell/examples/files_clipboard_native.rs",
   "crates/session/shell/src/shell/broker_services/file_clipboard/bridge_tests/child_tests.rs",
   "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs",

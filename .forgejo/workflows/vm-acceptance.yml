@@ -64,7 +64,7 @@ on:
       - "crates/dev/tilo-vmd/**"
       - "crates/dev/tilo-vm-protocol/**"
       - "crates/session/shell/src/compositor/input*"
-      - "crates/session/shell/src/compositor/keyboard*"
+      - "crates/session/shell/src/compositor/client_input.rs"
       - "crates/session/shell/src/compositor/lock_*"
       - "crates/session/shell/src/compositor/backend/drm/**"
       - "crates/session/shell/src/compositor/agent_door.rs"

@@ -34,7 +34,7 @@ WORKFLOW = ".forgejo/workflows/vm-acceptance.yml"
 INPUT = "input,B04,W17"
 FEATURES = [
     (re.compile(r"^crates/dev/tilo-vm[a-z-]*/"), INPUT),
-    (re.compile(r"^crates/session/shell/src/compositor/(input|keyboard|lock_|backend/drm/)"), INPUT),
+    (re.compile(r"^crates/session/shell/src/compositor/(input|client_input\.rs|lock_|backend/drm/)"), INPUT),
     (re.compile(r"^os/usr/lib/udev/"), INPUT),
     (re.compile(r"^os/hardware/profiles/lenovo-83ed/input/"), INPUT),
     (re.compile(r"^crates/runtime/tilo-runtime/src/(session_door|mcp|daemon|cli)"), "agent"),
