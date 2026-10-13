@@ -1953,6 +1953,28 @@ fn assert_nothing_lost(
     let output = size.0 as usize * size.1 as usize;
     let edge_noise = lost_max <= OFFSET_STEPS && lost.len() <= output / 100;
     if !edge_noise {
+        if let Some(&(x, y, step)) = lost.first() {
+            let at = (y * size.0 as usize + x) * 4;
+            eprintln!(
+                "strip layers {label}: first differing pixel ({x}, {y}) step {step}: \
+                 retained {:?}, dense {:?}",
+                &shown[at..at + 4],
+                &unlayered[at..at + 4]
+            );
+        }
+        // The dense draw can itself advance hosted widget presentation. A
+        // second retained draw distinguishes that state change from a stable
+        // discrepancy in the two scene compositions; this runs only after
+        // the strict pixel oracle has already found a structural mismatch.
+        let after = frame.paint_with_damage();
+        let after_pixels = render_whole(dense, &after.scene, after.revision, label);
+        eprintln!(
+            "strip layers {label}: second retained draw differs from dense \
+             at {} pixels and from first retained draw at {} pixels; cache {:?}",
+            pixels_apart(&after_pixels, &unlayered, size.0).len(),
+            pixels_apart(&after_pixels, shown, size.0).len(),
+            after.cache.as_ref().map(|cache| &cache.strips)
+        );
         eprintln!(
             "strip layers {label}: strips {:?}, wheel {:?}, pans {:?}\n{}",
             painted.cache.as_ref().map(|cache| &cache.strips),
