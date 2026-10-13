@@ -1,6 +1,4 @@
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
     clippy::arithmetic_side_effects,
     reason = "test assertions and counters"
 )]

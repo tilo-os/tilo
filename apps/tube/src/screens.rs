@@ -19,7 +19,7 @@ use ui::widget::{
     card_column_width, card_columns,
 };
 
-use crate::action::{self, Action, ActionBus, Invocations, SettingFlag};
+use crate::action::{self, Action, ActionBus, SettingFlag};
 use crate::actions::TubeEffect;
 use crate::i18n::{arg, t, t_args};
 use crate::images::Imgs;
@@ -33,15 +33,13 @@ use crate::widgets::{PlayerHost, SharedPlayer};
 const PLAYER_VH_FRAC: f64 = 0.65;
 
 /// Everything a screen reads: the model, the theme it is built for, the
-/// action queue its controls write to, the image store, and the queue of
-/// resource invocations for controls that report through a closure.
+/// action queue its controls write to, and the image store.
 #[derive(Clone, Copy)]
 pub struct Ui<'a> {
     pub model: &'a TubeModel,
     pub theme: &'a Theme,
     pub bus: &'a ActionBus,
     pub imgs: Imgs<'a>,
-    pub invocations: &'a Invocations,
     /// Width of the shell's content column, which sizes the media grids.
     pub content_width: f64,
 }

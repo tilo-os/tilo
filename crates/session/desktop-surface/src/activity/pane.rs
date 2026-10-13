@@ -3448,8 +3448,8 @@ impl RoomActivityPane {
                 .clone()
                 .with_weight(ui::text_render::TextWeight::Medium),
         );
+        let width = text_width(bounds.width() - 24.0);
         if let Some(detail) = self.selection_detail() {
-            let width = text_width(bounds.width() - 24.0);
             if let Some(indexed) = self.selected_agent_run().cloned() {
                 self.draw_agent_task_detail(scene, transform, tr, theme, bounds, width, &indexed);
                 return;
@@ -3503,7 +3503,6 @@ impl RoomActivityPane {
                 actions_bottom + 14.0,
             );
         } else {
-            let width = text_width(bounds.width() - 24.0);
             tr.draw_style(
                 scene,
                 &t("activity-select-prompt"),
@@ -9251,6 +9250,7 @@ fn describe_grantee(subject: &tilo_action_policy::Subject) -> String {
             t_args("activity-grant-shortcut", &[("shortcut", shortcut.into())])
         }
         Grantee::App(app) => app.clone(),
+        Grantee::Bot(bot) => t_args("activity-grant-bot", &[("bot", short(bot).into())]),
         Grantee::ForeignDevice => t("activity-grant-foreign-device"),
     }
 }
@@ -9259,6 +9259,7 @@ fn describe_grantee(subject: &tilo_action_policy::Subject) -> String {
 fn role_key(role: tilo_action_policy::Role) -> &'static str {
     match role {
         tilo_action_policy::Role::Owner => "owner",
+        tilo_action_policy::Role::Moderator => "moderator",
         tilo_action_policy::Role::Editor => "editor",
         tilo_action_policy::Role::Commenter => "commenter",
         tilo_action_policy::Role::Viewer => "viewer",

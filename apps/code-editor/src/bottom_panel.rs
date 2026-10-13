@@ -252,7 +252,7 @@ impl BottomPanel {
                     .with_child(Box::new(
                         Container::new()
                             .with_inset(Rhythm::Section)
-                            .with_child(Box::new(Section::new(rows))),
+                            .with_child(Box::new(Section::titled(self.search_summary(), rows))),
                     )),
             );
             return;
@@ -616,6 +616,40 @@ impl Widget for BottomPanel {
 }
 
 impl BottomPanel {
+    /// What the search found and whether it is still going or stopped at its
+    /// limit: "3 results in 2 files — 410 files scanned".
+    fn search_summary(&self) -> String {
+        let search = &self.search;
+        if search.query.is_empty() {
+            return String::new();
+        }
+        let files = {
+            let mut seen: Vec<&str> = search.rows.iter().map(|r| r.rel.as_str()).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            seen.len()
+        };
+        let head = match (search.rows.len(), files) {
+            (0, _) if search.running => return "Searching…".to_string(),
+            (0, _) => format!("No results for \u{201C}{}\u{201D}", search.query),
+            (1, _) => "1 result in 1 file".to_string(),
+            (n, 1) => format!("{n} results in 1 file"),
+            (n, f) => format!("{n} results in {f} files"),
+        };
+        if search.running {
+            format!("{head} \u{2014} still searching…")
+        } else if search.truncated {
+            format!(
+                "{head} \u{2014} search limit reached after {} files; narrow the search",
+                search.files_scanned
+            )
+        } else if search.files_scanned > 0 {
+            format!("{head} \u{2014} {} files scanned", search.files_scanned)
+        } else {
+            head
+        }
+    }
+
     pub fn set_search(&mut self, search: SearchState) {
         if self.search != search {
             self.search = search;
@@ -645,6 +679,41 @@ mod tests {
             col: 1,
             message: format!("problem on line {line}"),
         }
+    }
+
+    #[test]
+    fn the_search_heading_says_how_far_the_search_got() {
+        let hit = |rel: &str| HitRow {
+            rel: rel.into(),
+            line: 1,
+            preview: "fn main()".into(),
+            highlight: (0, 2),
+        };
+        let mut panel = BottomPanel::new();
+        let mut search = SearchState {
+            query: "main".into(),
+            running: true,
+            ..SearchState::default()
+        };
+        panel.set_search(search.clone());
+        assert_eq!(panel.search_summary(), "Searching…");
+
+        search.rows = vec![hit("a.rs"), hit("a.rs"), hit("b.rs")];
+        search.running = false;
+        search.files_scanned = 40;
+        panel.set_search(search.clone());
+        assert_eq!(
+            panel.search_summary(),
+            "3 results in 2 files \u{2014} 40 files scanned"
+        );
+
+        search.truncated = true;
+        panel.set_search(search);
+        assert!(
+            panel
+                .search_summary()
+                .contains("search limit reached after 40 files")
+        );
     }
 
     #[test]

@@ -1,4 +1,6 @@
 //! Real native clock, certified local action, and durable terminal owner barrier.
+#[path = "native_checkpoint_tests.rs"]
+mod checkpoints;
 use crate::shell::{
     broker_services::NativeCertificates, certified_action_session::ActionSessionSource,
     collab_broker, native_workspace_owner, state::WorkspaceTree,
@@ -9,6 +11,7 @@ use tilo_actions::InvocationUpdate;
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 struct NativeFixture {
+    governor: tilo_joined_room::testing::governor::TestGovernor,
     home: tilo_test_env::TestHome,
     owner: tilo_joined_room::NativeWorkspaceOwner,
     broker: collab_broker::BrokerHandle,
@@ -282,7 +285,7 @@ fn fixture() -> NativeFixture {
     initial.persist_path = Some(path.clone());
     let tree = initial.shared();
     let owner = native_workspace_owner::open(tree.clone()).unwrap();
-    let _governor =
+    let governor =
         tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
     // The normal service factory installs NativeCertificates, not a recording
     // authority or a test PolicyTime. Its real clock must retain the original.
@@ -296,6 +299,7 @@ fn fixture() -> NativeFixture {
     let broker =
         collab_broker::spawn_native(home.runtime().join("collab.sock"), &None, tree).unwrap();
     NativeFixture {
+        governor,
         home,
         owner,
         broker,
@@ -780,6 +784,7 @@ fn native_certified_local_membership_retains_original_and_settles_failed_and_suc
         certificate,
         room,
         path,
+        ..
     } = fixture();
     let discovery = broker.app_action_broker().unwrap().downgrade();
     let actions = discovery.upgrade().unwrap();
@@ -875,6 +880,7 @@ fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() 
         certificate,
         room,
         path,
+        ..
     } = fixture();
     let discovery = broker.app_action_broker().unwrap().downgrade();
     let actions = discovery.upgrade().unwrap();
@@ -1027,6 +1033,7 @@ fn failed_effect(
         revision: None,
         on_behalf_of: None,
         wait_ms: None,
+        appearance: None,
     };
     let mut pending = host.invoke(&caller, request);
     let deadline = Instant::now().checked_add(Duration::from_secs(3)).unwrap();

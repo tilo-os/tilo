@@ -158,18 +158,6 @@ pub struct Poi {
 }
 
 impl Poi {
-    /// A one-line detail subtitle for the marker/info card: the address if
-    /// present, else the cuisine/kind, else the category label.
-    pub fn subtitle(&self) -> String {
-        if !self.address.is_empty() {
-            self.address.clone()
-        } else if let Some(k) = &self.kind {
-            k.clone()
-        } else {
-            self.category.label().to_string()
-        }
-    }
-
     /// What the place is, in sentence case: OpenStreetMap's finer kind
     /// ("Beer garden" for `beer_garden`) when tagged, else the category.
     pub fn kind_label(&self) -> String {

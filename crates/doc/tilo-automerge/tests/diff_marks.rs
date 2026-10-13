@@ -1,11 +1,6 @@
 //! A diff keeps each text object's formatting changes on that object, however
 //! many objects it walks: reverting an action replays exactly these patches.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, PatchAction, ROOT, ReadDoc, ScalarValue};

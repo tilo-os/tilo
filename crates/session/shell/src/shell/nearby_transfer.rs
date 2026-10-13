@@ -18,8 +18,6 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 
 pub const STORE_SCHEMA_VERSION: u16 = 1;
@@ -212,6 +210,35 @@ impl SecureNearbySource {
         };
         let source_metadata = file.metadata().map_err(display)?;
         if !source_metadata.is_file() && !source_metadata.is_dir() {
+            return Err(crate::shell::i18n::t("nearby-error-one-item"));
+        }
+        Ok(Self { file, name })
+    }
+
+    /// Pin a granted directory before a pending user selection can replace it.
+    pub(crate) fn anchor_directory(grant: &Path) -> Result<File, String> {
+        let canonical = fs::canonicalize(grant).map_err(display)?;
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(canonical)
+            .map_err(display)
+    }
+
+    /// Resolve a selection using the exact admitted directory descriptor.
+    pub(crate) fn open_in_directory(
+        root: &File,
+        grant: &Path,
+        requested: &Path,
+    ) -> Result<Self, String> {
+        let name = portable_name(requested)?;
+        let relative = requested
+            .strip_prefix(grant)
+            .map_err(|_| crate::shell::i18n::t("nearby-error-outside-grant"))?;
+        validate_relative(relative)?;
+        let file = open_beneath(root, relative, false)?;
+        let metadata = file.metadata().map_err(display)?;
+        if !metadata.is_file() {
             return Err(crate::shell::i18n::t("nearby-error-one-item"));
         }
         Ok(Self { file, name })
@@ -485,7 +512,7 @@ impl NearbyTransferStore {
         now_unix_ms: u64,
     ) -> Result<OutboxEntry, String> {
         let id = loop {
-            let candidate = random_id();
+            let candidate = crate::random::bytes::<16>();
             if !self.index.outbox.iter().any(|entry| entry.id == candidate)
                 && !self.index.inbox.iter().any(|entry| entry.id == candidate)
                 && !self.object_path(candidate).exists()
@@ -1533,7 +1560,7 @@ fn extract_archive_create_new(
     root: &Path,
     name: &str,
 ) -> Result<PathBuf, String> {
-    let destination = root.join(format!(".{}.partial", id_hex(random_id())));
+    let destination = root.join(format!(".{}.partial", id_hex(crate::random::bytes::<16>())));
     fs::DirBuilder::new()
         .mode(0o700)
         .create(&destination)
@@ -1754,12 +1781,6 @@ fn remove_if_exists(path: &Path) -> Result<(), String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),
     }
-}
-
-fn random_id() -> [u8; 16] {
-    let mut id = [0; 16];
-    UnwrapErr(SysRng).fill_bytes(&mut id);
-    id
 }
 fn id_hex(id: [u8; 16]) -> String {
     hex::encode(id)
@@ -2703,7 +2724,7 @@ fn ensure_capability_directory(root: &File, relative: &Path) -> Result<File, Str
 
 #[cfg(target_os = "macos")]
 fn extract_capability_archive(source: &Path, root: &File, name: &str) -> Result<String, String> {
-    let temporary = format!(".{}.partial", id_hex(random_id()));
+    let temporary = format!(".{}.partial", id_hex(crate::random::bytes::<16>()));
     let temporary_c = CString::new(temporary.as_str()).map_err(display)?;
     // Reserve a private directory exclusively; do not reuse a planted entry.
     if unsafe { libc::mkdirat(root.as_raw_fd(), temporary_c.as_ptr(), 0o700) } != 0 {

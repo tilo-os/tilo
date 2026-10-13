@@ -47,6 +47,11 @@ inputs = ["tools/android/atl_entry.c", "tools/android/test_sticky_entry.c", "too
 suites = ["tools/android/test_sticky_entry.py"]
 
 [[group]]
+name = "headless-launch-preflight"
+inputs = ["scripts/headless-examples/spawn-headless.sh"]
+suites = ["scripts/headless-examples/test_spawn_headless.py"]
+
+[[group]]
 name = "chat-task-approval"
 inputs = ["apps/chat/"]
 suites = ["apps/chat/tests/test_agent_start_surface.py"]
@@ -951,6 +956,8 @@ inputs = [
   "tools/with-test-environment.sh",
   "tools/atspi_external_client.py",
   "scripts/headless-examples/",
+  "apps/store/fixtures/published/snapshot379.json.gz.b64",
+  "apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64",
 ]
 readers = [
   "crates/session/shell/examples/files_clipboard_native.rs",
@@ -962,6 +969,7 @@ readers = [
   "crates/session/shell/tests/input_method_wire.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
+  "crates/session/shell/src/compositor/chooser_service.rs",
 ]
 
 

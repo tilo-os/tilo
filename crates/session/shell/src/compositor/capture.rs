@@ -1999,7 +1999,6 @@ fn read_png_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
 mod tests {
     #![allow(
         clippy::field_reassign_with_default,
-        clippy::too_many_lines,
         reason = "capture integration tests keep their full scenario setup explicit"
     )]
     #![allow(
@@ -2044,10 +2043,7 @@ mod tests {
             node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             let style = taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
+                size: taffy::Size::from_percent(1.0, 1.0),
                 ..taffy::Style::default()
             };
             taffy.widget_leaf(style, node_map, self)
@@ -2111,9 +2107,6 @@ mod tests {
         }
         fn app_icon(&self) -> ui::widget::IconDescriptor {
             ui::widget::IconDescriptor::Glyph("L")
-        }
-        fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-            None
         }
     }
 

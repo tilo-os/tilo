@@ -2017,8 +2017,7 @@ impl BlockEditor {
         use winit::event::MouseButton;
 
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse_pos =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse_pos = ctx.logical(position);
         }
         if let WindowEvent::KeyboardInput {
             event:
@@ -2640,12 +2639,10 @@ impl BlockEditor {
         // fresh trailing paragraph) so the user can keep typing.
         if is_divider && self.focused == Some(idx) {
             let next_idx = idx.saturating_add(1);
-            if next_idx < self.blocks.len() {
-                self.focus_block(next_idx, CursorPlacement::Start);
-            } else {
+            if next_idx >= self.blocks.len() {
                 self.blocks.push(Block::paragraph(""));
-                self.focus_block(next_idx, CursorPlacement::Start);
             }
+            self.focus_block(next_idx, CursorPlacement::Start);
         }
         true
     }
@@ -3575,8 +3572,7 @@ impl BlockEditor {
             return false;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse_pos =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse_pos = ctx.logical(position);
         }
         for (index, block) in self.blocks.iter().enumerate() {
             if let Some(image) = self.image_attachments.get_mut(&block.id) {
@@ -8435,19 +8431,20 @@ impl Widget for BlockEditor {
                     .text_renderer
                     .measure(b.text(), b.kind.font_size(), Some(line_rect.width() as f32))
                     .0;
-                let mut bounds = Rect::new(
-                    line_rect.x0 - 24.0,
-                    line_rect.y0 - 4.0,
-                    (line_rect.x0 + f64::from(text_width) + 24.0).min(line_rect.x1 + 8.0),
-                    line_rect.y1 + 4.0,
-                );
-                if let Some(Some(painted)) = paint_rects.get(idx)
+                let bounds = if let Some(Some(painted)) = paint_rects.get(idx)
                     && (*painted != line_rect
                         || matches!(b.kind, BlockKind::Quote)
                         || transclusion_target(b).is_some())
                 {
-                    bounds = painted.inflate(4.0, 4.0);
-                }
+                    painted.inflate(4.0, 4.0)
+                } else {
+                    Rect::new(
+                        line_rect.x0 - 24.0,
+                        line_rect.y0 - 4.0,
+                        (line_rect.x0 + f64::from(text_width) + 24.0).min(line_rect.x1 + 8.0),
+                        line_rect.y1 + 4.0,
+                    )
+                };
                 ctx.scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
@@ -9185,20 +9182,14 @@ impl Widget for BlockEditor {
                         .with_children(vec![
                             AccessNode::new(Role::ToggleButton)
                                 .with_name("Source editor")
-                                .with_state(AccessState {
-                                    checked: Some(
-                                        chrome.descriptor.mode == crate::math::FormulaMode::Source,
-                                    ),
-                                    ..Default::default()
-                                }),
+                                .with_state(AccessState::new().checked(
+                                    chrome.descriptor.mode == crate::math::FormulaMode::Source,
+                                )),
                             AccessNode::new(Role::ToggleButton)
                                 .with_name("Visual editor")
-                                .with_state(AccessState {
-                                    checked: Some(
-                                        chrome.descriptor.mode == crate::math::FormulaMode::Visual,
-                                    ),
-                                    ..Default::default()
-                                }),
+                                .with_state(AccessState::new().checked(
+                                    chrome.descriptor.mode == crate::math::FormulaMode::Visual,
+                                )),
                         ]),
                 )
             })
@@ -9564,12 +9555,7 @@ impl Widget for BlockEditor {
                 .with_description(
                     "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
                 )
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    multiline: true,
-                    ..Default::default()
-                })
+                .with_state(AccessState::new().focusable(self.is_focusable()).focused(self.is_focused()).multiline(true))
                 .with_children(children),
         )
     }

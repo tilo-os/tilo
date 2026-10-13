@@ -157,17 +157,13 @@ fn mounted_wheel_observes_long_note_main_thread_phases() {
         .copied()
         .expect("mounted long editor");
     app.harness()
-        .dispatch_to_root(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(rect.x0 + 40.0, rect.y0 + 40.0),
-        });
+        .dispatch_to_root(&ui::synthetic_input::cursor_moved(
+            rect.x0 + 40.0,
+            rect.y0 + 40.0,
+        ));
     assert_action_inventory(app.harness().root_widget());
     let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
-    let event = winit::event::WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -1.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let event = ui::synthetic_input::mouse_wheel(0.0, -1.0);
     app.harness().begin_profiling();
     for sample in 0u32..150 {
         let mut presence_ns = 0;
@@ -318,15 +314,11 @@ fn mounted_text_note_view_only_scroll_contract_respects_title_editing() {
         .copied()
         .expect("mounted canonical editor");
     app.harness()
-        .dispatch_to_root(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(rect.x0 + 40.0, rect.y0 + 20.0),
-        });
-    let event = winit::event::WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -1.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+        .dispatch_to_root(&ui::synthetic_input::cursor_moved(
+            rect.x0 + 40.0,
+            rect.y0 + 20.0,
+        ));
+    let event = ui::synthetic_input::mouse_wheel(0.0, -1.0);
     assert!(
         app.harness().root_widget().view_only_scroll(&event),
         "mounted canonical text-note wheel opts in through its bound owner"
@@ -338,9 +330,8 @@ fn mounted_text_note_view_only_scroll_contract_respects_title_editing() {
         "title editing keeps the full input path"
     );
     app.harness()
-        .dispatch_to_root(&winit::event::WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: winit::event::KeyEvent::synthetic(
+        .dispatch_to_root(&ui::synthetic_input::keyboard_input(
+            winit::event::KeyEvent::synthetic(
                 winit::event::RawKeyEvent {
                     physical_key: winit::keyboard::PhysicalKey::Code(
                         winit::keyboard::KeyCode::Escape,
@@ -354,8 +345,7 @@ fn mounted_text_note_view_only_scroll_contract_respects_title_editing() {
                 None,
                 winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
             ),
-            is_synthetic: false,
-        });
+        ));
     assert!(
         app.harness().root_widget().view_only_scroll(&event),
         "cancelled title resumes text-note scrolling"
@@ -400,16 +390,12 @@ fn mounted_text_note_wheel_avoids_editor_projection_and_still_edits() {
         .copied()
         .expect("mounted canonical editor");
     app.harness()
-        .dispatch_to_root(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(rect.x0 + 40.0, rect.y0 + 20.0),
-        });
+        .dispatch_to_root(&ui::synthetic_input::cursor_moved(
+            rect.x0 + 40.0,
+            rect.y0 + 20.0,
+        ));
     let before = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
-    let event = winit::event::WindowEvent::MouseWheel {
-        device_id: winit::event::DeviceId::dummy(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -1.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let event = ui::synthetic_input::mouse_wheel(0.0, -1.0);
     let (elapsed, rows) = observe(|| {
         for _ in 0..100 {
             assert!(
@@ -491,10 +477,10 @@ fn mounted_text_note_draw_frame_phase_probe() {
         .copied()
         .expect("mounted canonical note");
     app.harness()
-        .dispatch_to_root(&ui::winit::event::WindowEvent::CursorMoved {
-            device_id: ui::winit::event::DeviceId::dummy(),
-            position: ui::winit::dpi::PhysicalPosition::new(rect.x0 + 40.0, rect.y0 + 80.0),
-        });
+        .dispatch_to_root(&ui::synthetic_input::cursor_moved(
+            rect.x0 + 40.0,
+            rect.y0 + 80.0,
+        ));
     let document = app.read_document(|doc| (doc.base_heads(), doc.pending_ops()));
     assert_eq!(document.1, 0);
     app.harness().begin_profiling();
@@ -502,11 +488,7 @@ fn mounted_text_note_draw_frame_phase_probe() {
         let started = ui::time::now();
         assert!(
             app.harness()
-                .dispatch_to_root(&ui::winit::event::WindowEvent::MouseWheel {
-                    device_id: ui::winit::event::DeviceId::dummy(),
-                    delta: ui::winit::event::MouseScrollDelta::LineDelta(0.0, -1.0),
-                    phase: ui::winit::event::TouchPhase::Moved,
-                })
+                .dispatch_to_root(&ui::synthetic_input::mouse_wheel(0.0, -1.0))
         );
         app.harness().relayout_at((1051, 952)).unwrap();
         let frames = app.harness().take_profile_samples();

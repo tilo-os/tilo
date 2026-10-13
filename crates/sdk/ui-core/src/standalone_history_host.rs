@@ -591,7 +591,7 @@ impl StandaloneHistoryHost {
         command: HistoryCommand,
         context: &HistoryReadContext<'_>,
     ) -> Result<(), HistoryHostError> {
-        if let HistoryCommand::Hide = command {
+        if command == HistoryCommand::Hide {
             if self.session.is_some() {
                 self.close();
             }
@@ -608,7 +608,7 @@ impl StandaloneHistoryHost {
                 context,
             );
         }
-        if let HistoryCommand::Open = command {
+        if command == HistoryCommand::Open {
             // Repeated Open retains the original captured document and focus.
             if self.session.is_some() {
                 self.refresh(context)?;
@@ -1037,10 +1037,7 @@ impl StandaloneHistoryHost {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
-                min_size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
+                min_size: Size::from_lengths(0.0, 0.0),
                 flex_grow: 1.0,
                 flex_basis: Dimension::length(0.0),
                 gap: Size {
@@ -1053,10 +1050,7 @@ impl StandaloneHistoryHost {
         );
         let root = taffy.parent_node(
             Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 flex_direction: taffy::FlexDirection::Column,
                 align_items: Some(taffy::AlignItems::FlexStart),
                 ..Default::default()

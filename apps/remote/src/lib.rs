@@ -72,7 +72,6 @@ pub mod rfb;
 mod sample;
 pub mod session;
 pub mod ssh;
-pub mod tilo_route;
 mod view;
 pub mod vnc;
 pub mod vt;

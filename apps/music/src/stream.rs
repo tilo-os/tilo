@@ -18,7 +18,7 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
 
 use crate::backend::{
     AlbumPage, ArtistPage, HomeContent, MusicBackend, PlaylistPage, ResolvedStream, SearchBundle,
-    SearchKind, default_backend, preferred_backend,
+    default_backend, preferred_backend,
 };
 
 /// Network work is deliberately back-pressured. A fast key-repeat or an agent
@@ -51,12 +51,6 @@ pub enum StreamRequest {
     /// playlists + a top result) in one call.
     Search {
         query: String,
-        request_id: u64,
-    },
-    /// A deep per-type "see all" search for one kind of result.
-    SearchMore {
-        query: String,
-        kind: SearchKind,
         request_id: u64,
     },
     /// Resolve a directly-playable audio URL for `video_id`. `track_id` is the
@@ -109,19 +103,6 @@ pub enum StreamUpdate {
     /// clear its busy state and offer a retry for the exact query.
     SearchUnavailable {
         query: String,
-        request_id: u64,
-        error: String,
-    },
-    /// A deep per-type "see all" result for one kind of result.
-    SearchMore {
-        query: String,
-        kind: SearchKind,
-        request_id: u64,
-        bundle: Box<SearchBundle>,
-    },
-    SearchMoreUnavailable {
-        query: String,
-        kind: SearchKind,
         request_id: u64,
         error: String,
     },
@@ -198,10 +179,7 @@ impl StreamWorker {
         let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<StreamRequest>(REQUEST_QUEUE_LIMIT);
         let (up_tx, up_rx) = std::sync::mpsc::channel::<StreamUpdate>();
 
-        if !matches!(
-            ui::rt::availability(ui::rt::Feature::Threads),
-            ui::rt::Availability::Available
-        ) {
+        if !ui::rt::available(ui::rt::Feature::Threads) {
             let backend: std::sync::Arc<dyn MusicBackend> =
                 std::sync::Arc::from(open_backend(&up_tx, force_offline));
             return Self {
@@ -308,7 +286,7 @@ fn validate_request(request: &StreamRequest) -> Result<(), String> {
                 return Err("Invalid Spotify track identity".into());
             }
         }
-        StreamRequest::Search { query, .. } | StreamRequest::SearchMore { query, .. } => {
+        StreamRequest::Search { query, .. } => {
             if query.trim().is_empty() {
                 return Err("music search needs a non-empty query".to_string());
             }
@@ -454,28 +432,6 @@ fn handle_request(
                 });
             }
         },
-        StreamRequest::SearchMore {
-            query,
-            kind,
-            request_id,
-        } => match backend.search_more(&query, kind) {
-            Ok(bundle) => {
-                let _ = up_tx.send(StreamUpdate::SearchMore {
-                    query,
-                    kind,
-                    request_id,
-                    bundle: Box::new(bundle),
-                });
-            }
-            Err(e) => {
-                let _ = up_tx.send(StreamUpdate::SearchMoreUnavailable {
-                    query,
-                    kind,
-                    request_id,
-                    error: e.to_string(),
-                });
-            }
-        },
         StreamRequest::Resolve {
             track_id,
             video_id,
@@ -550,10 +506,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn stream_worker_is_bounded_honest_and_non_blocking() {
         // Phase `worker_announces_backend_and_offline_resolve_fails_gracefully`.
         {

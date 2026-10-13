@@ -96,6 +96,31 @@ impl WorkspaceTaskExecution for NativeOwnerCommitService {
         })
     }
 
+    fn admit_host_launch(
+        &self,
+        room: &str,
+        binding: &NativeTaskBinding,
+        requirement: &NativeTaskActionRequirement,
+        launch: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let room = super::super::state::RoomId::parse(room).ok_or("invalid task room")?;
+        let owner = self.owner.as_ref().ok_or("native task owner unavailable")?;
+        if let Some(network) = &self.network {
+            network.check_native_custody(owner, room)?;
+        }
+        owner.with_task_action_admission(
+            room,
+            &binding.task_id,
+            &binding.agent_id,
+            binding.epoch,
+            binding.revision,
+            || {
+                self.authorize_action(&room.to_string(), &binding.agent_id, requirement)?;
+                launch()
+            },
+        )
+    }
+
     fn admit(
         &self,
         room: &str,

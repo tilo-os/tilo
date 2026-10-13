@@ -453,6 +453,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                         confirmation: None,
                         revision: Some("original-r1".into()),
                         wait_ms: None,
+                        appearance: None,
                     },
                 );
                 rig.state.drain_action_directory_bridge(&rig.directories);

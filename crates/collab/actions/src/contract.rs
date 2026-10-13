@@ -140,6 +140,14 @@ fn edit_parts(
 /// knowing the app.
 pub const DOCUMENT_READ_TAG: &str = "read:document";
 
+/// Facet the executor writes on a change made by a verb its app marks
+/// `#[action(incoming_message)]`: a message someone received. The
+/// `IncomingMessage` trigger fires on it without knowing the app's schema.
+pub const INCOMING_MESSAGE_FACET: &str = "incoming-message";
+/// Contract tag on the declaration of such a verb, so a surface and a
+/// catalogue show it.
+pub const INCOMING_MESSAGE_TAG: &str = "trigger:incoming-message";
+
 /// What one invocation of an action is, for the grants deciding it: its kind,
 /// the one field of its resource it writes when it writes only one (a reply
 /// writes the `comments`), which places it below that field in the tree, and
@@ -194,6 +202,17 @@ impl ActionNeed {
         Self {
             kind: ActionKind::Undoable,
             field: Some(tilo_action_policy::roles::COMMENTS_FIELD.to_owned()),
+            privileged: false,
+        }
+    }
+
+    /// An undoable change under the resource's `moderation` node: acting on
+    /// other people's content, which Moderators and the owner may do.
+    #[must_use]
+    pub fn moderation() -> Self {
+        Self {
+            kind: ActionKind::Undoable,
+            field: Some(tilo_action_policy::roles::MODERATION_FIELD.to_owned()),
             privileged: false,
         }
     }

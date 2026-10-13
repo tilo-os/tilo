@@ -1,9 +1,4 @@
-#![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::unwrap_used,
-    reason = "integration-test setup and assertions"
-)]
+#![allow(clippy::unwrap_used, reason = "integration-test setup and assertions")]
 
 use std::process::{Command, Output};
 

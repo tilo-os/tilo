@@ -309,6 +309,7 @@ fn fold_typed_presence(
                 ui::presence::ParticipantKind::Agent => tilo_actions::ActorKind::Agent,
                 ui::presence::ParticipantKind::Shortcut => tilo_actions::ActorKind::Shortcut,
                 ui::presence::ParticipantKind::App => tilo_actions::ActorKind::App,
+                ui::presence::ParticipantKind::Bot => tilo_actions::ActorKind::Bot,
             };
             let actor = if update.actor.id == user && update.actor.kind == kind {
                 update.actor.clone()
@@ -3454,10 +3455,6 @@ mod two_sessions {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario walks each roster input in turn on one fixture"
-    )]
     fn the_roster_is_derived_again_only_after_one_of_its_inputs_changed() {
         let guest_peer = peer_id(71);
         let host_peer = peer_id(72);

@@ -439,6 +439,7 @@ mod forwarding_tests {
             confirmation: None,
             revision: Some("revision".into()),
             on_behalf_of: None,
+            appearance: None,
             wait_ms: None,
         });
         assert!(matches!(

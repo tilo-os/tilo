@@ -224,6 +224,7 @@ pub fn governance_resource_id(room: &RoomId) -> String {
 pub fn role_id(role: Role) -> &'static str {
     match role {
         Role::Owner => "owner",
+        Role::Moderator => "moderator",
         Role::Editor => "editor",
         Role::Commenter => "commenter",
         Role::Viewer => "viewer",
@@ -850,26 +851,6 @@ impl Workspace {
     #[must_use]
     pub fn app_is_author_at(&self, app: &str, now: u64) -> bool {
         self.policy.app_authors(app, &context_at(now))
-    }
-
-    /// The named task's grant answer. Unrelated tasks of an agent do not
-    /// influence this call; native runs also enforce their frozen ceiling.
-    #[must_use]
-    pub fn task_bound_at(
-        &self,
-        agent: Option<&str>,
-        named: Option<&str>,
-        node: &TreePath,
-        kind: ActionKind,
-        now: u64,
-    ) -> Option<Answer> {
-        task_bound(
-            &self.policy,
-            &self.tasks,
-            (agent, named),
-            (node, kind),
-            &context_at(now),
-        )
     }
 
     /// The role a person with `agent`'s reach in the room would hold: what

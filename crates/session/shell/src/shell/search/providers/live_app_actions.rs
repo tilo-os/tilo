@@ -689,6 +689,7 @@ impl LocalStart {
                 confirmation,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             })
             .map(move |result| {
                 let (id, receipt) = result?;
@@ -2255,6 +2256,7 @@ impl LiveAppActionsProvider {
                         confirmation,
                         revision: Some(revision.clone()),
                         wait_ms: None,
+                        appearance: None,
                     })
                     .map(move |result| {
                         let (id, receipt) = result?;

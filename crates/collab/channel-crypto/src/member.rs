@@ -254,22 +254,6 @@ impl ChannelMember {
         }
     }
 
-    /// The current local MLS epoch admitting `device`, only while this
-    /// member is active in the same group. Waiting, removed and unknown
-    /// devices have no admitted epoch. This query never requests access,
-    /// changes membership or derives content keys.
-    ///
-    /// This is roster evidence, not certificate or revocation validation;
-    /// callers must independently authenticate the device they query.
-    #[must_use]
-    pub fn admitted_epoch_for(&self, device: Ed25519PublicKey) -> Option<u64> {
-        let MemberRecord::Joined(group) = &self.record else {
-            return None;
-        };
-        (group.is_active() && group.leaf_index_of(device.as_bytes()).is_some())
-            .then(|| group.epoch())
-    }
-
     /// Content keys for the device's application endpoints, once admitted.
     pub fn content_keys(&self) -> Option<ChannelContentKeys> {
         match &self.record {

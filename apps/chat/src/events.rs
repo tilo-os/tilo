@@ -1361,7 +1361,7 @@ impl ChatApp {
 
     fn on_key(&mut self, key: &Key, modifiers: Modifiers, doc: &mut ui::widget::Edits<'_>) -> bool {
         // Escape unwinds the top-most layer.
-        if let Key::Named(NamedKey::Escape) = key {
+        if matches!(key, Key::Named(NamedKey::Escape)) {
             if self.attach_open {
                 self.attach_open = false;
             } else if self.menu.is_some() {
@@ -1985,7 +1985,7 @@ fn prepare_attachment_import(
 /// (a browser page, where the job's workspace reads fail fast). A native
 /// thread that cannot start leaves the reason on the status line.
 fn run_worker(name: &str, job: impl FnOnce() + Send + 'static, status: &mut Option<String>) {
-    if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
+    if !ui::rt::available(ui::rt::Feature::Threads) {
         job();
         return;
     }
@@ -2461,10 +2461,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn live_start_workspace_switch_and_inbox_navigate_real_conversations() {
         // Phase: live_starter_selects_first_real_workspace_and_channel.
         {
@@ -3680,7 +3676,41 @@ mod tests {
             assert!(app.hits.iter().any(|(_, hit)| matches!(hit, Hit::Send)));
             assert_eq!(
                 app.header_identity_text().name,
-                "Review the resource action contract"
+                "Example: Review search actions"
+            );
+            assert_eq!(
+                app.messages.len(),
+                5,
+                "public work turns reach the real timeline"
+            );
+            assert!(
+                app.messages
+                    .iter()
+                    .any(|message| message.text.contains("Example action output"))
+            );
+            assert!(
+                app.messages
+                    .iter()
+                    .any(|message| message.text.contains("Example resource output"))
+            );
+            assert_eq!(app.user_name("agent:scribe"), "Scribe (agent)");
+            let lines =
+                crate::render_chat::agent_task_status_lines(app.direct_agent_tasks().unwrap());
+            assert!(lines.primary.contains("Working"));
+            assert!(!lines.primary.contains("task:review"));
+            assert!(lines.receipt.unwrap().contains("waiting for the agent"));
+            let semantics = ui::Widget::accessibility(&app).unwrap();
+            let heading = semantics
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Example: Review search actions"))
+                .expect("the selected task has an accessible heading");
+            assert!(
+                heading
+                    .description
+                    .as_deref()
+                    .unwrap()
+                    .contains("waiting for the agent")
             );
             assert!(!crate::projection::has_draft(&doc, &app.active_channel));
 
@@ -3711,6 +3741,44 @@ mod tests {
                     .run_epoch,
                 Some(7)
             );
+        }
+    }
+
+    #[test]
+    fn queued_task_conversation_draws_explicit_start_without_stop() {
+        for (scenario, width) in [
+            ("agent-task-queued", 1280.0),
+            ("agent-task-queued-compact", 420.0),
+        ] {
+            let (mut app, mut doc) = app_with_doc();
+            app.stage_scenario(scenario);
+            app.composer_main.sync(&doc);
+            render_frame(&mut app, width, 680.0);
+            let start = app
+                .hits
+                .iter()
+                .find(|(_, hit)| matches!(hit, Hit::AgentStart))
+                .expect("the production paint exposes explicit Start task");
+            assert!(start.0.x0 >= 0.0 && start.0.x1 <= width);
+            assert!(
+                !app.hits
+                    .iter()
+                    .any(|(_, hit)| matches!(hit, Hit::AgentStop))
+            );
+            assert_eq!(app.messages.len(), 1);
+            assert_eq!(
+                app.direct_agent_tasks()
+                    .unwrap()
+                    .current()
+                    .unwrap()
+                    .run_epoch,
+                Some(0)
+            );
+            app.focus = Focus::Main;
+            app.set_composer_focus();
+            type_str(&mut app, &mut doc, "An unsent new task");
+            assert!(!crate::projection::has_draft(&doc, &app.active_channel));
+            assert_eq!(app.composer_main.value(), "An unsent new task");
         }
     }
 
@@ -3943,7 +4011,7 @@ mod tests {
                     .unwrap()
                     .children
                     .into_iter()
-                    .find(|node| node.name.as_deref() == Some("Tide: "))
+                    .find(|node| node.name.as_deref() == Some("Tide (agent): "))
                     .expect("the open thread exposes its agent reply")
                     .description
                     .unwrap()
@@ -4881,10 +4949,6 @@ mod tests {
     // --- sidebar mute/deafen (were dead outside a call) -----------------
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
         // Phase: start_call_creates_a_voice_channel_when_the_workspace_has_none.
         {

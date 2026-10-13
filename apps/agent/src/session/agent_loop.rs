@@ -530,7 +530,7 @@ impl Session {
         }
     }
 
-    /// The task catalogue — every live broker offer an unattended task may
+    /// The task catalogue — every broker route an unattended task may
     /// invoke — rebuilt only when the broker republished it, and shared
     /// rather than copied between rebuilds.
     pub(super) fn task_catalogue(&mut self) -> std::sync::Arc<surface::Catalogue> {
@@ -542,7 +542,7 @@ impl Session {
         let offers = surface::broker_offers(&self.broker_surfaces)
             .into_iter()
             .filter(|offer| {
-                offer.broker_peer_id.is_some()
+                (offer.broker_peer_id.is_some() || offer.broker_provider.is_some())
                     // The agent's own AI transforms are not task steps.
                     && !crate::transform::is_transform_kind(&offer.descriptor.resource_kind)
                     && matches!(
@@ -1111,10 +1111,6 @@ impl Session {
 
     /// Handle one completed call. `failed` records that an `invoke` of this
     /// turn did not succeed; the rest of the turn's invokes are then not run.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one completed call is checked, resolved, performed and recorded in a single auditable sequence"
-    )]
     fn handle_call(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -2159,6 +2155,7 @@ mod tests {
             let mut surfaces = vec![
                 BrokerActionSurface {
                     peer_id: PEER,
+                    provider: None,
                     app_id: "so.tilo.word-processor".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: "doc-1".into(),
@@ -2227,6 +2224,7 @@ mod tests {
                 },
                 BrokerActionSurface {
                     peer_id: CHAT_PEER,
+                    provider: None,
                     app_id: "so.tilo.chat".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: String::new(),
@@ -2274,6 +2272,7 @@ mod tests {
                 };
                 surfaces.push(BrokerActionSurface {
                     peer_id: DESKTOP_PEER,
+                    provider: None,
                     app_id: "so.tilo.desktop".into(),
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: String::new(),
@@ -2844,10 +2843,6 @@ mod tests {
         execution_fixture(title, world, turns, pace, None)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one fixture wires the scripted model, the fake broker peer and the real Session"
-    )]
     fn execution_fixture(
         title: &str,
         world: World,
@@ -2900,12 +2895,8 @@ mod tests {
                 cluster: Uuid::from_u128(1),
                 record: None,
                 name: "agent-1".into(),
-                pace: Duration::ZERO,
-                once: false,
                 model: true,
                 model_timeout: Duration::from_secs(5),
-                await_document: Duration::ZERO,
-                settle: Duration::ZERO,
                 permissions: ui::permissions::PermissionContext::agent_granted_at(
                     "agent-1",
                     &[],
@@ -3542,12 +3533,15 @@ mod tests {
                 ],
                 24,
             )],
-            Some(Duration::from_secs(1)),
+            // The provider's first event comes long after Stop is seen at the
+            // third cancellation poll (about 600 ms), so a loaded machine's
+            // slower polls still finish well before it.
+            Some(Duration::from_secs(4)),
         );
         let started = ui::time::now();
         f.session.run_task(&f.run).unwrap();
         assert!(
-            started.elapsed() < Duration::from_millis(700),
+            started.elapsed() < Duration::from_secs(2),
             "Stop must not wait for the provider's first event"
         );
         assert_eq!(f.script.bodies.lock().unwrap().len(), 1);

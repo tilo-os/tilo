@@ -123,10 +123,7 @@ fn pin_under_gutter(taffy: &mut TaffyTree<()>, node: NodeId, metrics: &Metrics, 
         node,
         Style {
             position: taffy::Position::Absolute,
-            size: Size {
-                width: Dimension::auto(),
-                height: Dimension::auto(),
-            },
+            size: Size::auto(),
             inset: taffy::Rect {
                 left: length(num::f32_of_f64(metrics.text_edge)),
                 right: length(num::f32_of_f64(metrics.gutter)),
@@ -1274,29 +1271,13 @@ impl Widget for MainPanel {
             metrics: self.scroll_metrics(),
         })
     }
-    #[expect(
-        clippy::float_cmp,
-        reason = "the clamped target is compared exactly: identical means the scroll did not move"
-    )]
     fn apply_primary_vertical_scroll(
         &mut self,
         action: ui::widget::PrimaryScrollAction,
     ) -> ui::widget::PrimaryScrollResult {
-        use ui::widget::PrimaryScrollResult;
-        let Some(region) = self.primary_vertical_scroll() else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        let Some(next) = action.offset(region.metrics) else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        if next == region.metrics.offset {
-            return PrimaryScrollResult::Unchanged(region);
-        }
-        self.set_scroll_offset(next);
-        self.primary_vertical_scroll().map_or(
-            PrimaryScrollResult::Unsupported,
-            PrimaryScrollResult::Changed,
-        )
+        action.apply_to(self, Self::primary_vertical_scroll, |panel, _, next| {
+            panel.set_scroll_offset(next);
+        })
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1449,10 +1430,7 @@ impl Widget for MainPanel {
         // through the whole toolkit for a branch that can't be taken (see
         // `ui::widget::TaffyTreeExt`).
         let style = Style {
-            size: Size {
-                width: Dimension::auto(),
-                height: Dimension::auto(),
-            },
+            size: Size::auto(),
             overflow: taffy::Point {
                 x: taffy::Overflow::Hidden,
                 y: taffy::Overflow::Hidden,
@@ -1814,8 +1792,7 @@ impl Widget for MainPanel {
         // Track the pointer so a press (which carries no position) can be
         // classified as landing in the title band.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_pointer = ctx.logical(position);
         }
         if self.page_id.is_none() {
             let pressed = matches!(
@@ -2057,11 +2034,11 @@ impl Widget for MainPanel {
                 .with_name("New note")
                 .with_description("Create the first note in this workspace")
                 .with_action_target("notes.first_note")
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.empty_action_focused,
-                    ..Default::default()
-                });
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.empty_action_focused),
+                );
             // Only the painted pill takes the click; without its own bounds
             // the button would claim the whole panel, whose centre is empty.
             return Some(if self.empty_action_rect.width() > 0.0 {
@@ -2530,7 +2507,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn metadata_bands_tags_and_backlinks_clear_the_editor_and_keep_identity() {
         use ui::headless::Framed;

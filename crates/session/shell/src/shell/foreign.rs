@@ -44,7 +44,6 @@
 
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
 use ui::widget::TaffyTreeExt;
 
 use std::collections::HashMap;
@@ -77,7 +76,7 @@ use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+use vello::peniko::{Blob, Extend, Fill, ImageBrush, ImageData};
 
 #[cfg(target_os = "linux")]
 use crate::compositor::surface_readback::{
@@ -4383,14 +4382,8 @@ fn frame_image(frame: FrameSnapshot) -> ImageData {
 
 /// Tightly packed RGBA `pixels` as a GPU-uploadable image, sharing them.
 fn rgba_image(pixels: Arc<Vec<u8>>, width: u32, height: u32) -> ImageData {
-    ImageData {
-        data: Blob::new(pixels),
-        format: ImageFormat::Rgba8,
-        // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width,
-        height,
-    }
+    // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
+    ui::raster::rgba8_premultiplied(Blob::new(pixels), width, height)
 }
 
 /// The current frame of a surface with nothing composited onto it, shared
@@ -4487,10 +4480,7 @@ impl Widget for ForeignSurfaceWidget {
         // dummy id here just means the fallback is unreachable by real
         // traversal instead of panicking.
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -4687,9 +4677,6 @@ impl AppWidget for ForeignSurfaceWidget {
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("󰖯")
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
     }
 }
 
@@ -6276,10 +6263,7 @@ mod tests {
             let node = widget.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
             let root = taffy.parent_node(
                 taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::length(1200.0),
-                        height: taffy::Dimension::length(800.0),
-                    },
+                    size: taffy::Size::from_lengths(1200.0, 800.0),
                     ..Default::default()
                 },
                 &[node],

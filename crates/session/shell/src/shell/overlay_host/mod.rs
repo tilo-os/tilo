@@ -2309,7 +2309,13 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "one shared initialization body for the host interaction surfaces"
     )]
-    fn from_inputs(content: Box<dyn Widget>, inputs: OverlayInputs) -> Self {
+    fn from_inputs(content: Box<dyn Widget>, mut inputs: OverlayInputs) -> Self {
+        let file_picker_overlay = FilePickerOverlay::default();
+        inputs.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::file_picker::FilePickerProvider::new(
+                file_picker_overlay.actions(),
+            ),
+        ));
         // Palette entries come from the search registry on every
         // keystroke. New providers slot in via `SearchRegistry::register`;
         // the palette picks up their resource-kind chips automatically.
@@ -2420,7 +2426,7 @@ impl ShellOverlayHost {
             portal_prompts: None,
             host_shell_allows: Vec::new(),
             terminal_device_shell: None,
-            file_picker_overlay: FilePickerOverlay::default(),
+            file_picker_overlay,
             portal_dialogs: inputs.portal_dialogs,
             peer_sync_enabled: false,
             peer_sync_bridge: None,
@@ -6340,6 +6346,13 @@ impl ShellOverlayHost {
 
     /// The live file-chooser dialog, if one is up. For the frame
     /// builder's widget walk and for tests.
+    #[cfg(test)]
+    pub(crate) fn file_picker_actions_for_test(
+        &self,
+    ) -> crate::shell::file_picker_overlay::actions::PickerActions {
+        self.file_picker_overlay.actions()
+    }
+
     pub fn file_picker(&self) -> Option<&ui::widget::FilePicker> {
         self.file_picker_overlay.widget()
     }
@@ -8097,6 +8110,7 @@ impl ShellOverlayHost {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         );
         self.pending_launchpad_actions
@@ -13344,7 +13358,7 @@ impl ShellOverlayHost {
     /// Requires the debug environment gate and a known fixture phase.
     #[cfg(debug_assertions)]
     pub fn seed_dictation_for_shots(&mut self, phase: &str) -> Result<(), &'static str> {
-        use crate::compositor::dictation::DictationStatus;
+        use crate::compositor::dictation_status::DictationStatus;
         if std::env::var_os("TILO_UI_DEBUG").is_none() {
             return Err("dictation shots require TILO_UI_DEBUG and a debug build");
         }
@@ -13364,7 +13378,7 @@ impl ShellOverlayHost {
             }
             "dictation-model-required" => {
                 self.layers.dictation.status(DictationStatus::Unavailable(
-                    crate::compositor::dictation::runtime::RuntimeError::Worker(
+                    crate::compositor::dictation_status::RuntimeError::Worker(
                         agent_provider_config::speech::SpeechError::ModelUnavailable,
                     ),
                 ));
@@ -17498,7 +17512,7 @@ impl ShellOverlayHost {
                 }
                 self.layers
                     .dictation
-                    .status(crate::compositor::dictation::DictationStatus::Idle);
+                    .status(crate::compositor::dictation_status::DictationStatus::Idle);
                 self.layers.dictation.request_cancel();
                 if let Some(chrome) = self.chrome.clone() {
                     self.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
@@ -17826,6 +17840,8 @@ impl Widget for ShellOverlayHost {
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
             let mut apps = apps.borrow_mut();
+            // Only Linux enrollment asks for a provider's network access.
+            #[cfg(target_os = "linux")]
             if let Some(prompts) = &self.portal_prompts {
                 apps.bind_messaging_network_prompts(prompts.clone());
             }

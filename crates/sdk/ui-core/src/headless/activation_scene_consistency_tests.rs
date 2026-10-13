@@ -269,9 +269,6 @@ impl AppWidget for Owner {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("P")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 thread_local! { static NEXT: RefCell<Option<(Seen, u64, &'static str)>> = const { RefCell::new(None) }; }
 fn factory(

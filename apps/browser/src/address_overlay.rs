@@ -22,7 +22,7 @@
 //! the toolkit's `Dropdown` uses. `draw` itself is a no-op.
 
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -319,10 +319,7 @@ impl Widget for AddressSuggestions {
         // returns a bare `NodeId` across every implementor, so there is
         // nowhere to surface a theoretical error.
         let style = Style {
-            size: Size {
-                width: Dimension::length(self.width),
-                height: Dimension::length(self.panel_height() as f32),
-            },
+            size: Size::from_lengths(self.width, self.panel_height() as f32),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -360,8 +357,7 @@ impl Widget for AddressSuggestions {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 self.hovered = self.row_at(self.last_cursor);
             }
             WindowEvent::MouseInput {
@@ -440,12 +436,12 @@ impl Widget for AddressSuggestions {
                         row_top + self.row_height(),
                     ))
                     .with_position(index.saturating_add(1), self.items.len())
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: index == self.selected,
-                        selected: index == self.selected,
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(index == self.selected)
+                            .selected(index == self.selected),
+                    )
             })
             .collect();
         Some(
@@ -585,10 +581,6 @@ mod tests {
 
     /// Rendering, sizing and accessibility of suggestion rows.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn suggestion_rows_render_and_expose_stable_accessible_targets() {
         // Phase `accessibility_target_uses_the_stable_row_identity`.
         {
@@ -684,10 +676,6 @@ mod tests {
 
     /// Keyboard, Escape and pointer input on the overlay.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn keyboard_escape_and_mouse_choose_or_dismiss_suggestions() {
         // Phase `keyboard_moves_selection_and_enter_chooses`.
         {
@@ -697,11 +685,7 @@ mod tests {
             let send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
                 let ev =
                     ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
-                let event = WindowEvent::KeyboardInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    event: ev,
-                    is_synthetic: false,
-                };
+                let event = ui::synthetic_input::keyboard_input(ev);
                 ui::testing::dispatch(w, &event)
             };
 
@@ -729,11 +713,7 @@ mod tests {
                 None,
                 ElementState::Pressed,
             );
-            let event = WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            };
+            let event = ui::synthetic_input::keyboard_input(ev);
             let handled = ui::testing::dispatch(&mut w, &event);
             assert!(handled);
             assert!(!w.is_visible(), "Escape clears the overlay");
@@ -751,19 +731,9 @@ mod tests {
             let row1_y = r.y0 + w.pad() + w.row_height() * 1.5;
             ui::testing::dispatch(
                 &mut w,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(r.x0 + 20.0, row1_y),
-                },
+                &ui::synthetic_input::cursor_moved(r.x0 + 20.0, row1_y),
             );
-            let handled = ui::testing::dispatch(
-                &mut w,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            let handled = ui::testing::dispatch(&mut w, &ui::synthetic_input::mouse_press());
             assert!(handled, "a click on a row is consumed");
             assert_eq!(
                 w.selected_index(),

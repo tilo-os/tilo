@@ -87,3 +87,15 @@ This follows the optional hint contract in the
 The change is in `src/vulkan/{adapter,mod,swapchain/native}.rs`. Pixel coverage
 and fallback tests exercise the toolkit's hint conversion; native WSI transport
 and Yoga typing latency still require verification.
+
+## IEEE-safe Metal shaders
+
+`metal::Device::load_shader` compiles naga's MSL with `MTLMathMode::Safe`
+(`fastMathEnabled = NO` before macOS 15/iOS 18) instead of Metal's default
+fast math. Fast math lets the compiler reassociate floating-point
+expressions, which undoes Vello's translation-stable area coverage
+(`vendor/PATCHES.md`): on an Apple M1 a damage-region redraw differed from a
+full render of the same scene by one channel step at a few edge pixels, so
+partially redrawn frames drifted from fresh ones. With safe math the two agree
+pixel for pixel. Passthrough MSL keeps the options its author compiles with.
+The change is in `src/metal/device.rs`.

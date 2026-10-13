@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use automerge::ObjId;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::ColorCompat;
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -100,10 +100,7 @@ impl StyleColorPicker {
         let _ = taffy.set_style(
             node,
             Style {
-                size: Size {
-                    width: Dimension::length(num::f32_of_f64(WIDTH)),
-                    height: Dimension::length(num::f32_of_f64(height)),
-                },
+                size: Size::from_lengths(num::f32_of_f64(WIDTH), num::f32_of_f64(height)),
                 ..Default::default()
             },
         );

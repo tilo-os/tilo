@@ -51,15 +51,6 @@ pub(crate) fn remove(path: &Path) {
     }
 }
 
-/// Whether chosen files have native paths here; without them (a browser
-/// page) media is imported by its contents.
-pub(crate) fn native_paths() -> bool {
-    matches!(
-        tilo_files::availability(tilo_files::Feature::NativePaths),
-        tilo_files::Availability::Available
-    )
-}
-
 /// The largest media file imported by contents.
 pub(crate) const KEEP_LIMIT: usize = 512 * 1024 * 1024;
 

@@ -1722,10 +1722,7 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
 
         std::fs::create_dir_all(app.join("locales")).unwrap();
         std::fs::write(app.join("locales/en-US.ftl"), STARTER_APP_CATALOG).unwrap();
-        let registry = locale_registry_source(
-            &["en-US".to_owned()],
-            &catalog_message_ids(&parse_fluent_catalog(STARTER_APP_CATALOG).unwrap()),
-        );
+        let registry = locale_registry_source(&["en-US".to_owned()]);
         std::fs::write(app.join("src/locales.rs"), &registry).unwrap();
         let preview = add_app_artifact(AddRequest {
             start: app.clone(),
@@ -2003,16 +2000,9 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         })
         .unwrap();
         assert_eq!(preserved.checked, ["de-DE"]);
-        let registry_path = app.join("src/locales.rs");
         assert_eq!(
             preserved.files.as_slice(),
-            [translation_path.clone(), registry_path.clone()],
-            "a new source message also becomes a label key"
-        );
-        assert!(
-            std::fs::read_to_string(&registry_path).unwrap().contains(
-                "pub const SETTINGS_TITLE: LabelKey = LabelKey::new(\"settings-title\");"
-            )
+            std::slice::from_ref(&translation_path)
         );
         assert!(
             preserved
@@ -3330,7 +3320,13 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
                 .filter(|(path, _)| path.extension().is_none_or(|extension| extension != "ftl"))
                 .map(|(_, source)| source.as_str())
                 .collect::<String>();
-            for id in messages.entries.keys() {
+            // History messages are looked up by verb name, not written out.
+            let history = format!("{}-", tilo_history::app_prefix(&spec.app_id));
+            for id in messages
+                .entries
+                .keys()
+                .filter(|id| !id.starts_with(&history))
+            {
                 assert!(
                     source.contains(&format!("\"{id}\"")),
                     "{}: {id} is in the catalog but not used",
@@ -5023,7 +5019,7 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
     );
 
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    assert!(app_is_workspace_member(&repo.join("apps/hot-reload-demo")));
+    assert!(app_is_workspace_member(&repo.join("apps/calculator")));
     let temp = tempfile::tempdir().unwrap();
     assert!(!app_is_workspace_member(temp.path()));
 }

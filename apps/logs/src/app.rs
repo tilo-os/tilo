@@ -738,10 +738,6 @@ impl Widget for LogsApp {
         self.shell.sync(state, path);
     }
 
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.shell.update(state, path)
-    }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
