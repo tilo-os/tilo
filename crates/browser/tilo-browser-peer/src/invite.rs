@@ -8,9 +8,7 @@
 //! of the host user's devices.
 
 use tilo_relay_client::DeviceSigner;
-use tilo_relay_protocol::rooms::{
-    JoinChallengeView, JoinReply, JoinStep, MAX_JOIN_NAME_CHARS, join_proof_digest,
-};
+use tilo_relay_protocol::rooms::{JoinChallengeView, JoinReply, JoinStep, join_proof_digest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, device_cert_signing_digest};
 
 use crate::carrier::{self, HttpClient, LinkError};
@@ -28,10 +26,8 @@ pub async fn guest_certificate(
     label: &str,
     issued_at_ns: u64,
 ) -> Result<DeviceCert, LinkError> {
-    let label = label.trim();
-    if label.is_empty() || label.chars().count() > MAX_JOIN_NAME_CHARS {
-        return Err(LinkError::Sign("the device needs a name".into()));
-    }
+    let label = tilo_user_identity::display_name(label)
+        .map_err(|error| LinkError::Sign(format!("the device needs a name: {error}")))?;
     let mut cert = DeviceCert {
         user_public_key: root.device_public_key(),
         device_public_key,

@@ -37,6 +37,12 @@ use tracing_subscriber::{EnvFilter, fmt};
 use tilo_relay::{RelayConfig, daemon::RelayIdentity};
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
 
+#[cfg(feature = "agents")]
+mod persistent_moderation;
+#[cfg(feature = "agents")]
+mod persistent_room_cli;
+#[cfg(feature = "agents")]
+mod room_seed;
 #[cfg(feature = "web")]
 mod web_cli;
 

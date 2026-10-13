@@ -36,7 +36,16 @@ pub struct AppCatalogue {
 /// browser session can mount, and so what an agent in it can open.
 #[must_use]
 pub fn component_apps() -> Vec<&'static ApplicationDefinition> {
-    crate::web_apps::web_apps()
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(unused_mut, reason = "only a linux host adds apps")
+    )]
+    let mut apps = crate::web_apps::web_apps();
+    // Connectors run on a room's host, never in a browser; the bots there
+    // work on their records.
+    #[cfg(target_os = "linux")]
+    apps.push(discord::definition());
+    apps
 }
 
 impl AppCatalogue {
