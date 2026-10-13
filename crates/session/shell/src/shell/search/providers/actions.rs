@@ -1806,9 +1806,7 @@ impl Action {
             "search-action-room-activity-open",
             "search-action-room-activity-open-subtitle",
             |st, _| {
-                st.overlays.room_activity = true;
-                // The sheet covers the dropdown that can also open it.
-                st.overlays.collaborators = false;
+                st.open_room_activity(None);
                 Ok(())
             },
         ),
@@ -5031,7 +5029,9 @@ mod tests {
                 .find(|r| r.id == "room.activity.open")
                 .expect("typing 'activity' must surface the room-activity action");
             assert_eq!(action.title, "Show workspace activity");
-            assert!(!c.borrow().overlays.room_activity, "starts closed");
+            let activity_tab =
+                || crate::shell::tab_binding::active_workspace_activity_tab(&c.borrow().tree());
+            assert!(activity_tab().is_none(), "starts closed");
             (action.on_open)(
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
@@ -5040,12 +5040,16 @@ mod tests {
             )
             .expect("a nullary chrome action must run");
             assert!(
-                c.borrow().overlays.room_activity,
-                "invoking the exported action opened the sheet"
+                activity_tab().is_some(),
+                "invoking the exported action opens the workspace's Activity tab"
+            );
+            assert!(
+                !c.borrow().overlays.room_activity,
+                "Activity is a tab, not a modal that captures input"
             );
             assert!(
                 !c.borrow().overlays.collaborators,
-                "the dropdown the sheet can also be opened from is dismissed with it"
+                "the dropdown Activity can also be opened from is dismissed with it"
             );
         }
 

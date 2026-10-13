@@ -363,10 +363,7 @@ fn documents_opened_from_the_palette_or_a_drop_open_in_their_own_app() {
             &mut host,
             &layout,
             ModifiersState::empty(),
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(over.x, over.y),
-            },
+            &ui::synthetic_input::cursor_moved(over.x, over.y),
         );
         session.dispatch(
             &mut host,

@@ -692,7 +692,7 @@ impl Continuable for MusicApp {
         }))
         .ok()?;
         Some(ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
+            schema_version: ui::collaboration::semantic_schema::MEDIA_POSITION_V1,
             bytes,
         })
     }
@@ -702,7 +702,7 @@ impl Continuable for MusicApp {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ObjId,
     ) -> bool {
-        if metadata.schema_version != 1 {
+        if metadata.schema_version != ui::collaboration::semantic_schema::MEDIA_POSITION_V1 {
             return false;
         }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&metadata.bytes) else {
@@ -1016,7 +1016,7 @@ impl Widget for MusicApp {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            let p = ctx.logical(position);
             self.dirty |= toggle_hovered != self.drawer.toggle_rect().contains(p);
         }
 
@@ -3836,9 +3836,7 @@ impl MusicApp {
             return false;
         }
         let mouse = match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor)
-            }
+            WindowEvent::CursorMoved { position, .. } => ctx.logical(position),
             _ => self.mouse,
         };
         let covered = !self.body_rect.contains(mouse)

@@ -6,8 +6,7 @@
 //! virtualized, and partially resident collections.
 //!
 //! Several toolkit widgets surface a list of homogeneous items that the
-//! user can select — `DataTable` list mode,
-//! [`IconGrid`](crate::widget::IconGrid), the file picker, the
+//! user can select — `DataTable` list mode, the file picker, the
 //! file-explorer's views — and they all need the *same* selection
 //! semantics, so that logic lives here once instead of being re-derived
 //! (subtly differently) in each widget.

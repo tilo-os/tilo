@@ -54,16 +54,6 @@ pub enum Schedule {
 }
 
 impl Schedule {
-    /// The cadence in one word.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::OnDemand => "On demand",
-            Self::Hourly { .. } => "Hourly",
-            Self::Daily { .. } => "Daily",
-            Self::Weekly { .. } => "Weekly",
-        }
-    }
-
     /// The next run strictly after `now`, or `None` for an on-demand source.
     pub fn next_after(self, now: NaiveDateTime) -> Option<NaiveDateTime> {
         let at =
@@ -181,7 +171,6 @@ impl DestKind {
 pub enum Health {
     Ok,
     Warning,
-    Error,
 }
 
 #[derive(Clone, Debug)]

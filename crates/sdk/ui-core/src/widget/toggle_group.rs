@@ -2254,8 +2254,7 @@ impl Widget for ToggleGroup {
         match event {
             WindowEvent::KeyboardInput { event, .. } => self.handle_key_event(event, ctx.handled),
             WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let logical_pos = ctx.logical(position);
                 self.last_cursor.set(logical_pos);
                 self.hovered = if self.is_enabled() && self.rect.contains(logical_pos) {
                     self.segment_rects

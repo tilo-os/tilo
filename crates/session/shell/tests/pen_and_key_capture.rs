@@ -652,10 +652,7 @@ fn an_app_that_declines_the_pad_keeps_the_pads_own_mapping() {
     let _ = shell::compositor::client_input::route_input(
         &mut h.wl.state,
         &mut h.fb,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(centre.0, centre.1),
-        },
+        &ui::synthetic_input::cursor_moved(centre.0, centre.1),
         &no_mods,
     );
     let config = TabletConfig::default();
@@ -766,10 +763,7 @@ fn a_tablet_aware_app_gets_pad_rings_and_strips_and_others_scroll() {
     let _ = shell::compositor::client_input::route_input(
         &mut h.wl.state,
         &mut h.fb,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(centre.0, centre.1),
-        },
+        &ui::synthetic_input::cursor_moved(centre.0, centre.1),
         &no_mods,
     );
     let landed = shell::compositor::client_input::route_pad_event(
@@ -1210,11 +1204,7 @@ fn key(logical: Key, pressed: bool) -> WindowEvent {
             ElementState::Released
         },
     );
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }
 
 #[test]

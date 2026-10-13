@@ -839,8 +839,7 @@ impl Widget for CollaborationLaunchpad {
         let before = (self.hover_target(), self.selected, self.focused);
         self.sync_targets();
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
         }
         if !self.navigate(event, ctx) {
             self.dirty |= self.targets.handle_event(event, ctx);
@@ -1180,10 +1179,7 @@ mod tests {
     }
 
     fn pointer_at(point: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-        }
+        ui::synthetic_input::cursor_moved(point.x, point.y)
     }
 
     use ui::synthetic_input::mouse_press;

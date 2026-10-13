@@ -362,21 +362,6 @@ impl ClientInput {
 
 // Pure helpers — no seat, no widgets. Unit-testable in isolation.
 
-pub(crate) fn monotonic_time_ns() -> Option<u128> {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: the out pointer refers to a live timespec for the entire call.
-    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) } != 0 {
-        return None;
-    }
-    u128::try_from(now.tv_sec)
-        .ok()?
-        .checked_mul(1_000_000_000)?
-        .checked_add(u128::try_from(now.tv_nsec).ok()?)
-}
-
 /// Mint a fresh input serial. Wayland clients ignore events whose serial goes backwards, so every delivered event gets its own.
 fn mint_serial(state: &mut State) -> Serial {
     state.serial_counter = state.serial_counter.wrapping_add(1);
@@ -572,7 +557,7 @@ impl State {
             && has_focus
             && pressed
             && crate::shell::launcher::LaunchSession::current().presentation_observer_enabled())
-        .then(monotonic_time_ns)
+        .then(crate::compositor::metrics::monotonic_time_ns)
         .flatten();
         let intercepted: Option<()> = keyboard.input(
             self,
@@ -2287,10 +2272,7 @@ mod tests {
                 display.handle(),
                 tree,
             );
-            let moved = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(1210.0, 70.0),
-            };
+            let moved = ui::synthetic_input::cursor_moved(1210.0, 70.0);
 
             assert!(
                 !route_input(&mut state, &mut fb, &moved, &Modifiers::default(),),
@@ -2685,10 +2667,7 @@ mod tests {
             route_input(
                 &mut state,
                 &mut fb,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(640.0, 610.0),
-                },
+                &ui::synthetic_input::cursor_moved(640.0, 610.0),
                 &mods,
             );
 
@@ -2716,10 +2695,7 @@ mod tests {
             route_input(
                 &mut state,
                 &mut fb,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(523.0, 339.0),
-                },
+                &ui::synthetic_input::cursor_moved(523.0, 339.0),
                 &mods,
             );
             assert_eq!(
@@ -2732,10 +2708,7 @@ mod tests {
             route_input(
                 &mut state,
                 &mut fb,
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(880.0, 300.0),
-                },
+                &ui::synthetic_input::cursor_moved(880.0, 300.0),
                 &mods,
             );
             assert_eq!(

@@ -1271,29 +1271,13 @@ impl Widget for MainPanel {
             metrics: self.scroll_metrics(),
         })
     }
-    #[expect(
-        clippy::float_cmp,
-        reason = "the clamped target is compared exactly: identical means the scroll did not move"
-    )]
     fn apply_primary_vertical_scroll(
         &mut self,
         action: ui::widget::PrimaryScrollAction,
     ) -> ui::widget::PrimaryScrollResult {
-        use ui::widget::PrimaryScrollResult;
-        let Some(region) = self.primary_vertical_scroll() else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        let Some(next) = action.offset(region.metrics) else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        if next == region.metrics.offset {
-            return PrimaryScrollResult::Unchanged(region);
-        }
-        self.set_scroll_offset(next);
-        self.primary_vertical_scroll().map_or(
-            PrimaryScrollResult::Unsupported,
-            PrimaryScrollResult::Changed,
-        )
+        action.apply_to(self, Self::primary_vertical_scroll, |panel, _, next| {
+            panel.set_scroll_offset(next);
+        })
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1808,8 +1792,7 @@ impl Widget for MainPanel {
         // Track the pointer so a press (which carries no position) can be
         // classified as landing in the title band.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_pointer = ctx.logical(position);
         }
         if self.page_id.is_none() {
             let pressed = matches!(

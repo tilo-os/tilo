@@ -1249,20 +1249,9 @@ impl App {
             return false;
         }
         let events = [
-            WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: PhysicalPosition::new(x, y),
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
+            crate::synthetic_input::cursor_moved(x, y),
+            crate::synthetic_input::mouse_press(),
+            crate::synthetic_input::mouse_release(),
         ];
         let mut handled_any = false;
         for event in events {

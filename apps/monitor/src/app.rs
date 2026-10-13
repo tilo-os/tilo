@@ -548,11 +548,9 @@ impl MonitorApp {
                     cpu: p.cpu,
                     mem_bytes: p.mem_bytes,
                     threads: p.threads,
-                    status: p.status,
                     depth: 0,
                     has_children: false,
                     expanded: false,
-                    descendants: 0,
                 })
                 .collect()
         }
@@ -2163,15 +2161,11 @@ mod tests {
         assert!(!harness.root::<MonitorApp>().prefs.auto_refresh);
 
         let (x, y) = center_of(&harness, "tilo-fs").expect("tilo-fs row");
-        harness.send(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        });
-        harness.send(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Right,
-        });
+        harness.send(&ui::synthetic_input::cursor_moved(x, y));
+        harness.send(&ui::synthetic_input::mouse_input(
+            ElementState::Pressed,
+            winit::event::MouseButton::Right,
+        ));
         harness.relayout();
         let tilo_fs = pid_named(harness.root::<MonitorApp>(), "tilo-fs");
         assert_eq!(harness.root::<MonitorApp>().selected_pid, Some(tilo_fs));

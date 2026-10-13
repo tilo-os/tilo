@@ -303,18 +303,6 @@ pub fn mime_from_filename(name: &str) -> &'static str {
         .unwrap_or("application/octet-stream")
 }
 
-/// Outcome of a (simulated, in this slice) send. The live app returns the
-/// SMTP server's reply here.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SendOutcome {
-    /// Bytes were built and (in the live app) submitted. Carries the wire
-    /// size so the UI can confirm "sent (N KB)".
-    Sent {
-        wire_bytes: usize,
-    },
-    Failed(String),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

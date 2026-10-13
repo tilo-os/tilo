@@ -164,10 +164,7 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f64, usize)]) -> Vec<Run> {
         if at == 3 {
             app.surface_input(
                 &window,
-                WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(200.0 * scale, 200.0 * scale),
-                },
+                crate::synthetic_input::cursor_moved(200.0 * scale, 200.0 * scale),
                 false,
             );
         }

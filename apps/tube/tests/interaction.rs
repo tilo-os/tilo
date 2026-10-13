@@ -123,10 +123,10 @@ fn player_draws(app: TubeApp) -> usize {
         .expect("the production watch page mounts its player")
         .get_rect();
     assert!(player.width() > 0.0 && player.height() > 0.0);
-    Framed::harness_mut(&mut framed).send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(player.center().x, player.center().y),
-    });
+    Framed::harness_mut(&mut framed).send(&ui::synthetic_input::cursor_moved(
+        player.center().x,
+        player.center().y,
+    ));
     let mut scene = vello::Scene::new();
     assert!(paint_player(&mut *framed, &mut scene));
     scene.encoding().draw_tags.len()
@@ -176,10 +176,7 @@ impl Harness {
     }
     fn wheel_at(&mut self, at: vello::kurbo::Point, delta: f64) {
         let frame = Framed::harness_mut(&mut self.app);
-        frame.send(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-        });
+        frame.send(&ui::synthetic_input::cursor_moved(at.x, at.y));
         frame.scroll(0.0, delta);
         frame.relayout();
     }
@@ -368,10 +365,8 @@ fn rail_click_survives_a_layout_refresh_between_motion_and_press() {
         .expect("the Queue rail destination is laid out");
     assert!(queue.width() > 0.0 && queue.height() > 0.0);
     let centre = queue.center();
-    app.harness().send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
-    });
+    app.harness()
+        .send(&ui::synthetic_input::cursor_moved(centre.x, centre.y));
     // An actual viewport change forces the host's composition/layout passes,
     // unlike a fixture-only model flag that cached layout may never observe.
     app.harness().resize((VIEWPORT.0 + 1, VIEWPORT.1)).unwrap();
@@ -398,11 +393,10 @@ fn rail_click_survives_a_layout_refresh_between_motion_and_press() {
         winit::event::ElementState::Pressed,
         winit::event::ElementState::Released,
     ] {
-        app.harness().send(&winit::event::WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
+        app.harness().send(&ui::synthetic_input::mouse_input(
             state,
-            button: winit::event::MouseButton::Left,
-        });
+            winit::event::MouseButton::Left,
+        ));
     }
     app.settle();
     assert_eq!(route(&mut app), Route::Queue);
@@ -941,10 +935,8 @@ fn hovering_copy_link() -> (
         "the watch page must finish its entrance before the pointer arrives"
     );
     let centre = app.harness().targets()["watch_copy_link"].center();
-    app.harness().send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
-    });
+    app.harness()
+        .send(&ui::synthetic_input::cursor_moved(centre.x, centre.y));
     let button = copy_link_identity(&mut app);
     (app, results, button)
 }
@@ -987,11 +979,10 @@ fn press(
     app: &mut ui::framework::testing::TestApp<tube::TubeShell>,
     state: winit::event::ElementState,
 ) {
-    app.harness().send(&winit::event::WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
+    app.harness().send(&ui::synthetic_input::mouse_input(
         state,
-        button: winit::event::MouseButton::Left,
-    });
+        winit::event::MouseButton::Left,
+    ));
 }
 
 fn link_copied(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> bool {

@@ -1359,29 +1359,13 @@ impl Widget for Scrollable {
             metrics: self.v_metrics(),
         })
     }
-    #[expect(
-        clippy::float_cmp,
-        reason = "an offset that resolves to exactly the current one is a no-op scroll"
-    )]
     fn apply_primary_vertical_scroll(
         &mut self,
         action: crate::widget::PrimaryScrollAction,
     ) -> crate::widget::PrimaryScrollResult {
-        use crate::widget::PrimaryScrollResult;
-        let Some(region) = self.primary_vertical_scroll() else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        let Some(next) = action.offset(region.metrics) else {
-            return PrimaryScrollResult::Unsupported;
-        };
-        if next == region.metrics.offset {
-            return PrimaryScrollResult::Unchanged(region);
-        }
-        self.set_offset_y(next as f32);
-        self.primary_vertical_scroll().map_or(
-            PrimaryScrollResult::Unsupported,
-            PrimaryScrollResult::Changed,
-        )
+        action.apply_to(self, Self::primary_vertical_scroll, |s, _, next| {
+            s.set_offset_y(next as f32);
+        })
     }
 
     fn child_clip_rect(&self) -> Option<Rect> {
@@ -1778,9 +1762,9 @@ impl Widget for Scrollable {
             .as_ref()
             .is_some_and(|child| child.wants_pointer_capture());
         let pointer_in_content = match event {
-            WindowEvent::CursorMoved { position, .. } => self.content_viewport_rect().contains(
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor),
-            ),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.content_viewport_rect().contains(ctx.logical(position))
+            }
             WindowEvent::MouseInput { .. } => {
                 self.content_viewport_rect().contains(self.last_cursor)
             }
@@ -2076,11 +2060,7 @@ mod tests {
 
     use crate::synthetic_input::cursor_moved;
     fn mouse(state: ElementState) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: MouseButton::Left,
-        }
+        crate::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
     struct EventSpy {
@@ -3011,11 +2991,7 @@ mod tests {
         {
             let mut s = vertical(1200.0);
             let before = s.offset_y();
-            let ev = WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let ev = crate::synthetic_input::mouse_wheel(0.0, -1.0);
             assert!(dispatch(&mut s, &ev), "wheel handled");
             assert!(s.offset_y() > before, "wheel down increases offset");
         }

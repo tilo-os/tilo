@@ -49,13 +49,6 @@ fn path_identity_suffix(path: &std::path::Path) -> String {
     hex::encode(digest.get(..16).unwrap_or(&digest))
 }
 
-/// Stable, wire-safe identity for a currently presented directory.  The path
-/// is deliberately the identity here: ordinary host folders do not have a
-/// Tilo record UUID, while collaborative records use [`record_resource_id`].
-pub fn folder_resource_id(path: &std::path::Path) -> String {
-    format!("files.folder:{}", path_identity_suffix(path))
-}
-
 /// Stable, wire-safe identity for an entry in the currently presented folder.
 /// Collaborative resources additionally publish their record UUID identity,
 /// which survives rename and move; this address is the local filesystem view.
@@ -496,19 +489,12 @@ mod tests {
             assert_eq!(ActionAddress::parse(&address.encode()), Some(address));
         }
 
-        // --- phase: folder_and_entry_resource_ids_are_wire_safe_and_kind_scoped ---
+        // --- phase: entry_resource_ids_are_wire_safe ---
         {
             let path = PathBuf::from("/tmp/a\u{1f}b");
-            let folder = ActionAddress::new(folder_resource_id(&path), "refresh");
             let entry = ActionAddress::new(entry_resource_id(&path), "open");
-            assert_eq!(ActionAddress::parse(&folder.encode()), Some(folder));
             assert_eq!(ActionAddress::parse(&entry.encode()), Some(entry));
-            assert_ne!(folder_resource_id(&path), entry_resource_id(&path));
-            for id in [
-                place_resource_id(&path),
-                folder_resource_id(&path),
-                entry_resource_id(&path),
-            ] {
+            for id in [place_resource_id(&path), entry_resource_id(&path)] {
                 assert!(
                     !id.contains("/tmp") && !id.contains("2f746d70"),
                     "resource ids must not retain either the path or its old reversible hex: {id}"

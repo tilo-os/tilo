@@ -476,8 +476,7 @@ impl Widget for ColorSwatchPicker {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 self.hovered = self
                     .swatch_rects
                     .iter()
@@ -703,19 +702,9 @@ mod tests {
 
         dispatch(
             &mut picker,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(third.x, third.y),
-            },
+            &crate::synthetic_input::cursor_moved(third.x, third.y),
         );
-        dispatch(
-            &mut picker,
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
+        dispatch(&mut picker, &crate::synthetic_input::mouse_press());
         assert_eq!(*chosen.borrow(), vec![2]);
 
         // Showing a choice made elsewhere tells no one.
@@ -776,18 +765,11 @@ mod tests {
 
         dispatch(
             &mut picker,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
-            },
+            &crate::synthetic_input::cursor_moved(centre.x, centre.y),
         );
         assert!(dispatch(
             &mut picker,
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            }
+            &crate::synthetic_input::mouse_press()
         ));
         assert_eq!(picker.take_choice(), Some(2));
 

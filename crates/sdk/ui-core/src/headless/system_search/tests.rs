@@ -78,17 +78,13 @@ fn first_row(f: &FrameHarness) -> Rect {
         .unwrap()
 }
 fn move_pointer(f: &mut FrameHarness, x: f64, y: f64) {
-    f.send_host_event(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    });
+    f.send_host_event(&crate::synthetic_input::cursor_moved(x, y));
 }
 fn press(f: &mut FrameHarness, button: MouseButton) {
-    f.send_host_event(&WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
+    f.send_host_event(&crate::synthetic_input::mouse_input(
+        ElementState::Pressed,
         button,
-    });
+    ));
 }
 fn enter(f: &mut FrameHarness) {
     f.send_host_event(&key_input(
@@ -737,11 +733,10 @@ fn search_captures_host_and_direct_pointer_before_history_observation() {
             } else {
                 move_pointer(&mut f, history_button.x, history_button.y);
                 for state in [ElementState::Pressed, ElementState::Released] {
-                    f.send_host_event(&WindowEvent::MouseInput {
-                        device_id: winit::event::DeviceId::dummy(),
+                    f.send_host_event(&crate::synthetic_input::mouse_input(
                         state,
-                        button: MouseButton::Left,
-                    });
+                        MouseButton::Left,
+                    ));
                 }
             }
             assert!(

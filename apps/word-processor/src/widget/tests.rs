@@ -2350,10 +2350,10 @@ fn assert_styles_page_scrolls_to_its_last_real_action(
             widget.panel_body
         })
         .unwrap();
-    app.harness().send(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(body.center().x, body.center().y),
-    });
+    app.harness().send(&ui::synthetic_input::cursor_moved(
+        body.center().x,
+        body.center().y,
+    ));
     app.harness().scroll(0.0, -20.0);
     app.settle();
     app.with_surface::<WordProcessorWidget, _>(|widget| {
@@ -3237,14 +3237,7 @@ fn press_named_with_modifiers(
         .modifiers(mods)
         .doc(&mut state.doc)
         .path(&state.root)
-        .send(
-            wp,
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            },
-        );
+        .send(wp, &ui::synthetic_input::keyboard_input(ev));
 }
 
 fn pinch(
@@ -5978,14 +5971,7 @@ pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt
         .path(&state.root)
         .handled(moved.handled)
         .focus_target(moved.focus_target)
-        .send(
-            wp,
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
+        .send(wp, &ui::synthetic_input::mouse_press());
 }
 
 #[test]
@@ -6546,14 +6532,10 @@ fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
         Some(SmolStr::new(ch.to_string())),
         ElementState::Pressed,
     );
-    Dispatch::new().doc(&mut state.doc).path(&state.root).send(
-        wp,
-        &WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        },
-    );
+    Dispatch::new()
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(wp, &ui::synthetic_input::keyboard_input(ev));
 }
 
 // ---- horizontal ruler ----------------------------------------------------
@@ -6562,14 +6544,10 @@ fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
 /// path (no `text`, just the named key).
 fn press_tab(wp: &mut WordProcessorWidget, state: &mut ui::State) {
     let ev = ui::synthetic_input::key_event(Key::Named(NamedKey::Tab), None, ElementState::Pressed);
-    Dispatch::new().doc(&mut state.doc).path(&state.root).send(
-        wp,
-        &WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        },
-    );
+    Dispatch::new()
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(wp, &ui::synthetic_input::keyboard_input(ev));
 }
 
 /// The ruler defaults on and toggles, its markers track margins, indent and zoom, and dragging the left
@@ -8298,14 +8276,7 @@ fn the_colour_picker_applies_and_cancels_previews() {
             .path(&state.root)
             .handled(moved.handled)
             .focus_target(moved.focus_target)
-            .send(
-                wp,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            .send(wp, &ui::synthetic_input::mouse_press());
         let style_after = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         assert_ne!(
             style_before, style_after,
@@ -8350,14 +8321,10 @@ fn preview_custom_colour(
         .expect("the picker lays out its SV square");
     left_click(wp, state, Point::new(sv.x0 + 20.0, sv.y0 + 20.0));
     // End the SV drag the press started, as the pointer would.
-    Dispatch::new().doc(&mut state.doc).path(&state.root).send(
-        wp,
-        &WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-    );
+    Dispatch::new()
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(wp, &ui::synthetic_input::mouse_release());
     assert_ne!(
         wp.focused_style_key().map(|k| wp.sheet.get(&k).color),
         before,
