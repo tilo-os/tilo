@@ -727,6 +727,159 @@ const SAMPLED_USAGE: vk::ImageUsageFlags = vk::ImageUsageFlags::from_raw(
     vk::ImageUsageFlags::SAMPLED.as_raw() | vk::ImageUsageFlags::TRANSFER_SRC.as_raw(),
 );
 
+/// `DMA_BUF_IOCTL_EXPORT_SYNC_FILE`: `_IOWR('b', 2, struct dma_buf_export_sync_file)`.
+const DMA_BUF_IOCTL_EXPORT_SYNC_FILE: libc::c_ulong = 0xC008_6202;
+/// `DMA_BUF_SYNC_READ`: the fences a reader must wait for, the writers'.
+const DMA_BUF_SYNC_READ: u32 = 1;
+
+/// Submissions made to wait for a client buffer's pending writes since the
+/// process started ([`wait_for_writes`]).
+static WRITE_FENCE_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many times a submission was made to wait on the GPU for a client
+/// buffer's pending writes since the process started: commits whose buffer
+/// the producer's GPU had not finished when it was imported.
+pub fn write_fence_waits() -> u64 {
+    WRITE_FENCE_WAITS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `struct dma_buf_export_sync_file`.
+#[repr(C)]
+struct DmaBufExportSyncFile {
+    flags: u32,
+    fd: i32,
+}
+
+/// A client buffer's pending writes, as a semaphore the presenting queue's
+/// next submission waits for ([`wait_for_writes`]). Keep it until a
+/// submission made after it completed; dropping it destroys the semaphore.
+pub struct WriteFence {
+    device: wgpu::Device,
+    semaphore: vk::Semaphore,
+}
+
+impl std::fmt::Debug for WriteFence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteFence").finish_non_exhaustive()
+    }
+}
+
+impl Drop for WriteFence {
+    fn drop(&mut self) {
+        // Safety: the guard only lends this device's Vulkan handles; the
+        // semaphore is this device's, and its owner kept it until the
+        // submission that waited for it completed.
+        if let Some(guard) = unsafe { self.device.as_hal::<vulkan::Api>() } {
+            unsafe { guard.raw_device().destroy_semaphore(self.semaphore, None) };
+        }
+    }
+}
+
+/// The sync file of the writes still pending on a dma-buf plane: the fence a
+/// reader waits for. `None` when the kernel cannot export it (before Linux
+/// 6.0) or nothing is pending.
+fn export_write_fence(plane: BorrowedFd<'_>) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd as _;
+    let mut request = DmaBufExportSyncFile {
+        flags: DMA_BUF_SYNC_READ,
+        fd: -1,
+    };
+    // Safety: the ioctl reads `flags` and writes `fd` of the struct it is
+    // handed, which outlives the call; the dma-buf fd is borrowed for it.
+    let result = unsafe {
+        libc::ioctl(
+            plane.as_raw_fd(),
+            DMA_BUF_IOCTL_EXPORT_SYNC_FILE,
+            &raw mut request,
+        )
+    };
+    if result != 0 || request.fd < 0 {
+        return None;
+    }
+    // Safety: the kernel returned a new sync file descriptor this owns.
+    let fence = unsafe { std::os::fd::OwnedFd::from_raw_fd(request.fd) };
+    let mut poll = libc::pollfd {
+        fd: fence.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // A signalled fence (the writes are done) needs no wait. Never blocks.
+    // Safety: one valid pollfd, borrowed for the call.
+    let signalled = unsafe { libc::poll(&raw mut poll, 1, 0) } == 1;
+    (!signalled).then_some(fence)
+}
+
+/// Make the next submission on `queue` wait on the GPU for the writes still
+/// pending on the single-plane dma-buf `plane` (the producer's implicit
+/// fence), so a sample of the buffer in it or any later submission reads what
+/// the producer wrote. No thread waits: the fence is exported as a sync file
+/// and imported as a semaphore the submission waits for.
+///
+/// `Ok(None)` when nothing is pending, or the kernel cannot export the fence
+/// (the caller then relies on having watched the buffer become readable).
+///
+/// # Errors
+///
+/// [`ImportError::NotVulkan`], or [`ImportError::Vulkan`] when the device
+/// lacks `VK_KHR_external_semaphore_fd` or the semaphore cannot be made.
+pub fn wait_for_writes(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    plane: BorrowedFd<'_>,
+) -> Result<Option<WriteFence>, ImportError> {
+    let Some(fence) = export_write_fence(plane) else {
+        return Ok(None);
+    };
+    // Safety: the guards only lend this device's and queue's Vulkan handles
+    // for the call.
+    let guard = unsafe { device.as_hal::<vulkan::Api>() }.ok_or(ImportError::NotVulkan)?;
+    let hal_device: &vulkan::Device = &guard;
+    if !hal_device
+        .enabled_device_extensions()
+        .contains(&ash::khr::external_semaphore_fd::NAME)
+    {
+        return Err(ImportError::Vulkan(
+            "VK_KHR_external_semaphore_fd is not enabled".to_owned(),
+        ));
+    }
+    let instance = hal_device.shared_instance().raw_instance();
+    let dev = hal_device.raw_device();
+    let semaphore = unsafe { dev.create_semaphore(&vk::SemaphoreCreateInfo::default(), None) }
+        .map_err(|error| ImportError::Vulkan(format!("vkCreateSemaphore: {error}")))?;
+    let fd = fence.into_raw_fd();
+    let info = vk::ImportSemaphoreFdInfoKHR::default()
+        .semaphore(semaphore)
+        .flags(vk::SemaphoreImportFlags::TEMPORARY)
+        .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
+        .fd(fd);
+    // Safety: a new semaphore of this device; on success the driver owns the
+    // sync file descriptor.
+    let imported = unsafe {
+        ash::khr::external_semaphore_fd::Device::new(instance, dev).import_semaphore_fd(&info)
+    };
+    if let Err(error) = imported {
+        // Safety: the import failed, so the descriptor is still ours to close.
+        drop(unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) });
+        unsafe { dev.destroy_semaphore(semaphore, None) };
+        return Err(ImportError::Vulkan(format!(
+            "vkImportSemaphoreFdKHR (sync file): {error}"
+        )));
+    }
+    let queue_guard = unsafe { queue.as_hal::<vulkan::Api>() }.ok_or(ImportError::NotVulkan);
+    let Ok(queue_guard) = queue_guard else {
+        unsafe { dev.destroy_semaphore(semaphore, None) };
+        return Err(ImportError::NotVulkan);
+    };
+    queue_guard.add_wait_semaphore(semaphore, vk::PipelineStageFlags::ALL_COMMANDS);
+    WRITE_FENCE_WAITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    drop(queue_guard);
+    drop(guard);
+    Ok(Some(WriteFence {
+        device: device.clone(),
+        semaphore,
+    }))
+}
+
 /// Import `image`, a single plane, so that each commit can draw from it
 /// ([`DmabufImage::texture`]).
 ///
