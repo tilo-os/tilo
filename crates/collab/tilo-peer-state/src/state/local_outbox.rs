@@ -608,33 +608,15 @@ impl StatePeer {
 // Count the closed wire DTO before cloning the caller's prefix. These are encoded
 // refusal limits, not a native CRDT heap qualification or a durable barrier.
 fn publication_size(messages: &[NeighbourMsg]) -> Result<usize, String> {
-    struct Count(usize);
-    impl postcard::ser_flavors::Flavor for Count {
-        type Output = usize;
-        fn try_push(&mut self, _: u8) -> postcard::Result<()> {
-            self.try_extend(&[0])
-        }
-        fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-            self.0 = self
-                .0
-                .checked_add(bytes.len())
-                .filter(|size| *size <= MAX_PUBLICATION_BYTES)
-                .ok_or(postcard::Error::SerializeBufferFull)?;
-            Ok(())
-        }
-        fn finalize(self) -> postcard::Result<usize> {
-            Ok(self.0)
-        }
-    }
     if messages.len() > MAX_PUBLICATIONS {
         return Err("local publication count limit".into());
     }
-    let mut total = 0;
-    for message in messages {
-        total = postcard::serialize_with_flavor(message, Count(total))
-            .map_err(|_| "local publication byte limit")?;
-    }
-    Ok(total)
+    messages.iter().try_fold(0usize, |total, message| {
+        let room = MAX_PUBLICATION_BYTES.saturating_sub(total);
+        crate::postcard_sink::encoded_len(message, room)
+            .map(|size| total.saturating_add(size))
+            .map_err(|_| "local publication byte limit".into())
+    })
 }
 
 #[cfg(test)]
