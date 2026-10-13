@@ -30,6 +30,8 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_sy
     kind = "music.library",
     label = "Music",
     params = library,
+    version = 2,
+    migrate = crate::library_migration::migrate,
     search = Library::search_entries
 )]
 impl Library {
