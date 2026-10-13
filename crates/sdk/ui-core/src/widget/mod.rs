@@ -184,6 +184,21 @@ macro_rules! rect_geometry {
     };
 }
 
+/// Implements [`Widget::needs_redraw`] and [`Widget::mark_drawn`] for a
+/// widget that tracks whether it needs repainting in `self.dirty`.
+#[macro_export]
+macro_rules! redraw_flag {
+    () => {
+        fn needs_redraw(&self) -> bool {
+            self.dirty
+        }
+
+        fn mark_drawn(&mut self) {
+            self.dirty = false;
+        }
+    };
+}
+
 /// Let `node` share its row's main axis with its siblings by `grow`: it
 /// grows and shrinks from a zero basis instead of keeping its own width.
 pub fn share_row(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
