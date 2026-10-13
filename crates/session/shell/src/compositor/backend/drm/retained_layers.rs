@@ -9,6 +9,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use vello::FineDamageRect;
+use vello::Scene;
+use vello::kurbo::{Affine, Rect};
+use vello::peniko::Fill;
 
 use super::cpu_present::{CpuFrame, CpuFrameStats, CpuRenderer};
 use super::gl_compose::{ComposeStats, GlCompositor, LayerView};
@@ -145,38 +148,66 @@ impl Drop for Consumer {
 }
 
 struct Canvases {
-    layers: [CpuRenderer; 3],
-    empty: [bool; 3],
-    sizes: [(u32, u32); 3],
+    // Backdrop, stationary workspace, one canvas per strip, wheel, chrome.
+    layers: Vec<CpuRenderer>,
+    empty: Vec<bool>,
+    sizes: Vec<(u32, u32)>,
 }
 
 impl Canvases {
     fn new() -> Self {
         Self {
-            layers: std::array::from_fn(|_| CpuRenderer::new()),
-            empty: [false; 3],
-            sizes: [(0, 0); 3],
+            layers: Vec::new(),
+            empty: Vec::new(),
+            sizes: Vec::new(),
         }
     }
 
     fn update(&mut self, cache: &FrameCache, size: (u32, u32)) -> CpuFrameStats {
-        let scenes = [
-            &cache.layers.backdrop,
-            &cache.layers.workspace,
-            &cache.layers.chrome,
-        ];
-        let sizes = [size, (cache.width, size.1), size];
+        let count = cache.layers.strips.len() + 4;
+        if self.layers.len() != count {
+            self.layers = (0..count).map(|_| CpuRenderer::new()).collect();
+            self.empty = vec![false; count];
+            self.sizes = vec![(0, 0); count];
+        }
+        let mut wheel = Scene::new();
+        if let Some(sprite) = &cache.layers.wheel {
+            let (x, y) = (f64::from(sprite.x), f64::from(sprite.y));
+            wheel.push_clip_layer(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                &Rect::new(
+                    x,
+                    y,
+                    x + f64::from(sprite.width),
+                    y + f64::from(sprite.height),
+                ),
+            );
+            wheel.append(&sprite.scene, Some(Affine::translate((x, y))));
+            wheel.pop_layer();
+        }
+        let scenes = std::iter::once(&cache.layers.backdrop)
+            .chain(std::iter::once(&cache.layers.workspace))
+            .chain(cache.layers.strips.iter())
+            .chain(std::iter::once(&wheel))
+            .chain(std::iter::once(&cache.layers.chrome));
         let mut stats = CpuFrameStats {
             fill: "layers-gles",
             ..CpuFrameStats::default()
         };
-        for (((layer, was_empty), last_size), (scene, layer_size)) in self
+        for (index, (((layer, was_empty), last_size), scene)) in self
             .layers
             .iter_mut()
             .zip(&mut self.empty)
             .zip(&mut self.sizes)
-            .zip(scenes.into_iter().zip(sizes))
+            .zip(scenes)
+            .enumerate()
         {
+            let layer_size = if (2..2 + cache.layers.strips.len()).contains(&index) {
+                (cache.width, size.1)
+            } else {
+                size
+            };
             let empty = scene.encoding().draw_tags.is_empty();
             // The dense rasterizer has no decoded-draw diff for an empty
             // scene. Its already-cleared canvas remains valid until either
@@ -215,12 +246,24 @@ impl Canvases {
             width: size.0,
             height: size.1,
         };
-        let workspace = workspace_pieces(cache, full);
         self.layers
             .iter()
             .enumerate()
             .map(|(index, layer)| {
-                let width = if index == 1 { cache.width } else { size.0 };
+                let strip = index.checked_sub(2).and_then(|at| cache.strips.get(at));
+                let width = if strip.is_some() { cache.width } else { size.0 };
+                let pieces = match strip {
+                    Some(strip) => vec![(
+                        FineDamageRect {
+                            x: strip.dest_x,
+                            y: strip.dest_y,
+                            width: strip.dest_w,
+                            height: strip.dest_h,
+                        },
+                        strip.scroll_x,
+                    )],
+                    None => vec![(full, 0)],
+                };
                 LayerView {
                     pixels: layer.screen_rgba(),
                     width,
@@ -228,11 +271,7 @@ impl Canvases {
                     stride: usize::try_from(width).unwrap_or(0).saturating_mul(4),
                     generation: layer.generation(),
                     opaque: false,
-                    pieces: if index == 1 {
-                        workspace.clone()
-                    } else {
-                        vec![(full, 0)]
-                    },
+                    pieces,
                     draw: Vec::new(),
                     // A full upload is represented by an empty slice here: the
                     // generation must invalidate its cached texture separately.
@@ -253,10 +292,16 @@ fn render(
     validate(cache, size, gl.max_layer_width())?;
     let started = Instant::now();
     let mut stats = canvases.update(cache, size);
-    let full = [FineDamageRect {
+    let canvas_full = [FineDamageRect {
         x: 0,
         y: 0,
         width: cache.width,
+        height: size.1,
+    }];
+    let screen_full = [FineDamageRect {
+        x: 0,
+        y: 0,
+        width: size.0,
         height: size.1,
     }];
     let mut views = canvases.views(cache, size);
@@ -264,19 +309,11 @@ fn render(
     // Supply a full rectangle even when the allocation generation is unchanged.
     for (view, layer) in views.iter_mut().zip(&canvases.layers) {
         if layer.pending().is_none() {
-            view.written = &full;
-        }
-    }
-    // Backdrop and chrome may be narrower than the workspace.
-    let screen_full = [FineDamageRect {
-        x: 0,
-        y: 0,
-        width: size.0,
-        height: size.1,
-    }];
-    for (index, (view, layer)) in views.iter_mut().zip(&canvases.layers).enumerate() {
-        if index != 1 && layer.pending().is_none() {
-            view.written = &screen_full;
+            view.written = if view.width == cache.width && view.width != size.0 {
+                &canvas_full
+            } else {
+                &screen_full
+            };
         }
     }
     let (framebuffer, compose, sync) =
@@ -303,7 +340,22 @@ fn validate(cache: &FrameCache, size: (u32, u32), limit: u32) -> Result<(), Stri
     if size.0 == 0 || size.1 == 0 || cache.width < size.0 || cache.width > limit || size.1 > limit {
         return Err("retained canvas dimensions exceed output or texture limits".into());
     }
+    if cache.layers.strips.len() != cache.strips.len()
+        || cache.layers.strip_parts.len() != cache.strips.len()
+    {
+        return Err("retained strip scenes do not match destinations".into());
+    }
     if tilo_cpu_raster::reads_backdrop(cache.layers.workspace.encoding())
+        || cache
+            .layers
+            .strips
+            .iter()
+            .any(|strip| tilo_cpu_raster::reads_backdrop(strip.encoding()))
+        || cache
+            .layers
+            .wheel
+            .as_ref()
+            .is_some_and(|wheel| tilo_cpu_raster::reads_backdrop(wheel.scene.encoding()))
         || tilo_cpu_raster::reads_backdrop(cache.layers.chrome.encoding())
     {
         return Err("retained layers require independent backdrop sampling".into());
@@ -347,83 +399,10 @@ fn validate(cache: &FrameCache, size: (u32, u32), limit: u32) -> Result<(), Stri
     Ok(())
 }
 
-fn workspace_pieces(cache: &FrameCache, full: FineDamageRect) -> Vec<(FineDamageRect, u32)> {
-    let mut stationary = vec![full];
-    for strip in &cache.strips {
-        let dest = FineDamageRect {
-            x: strip.dest_x,
-            y: strip.dest_y,
-            width: strip.dest_w,
-            height: strip.dest_h,
-        };
-        stationary = stationary
-            .into_iter()
-            .flat_map(|rect| subtract(rect, dest))
-            .collect();
-    }
-    stationary
-        .into_iter()
-        .map(|rect| (rect, 0))
-        .chain(cache.strips.iter().map(|strip| {
-            (
-                FineDamageRect {
-                    x: strip.dest_x,
-                    y: strip.dest_y,
-                    width: strip.dest_w,
-                    height: strip.dest_h,
-                },
-                strip.scroll_x,
-            )
-        }))
-        .collect()
-}
-
-/// Preserve the old consumer's exact partition, without overlapping draws.
-fn subtract(a: FineDamageRect, b: FineDamageRect) -> Vec<FineDamageRect> {
-    let x0 = a.x.max(b.x);
-    let y0 = a.y.max(b.y);
-    let x1 = a.x.saturating_add(a.width).min(b.x.saturating_add(b.width));
-    let y1 =
-        a.y.saturating_add(a.height)
-            .min(b.y.saturating_add(b.height));
-    if x0 >= x1 || y0 >= y1 {
-        return vec![a];
-    }
-    [
-        FineDamageRect {
-            x: a.x,
-            y: a.y,
-            width: a.width,
-            height: y0.saturating_sub(a.y),
-        },
-        FineDamageRect {
-            x: a.x,
-            y: y1,
-            width: a.width,
-            height: a.y.saturating_add(a.height).saturating_sub(y1),
-        },
-        FineDamageRect {
-            x: a.x,
-            y: y0,
-            width: x0.saturating_sub(a.x),
-            height: y1.saturating_sub(y0),
-        },
-        FineDamageRect {
-            x: x1,
-            y: y0,
-            width: a.x.saturating_add(a.width).saturating_sub(x1),
-            height: y1.saturating_sub(y0),
-        },
-    ]
-    .into_iter()
-    .filter(|rect| rect.width > 0 && rect.height > 0)
-    .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::frame::{FrameLayers, StripBlit};
+    use crate::shell::frame::{FrameLayers, StripBlit, WheelSprite};
     use vello::Scene;
     use vello::kurbo::{Affine, Rect};
     use vello::peniko::{Color, Fill};
@@ -439,9 +418,9 @@ mod tests {
             Rect::new(0.0, 0.0, 64.0, 32.0),
             Color::from_rgb8(0, 0, 255),
         );
-        let mut workspace = Scene::new();
+        let mut strip_scene = Scene::new();
         fill(
-            &mut workspace,
+            &mut strip_scene,
             Rect::new(80.0, 0.0, 112.0, 32.0),
             Color::from_rgb8(255, 0, 0),
         );
@@ -454,12 +433,91 @@ mod tests {
                 dest_h: 32,
                 scroll_x,
             }],
+            generation: 1,
+            chrome_damage: None,
             layers: FrameLayers {
                 backdrop,
-                workspace,
+                workspace: Scene::new(),
+                strips: vec![strip_scene],
+                strip_parts: vec![None],
+                wheel: None,
                 chrome: Scene::new(),
             },
         }
+    }
+
+    #[test]
+    fn retained_views_include_the_current_per_strip_window_scene() {
+        let mut cache = cache(0);
+        cache.layers.workspace = Scene::new();
+        fill(
+            &mut cache.layers.strips[0],
+            Rect::new(20.0, 0.0, 52.0, 32.0),
+            Color::from_rgb8(255, 0, 0),
+        );
+        let mut canvases = Canvases::new();
+        canvases.update(&cache, (64, 32));
+        let views = canvases.views(&cache, (64, 32));
+        let shown_red = views.iter().any(|view| {
+            view.pieces.iter().any(|(dest, scroll_x)| {
+                let (x, y) = (25, 4);
+                if x < dest.x
+                    || x >= dest.x.saturating_add(dest.width)
+                    || y < dest.y
+                    || y >= dest.y.saturating_add(dest.height)
+                {
+                    return false;
+                }
+                let source_x = usize::try_from(x.saturating_add(*scroll_x)).unwrap();
+                let source_y = usize::try_from(y).unwrap();
+                let at = source_y
+                    .saturating_mul(view.stride)
+                    .saturating_add(source_x.saturating_mul(4));
+                view.pixels.get(at..at + 4) == Some(&[255, 0, 0, 255][..])
+            })
+        });
+        assert!(
+            shown_red,
+            "the retained GLES input must carry strip windows"
+        );
+    }
+
+    #[test]
+    fn retained_wheel_layer_moves_without_changing_strip_canvas() {
+        let mut cache = cache(0);
+        let mut wheel = Scene::new();
+        fill(
+            &mut wheel,
+            Rect::new(0.0, 0.0, 8.0, 8.0),
+            Color::from_rgb8(0, 255, 0),
+        );
+        cache.layers.wheel = Some(WheelSprite {
+            scene: wheel,
+            width: 8,
+            height: 8,
+            x: 10,
+            y: 4,
+        });
+        let mut canvases = Canvases::new();
+        canvases.update(&cache, (64, 32));
+        let before = canvases.views(&cache, (64, 32));
+        let at = |x: usize, y: usize| y * before[3].stride + x * 4;
+        assert_eq!(
+            &before[3].pixels[at(11, 5)..at(11, 5) + 4],
+            &[0, 255, 0, 255]
+        );
+        assert_eq!(&before[3].pixels[at(9, 5)..at(9, 5) + 4], &[0, 0, 0, 0]);
+        let strip_generation = canvases.layers[2].generation();
+        cache.layers.wheel.as_mut().unwrap().x = 13;
+        canvases.update(&cache, (64, 32));
+        let after = canvases.views(&cache, (64, 32));
+        let at = |x: usize, y: usize| y * after[3].stride + x * 4;
+        assert_eq!(
+            &after[3].pixels[at(14, 5)..at(14, 5) + 4],
+            &[0, 255, 0, 255]
+        );
+        assert_eq!(&after[3].pixels[at(11, 5)..at(11, 5) + 4], &[0, 0, 0, 0]);
+        assert_eq!(canvases.layers[2].generation(), strip_generation);
     }
 
     #[test]
@@ -480,7 +538,7 @@ mod tests {
                 "pan {scroll}"
             );
             let views = canvases.views(&panned, (64, 32));
-            let pieces = &views[1].pieces;
+            let pieces = &views[2].pieces;
             assert_eq!(
                 pieces,
                 &vec![(
@@ -517,7 +575,7 @@ mod tests {
             );
             for x in 0..64_usize {
                 let canvas_x = x + scroll as usize;
-                let foreground = &views[1].pixels[canvas_x * 4..canvas_x * 4 + 4];
+                let foreground = &views[2].pixels[canvas_x * 4..canvas_x * 4 + 4];
                 let actual = if foreground[3] == 0 {
                     &views[0].pixels[x * 4..x * 4 + 4]
                 } else {
@@ -533,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_strip_pieces_partition_the_screen_exactly_once() {
+    fn multiple_strip_views_cover_only_their_destinations_above_workspace() {
         let mut cached = cache(24);
         cached.strips[0].dest_w = 20;
         cached.strips.push(StripBlit {
@@ -543,6 +601,8 @@ mod tests {
             dest_h: 16,
             scroll_x: 48,
         });
+        cached.layers.strips.push(Scene::new());
+        cached.layers.strip_parts.push(None);
         validate(&cached, (64, 32), 128).expect("disjoint strips");
         let full = FineDamageRect {
             x: 0,
@@ -550,24 +610,31 @@ mod tests {
             width: 64,
             height: 32,
         };
-        let pieces = workspace_pieces(&cached, full);
+        let mut canvases = Canvases::new();
+        canvases.update(&cached, (64, 32));
+        let views = canvases.views(&cached, (64, 32));
+        assert_eq!(views[1].pieces, vec![(full, 0)]);
         for y in 0..32 {
             for x in 0..64 {
-                let offsets: Vec<_> = pieces
+                let offsets: Vec<_> = views[2..4]
                     .iter()
-                    .filter(|(r, _)| {
-                        x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+                    .flat_map(|view| &view.pieces)
+                    .filter(|(rect, _)| {
+                        x >= rect.x
+                            && x < rect.x + rect.width
+                            && y >= rect.y
+                            && y < rect.y + rect.height
                     })
                     .map(|(_, offset)| *offset)
                     .collect();
                 let expected = if x < 20 {
-                    24
+                    vec![24]
                 } else if (30..50).contains(&x) && (8..24).contains(&y) {
-                    48
+                    vec![48]
                 } else {
-                    0
+                    vec![]
                 };
-                assert_eq!(offsets, vec![expected], "pixel {x},{y}");
+                assert_eq!(offsets, expected, "pixel {x},{y}");
             }
         }
     }
@@ -579,8 +646,12 @@ mod tests {
         assert!(validate(&cached, (64, 32), 128).is_err());
         cached.strips[0].scroll_x = 0;
         cached.strips.push(cached.strips[0]);
+        cached.layers.strips.push(Scene::new());
+        cached.layers.strip_parts.push(None);
         assert!(validate(&cached, (64, 32), 128).is_err());
         cached.strips.pop();
+        cached.layers.strips.pop();
+        cached.layers.strip_parts.pop();
         cached.width = 129;
         assert!(validate(&cached, (64, 32), 128).is_err());
         cached.width = 128;
@@ -608,6 +679,7 @@ mod tests {
         let mut cached = cache(24);
         let mut canvases = Canvases::new();
         canvases.update(&cached, (64, 32));
+        let chrome = canvases.layers.len() - 1;
         for layer in &mut canvases.layers {
             layer.mark_presented(1);
         }
@@ -617,15 +689,18 @@ mod tests {
             Color::from_rgb8(0, 255, 0),
         );
         assert!(canvases.update(&cached, (64, 32)).raster_px > 0);
-        assert_eq!(&canvases.layers[2].screen_rgba()[..4], &[0, 255, 0, 255]);
+        assert_eq!(
+            &canvases.layers[chrome].screen_rgba()[..4],
+            &[0, 255, 0, 255]
+        );
         for layer in &mut canvases.layers {
             layer.mark_presented(2);
         }
         cached.layers.chrome = Scene::new();
         assert!(canvases.update(&cached, (64, 32)).raster_px > 0);
-        assert!(canvases.layers[2].has_pending());
+        assert!(canvases.layers[chrome].has_pending());
         assert!(
-            canvases.layers[2]
+            canvases.layers[chrome]
                 .screen_rgba()
                 .iter()
                 .all(|byte| *byte == 0)
@@ -634,6 +709,6 @@ mod tests {
             layer.mark_presented(3);
         }
         assert_eq!(canvases.update(&cached, (64, 32)).raster_px, 0);
-        assert!(!canvases.layers[2].has_pending());
+        assert!(!canvases.layers[chrome].has_pending());
     }
 }
