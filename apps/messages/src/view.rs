@@ -235,9 +235,6 @@ fn answer(
             });
         }
         MessagesEffect::Back => state.set(Selection::default()),
-        MessagesEffect::ConfirmRecipient { .. } => {
-            return Err(CATALOG.t("messages-identity-unavailable"));
-        }
         MessagesEffect::ConfirmAccount { person, choice } => {
             confirm_account(sources, state, person, &choice)?;
         }
@@ -878,10 +875,6 @@ fn capture_history() -> tilo_messaging::HistoryPage {
 
 #[cfg(test)]
 mod route_tests {
-    #![allow(
-        clippy::expect_used,
-        reason = "isolated shared-record fixtures must construct before routing assertions"
-    )]
     use super::*;
     use crate::MessagesShell;
     use ui::framework::testing::TestApp;

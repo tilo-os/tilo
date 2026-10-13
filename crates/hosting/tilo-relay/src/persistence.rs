@@ -54,7 +54,7 @@ const RECLAIM_RETRY: std::time::Duration = std::time::Duration::from_millis(100)
 /// on disk. A restart continues past the reservation, at most this far
 /// ahead of the host clock. Sequences follow the clock, so a workspace that
 /// commits steadily renews the reservation once per this interval: at a
-/// second, a typing room paid a renewal every second (TIL-732).
+/// second, a typing room paid a renewal every second.
 const SEQUENCE_RESERVATION_NS: u64 = 10_000_000_000;
 /// One blocking-pool task runs a transaction's quanta for up to this long: a
 /// many-quantum transaction then pays a pool round trip per slice instead of
@@ -93,7 +93,7 @@ fn replay_byte_budget() -> &'static Arc<Semaphore> {
 
 fn detached_replay_budget() -> &'static Arc<Semaphore> {
     static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    WORKERS.get_or_init(|| Arc::new(Semaphore::new(1)))
+    WORKERS.get_or_init(|| Arc::new(Semaphore::new(2)))
 }
 
 #[derive(Clone)]
@@ -667,9 +667,22 @@ async fn run_owner(
             let mut state = shared
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Err(error) = state.reclaim_replay_step() {
-                tracing::warn!(%error, "replay reclamation failed");
+            // A released entry keeps its process-wide replay permit until it
+            // is gone, so new subscriptions wait on this. One bounded step
+            // per turn fell behind a room where every guest's arrival
+            // replays to them: spools grow with the room, permits ran out,
+            // and joins queued for seconds. Step for one slice instead.
+            let start = std::time::Instant::now();
+            loop {
+                if let Err(error) = state.reclaim_replay_step() {
+                    tracing::warn!(%error, "replay reclamation failed");
+                    break;
+                }
+                if start.elapsed() >= SLICE || !state.replays.reclaimable() {
+                    break;
+                }
             }
+            drop(state);
         })
         .await;
     }
@@ -1239,7 +1252,7 @@ mod tests {
     }
 
     async fn captured_replay(owner: &Persistence) -> ReplayTicket {
-        let ticket = ReplayTicket::reserve([2; 32], None).unwrap();
+        let ticket = ReplayTicket::reserve([2; 32], None).await.unwrap();
         let authority = ticket.authority.clone();
         receipt(
             owner

@@ -1,7 +1,4 @@
-use winit::{
-    dpi::PhysicalPosition,
-    event::{ElementState, MouseButton, WindowEvent},
-};
+use winit::event::{ElementState, WindowEvent};
 // The native event-loop runner (`app/native_runner.rs`) reaches these through
 // `use super::*`.
 #[cfg(feature = "native")]
@@ -490,7 +487,7 @@ pub struct ControlBindingCoverage {
     pub status: ControlBindingStatus,
 }
 
-pub use crate::action_locus::ActionUiRoute;
+pub use crate::action_locus::{ActionUiRoute, PaintedActionMarker};
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -2665,10 +2662,7 @@ mod occlusion_probe_event_tests {
     use super::*;
     #[test]
     fn occlusion_probe_only_explicit_exposure_or_interaction_bypasses_backoff() {
-        let pointer = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(10.0, 20.0),
-        };
+        let pointer = crate::synthetic_input::cursor_moved(10.0, 20.0);
         assert!(render_probe_event(&pointer));
         let mut retry = crate::render_thread::retry::RenderRetryState::default();
         assert!(
@@ -2778,6 +2772,7 @@ mod generic_floating_activity_tests {
                     id: "chat-call:huddle".into(),
                     content_rect: Rect::new(40.0, 40.0, 400.0, 260.0),
                     window_rect: Rect::new(32.0, 32.0, 408.0, 268.0),
+                    input_rect: None,
                     returning_to_app: false,
                 },
             )]);
@@ -3063,9 +3058,6 @@ mod legacy_owner_routing_tests {
         }
         fn app_icon(&self) -> crate::widget::IconDescriptor {
             crate::widget::IconDescriptor::Glyph("T")
-        }
-        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-            None
         }
     }
 
@@ -3939,10 +3931,7 @@ pub(crate) mod ordinary_confirmation_tests {
         let baseline_nodes = app.layout.taffy.total_node_count();
         let mut samples = vec![(baseline_nodes, app.root_widget.get_rect())];
         for index in 0..12 {
-            let event = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(300.0 + f64::from(index), 220.0),
-            };
+            let event = crate::synthetic_input::cursor_moved(300.0 + f64::from(index), 220.0);
             assert!(app.action_palette_handle_event(&event, 1.0));
             layout(app);
             samples.push((
@@ -4567,13 +4556,10 @@ pub(crate) mod ordinary_confirmation_tests {
                     .unwrap();
                 assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
                 let scale = if native { 2.0 } else { 1.0 };
-                let event = WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(
-                        (bounds.x0 + bounds.x1) * 0.5 * scale,
-                        (bounds.y0 + bounds.y1) * 0.5 * scale,
-                    ),
-                };
+                let event = crate::synthetic_input::cursor_moved(
+                    (bounds.x0 + bounds.x1) * 0.5 * scale,
+                    (bounds.y0 + bounds.y1) * 0.5 * scale,
+                );
                 let mut send = |event: &WindowEvent| match &mut host {
                     Host::Native(app) => {
                         assert!(app.action_palette_handle_event(event, scale));
@@ -4583,11 +4569,10 @@ pub(crate) mod ordinary_confirmation_tests {
                 };
                 send(&event);
                 for state in [ElementState::Pressed, ElementState::Released] {
-                    send(&WindowEvent::MouseInput {
-                        device_id: winit::event::DeviceId::dummy(),
+                    send(&crate::synthetic_input::mouse_input(
                         state,
-                        button: winit::event::MouseButton::Left,
-                    });
+                        winit::event::MouseButton::Left,
+                    ));
                 }
                 assert_eq!(ledger.borrow().len(), usize::from(!cancel));
             }

@@ -34,14 +34,11 @@ a11y-underline = Underline
 a11y-strikethrough = Strikethrough
 a11y-superscript = Superscript
 a11y-subscript = Subscript
-a11y-heading1 = Heading 1
-a11y-heading2 = Heading 2
 a11y-body-text = Body text
 a11y-bulleted-list = Bulleted list
 a11y-align-left = Align left
 a11y-align-center = Align center
 a11y-align-right = Align right
-a11y-justify = Justify
 a11y-line-spacing = Line spacing
 a11y-font = Font
 a11y-size-up = Increase font size
@@ -68,13 +65,6 @@ a11y-highlight-clear = Clear highlight
 
 ## Status bar
 status-untitled = Untitled
-format-odt = ODF Text
-format-docx = Word Document
-format-markdown = Markdown
-format-pdf = PDF
-format-html = HTML
-format-rtf = Rich Text
-format-epub = EPUB
 
 ## Header / footer edit-mode tabs
 band-header = Header
@@ -87,12 +77,10 @@ review-accept-deletion = Accept deletion
 review-reject-deletion = Reject deletion
 review-resolve-comment = Resolve comment
 review-reply = Reply
-review-thread = Comment thread
 review-thread-unavailable = That comment is no longer available
 review-reply-placeholder = Write a reply
 review-send-reply = Send
 review-cancel-reply = Cancel
-review-you = You
 review-accept-all = Accept all changes
 review-reject-all = Reject all changes
 
@@ -216,11 +204,9 @@ page-indicator = Page { $n }
 canvas-image-missing = image
 canvas-embedded-content = Embedded content
 canvas-empty-placeholder = Start writing…
-toolbar-history = History
 toolbar-text-color = Colour
 toolbar-highlight = Highlight
 picker-text-color = Text colour
-toolbar-more = More ▾
 picker-highlight = Highlight
 a11y-text-colour-name = { $colour } text
 a11y-highlight-name = { $colour } highlight

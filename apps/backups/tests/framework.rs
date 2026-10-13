@@ -1,10 +1,4 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
-    reason = "test assertions"
-)]
+#![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
 
 //! Backups on the framework: the retention controls edit the document
 //! through the resource's action, and backing up, verifying and restoring

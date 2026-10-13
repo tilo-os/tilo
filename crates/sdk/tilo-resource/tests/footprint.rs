@@ -1,10 +1,5 @@
 //! What an action may write, checked where it is made, and which units a
 //! change touched, read without the app's code.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test assertions over exact values written and read back"
-)]
 
 use tilo_resource::footprint::{RECORD_UNIT, UNIT_INDEX, units_of};
 use tilo_resource::{ActionCx, Collection, Id, Model, Replica, Resource, resource};

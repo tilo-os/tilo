@@ -77,3 +77,18 @@ store-draft-report = Meldung zu { $app_id } begonnen
 store-record-moderation-case = Die Registry hat Fall { $case_id } eröffnet: { $status }
 store-report-note = Das Anliegen einer Meldung beschrieben
 store-reports-reports = Eine Meldung bearbeitet
+
+store-source-partial = Einige Paketquellen sind nicht verfügbar. Andere Apps bleiben verfügbar.
+
+store-bot-label = BOT
+store-bot-what-it-does = Was er tut
+store-bot-needs-apps = Braucht Apps: { $apps }
+store-bot-needs-connectors = Braucht Konnektoren: { $connectors }
+store-bot-appearance = Kann unter anderen Namen und Bildern posten. Immer als BOT gekennzeichnet.
+store-bot-add-to-room = Zu einem Raum hinzufügen…
+store-bot-add-unavailable = Bots laufen in Räumen. Raum-Admins fügen sie in den Raumeinstellungen hinzu.
+store-bot-trigger-connector = Wenn sein Konnektor ein Ereignis meldet
+store-bot-trigger-record-changed = Wenn sich ein Eintrag ändert
+store-bot-trigger-schedule = Nach Zeitplan
+store-bot-trigger-manual = Wenn jemand ihn startet
+store-bot-trigger-incoming-message = Wenn eine Nachricht ankommt

@@ -49,8 +49,7 @@ pub mod backend;
 pub mod commands;
 mod files;
 mod i18n;
-#[cfg(test)]
-pub mod live_search;
+mod library_migration;
 pub mod local_file;
 pub mod lyrics;
 pub mod model;

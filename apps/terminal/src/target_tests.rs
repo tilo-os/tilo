@@ -973,11 +973,19 @@ fn owner_fixture_sessions(gate: Rc<std::cell::Cell<bool>>) -> Sessions {
                 "fixture owner consent required".into(),
             ));
         }
-        let mut command = portable_pty::CommandBuilder::new("/usr/bin/bash");
-        command.args(["--noprofile", "--norc", "-i"]);
+        let command = interactive_bash();
         crate::inner::TerminalBackend::with_command(command)
             .map_err(|error| OpenError::Failed(error.to_string()))
     })
+}
+
+/// An interactive bash without user startup files. Resolved through `PATH`:
+/// bash lives at `/usr/bin/bash` on merged-`/usr` Linux but only at
+/// `/bin/bash` on macOS.
+fn interactive_bash() -> portable_pty::CommandBuilder {
+    let mut command = portable_pty::CommandBuilder::new("bash");
+    command.args(["--noprofile", "--norc", "-i"]);
+    command
 }
 
 #[test]
@@ -985,8 +993,7 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
     use crate::resource::TerminalEffect;
     let sessions = Sessions::scripted(RecentTarget::none(), |target, _, _| {
         assert_eq!(target, &SessionTarget::default_environment());
-        let mut command = portable_pty::CommandBuilder::new("/usr/bin/bash");
-        command.args(["--noprofile", "--norc", "-i"]);
+        let mut command = interactive_bash();
         command.env("PS1", "[Default fixture]$ ");
         crate::inner::TerminalBackend::with_command(command)
             .map_err(|error| OpenError::Failed(error.to_string()))
@@ -1032,4 +1039,68 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
         .unwrap();
     wait_for_owner_shell(&mut app, session.as_str().unwrap(), true);
     assert!(observed, "canonical retained PTY output/prompt absent");
+}
+
+#[test]
+fn native_resource_terminal_inspector_is_acknowledged_through_the_mounted_root() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use ui::floating_surface::{
+        DeviceShellOperation, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
+        FloatingSurfaceServiceClient,
+    };
+
+    ui::framework::testing::drive_live_window::<crate::TerminalShell, _>(|app| {
+        let (app_side, mut host_side) = UnixStream::pair().unwrap();
+        host_side.set_nonblocking(true).unwrap();
+        app.test_floating_service_connection(
+            FloatingSurfaceServiceClient::from_test_stream(app_side).unwrap(),
+        );
+        for request in [81, 82] {
+            let mut message =
+                serde_json::to_vec(&FloatingSurfaceHostMessage::DeviceShellOperation {
+                    request,
+                    operation: DeviceShellOperation::Inspect,
+                })
+                .unwrap();
+            message.push(b'\n');
+            host_side.write_all(&message).unwrap();
+            assert!(app.test_pump_floating_service());
+            let mut received = Vec::new();
+            assert_eq!(
+                host_side.read_to_end(&mut received).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            let outcomes = received
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .filter_map(|line| {
+                    match serde_json::from_slice::<FloatingSurfaceClientMessage>(line).unwrap() {
+                        FloatingSurfaceClientMessage::DeviceShellOutcome { request, result } => {
+                            Some((request, result))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                outcomes.len(),
+                1,
+                "one exact response on the original connection"
+            );
+            assert_eq!(outcomes[0].0, request);
+            let value = outcomes[0]
+                .1
+                .as_ref()
+                .expect("native mounted Terminal Inspector must be available");
+            assert!(value["lifecycle"].is_string());
+            assert!(value["input_available"].is_boolean());
+            assert!(value["transport_disconnected"].is_boolean());
+            assert!(
+                !app.test_pump_floating_service(),
+                "idle service polling must not replay the operation"
+            );
+        }
+    })
+    .unwrap();
 }

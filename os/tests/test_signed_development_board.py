@@ -82,7 +82,7 @@ class SignedBoard(unittest.TestCase):
             output.write_text('TILO_PREBUILT_APPS=0\n')
             result = subprocess.run(['bash', '-c', actual], cwd=ROOT, capture_output=True, text=True,
                 env={**os.environ, 'PATH': str(root)+os.pathsep+os.environ['PATH'],
-                     'DEV_BUILD': 'true', 'COLLECTION_SOURCE': 'a'*40, 'GITHUB_SHA': 'b'*40,
+                     'DEV_BUILD': 'true', 'COLLECTION_SOURCE': 'a'*40, 'GITHUB_SHA': 'b'*40, 'TILO_IMAGE_SOURCE': 'b'*40,
                      'GITHUB_ENV': str(output)})
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('app inputs changed', result.stdout)
@@ -300,7 +300,7 @@ class SignedBoard(unittest.TestCase):
                      'TILO_SIGNED_DEVELOPMENT_BOARD': '1', 'DEV_BASE_DIGEST': 'sha256:production',
                      'SOURCE_DATE_ISO': '2026-10-07T00:00:00Z', 'DEV_SERIES': 'main-fixture',
                      'BOARDS': '["orangepi-3b-v2-1"]', 'RUNNER_TEMP': str(root),
-                     'GITHUB_SHA': 'a'*40, 'GITHUB_REF': 'refs/heads/main', 'CALLS': str(log),
+                     'GITHUB_SHA': 'a'*40, 'TILO_IMAGE_SOURCE': 'a'*40, 'GITHUB_REF': 'refs/heads/main', 'CALLS': str(log),
                      'TILO_DEV_COMPILE_LOG': ''})
             self.assertEqual(result.returncode, 0, result.stderr)
             calls = log.read_text().splitlines()

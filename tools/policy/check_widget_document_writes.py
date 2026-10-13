@@ -31,10 +31,12 @@ import tomllib
 from collections import Counter
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import is_test_file, production_source  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 WIDGETS = Path("crates/sdk/ui-core/src/widget")
 BASELINE = Path("tools/policy/widget_document_writes_baseline.toml")
-TEST_MODULE_MARKERS = ("\n#[cfg(test)]", "\n#[cfg(all(test")
 
 WRITES = re.compile(
     r"(?:\b(?:doc|state|document|model)\b(?:\.\w+)*|ctx\.state)\s*"
@@ -43,18 +45,6 @@ WRITES = re.compile(
 HELPERS = re.compile(
     r"\bdoc::(?:put_\w+|splice_\w+|put_if_changed)\b|\bdoc_binding::|\bTransactable\b"
 )
-
-
-def is_test_file(relative: Path) -> bool:
-    name = relative.name
-    return "tests" in relative.parts or name == "tests.rs" or name.endswith("_tests.rs")
-
-
-def production_source(text: str) -> str:
-    """Drop the trailing test module and blank full-line comments."""
-    ends = [text.find(marker) for marker in TEST_MODULE_MARKERS if marker in text]
-    source = text[: min(ends)] if ends else text
-    return re.sub(r"(?m)^\s*//.*$", "", source)
 
 
 def violations(root: Path) -> list[str]:

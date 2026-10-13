@@ -218,7 +218,11 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
                 requests.insert(request.device, *request);
                 steward.reconcile(&allowed, &requests, &vault).unwrap();
                 for outgoing in steward.outbox() {
-                    for frame in outgoing.frames {
+                    for frame in outgoing
+                        .frames
+                        .into_iter()
+                        .flat_map(|frame| frame.into_deliveries().unwrap())
+                    {
                         publish(
                             &session,
                             &NeighbourMsg::MlsGovernance {
@@ -307,7 +311,11 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
     publish(&session, &seal(&steward, 3, "under the new epoch"));
     for outgoing in steward.outbox() {
         if outgoing.recipient == browser_device {
-            for frame in outgoing.frames {
+            for frame in outgoing
+                .frames
+                .into_iter()
+                .flat_map(|frame| frame.into_deliveries().unwrap())
+            {
                 publish(
                     &session,
                     &NeighbourMsg::MlsGovernance {
@@ -451,7 +459,11 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
                 requests.insert(request.device, *request);
                 steward.reconcile(&allowed, &requests, &vault).unwrap();
                 for outgoing in steward.outbox() {
-                    for frame in outgoing.frames {
+                    for frame in outgoing
+                        .frames
+                        .into_iter()
+                        .flat_map(|frame| frame.into_deliveries().unwrap())
+                    {
                         publish(
                             &session,
                             &NeighbourMsg::MlsGovernance {
@@ -583,7 +595,11 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
                 requests.insert(request.device, *request);
                 steward.reconcile(&allowed, &requests, &vault).unwrap();
                 for outgoing in steward.outbox() {
-                    for frame in outgoing.frames {
+                    for frame in outgoing
+                        .frames
+                        .into_iter()
+                        .flat_map(|frame| frame.into_deliveries().unwrap())
+                    {
                         publish(
                             &session,
                             &NeighbourMsg::MlsGovernance {

@@ -52,6 +52,7 @@ fn subject_key(subject: &Subject) -> String {
         Subject::Task(id) => format!("task:{id}"),
         Subject::Shortcut(id) => format!("shortcut:{id}"),
         Subject::App(id) => format!("app:{id}"),
+        Subject::Bot(id) => format!("bot:{id}"),
         Subject::ForeignDevice => "foreign-device".to_owned(),
     }
 }

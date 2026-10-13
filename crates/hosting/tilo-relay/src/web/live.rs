@@ -49,7 +49,6 @@ const _: () = assert!(
 const SWEEP: Duration = Duration::from_secs(5);
 /// Grant lifetime; the page asks for a new one before it ends.
 const GRANT_TTL: Duration = Duration::from_secs(10 * 60);
-const MAX_GRANTS: usize = 512;
 
 struct Grant {
     session: [u8; 32],
@@ -67,13 +66,21 @@ pub(crate) struct LiveGrants {
     /// Signalled when a grant is issued: its admission may predate a change
     /// an observation already ran for.
     issued: Notify,
+    /// Grants outstanding at once.
+    max_grants: usize,
 }
 
 impl LiveGrants {
+    #[cfg(test)]
     pub(crate) fn new() -> Arc<Self> {
+        Self::with_limit(super::WebLimits::default().max_live_grants)
+    }
+
+    pub(crate) fn with_limit(max_grants: usize) -> Arc<Self> {
         Arc::new(Self {
             grants: Mutex::default(),
             issued: Notify::new(),
+            max_grants,
         })
     }
 
@@ -139,7 +146,7 @@ impl LiveGrants {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             grants.retain(|_, grant| grant.expires > Instant::now());
-            if grants.len() >= MAX_GRANTS {
+            if grants.len() >= self.max_grants {
                 return None;
             }
             grants.insert(grant_token, grant.clone());

@@ -390,10 +390,8 @@ fn twenty_megabyte_sources_open_through_the_actual_resource_and_stay_scrollable(
     let started = Instant::now();
     app.invoke(open).unwrap();
     let reopened = started.elapsed();
-    app.harness().send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(480.0, 400.0),
-    });
+    app.harness()
+        .send(&ui::synthetic_input::cursor_moved(480.0, 400.0));
     let digests = crate::model::digest_passes();
     let started = Instant::now();
     for _ in 0..8 {

@@ -4,8 +4,6 @@
 //! Every one of them used to start at login, including the screen reader,
 //! GNOME's keyring and settings-daemon plugins and a second tray watcher.
 
-#![allow(clippy::unwrap_used, reason = "a test's unwrap is its assertion")]
-
 use std::path::{Path, PathBuf};
 
 use desktop_entry::autostart::{AutostartProbe, Skipped, scan_autostart};

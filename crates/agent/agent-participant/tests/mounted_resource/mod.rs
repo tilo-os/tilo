@@ -121,7 +121,13 @@ pub async fn run() {
     };
     let seed = if voice_journey {
         rooms
-            .prepare_application(&room.room, &host.cert, &common::catalogue(), "so.tilo.chat")
+            .prepare_application(
+                &room.room,
+                &host.cert,
+                &common::catalogue(),
+                "so.tilo.chat",
+                "",
+            )
             .await
             .unwrap();
         let mut canonical = rooms
@@ -130,6 +136,7 @@ pub async fn run() {
                 &host.cert,
                 &common::catalogue(),
                 "so.tilo.chat",
+                "",
                 |doc| Ok(doc.clone()),
             )
             .await
@@ -151,7 +158,7 @@ pub async fn run() {
         "so.tilo.chat",
         &room.room,
         &source_author,
-        false,
+        tilo_agent_participant::ReplicaActor::Owner,
         seed,
     )
     .unwrap();
@@ -221,6 +228,7 @@ pub async fn run() {
             &host.cert,
             &common::catalogue(),
             "so.tilo.chat",
+            "",
             |doc| {
                 let mut fixture_doc = fixture_doc;
                 tilo_automerge::ApplyIncoming::merge_incoming(doc, &mut fixture_doc)

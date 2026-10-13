@@ -206,7 +206,6 @@ fn production_producer_authorizes_only_matching_completed_headless_frames() {
 #[test]
 fn hdr_metadata_cannot_reuse_the_completed_sdr_image() {
     use crate::shell::hdr_surface::{HdrLayer, HdrPlane, SurfaceSignal};
-    use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
     let mut backend = HeadlessBackend::new(64, 48).expect("fixture renderer");
     backend.set_watched(true);
     let color = Color::from_rgb8(200, 20, 30);
@@ -223,13 +222,7 @@ fn hdr_metadata_cannot_reuse_the_completed_sdr_image() {
     let mut frame = unchanged(solid(color), 4, 3);
     frame.hdr_layers.push(HdrLayer {
         plane: std::sync::Arc::new(plane),
-        image: ImageData {
-            data: Blob::new(std::sync::Arc::new(vec![0, 0, 0, 255])),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
-            width: 1,
-            height: 1,
-        },
+        image: ui::raster::rgba8_premultiplied(vec![0, 0, 0, 255], 1, 1),
         image_to_scene: Affine::IDENTITY,
         scene_to_image: Affine::IDENTITY,
         bounds: Rect::new(0.0, 0.0, 1.0, 1.0),

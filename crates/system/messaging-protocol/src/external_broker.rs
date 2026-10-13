@@ -409,22 +409,7 @@ impl ExternalBroker {
         .map_err(|_| SendError::Revoked)?;
         crate::routing::check(&auth.accounts, &native, &self.owner, &auth.binding)
             .map_err(|_| SendError::Revoked)?;
-        let sender = tilo_contact_directory::routing::SenderAccount {
-            id: route.sender.clone(),
-            service: route.service.clone(),
-            scope: self.scope.clone(),
-            enabled: true,
-        };
-        if !tilo_contact_directory::routing::routes(
-            &auth.directory,
-            &route.person,
-            &route.service,
-            &[sender],
-        )
-        .contains(route)
-        {
-            return Err(SendError::Revoked);
-        }
+        auth.listed(route, &self.scope, true)?;
         Ok(auth)
     }
     async fn submit(&self, request: SendRequest) -> Result<SendReceipt, SendError> {

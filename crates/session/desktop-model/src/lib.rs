@@ -49,8 +49,9 @@ pub use task::{
     MAX_WORKSPACE_TASK_SUMMARY_BYTES, TASK_KIND, WorkspaceAgentRequest, WorkspaceEffectReceipt,
     WorkspaceTask, WorkspaceTaskActiveRun, WorkspaceTaskApproval, WorkspaceTaskAuditEvent,
     WorkspaceTaskControl, WorkspaceTaskDirection, WorkspaceTaskDirectionApplied,
-    WorkspaceTaskExecution, WorkspaceTaskExecutionPhase, WorkspaceTaskMutationReceipt,
-    WorkspaceTaskMutationResult, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
+    WorkspaceTaskExecution, WorkspaceTaskExecutionAuthority, WorkspaceTaskExecutionPhase,
+    WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult, WorkspaceTaskResource,
+    WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};

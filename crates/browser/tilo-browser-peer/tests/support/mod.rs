@@ -110,6 +110,9 @@ pub async fn start_host_plain(
             },
             allowed_origins: Vec::new(),
             plain_listen,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
         .await
         .unwrap();
@@ -149,6 +152,9 @@ pub async fn start_room_host(
             },
             allowed_origins: Vec::new(),
             plain_listen: None,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
         .await
         .unwrap();

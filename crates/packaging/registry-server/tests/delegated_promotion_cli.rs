@@ -156,6 +156,7 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
             entries: Vec::new(),
             owner_signature_hex: "unfinished fixture".into(),
             channel_authorization: None,
+            bots_signature_hex: String::new(),
         },
     };
     storage
@@ -203,6 +204,7 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     let digest = blake3::hash(&bytes).to_hex().to_string();
     let entry = RegistryEntry {
         package_id: "so.tilo.editor".into(),
+        kind: registry_types::EntryKind::App,
         name: "Editor".into(),
         description: "Editor".into(),
         tagline: "Edit video on Tilo OS".into(),
@@ -217,18 +219,20 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
         publisher_pubkey_hex: publisher_hex.clone(),
         versions: vec![RegistryVersion {
             version: "1.0.0".into(),
-            tapp_url: "https://apps.tilo.so/artifacts/editor-x86_64.tapp".into(),
-            tapp_root_hash_hex: hex::encode(package_id.as_bytes()),
-            tapp_size_bytes: bytes.len() as u64,
             released_at_unix: 1,
-            tapp_blake3_hex: digest.clone(),
-            target: RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-                interfaces: Vec::new(),
-            },
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: "https://apps.tilo.so/artifacts/editor-x86_64.tapp".into(),
+                tapp_root_hash_hex: hex::encode(package_id.as_bytes()),
+                tapp_size_bytes: bytes.len() as u64,
+                tapp_blake3_hex: digest.clone(),
+                target: RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                    interfaces: Vec::new(),
+                },
+            }),
         }],
         updated_at_unix: 1,
         signature_hex: String::new(),
@@ -411,6 +415,7 @@ fn collector_reuses_staged_bytes_and_leaves_uncollectable_submissions_pending() 
     let submission = |id: &str, url: &str, blake3_hex: &str| {
         let entry = RegistryEntry {
             package_id: id.into(),
+            kind: registry_types::EntryKind::App,
             name: "Editor".into(),
             description: "Editor".into(),
             tagline: "Edit video on Tilo OS".into(),
@@ -425,18 +430,20 @@ fn collector_reuses_staged_bytes_and_leaves_uncollectable_submissions_pending() 
             publisher_pubkey_hex: publisher_hex.clone(),
             versions: vec![RegistryVersion {
                 version: "1.0.0".into(),
-                tapp_url: url.into(),
-                tapp_root_hash_hex: hex::encode(package_id.as_bytes()),
-                tapp_size_bytes: bytes.len() as u64,
                 released_at_unix: 1,
-                tapp_blake3_hex: blake3_hex.into(),
-                target: RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: url.into(),
+                    tapp_root_hash_hex: hex::encode(package_id.as_bytes()),
+                    tapp_size_bytes: bytes.len() as u64,
+                    tapp_blake3_hex: blake3_hex.into(),
+                    target: RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),
@@ -781,6 +788,7 @@ fn selected_partial_inventory_recovers_without_consuming_deferred_requests() {
                 ],
                 owner_signature_hex: String::new(),
                 channel_authorization: None,
+                bots_signature_hex: String::new(),
             };
             registry_types::sign_snapshot_delegated(&mut candidate, &channel, authorization)
                 .unwrap();
@@ -1299,6 +1307,7 @@ mode = "off"
     };
     let entry = RegistryEntry {
         package_id: package_id.into(),
+        kind: registry_types::EntryKind::App,
         name: "Native package".into(),
         description: "Native package".into(),
         tagline: "Native package".into(),
@@ -1313,12 +1322,16 @@ mode = "off"
         publisher_pubkey_hex: hex::encode(identity.public_key_bytes()),
         versions: vec![RegistryVersion {
             version: "1.0.0".into(),
-            tapp_url: format!("https://apps.tilo.so/artifacts/{package_id}-{architecture}.tapp"),
-            tapp_root_hash_hex: packed.id().to_hex(),
-            tapp_size_bytes: bytes.len() as u64,
             released_at_unix: 1,
-            tapp_blake3_hex: digest.clone(),
-            target: target.clone(),
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: format!(
+                    "https://apps.tilo.so/artifacts/{package_id}-{architecture}.tapp"
+                ),
+                tapp_root_hash_hex: packed.id().to_hex(),
+                tapp_size_bytes: bytes.len() as u64,
+                tapp_blake3_hex: digest.clone(),
+                target: target.clone(),
+            }),
         }],
         updated_at_unix: 1,
         signature_hex: String::new(),

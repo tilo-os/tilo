@@ -74,15 +74,6 @@ pub struct PortMapping {
     pub protocol: String,
 }
 
-impl PortMapping {
-    pub fn display(&self) -> String {
-        format!(
-            "{}→{}/{}",
-            self.host_port, self.container_port, self.protocol
-        )
-    }
-}
-
 /// A bind/volume mount of the container.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mount {
@@ -174,17 +165,6 @@ impl Container {
     pub fn short_id(&self) -> &str {
         short_id_of(&self.id)
     }
-
-    /// Matches the free-text search query against name / image / id.
-    pub fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        let q = query.to_ascii_lowercase();
-        self.name.to_ascii_lowercase().contains(&q)
-            || self.image.to_ascii_lowercase().contains(&q)
-            || self.id.to_ascii_lowercase().contains(&q)
-    }
 }
 
 /// A local container image.
@@ -203,20 +183,6 @@ impl Image {
     pub fn reference(&self) -> String {
         format!("{}:{}", self.repository, self.tag)
     }
-
-    pub fn short_id(&self) -> &str {
-        let trimmed = self.id.strip_prefix("sha256:").unwrap_or(&self.id);
-        short_id_of(trimmed)
-    }
-
-    pub fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        let q = query.to_ascii_lowercase();
-        self.reference().to_ascii_lowercase().contains(&q)
-            || self.id.to_ascii_lowercase().contains(&q)
-    }
 }
 
 /// A distrobox — a tightly host-integrated container, listed separately
@@ -229,16 +195,6 @@ pub struct DistroBox {
     pub status_detail: String,
 }
 
-impl DistroBox {
-    pub fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        let q = query.to_ascii_lowercase();
-        self.name.to_ascii_lowercase().contains(&q) || self.image.to_ascii_lowercase().contains(&q)
-    }
-}
-
 /// A named podman volume.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Volume {
@@ -249,16 +205,6 @@ pub struct Volume {
     pub created: String,
     /// Number of containers currently mounting this volume.
     pub in_use_by: u32,
-}
-
-impl Volume {
-    pub fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        let q = query.to_ascii_lowercase();
-        self.name.to_ascii_lowercase().contains(&q) || self.driver.to_ascii_lowercase().contains(&q)
-    }
 }
 
 /// The complete, in-memory snapshot the UI renders from.
@@ -277,20 +223,6 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn running_count(&self) -> usize {
-        self.containers
-            .iter()
-            .filter(|c| c.status.is_running())
-            .count()
-    }
-
-    pub fn stopped_count(&self) -> usize {
-        self.containers
-            .iter()
-            .filter(|c| !c.status.is_running())
-            .count()
-    }
-
     /// Total bytes across all images.
     pub fn image_disk_bytes(&self) -> u64 {
         self.images.iter().map(|i| i.size_bytes).sum()
@@ -298,21 +230,6 @@ impl Engine {
 
     pub fn find(&self, id: &str) -> Option<&Container> {
         self.containers.iter().find(|c| c.id == id)
-    }
-
-    /// Local image references, sorted, for the create-form image combobox.
-    pub fn image_references(&self) -> Vec<String> {
-        let mut refs: Vec<String> = self.images.iter().map(Image::reference).collect();
-        refs.sort();
-        refs.dedup();
-        refs
-    }
-
-    /// Local volume names, sorted, for the create-form volume picker.
-    pub fn volume_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.volumes.iter().map(|v| v.name.clone()).collect();
-        names.sort();
-        names
     }
 }
 
@@ -940,17 +857,22 @@ mod tests {
         }
     }
 
-    /// The sample engine is populated and consistent with volumes and references, and containers and volumes are searchable.
+    /// The sample engine is populated and consistent, with named volumes.
     #[test]
-    fn sample_engine_is_consistent_and_searchable() {
+    fn sample_engine_is_consistent() {
         // --- phase: sample_engine_is_populated_and_consistent ---
         {
             let e = sample_engine();
+            let running = e
+                .containers
+                .iter()
+                .filter(|c| c.status.is_running())
+                .count();
+            assert!(running >= 3, "sample has several running containers");
             assert!(
-                e.running_count() >= 3,
-                "sample has several running containers"
+                e.containers.len() - running >= 2,
+                "sample has stopped containers too"
             );
-            assert!(e.stopped_count() >= 2, "sample has stopped containers too");
             assert!(!e.images.is_empty());
             assert!(!e.distroboxes.is_empty());
             // Each running container should carry some logs for the detail view.
@@ -959,49 +881,11 @@ mod tests {
             }
         }
 
-        // --- phase: container_search_matches_name_and_image ---
-        {
-            let e = sample_engine();
-            let nginx = e
-                .containers
-                .iter()
-                .find(|c| c.name == "web-frontend")
-                .unwrap();
-            assert!(nginx.matches("nginx"));
-            assert!(nginx.matches("web"));
-            assert!(!nginx.matches("postgres"));
-            assert!(nginx.matches(""));
-        }
-
-        // --- phase: sample_engine_has_volumes_and_references ---
+        // --- phase: sample_engine_has_volumes ---
         {
             let e = sample_engine();
             assert!(!e.volumes.is_empty(), "sample carries named volumes");
-            // image_references feeds the create combobox dropdown.
-            let refs = e.image_references();
-            assert!(refs.iter().any(|r| r.contains("nginx")), "{refs:?}");
-            // sorted + deduped
-            let mut sorted = refs.clone();
-            sorted.sort();
-            assert_eq!(refs, sorted, "references come back sorted");
-            // volume names feed the volume picker.
-            let names = e.volume_names();
-            assert!(names.contains(&"pgdata".to_string()));
-        }
-
-        // --- phase: volume_search_matches_name ---
-        {
-            let v = Volume {
-                name: "pgdata".into(),
-                driver: "local".into(),
-                mountpoint: "/x".into(),
-                created: "now".into(),
-                in_use_by: 1,
-            };
-            assert!(v.matches("pg"));
-            assert!(v.matches("local"));
-            assert!(!v.matches("redis"));
-            assert!(v.matches(""));
+            assert!(e.volumes.iter().any(|v| v.name == "pgdata"));
         }
     }
 }

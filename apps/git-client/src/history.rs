@@ -88,7 +88,6 @@ pub struct ListInput<'a> {
 pub struct ListDraw {
     /// Each visible commit's row, by index into the commit list.
     pub rows: Vec<(usize, Rect)>,
-    pub metrics: Metrics,
     /// Height of all rows, for clamping the scroll.
     pub content_height: f64,
 }
@@ -175,7 +174,6 @@ pub fn paint_list(ctx: &mut PaintCtx<'_>, area: Rect, input: &ListInput<'_>) -> 
     ctx.scene.pop_layer();
     ListDraw {
         rows,
-        metrics: m,
         content_height,
     }
 }

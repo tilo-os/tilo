@@ -1783,10 +1783,7 @@ mod tests {
         let theme = Theme::dark().with_text_scale(2.0);
         paint_detail(&mut menu, viewport, &theme);
         let cursor = menu.action_rect(viewport, 1).center();
-        let hover = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(cursor.x, cursor.y),
-        };
+        let hover = ui::synthetic_input::cursor_moved(cursor.x, cursor.y);
         assert_eq!(
             route_detail_pointer(&mut menu, &hover, cursor, viewport),
             [LayerIntent::Repaint]
@@ -1802,11 +1799,7 @@ mod tests {
             menu.detail_tip.visible().is_some(),
             "reading the hint keeps it visible"
         );
-        let press = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
+        let press = ui::synthetic_input::mouse_press();
         for _ in 0..2 {
             assert!(route_detail_pointer(&mut menu, &press, rect.center(), viewport).is_empty());
         }

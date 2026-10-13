@@ -450,13 +450,12 @@ pub(crate) fn plan(
     // A texture that holds nothing known was never composited into the
     // output.
     let output_current = output_current && shown.complete();
-    let mut composite = None;
-    if backdrop
+    let composite = if backdrop
         || (chrome && chrome_tiles.is_none())
         || workspace == WorkspaceWork::Whole
         || !output_current
     {
-        composite = Some(full_rect(size));
+        Some(full_rect(size))
     } else {
         let moved = match &workspace {
             WorkspaceWork::Pan { copies, uncovered } => copies
@@ -472,10 +471,12 @@ pub(crate) fn plan(
             WorkspaceWork::Unchanged | WorkspaceWork::Whole => Vec::new(),
         };
         let tiles = chrome_tiles.iter().flatten().copied();
-        for rect in moved.into_iter().chain(wheel_rects).chain(tiles) {
-            composite = Some(union(composite, rect));
-        }
-    }
+        moved
+            .into_iter()
+            .chain(wheel_rects)
+            .chain(tiles)
+            .fold(None, |composite, rect| Some(union(composite, rect)))
+    };
     LayerWork {
         backdrop,
         chrome,

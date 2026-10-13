@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use tilo_ui::widget::TaffyTreeExt;
 
-use taffy::{AvailableSpace, Dimension, Style};
+use taffy::{AvailableSpace, Style};
 use taffy::{NodeId, Size, TaffyTree};
 use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -118,10 +118,7 @@ impl Widget for FixedContent {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::length(self.size.width),
-                height: Dimension::length(self.size.height),
-            },
+            size: Size::from_lengths(self.size.width, self.size.height),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)

@@ -548,9 +548,7 @@ impl Widget for DisplayArrangement {
         self.rect == Rect::ZERO
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -604,8 +602,7 @@ impl Widget for DisplayArrangement {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let point = ctx.logical(position);
                 self.cursor = Some(point);
                 if self.drag_to(point) {
                     *ctx.handled = true;
@@ -719,10 +716,6 @@ impl Widget for DisplayArrangement {
 
     fn test_id(&self) -> Option<&str> {
         Some("display.arrangement")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 
@@ -883,10 +876,10 @@ mod tests {
             .get("display.arrangement")
             .copied()
             .expect("the actual arrangement is mounted");
-        host.send(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(rect.center().x, rect.center().y),
-        });
+        host.send(&crate::synthetic_input::cursor_moved(
+            rect.center().x,
+            rect.center().y,
+        ));
         assert!(!host.last_relayout().measured);
         host.verify_retained_geometry().unwrap();
         host.resize((1200, 720)).unwrap();

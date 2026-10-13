@@ -282,11 +282,7 @@ fn following_a_peer_tracks_their_tab_binds_views_and_releases_on_local_intent() 
             None,
             ElementState::Pressed,
         );
-        let event = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: key,
-            is_synthetic: false,
-        };
+        let event = ui::synthetic_input::keyboard_input(key);
         assert!(host.release_follow_for_local_key(&event));
         assert!(host.followed_peer.is_none());
         assert_eq!(

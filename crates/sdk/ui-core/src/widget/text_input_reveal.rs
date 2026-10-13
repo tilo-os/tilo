@@ -219,10 +219,7 @@ impl Widget for RevealToggle {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 // A hover change is a repaint, never consumed input.
-                self.hovered = self.rect.contains(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                self.hovered = self.rect.contains(ctx.logical(position));
             }
             WindowEvent::MouseInput {
                 state,
@@ -253,10 +250,7 @@ impl Widget for RevealToggle {
                 }
             }
             WindowEvent::Touch(touch) => {
-                let point = Point::new(
-                    touch.location.x / ctx.scale_factor,
-                    touch.location.y / ctx.scale_factor,
-                );
+                let point = ctx.logical(touch.location);
                 match touch.phase {
                     TouchPhase::Started if self.touch.is_none() && self.rect.contains(point) => {
                         self.touch = Some(touch.id);
@@ -338,11 +332,11 @@ impl Widget for RevealToggle {
         Some(
             AccessNode::new(Role::Button)
                 .with_name(crate::i18n!(self.label()))
-                .with_state(AccessState {
-                    focused: self.focused,
-                    disabled: !self.enabled,
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focused(self.focused)
+                        .disabled(!self.enabled),
+                ),
         )
     }
 

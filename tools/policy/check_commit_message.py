@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Validate Conventional Commits and Git-generated merge/revert/autosquash messages."""
+"""Validate Conventional Commits and Git-generated merge/revert/autosquash messages.
+
+--title checks a pull request title, which becomes the subject of its merge
+commit, for internal references only.
+"""
 import argparse
 from pathlib import Path
 import re
 import subprocess
 import sys
+
+from check_public_references import internal_reference
 
 TYPES = frozenset("build chore ci docs dev env feat fix perf refactor revert style test".split())
 HEADER = re.compile(r"([a-z][a-z0-9-]*)(?:\(([^()\r\n]+)\))?(!)?: (\S.*)")
@@ -14,6 +20,16 @@ EXAMPLES = "Examples:\n  fix(shell): preserve window identity\n  feat(ui)!: expo
 
 def git(root, *args):
     return subprocess.check_output(["git", "-C", str(root), *args]).decode().strip()
+
+
+def public_reference_failure(text):
+    # Only authored text: generated merge, revert and autosquash subjects repeat
+    # titles and branch names from history that predates this rule.
+    hit = internal_reference(text)
+    if hit:
+        return ("'" + hit + "' points at the internal issue tracker, which readers of this public"
+                " repository cannot open; say what changed and why instead.")
+    return None
 
 
 def validate(message, root, merge=False, parent=None):
@@ -32,7 +48,7 @@ def validate(message, root, merge=False, parent=None):
             return "Use a nonempty scope without leading or trailing spaces."
         if len(lines) > 1 and lines[1].strip():
             return "Separate the subject and multiline body with a blank line."
-        return None
+        return public_reference_failure(message)
     if merge and MERGE.fullmatch(subject):
         return None
     if subject.startswith('Revert "') and subject.endswith('"'):
@@ -62,8 +78,16 @@ def validate(message, root, merge=False, parent=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("message", type=Path)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("message", type=Path, nargs="?")
+    target.add_argument("--title", help="a pull request title")
     args = parser.parse_args()
+    if args.title is not None:
+        failure = public_reference_failure(args.title)
+        if failure:
+            print("Pull request title rejected: " + failure, file=sys.stderr)
+            return 1
+        return 0
     root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel"))
     merge_path = Path(git(root, "rev-parse", "--git-path", "MERGE_HEAD"))
     if not merge_path.is_absolute():

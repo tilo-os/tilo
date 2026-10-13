@@ -19,11 +19,6 @@ pub fn catalog() -> &'static EmbeddedCatalog {
     &CATALOG
 }
 
-/// Load the catalogue on this thread if it is not loaded yet.
-pub fn ensure() {
-    CATALOG.ensure();
-}
-
 /// Resolve a Mail string key.
 pub fn t(key: &str) -> String {
     CATALOG.t(key)
@@ -44,10 +39,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn catalogue_resolves_every_used_key_and_keeps_interpolated_sentences() {
         // Phase `every_key_the_app_uses_resolves_to_a_real_string`.
         {

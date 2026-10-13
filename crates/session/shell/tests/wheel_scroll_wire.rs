@@ -5,11 +5,7 @@
 //! did not move. To a toolkit that is the end of a scroll gesture: winit
 //! reported each notch as an ended scroll, which a scroll view takes for a
 //! fling release and ignores, so a wheel scrolled nothing in Tilo's apps.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test harness failures are assertions"
-)]
+#![allow(clippy::expect_used, reason = "test harness failures are assertions")]
 
 use wayland_client::protocol::{wl_compositor, wl_pointer, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};

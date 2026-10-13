@@ -604,10 +604,6 @@ impl PowerPane {
         &self.state.battery
     }
 
-    pub fn profile(&self) -> PowerProfile {
-        self.state.profile
-    }
-
     pub fn prefs(&self) -> &PowerPrefs {
         self.prefs.get()
     }

@@ -38,22 +38,6 @@ impl Congestion {
         Congestion::Severe,
     ];
 
-    /// Map an observed-speed / free-flow-speed ratio (0..=1) to a level. A real
-    /// feed reports current vs typical speed; this is the shared thresholding so
-    /// a peer report and a provider agree on what "heavy" means.
-    pub fn from_speed_ratio(ratio: f64) -> Self {
-        let r = ratio.clamp(0.0, 1.0);
-        if r >= 0.75 {
-            Congestion::Free
-        } else if r >= 0.5 {
-            Congestion::Moderate
-        } else if r >= 0.25 {
-            Congestion::Heavy
-        } else {
-            Congestion::Severe
-        }
-    }
-
     /// Human-readable label for the legend / a tapped segment.
     pub fn label(self) -> &'static str {
         match self {
@@ -116,7 +100,7 @@ impl TrafficData {
         const WINDOW: usize = 2;
         let mut segments = Vec::new();
         for road in &base.roads {
-            if matches!(road.class, RoadClass::Path) || road.pts.len() < 2 {
+            if road.pts.len() < 2 {
                 continue;
             }
             let mut i = 0;
@@ -178,7 +162,6 @@ fn level_for(class: RoadClass, h: u64) -> Congestion {
                 Congestion::Heavy
             }
         }
-        RoadClass::Path => Congestion::Free,
     }
 }
 
@@ -187,23 +170,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn traffic_levels_start_empty_and_sample_overlay_is_realistic() {
-        // Phase `speed_ratio_buckets_into_levels`.
-        {
-            assert_eq!(Congestion::from_speed_ratio(1.0), Congestion::Free);
-            assert_eq!(Congestion::from_speed_ratio(0.8), Congestion::Free);
-            assert_eq!(Congestion::from_speed_ratio(0.6), Congestion::Moderate);
-            assert_eq!(Congestion::from_speed_ratio(0.3), Congestion::Heavy);
-            assert_eq!(Congestion::from_speed_ratio(0.1), Congestion::Severe);
-            // Out-of-range ratios clamp rather than panic.
-            assert_eq!(Congestion::from_speed_ratio(5.0), Congestion::Free);
-            assert_eq!(Congestion::from_speed_ratio(-1.0), Congestion::Severe);
-        }
-
         // Phase `default_traffic_is_empty_the_honest_live_state`.
         {
             let t = TrafficData::default();
@@ -229,11 +196,7 @@ mod tests {
             );
             // Sub-segmentation makes the overlay dense: many more coloured segments
             // than there are roads, so congestion varies *along* a road.
-            let drivable = base
-                .roads
-                .iter()
-                .filter(|r| !matches!(r.class, RoadClass::Path) && r.pts.len() >= 2)
-                .count();
+            let drivable = base.roads.iter().filter(|r| r.pts.len() >= 2).count();
             assert!(
                 t.segments.len() > drivable,
                 "roads are split into sub-segments: {} segments from {drivable} roads",
