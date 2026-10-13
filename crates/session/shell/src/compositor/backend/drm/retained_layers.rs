@@ -579,7 +579,7 @@ mod tests {
         canvases.update(&cache, (64, 32));
         let views = canvases.views(&cache, (64, 32));
         assert_eq!(views.len(), 6);
-        for (x, y) in [(2, 2), (50, 2), (60, 2), (13, 20), (14, 20), (15, 17)] {
+        for (x, y) in (0..32_u32).flat_map(|y| (0..64_u32).map(move |x| (x, y))) {
             let mut actual = [0, 0, 0, 255];
             for view in &views {
                 for (dest, scroll_x) in &view.pieces {
