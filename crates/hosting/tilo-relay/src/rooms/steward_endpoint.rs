@@ -47,17 +47,17 @@ impl Rooms {
         create: bool,
     ) -> Option<Result<ChannelContentKeys, String>> {
         let state = self.room(&route.cluster_id).await.ok()?;
-        let mut room = state.lock().await;
+        let room = state.lock().await;
         room.stewardship.as_ref()?;
         Some(
-            self.steward_endpoint_keys_locked(&mut room, route, create)
+            self.steward_endpoint_keys_locked(&room, route, create)
                 .await,
         )
     }
 
     async fn steward_endpoint_keys_locked(
         &self,
-        room: &mut super::GovernedRoom,
+        room: &super::GovernedRoom,
         route: &DocumentRoute,
         create: bool,
     ) -> Result<ChannelContentKeys, String> {
@@ -100,20 +100,18 @@ impl Rooms {
         let channel =
             collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
         let allowed = readers(&room.peer().governed_access(SystemTime::now())?);
-        let stewardship = room
+        let steward = room
             .stewardship
-            .as_mut()
+            .clone()
             .ok_or("this relay does not steward the room's channels")?;
+        let mut stewardship = steward.channels.lock().await;
         if create {
             let messages = stewardship.open_channel(channel, &allowed)?;
             self.publish_channel_governance(workspace_id, messages)
                 .await?;
         }
-        let keys = room
-            .stewardship
-            .as_mut()
-            .ok_or("this relay does not steward the room's channels")?
-            .existing_keys(channel)?;
+        let keys = stewardship.existing_keys(channel)?;
+        drop(stewardship);
         tracing::debug!(room = %route.cluster_id, app = %route.app_id, record = %route.record,
             epoch = keys.epoch(), "room actions: handed the steward's channel keys");
         Ok(keys)

@@ -946,16 +946,8 @@ impl ChatApp {
                 // The same device-local handler the public effect reaches.
                 let _ = self.answer_effect(crate::effects::ChatEffect::StopSharingLiveContext);
             }
-            Hit::CopyResourceLink(message) => {
-                if let Some(dispatch) = &self.dispatch {
-                    dispatch.effect(&crate::effects::ChatEffect::CopyResourceLink { message });
-                }
-            }
-            Hit::OpenResourceLink(message) => {
-                if let Some(dispatch) = &self.dispatch {
-                    dispatch.effect(&crate::effects::ChatEffect::OpenResourceLink { message });
-                }
-            }
+            Hit::CopyResourceLink(message) => self.begin_resource_navigation(&message, false),
+            Hit::OpenResourceLink(message) => self.begin_resource_navigation(&message, true),
             Hit::CloseThread => {
                 self.close_thread();
             }

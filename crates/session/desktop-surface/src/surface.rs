@@ -34,7 +34,7 @@ use ui::widget::{
     GroupRow, OutputSpan, TabDescriptor, TaffyTreeExt as _, TileContent, TileHost, Widget,
     WindowGroup,
 };
-use ui::winit::event::{MouseScrollDelta, WindowEvent};
+use ui::winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use ui::{TextRenderer, Theme};
 
 use crate::navigation::{
@@ -49,6 +49,7 @@ mod search;
 
 pub use history::HistorySource;
 pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
+pub use search::HostAction;
 
 /// The caret or selection a surface publishes as its presence: the
 /// keyboard-focused widget's when it is one of the focused window's (or
@@ -72,12 +73,6 @@ pub trait TileSource {
     /// The content for `tab` in `workspace`, built the first time the tab's
     /// strip is shown.
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost;
-
-    /// A group's new-tab control was pressed: the tab to open, under `id`.
-    /// `None` opens nothing.
-    fn new_tab(&mut self, _workspace: &Workspace, _id: TabId) -> Option<Tab> {
-        None
-    }
 
     /// A launch command named `app`: the tab to open under `id`. `None`
     /// opens nothing.
@@ -114,6 +109,9 @@ struct Shared {
     rebuild: Vec<TabId>,
     search_request: Option<search::SearchRequest>,
     search_open: bool,
+    /// What the host offers to do for the person, and what they chose.
+    host_actions: Vec<search::HostAction>,
+    host_choices: Vec<String>,
     /// Pan, scroll, history and activity state, as last presented.
     presentation: Presentation,
     /// Bumped whenever `presentation` changes. Unlike `revision` it never
@@ -373,6 +371,9 @@ pub struct DesktopSurface {
     /// The sideways swipe in progress, if any.
     swipe: Option<Swipe>,
     search: tilo_desktop_search::DesktopSearch,
+    /// The window a group's new-tab control opened search for: the
+    /// application chosen there opens as its tab, as in the native shell.
+    new_tab_into: Option<(StripId, GroupId)>,
     /// The pointer in logical coordinates, while search is open.
     search_pointer: Point,
     platform: ui::platform::PlatformConventions,
@@ -436,6 +437,8 @@ impl DesktopSurface {
             rebuild: Vec::new(),
             search_request: None,
             search_open: false,
+            host_actions: Vec::new(),
+            host_choices: Vec::new(),
             presentation: Presentation::default(),
             presented: 0,
         }));
@@ -451,6 +454,7 @@ impl DesktopSurface {
             unbuilt: Vec::new(),
             swipe: None,
             search: tilo_desktop_search::DesktopSearch::new(),
+            new_tab_into: None,
             search_pointer: Point::ZERO,
             platform: ui::platform::PlatformConventions::default(),
             history: None,
@@ -522,9 +526,20 @@ impl DesktopSurface {
         layer.tick();
         let mut open_app = layer.open_app.take();
         for outcome in layer.notifications().take_outcomes() {
-            let NotificationOutcome::Activated { notification, .. } = outcome else {
+            let NotificationOutcome::Activated {
+                notification,
+                action,
+            } = outcome
+            else {
                 continue;
             };
+            if let Some(choice) = action.as_deref().and_then(search::host_choice) {
+                self.shared
+                    .borrow_mut()
+                    .host_choices
+                    .push(choice.to_owned());
+                continue;
+            }
             if let Some(uri) = layer
                 .inbox
                 .as_mut()
@@ -783,6 +798,32 @@ impl DesktopSurface {
         self.structure_dirty = true;
     }
 
+    /// A press anywhere in a window, its body included and not only its tab
+    /// bar, makes that window the active one. It stays where it is: it was
+    /// on screen to be clicked, and panning would move it from under the
+    /// pointer.
+    fn focus_clicked_group(&self) {
+        let Some(strip_id) = self.shown else {
+            return;
+        };
+        let Some(group) = self
+            .rows
+            .get(&strip_id)
+            .and_then(GroupRow::group_under_cursor)
+        else {
+            return;
+        };
+        let mut shared = self.shared.borrow_mut();
+        if shared.tree.active_group_for(strip_id) == Some(group)
+            || find_group(&mut shared.tree, strip_id, group).is_none()
+        {
+            return;
+        }
+        shared.tree.set_active_group(strip_id, group);
+        shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
+        shared.changed();
+    }
+
     /// Mirror gestures the shown row performed into the tree.
     fn harvest(&mut self) {
         let Some(strip_id) = self.shown else {
@@ -803,7 +844,7 @@ impl DesktopSurface {
                 .reorder_group_within_strip(strip_id, group, index)
                 .is_some();
         }
-        let mut new_tabs = Vec::new();
+        let mut new_tab = None;
         for group in &mut row.groups {
             for tab in group.take_pending_close_commits() {
                 changed |= shared.tree.remove_tab(tab).is_some();
@@ -836,7 +877,7 @@ impl DesktopSurface {
                 changed = true;
             }
             if group.take_pending_new_tab().is_some() {
-                new_tabs.push(group.id);
+                new_tab = Some(group.id);
             }
         }
         if let Some(topology) = row.take_pending_topology_change() {
@@ -854,27 +895,10 @@ impl DesktopSurface {
                 .reconcile_strip_topology(strip_id, &shape)
                 .is_some();
         }
-        for group_id in new_tabs {
-            let id = shared.minter.mint();
-            let Some(workspace) = shared.tree.active_workspace() else {
-                continue;
-            };
-            let Some(tab) = self.tiles.new_tab(workspace, id) else {
-                continue;
-            };
-            let host = build_tile(self.tiles.as_mut(), workspace, &tab);
-            let Some(model) = find_group(&mut shared.tree, strip_id, group_id) else {
-                continue;
-            };
-            model.tabs.push(tab.clone());
-            model.activate_tab(tab.id);
-            let index = model.tabs.len().saturating_sub(1);
-            shared.tree.set_active_group(strip_id, group_id);
-            if let Some(group) = row.groups.iter_mut().find(|g| g.id == group_id) {
-                group.insert_detached_tab(index, descriptor(&tab), host);
-                group.set_active_tab(tab.id);
-            }
-            changed = true;
+        // The new-tab control asks which application to open there: search
+        // over the applications, aimed at that window.
+        if let Some(group) = new_tab {
+            shared.search_request = Some(search::SearchRequest::NewTab(strip_id, group));
         }
         if changed {
             shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
@@ -1125,6 +1149,19 @@ impl DesktopSurface {
         self.rows.get(&self.shown?)
     }
 
+    /// Where window `group`'s new-tab control is drawn, while its strip is
+    /// shown, so a test presses it as a person does.
+    #[cfg(any(test, debug_assertions))]
+    #[must_use]
+    pub fn new_tab_rect(&self, group: GroupId) -> Option<Rect> {
+        self.shown_row_ref()?
+            .groups
+            .iter()
+            .find(|g| g.id == group)
+            .map(WindowGroup::new_tab_rect)
+            .filter(|rect| rect.area() > 0.0)
+    }
+
     /// Present a launched window. A row first built after the launch
     /// already holds it, with its content, from the tree.
     fn open_group(&mut self, strip: StripId, group: GroupId, index: usize, tab: &Tab) {
@@ -1336,6 +1373,40 @@ fn launch(tiles: &mut dyn TileSource, shared: &mut Shared, app: &str) -> Option<
         index,
         tab,
     })
+}
+
+impl DesktopSurface {
+    /// Open `app` as a new tab of window `group` in strip `strip`, focused.
+    /// Returns whether it opened.
+    fn open_tab_in_group(&mut self, strip: StripId, group: GroupId, app: &str) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let id = shared.minter.mint();
+        let Some(workspace) = shared.tree.active_workspace() else {
+            return false;
+        };
+        let Some(tab) = self.tiles.launch(workspace, id, app) else {
+            return false;
+        };
+        let host = build_tile(self.tiles.as_mut(), workspace, &tab);
+        let Some(model) = find_group(&mut shared.tree, strip, group) else {
+            return false;
+        };
+        model.tabs.push(tab.clone());
+        model.active_tab = tab.id;
+        let index = model.tabs.len().saturating_sub(1);
+        shared.tree.set_active_group(strip, group);
+        if let Some(widget) = self
+            .rows
+            .get_mut(&strip)
+            .and_then(|row| row.groups.iter_mut().find(|g| g.id == group))
+        {
+            widget.insert_detached_tab(index, descriptor(&tab), host);
+            widget.set_active_tab(tab.id);
+        }
+        shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
+        shared.changed();
+        true
+    }
 }
 
 /// Pan `row` to `offset` the way the shell's direct strip pan does, within
@@ -1716,6 +1787,14 @@ impl Widget for DesktopSurface {
             .unwrap_or_default()
             .first()
             .copied();
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            self.focus_clicked_group();
+        }
         if let (Some(row), Some(child)) = (self.shown_row(), child) {
             let path = ctx.path.clone();
             row.handle_event(event, &mut ctx.reborrow(&path, child));
@@ -1942,6 +2021,98 @@ mod tests {
             .collect();
         let tree = seed_tree(&mut minter, "Desk", tabs);
         DesktopSurface::new(tree, 7, Box::new(Notices))
+    }
+
+    /// Each select a host sends applies in the frame its wake draws, in
+    /// order, while the strip pans between windows.
+    #[test]
+    fn selects_apply_in_the_frame_they_wake() {
+        let (surface, handle) = desktop(3);
+        let mut frame = ui::headless::FrameHarness::new(
+            ui::state::State::new(),
+            Box::new(surface),
+            (1280, 800),
+        );
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        let entries = handle.snapshot("g", vec![]).entries;
+        for target in [0, 2, 1, 2] {
+            let route = entries[target].route.clone();
+            handle
+                .dispatch(
+                    &Command::Select {
+                        generation: "g".into(),
+                        route: route.clone(),
+                    },
+                    "g",
+                )
+                .unwrap();
+            frame.relayout();
+            assert_eq!(
+                handle.snapshot("g", vec![]).active,
+                Some(route),
+                "select {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn closing_a_window_keeps_every_frame_settling() {
+        let (surface, handle) = desktop(3);
+        let mut frame = ui::headless::FrameHarness::new(
+            ui::state::State::new(),
+            Box::new(surface),
+            (1280, 800),
+        );
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        let route = handle.snapshot("g", vec![]).entries[0].route.clone();
+        handle
+            .dispatch(
+                &Command::Close {
+                    generation: "g".into(),
+                    route,
+                },
+                "g",
+            )
+            .unwrap();
+        for _ in 0..40 {
+            assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        assert_eq!(handle.snapshot("g", vec![]).entries.len(), 2);
+    }
+
+    #[test]
+    fn clicking_a_window_body_makes_it_active() {
+        let (surface, handle) = desktop(3);
+        let mut frame = ui::headless::FrameHarness::new(
+            ui::state::State::new(),
+            Box::new(surface),
+            (1280, 800),
+        );
+        for _ in 0..4 {
+            frame.relayout();
+        }
+        let active = || handle.read(|tree| navigation::active_route(tree).map(|ids| ids.group));
+        let first = active();
+        let device_id = ui::winit::event::DeviceId::dummy();
+        frame.send_host_event(&WindowEvent::CursorMoved {
+            device_id,
+            position: PhysicalPosition::new(1270.0, 500.0),
+        });
+        for state in [ElementState::Pressed, ElementState::Released] {
+            frame.send_host_event(&WindowEvent::MouseInput {
+                device_id,
+                state,
+                button: MouseButton::Left,
+            });
+        }
+        let clicked = active();
+        assert!(clicked.is_some());
+        assert_ne!(clicked, first, "the window under the pointer takes focus");
     }
 
     #[test]

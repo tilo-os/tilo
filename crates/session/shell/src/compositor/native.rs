@@ -8091,6 +8091,8 @@ fn attach_collab_broker_bridges(
             dispatcher.set(&room.to_string(), peer_id);
         }));
     if let Some(action_broker) = broker.app_action_broker() {
+        // Links the shell opens show their resource through this broker.
+        crate::shell::link_open::attach_broker(&action_broker);
         // An app reaching for another app's action is asked about on this
         // session's own sheet, which the overlay host draws and answers.
         action_broker.set_app_action_consent(std::sync::Arc::new(
@@ -9349,7 +9351,10 @@ pub fn run() {
     state.scale = crate::compositor::state::display_scale_from(&live_settings.snapshot().document);
     // Point `ui`'s clipboard at the compositor's selection mirror — everything
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
-    crate::compositor::selection::install_host_services(state.selection_store());
+    crate::compositor::selection::install_host_services(
+        state.selection_store(),
+        tree_handle.clone(),
+    );
     // Building the desktop mounts the hosted tabs it restores, which connect
     // to the collaboration broker and identity service bound below: they
     // wait for them rather than find no socket and stay offline.

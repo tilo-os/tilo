@@ -3,10 +3,12 @@
 //!
 //! The counters live in one process-wide [`Ops`] so the join routes, the
 //! persistent room's supervisor and the error endpoint all feed the same
-//! `/metrics` page. Whatever other processes of the pod measure arrives as
-//! Prometheus text files in `<state>/metrics.d/*.prom` (the bridge writes
-//! `bridge.prom`), which `/metrics` appends under a freshness gauge; the
-//! relay's own counters are read from the snapshot it persists every second.
+//! `/metrics` page. Each room's relay persists its counters every second and
+//! its connector workers keep theirs as Prometheus text (the Discord
+//! connector's is `discord.prom`), both under the relay's `--state`, at the
+//! paths `tilo_relay_protocol::metrics` defines; other processes of the pod
+//! may drop text files into `<state>/metrics.d`. `/metrics` reads the
+//! snapshots and appends the text files under a freshness gauge.
 
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
@@ -15,7 +17,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
-use tilo_relay_protocol::metrics::{METRICS_FILE, MetricsSnapshot};
+use tilo_relay_protocol::metrics::{
+    METRICS_FILE, MetricsSnapshot, room_relay_root, room_textfile_dir,
+};
 
 /// The file the `mode` command writes inside the state directory.
 const MODE_FILE: &str = "mode";
@@ -311,8 +315,11 @@ impl Ops {
             "",
             load(&self.reports_dropped),
         );
-        relay(&mut out, &self.state);
-        textfiles(&mut out, &self.state.join(TEXTFILE_DIR));
+        let rooms = room_states(&self.state);
+        relay(&mut out, &rooms);
+        let mut dirs = vec![self.state.join(TEXTFILE_DIR)];
+        dirs.extend(rooms.iter().map(|room| room_textfile_dir(room)));
+        textfiles(&mut out, &dirs);
         out
     }
 }
@@ -338,18 +345,33 @@ fn age_of(path: &Path) -> Option<Duration> {
     )
 }
 
-/// The relay snapshots under the state directory: one per room
-/// (`<state>/<room>/state/metrics.json`) or the persistent room's own.
-fn relay_snapshots(state: &Path) -> Vec<(MetricsSnapshot, Duration)> {
-    let mut candidates = vec![state.join(METRICS_FILE)];
-    if let Ok(entries) = std::fs::read_dir(state) {
-        for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
-            candidates.push(entry.path().join(METRICS_FILE));
-            candidates.push(entry.path().join("state").join(METRICS_FILE));
-        }
-    }
-    candidates
-        .into_iter()
+/// The `--state` of every room relay this service runs: each room, and the
+/// persistent room, has a directory under the state directory.
+fn room_states(state: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(state) else {
+        return Vec::new();
+    };
+    let mut rooms: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .flat_map(|dir| {
+            [
+                crate::room::relay_state(&dir),
+                crate::persistent::relay_state(&dir),
+            ]
+        })
+        .filter(|room| room.is_dir())
+        .collect();
+    rooms.sort();
+    rooms
+}
+
+/// The relay snapshot of each room, with its age.
+fn relay_snapshots(rooms: &[PathBuf]) -> Vec<(MetricsSnapshot, Duration)> {
+    rooms
+        .iter()
+        .map(|room| room_relay_root(room).join(METRICS_FILE))
         .filter_map(|path| {
             let age = age_of(&path)?;
             let snapshot = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
@@ -358,8 +380,8 @@ fn relay_snapshots(state: &Path) -> Vec<(MetricsSnapshot, Duration)> {
         .collect()
 }
 
-fn relay(out: &mut String, state: &Path) {
-    let snapshots = relay_snapshots(state);
+fn relay(out: &mut String, rooms: &[PathBuf]) {
+    let snapshots = relay_snapshots(rooms);
     let youngest = snapshots.iter().map(|(_, age)| *age).min();
     let fresh: Vec<&MetricsSnapshot> = snapshots
         .iter()
@@ -439,14 +461,15 @@ fn relay(out: &mut String, state: &Path) {
     }
 }
 
-/// Appends every `*.prom` file of `dir`, with a per-file age gauge so a
-/// writer that stopped is visible.
-fn textfiles(out: &mut String, dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
+/// Appends every `*.prom` file of `dirs`, with a per-file age gauge so a
+/// writer that stopped is visible. A file name seen twice is kept once.
+fn textfiles(out: &mut String, dirs: &[PathBuf]) {
     let mut files: BTreeMap<String, (String, u64)> = BTreeMap::new();
-    for entry in entries.flatten() {
+    for entry in dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(Iterator::flatten)
+    {
         let path = entry.path();
         let Some(name) = path
             .file_name()
@@ -465,7 +488,7 @@ fn textfiles(out: &mut String, dir: &Path) {
         }
         let age = age_of(&path).map_or(0, |age| age.as_secs());
         if let Ok(text) = std::fs::read_to_string(&path) {
-            files.insert(name, (text, age));
+            files.entry(name).or_insert((text, age));
         }
     }
     if files.is_empty() {
@@ -586,9 +609,12 @@ mod tests {
     fn metrics_render_counters_relay_snapshots_and_dropped_in_files() {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path();
-        std::fs::create_dir_all(state.join("room/state")).unwrap();
+        // Where a room's relay keeps its snapshot, under the `--state` the
+        // room is started with.
+        let room = room_relay_root(&crate::room::relay_state(&state.join("room")));
+        std::fs::create_dir_all(&room).unwrap();
         tilo_relay_protocol::metrics::save_metrics(
-            &state.join("room/state"),
+            &room,
             &MetricsSnapshot {
                 sessions_open: 7,
                 subscriber_dropped_backpressure: 2,

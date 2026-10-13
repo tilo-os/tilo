@@ -174,6 +174,13 @@ pub enum Command {
         generation: String,
         app: String,
     },
+    /// Show `app` on the shown strip, as following a link to it does: focus
+    /// its window there, else open one. The page then invokes the link's
+    /// view action through that window's action door.
+    Open {
+        generation: String,
+        app: String,
+    },
 }
 
 impl Command {
@@ -193,7 +200,8 @@ impl Command {
             | Self::Scroll { generation, .. }
             | Self::GlobalSearch { generation }
             | Self::Commands { generation, .. }
-            | Self::Launch { generation, .. } => generation,
+            | Self::Launch { generation, .. }
+            | Self::Open { generation, .. } => generation,
         }
     }
 }
@@ -413,7 +421,36 @@ pub fn admit_with(
             }
             Ok(Admitted::Launch(app.clone()))
         }
+        Command::Open { app, .. } => admit_open(tree, app),
     }
+}
+
+fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
+    let workspace = tree.active_workspace().ok_or("Workspace unavailable")?;
+    let strip = active_strip(tree, workspace).ok_or("Strip unavailable")?;
+    if app.is_empty() {
+        return Err("Application unavailable".into());
+    }
+    // A window already showing the app is the one the link means; a second
+    // copy would split the person's place in it.
+    let shown = workspace
+        .strips
+        .iter()
+        .find(|s| s.id == strip)
+        .into_iter()
+        .flat_map(|s| s.window_groups.iter())
+        .find_map(|group| {
+            let tab = group.tabs.iter().find(|tab| {
+                tilo_desktop_model::apps::canonical_app_id(&tab.tile).as_deref() == Some(app)
+            })?;
+            Some(RouteIds {
+                workspace: workspace.id,
+                strip,
+                group: group.id,
+                tab: tab.id,
+            })
+        });
+    Ok(shown.map_or_else(|| Admitted::Launch(app.to_owned()), Admitted::Select))
 }
 
 fn admit_notifications(open: bool, capabilities: &Capabilities) -> Result<Admitted, String> {
@@ -685,6 +722,9 @@ fn activity_state(
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
     pub route: Route,
+    /// The app the window shows, as links name it; `None` for a surface of
+    /// no app (the activity pane).
+    pub app: Option<String>,
     pub label: String,
     pub strip_label: String,
     pub workspace_label: String,
@@ -759,6 +799,7 @@ pub fn snapshot_with(
                             group: group.id,
                             tab: tab.id,
                         }),
+                        app: tilo_desktop_model::apps::canonical_app_id(&tab.tile),
                         label: tab.title.clone(),
                         strip_label: strip.name.clone(),
                         workspace_label: workspace.name.clone(),
@@ -1222,5 +1263,31 @@ mod tests {
             serde_json::to_value(snapshot(&tree, "g1", vec![])).unwrap()["capabilities"]["launch"],
             true
         );
+    }
+
+    #[test]
+    fn open_focuses_the_shown_window_of_an_app_or_launches_one() {
+        let tree = tree();
+        let open = |app: &str| -> Command {
+            serde_json::from_value(serde_json::json!({"kind":"open","generation":"g1","app":app}))
+                .unwrap()
+        };
+        let shown = RouteIds {
+            workspace: WorkspaceId(u64::MAX),
+            strip: StripId(9_007_199_254_740_993),
+            group: 3,
+            tab: 4,
+        };
+        assert_eq!(
+            admit(&open("so.tilo.notes"), "g1", &tree),
+            Ok(Admitted::Select(shown))
+        );
+        assert_eq!(
+            admit(&open("so.tilo.chat"), "g1", &tree),
+            Ok(Admitted::Launch("so.tilo.chat".into()))
+        );
+        assert!(admit(&open(""), "g1", &tree).is_err());
+        let json = serde_json::to_value(snapshot(&tree, "g1", vec![])).unwrap();
+        assert_eq!(json["entries"][0]["app"], "so.tilo.notes");
     }
 }

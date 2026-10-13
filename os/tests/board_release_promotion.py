@@ -45,7 +45,7 @@ class BoardRelease(unittest.TestCase):
         (profile_dir / f"{PROFILE}.json").write_bytes(definition)
         self.definition = hashlib.sha256(definition).hexdigest()
         self.env = os.environ | {
-            "HARDWARE_PROFILE": PROFILE, "GITHUB_SHA": SOURCE,
+            "HARDWARE_PROFILE": PROFILE, "GITHUB_SHA": SOURCE, "TILO_IMAGE_SOURCE": SOURCE,
             "GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
             "REQUESTED_RELEASE": "true", "FIRMWARE_CANDIDATE": "",
             "FIRMWARE_MANIFEST_SHA256": "", "FEX_PAYLOAD_CANDIDATE": "",

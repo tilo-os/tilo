@@ -1043,3 +1043,66 @@ fn published_read_follows_actual_pty_output_into_the_shared_session() {
 
 #[cfg(unix)]
 mod inherited_control_wire;
+#[test]
+fn native_resource_terminal_inspector_is_acknowledged_through_the_mounted_root() {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use ui::floating_surface::{
+        DeviceShellOperation, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
+        FloatingSurfaceServiceClient,
+    };
+
+    ui::framework::testing::drive_live_window::<crate::TerminalShell, _>(|app| {
+        let (app_side, mut host_side) = UnixStream::pair().unwrap();
+        host_side.set_nonblocking(true).unwrap();
+        app.test_floating_service_connection(
+            FloatingSurfaceServiceClient::from_test_stream(app_side).unwrap(),
+        );
+        for request in [81, 82] {
+            let mut message =
+                serde_json::to_vec(&FloatingSurfaceHostMessage::DeviceShellOperation {
+                    request,
+                    operation: DeviceShellOperation::Inspect,
+                })
+                .unwrap();
+            message.push(b'\n');
+            host_side.write_all(&message).unwrap();
+            assert!(app.test_pump_floating_service());
+            let mut received = Vec::new();
+            assert_eq!(
+                host_side.read_to_end(&mut received).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            let outcomes = received
+                .split(|byte| *byte == b'\n')
+                .filter(|line| !line.is_empty())
+                .filter_map(|line| {
+                    match serde_json::from_slice::<FloatingSurfaceClientMessage>(line).unwrap() {
+                        FloatingSurfaceClientMessage::DeviceShellOutcome { request, result } => {
+                            Some((request, result))
+                        }
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                outcomes.len(),
+                1,
+                "one exact response on the original connection"
+            );
+            assert_eq!(outcomes[0].0, request);
+            let value = outcomes[0]
+                .1
+                .as_ref()
+                .expect("native mounted Terminal Inspector must be available");
+            assert!(value["lifecycle"].is_string());
+            assert!(value["input_available"].is_boolean());
+            assert!(value["transport_disconnected"].is_boolean());
+            assert!(
+                !app.test_pump_floating_service(),
+                "idle service polling must not replay the operation"
+            );
+        }
+    })
+    .unwrap();
+}

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, bail};
 use ed25519_dalek::SigningKey;
 use registry_types::retention::RetentionPolicy;
 use registry_types::{
@@ -116,44 +116,22 @@ pub fn build_bot_entry(
         versions.push(version);
     }
     let versions = crate::entry::retain_versions(versions, &RetentionPolicy::default());
-    let mut entry = RegistryEntry {
+    let fresh = crate::entry::FreshEntry {
         package_id: release.package_id.to_owned(),
         kind: EntryKind::Bot,
-        name: previous.map_or_else(|| name.as_str().into(), |p| p.name.clone()),
-        description: previous.map_or_else(
-            || format!("{name} is a Tilo bot.").into(),
-            |p| p.description.clone(),
-        ),
-        tagline: previous.map_or_else(|| name.as_str().into(), |p| p.tagline.clone()),
-        images: previous.map(|p| p.images.clone()).unwrap_or_default(),
-        supported_languages: previous
-            .map_or_else(|| vec!["en".into()], |p| p.supported_languages.clone()),
+        description: format!("{name} is a Tilo bot."),
+        tagline: name.clone(),
+        name,
         categories: vec!["Bots".into()],
-        source_url: previous.and_then(|p| p.source_url.clone()),
-        homepage: previous.and_then(|p| p.homepage.clone()),
-        publisher_pubkey_hex: publisher,
-        versions,
-        updated_at_unix: previous.map_or(released_at_unix, |p| {
-            released_at_unix.max(p.updated_at_unix.saturating_add(1))
-        }),
-        signature_hex: String::new(),
     };
-    if let Some(metadata) = metadata {
-        entry.name.clone_from(&metadata.name);
-        entry.description.clone_from(&metadata.description);
-        entry.tagline.clone_from(&metadata.tagline);
-        entry.images.clone_from(&metadata.images);
-        entry
-            .supported_languages
-            .clone_from(&metadata.supported_languages);
-        entry.source_url.clone_from(&metadata.source_url);
-        entry.homepage.clone_from(&metadata.homepage);
-    }
-    entry
-        .validate()
-        .map_err(|error| anyhow!("invalid registry metadata: {error}"))?;
-    registry_types::sign_entry(&mut entry, signer);
-    Ok(entry)
+    crate::entry::signed_entry(
+        fresh,
+        versions,
+        previous,
+        metadata,
+        released_at_unix,
+        signer,
+    )
 }
 
 #[cfg(test)]

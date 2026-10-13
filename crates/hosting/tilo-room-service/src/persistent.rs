@@ -219,6 +219,11 @@ fn tls_listener(
     }
 }
 
+/// The `--state` of the persistent room's relay, under its directory.
+pub(crate) fn relay_state(dir: &Path) -> PathBuf {
+    dir.join("relay")
+}
+
 /// The child's command line.
 fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     let persistent = config
@@ -230,7 +235,7 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
         .env("TILO_RELAY_LOG", "warn")
         .arg("room")
         .arg("--state")
-        .arg(dir.join("relay"));
+        .arg(relay_state(dir));
     tls_listener(&mut command, config, persistent);
     command.arg("--allowed-origin").arg(config.api_origin());
     for origin in &config.site_origins {
@@ -251,6 +256,9 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
                 .port_base
                 .saturating_add(crate::config::LOCAL_PLAIN_OFFSET)
         ));
+    }
+    if let Some(entry) = &persistent.web_entry {
+        command.arg("--web-entry").arg(entry);
     }
     command
         .arg("--persistent")
@@ -1150,6 +1158,61 @@ mod tests {
         let shared = Shared::for_test(dir.path(), 1, 1);
         assert!(shared.avatar_path("../guests.json").is_none());
         assert!(shared.avatar_path(&"ab".repeat(32)).is_some());
+    }
+
+    /// `/metrics` finds the counters where the relay this command starts,
+    /// and its connector workers, write them under its `--state`.
+    #[test]
+    fn metrics_read_what_the_persistent_relay_and_its_connectors_write() {
+        use tilo_relay_protocol::metrics::{
+            MetricsSnapshot, room_relay_root, room_textfile_dir, save_metrics,
+        };
+        let state = tempfile::tempdir().unwrap();
+        let vars = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_RELAY_ORIGIN", "https://rooms.example"),
+        ];
+        let config = Config::from_lookup(|name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        })
+        .unwrap();
+        let command = child_command(&config, &state.path().join("plaza")).unwrap();
+        let args: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let at = args.iter().position(|arg| arg == "--state").unwrap();
+        let relay_state = PathBuf::from(&args[at + 1]);
+        let root = room_relay_root(&relay_state);
+        std::fs::create_dir_all(&root).unwrap();
+        save_metrics(
+            &root,
+            &MetricsSnapshot {
+                sessions_open: 2,
+                ..MetricsSnapshot::default()
+            },
+        )
+        .unwrap();
+        let textfiles = room_textfile_dir(&relay_state);
+        std::fs::create_dir_all(&textfiles).unwrap();
+        std::fs::write(
+            textfiles.join("discord.prom"),
+            "tilo_rooms_bridge_queue_depth 0\n",
+        )
+        .unwrap();
+        let page =
+            crate::ops::Ops::new(state.path().to_owned(), crate::ops::Mode::Normal).render(1);
+        for expected in [
+            "tilo_rooms_relay_up 1",
+            "tilo_rooms_relay_sessions 2",
+            "tilo_rooms_textfile_age_seconds{file=\"discord.prom\"}",
+            "tilo_rooms_bridge_queue_depth 0",
+        ] {
+            assert!(page.contains(expected), "{expected} missing from\n{page}");
+        }
     }
 
     #[test]

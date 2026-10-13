@@ -39,6 +39,35 @@ fn the_app_worker_cannot_read_the_hosts_state_directory() {
     );
 }
 
+/// A record a host creates under the room's default route is the record
+/// every member's first window opens: its genesis names that id, not one
+/// of its own, or a member's store refuses it as not matching its binding.
+#[test]
+fn a_confined_record_created_under_a_room_route_names_that_route() {
+    let catalogue = catalogue();
+    let app = "so.tilo.notes";
+    let default = ui::record::RecordId::room_default();
+    let source = ConfinedReplica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "host",
+        &tilo_agent_participant::ReplicaActor::Owner,
+        Seed::NewAt(default.clone()),
+    )
+    .unwrap();
+    assert_eq!(source.record(), default.as_str());
+    let Some(DocumentMutation::Snapshot(genesis)) = source.take_mutation().unwrap() else {
+        panic!("a new record is published whole");
+    };
+    let doc = automerge::AutoCommit::load(&genesis).unwrap();
+    let kind = catalogue.get(app).unwrap().record_kind.clone();
+    assert_eq!(
+        ui::record::identity(&doc),
+        Some(ui::record::RecordCheckout::new(default, kind))
+    );
+}
+
 fn edit(text: &str) -> serde_json::Map<String, serde_json::Value> {
     common::scratchpad_body(text).1
 }

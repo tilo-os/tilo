@@ -238,7 +238,7 @@ pub struct ResourceAddress { pub kind: String, pub id: String, pub span: Option<
 pub enum Mode { Desktop, App }
 
 /// Never rendered outside the fragment; `Debug` and `Display` redact.
-pub struct LinkSecrets { pub invite: Option<Secret>, pub ticket: Option<Secret>, pub token: Option<Secret> }
+pub struct LinkSecrets { pub invite: Option<Secret>, pub ticket: Option<Secret>, pub token: Option<Secret>, pub pair: Option<Secret> }
 
 pub struct Link { pub mode: Mode, pub target: LinkTarget, pub secrets: LinkSecrets }
 
@@ -392,6 +392,12 @@ the page.
    - With `ticket` (room service rooms), the page shows its pairing code and
      the ticket is spent on it at the redemption door the web host's
      `entry.json` names (`tickets`); a host that names none refuses the link.
+   - With `pair`, the page becomes a new device of that person: it shows its
+     pairing code, the person approves it on a device that holds their root
+     (the desktop's "Pair a new device"; the host relays the request and
+     checks the root's signature, `/certify/approve`), and the page connects
+     as them with the certificate the root signed. Nothing is asked of any
+     server but the host the two devices share.
    - A host whose **listed workspace has an admission door**
      (`web/workspaces.mjs`: a workspace is
      `{name, host: {origin, key?}, room?, admission?}`, and `admission` is
@@ -415,7 +421,8 @@ the page.
 ### 6.2 Secrets
 
 Secrets are `invite` (invitation text), `ticket` (a room service guest
-ticket) and `token` (a pre-admission token). Rules:
+ticket), `token` (a pre-admission token) and `pair` (the user root, hex, of
+the person whose new device this browser asks to become). Rules:
 
 - They only ever appear in the fragment. `LinkSecrets` has no path or query
   rendering; there is no API that could put one there.
@@ -423,7 +430,7 @@ ticket) and `token` (a pre-admission token). Rules:
   the secrets into page memory and calls `history.replaceState` with the
   public URL before any module loads. Copying from the address bar, a crash
   report, a screenshot of the address bar or a later `share-link` never sees
-  them. It is the one JavaScript parser, and it only splits off the three
+  them. It is the one JavaScript parser, and it only splits off the four
   known keys; the corpus tests (§9) hold it to the Rust parser's split.
 - Secrets are read once by admission and dropped after use.
 - Entry pages set `<meta name="referrer" content="no-referrer">` (as

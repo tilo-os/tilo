@@ -1848,7 +1848,7 @@ mod tests {
     use tilo_actions::remote::RemoteActionMessage;
     use tilo_actions::{ActionContract, ActionParam, Availability, ParamType};
     use ui::collaboration::CollabRequest;
-    use ui::collaboration::{BrokerActionDescriptor, BrokerActionInput, BrokerActionSurface};
+    use ui::collaboration::{BrokerActionSurface, ExportedAction, ExportedInput};
     use uuid::Uuid;
 
     // -- A scripted model ------------------------------------------------
@@ -2028,8 +2028,8 @@ mod tests {
         params: Vec<ActionParam>,
         availability: Availability,
         tags: Vec<String>,
-    ) -> BrokerActionDescriptor {
-        BrokerActionDescriptor {
+    ) -> ExportedAction {
+        ExportedAction {
             semantic_identity: None,
             resource: DOC.into(),
             action: action.into(),
@@ -2044,12 +2044,8 @@ mod tests {
                 tags,
                 ..ActionContract::default()
             },
-            input: BrokerActionInput {
-                kind: "none".into(),
-                prompt: String::new(),
-                placeholder: String::new(),
-                wants_content: false,
-            },
+            view: None,
+            input: ExportedInput::None,
         }
     }
 
@@ -2229,7 +2225,7 @@ mod tests {
                     cluster_id: Uuid::from_u128(1).to_string(),
                     record_id: String::new(),
                     live: true,
-                    actions: vec![BrokerActionDescriptor {
+                    actions: vec![ExportedAction {
                         semantic_identity: None,
                         resource: "chat.channel:general".into(),
                         resource_kind: "chat.channel".into(),
@@ -2256,7 +2252,7 @@ mod tests {
                 if !self.writer_opened {
                     surfaces.remove(0);
                 }
-                let open = |app: &str, title: &str| BrokerActionDescriptor {
+                let open = |app: &str, title: &str| ExportedAction {
                     semantic_identity: None,
                     resource: format!("{}{app}", tools::LAUNCHER_OPEN_PREFIX),
                     resource_kind: "desktop.application".into(),

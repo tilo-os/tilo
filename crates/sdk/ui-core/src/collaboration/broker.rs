@@ -20,12 +20,11 @@
 #[cfg(test)]
 use super::channel_key;
 use super::{
-    ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionDescriptor,
-    BrokerActionSurface, CollabEvent, CollabRequest, CollabTransport, CollaborationManager,
-    Collaborator, DocumentMutation, DocumentPublicationError, DocumentPublicationReceipt,
-    ExportedAction, ExportedInput, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
-    SignedOp, TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, mpsc,
-    presence_handle_env,
+    ActionDirectoryRequest, Backend, BrokerActionCatalogueWire, BrokerActionSurface, CollabEvent,
+    CollabRequest, CollabTransport, CollaborationManager, Collaborator, DocumentMutation,
+    DocumentPublicationError, DocumentPublicationReceipt, ExportedAction, ExportedInput,
+    PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, SignedOp, TransportCommand,
+    TransportError, TransportStatus, Uuid, auto_hello_env, mpsc, presence_handle_env,
 };
 
 // Worker-owned Cloud facilities: committed-document reads, the paged
@@ -871,37 +870,11 @@ fn json_map_bytes(values: &serde_json::Map<String, serde_json::Value>, meter: &m
 /// to a `Vec<u8>` reuses the serializer every value is already sent with,
 /// instead of compiling a second one per type for a counting writer.
 fn serialized_bytes<T: serde::Serialize>(value: &T, meter: &mut ByteMeter) {
-    thread_local! {
-        static TEXT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-    let written = TEXT.with(|text| {
-        let Ok(mut text) = text.try_borrow_mut() else {
-            return written_len(&mut Vec::new(), value);
-        };
-        text.clear();
-        let written = written_len(&mut text, value);
-        // Keep the buffer for the next value, but not the peak of a large one.
-        if text.capacity() > SERIALIZED_TEXT_KEPT {
-            *text = Vec::new();
-        }
-        written
-    });
-    match written {
-        Some(bytes) => meter.add(bytes),
-        None => meter.0 = None,
+    match runtime_collab::wire_json_len(value) {
+        usize::MAX => meter.0 = None,
+        bytes => meter.add(bytes),
     }
 }
-
-/// The length of `value`'s JSON text, written after what `text` holds.
-fn written_len<T: serde::Serialize>(text: &mut Vec<u8>, value: &T) -> Option<usize> {
-    value
-        .serialize(&mut serde_json::Serializer::new(&mut *text))
-        .ok()
-        .map(|()| text.len())
-}
-
-/// The most text [`serialized_bytes`] keeps allocated between values.
-const SERIALIZED_TEXT_KEPT: usize = 64 * 1024;
 
 fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     meter.string_capacity(&action.resource);
@@ -1328,32 +1301,6 @@ async fn remote_action_round_trip(
     })
 }
 
-fn broker_action_bytes(action: &BrokerActionDescriptor, meter: &mut ByteMeter) {
-    meter.string_capacity(&action.resource);
-    if let Some(identity) = &action.semantic_identity {
-        meter.string_capacity(&identity.kind);
-        meter.string_capacity(&identity.key);
-    }
-    meter.string_capacity(&action.action);
-    meter.string_capacity(&action.resource_kind);
-    meter.string_capacity(&action.resource_label);
-    meter.string_capacity(&action.action_label);
-    if let Some(description) = &action.description {
-        meter.string_capacity(description);
-    }
-    meter.add_product(
-        action.params.capacity(),
-        std::mem::size_of::<tilo_actions::ActionParam>(),
-    );
-    for param in &action.params {
-        serialized_bytes(param, meter);
-    }
-    serialized_bytes(&action.contract, meter);
-    meter.string_capacity(&action.input.kind);
-    meter.string_capacity(&action.input.prompt);
-    meter.string_capacity(&action.input.placeholder);
-}
-
 fn action_catalogue_bytes(
     surfaces: &[BrokerActionSurface],
     surface_capacity: usize,
@@ -1366,10 +1313,10 @@ fn action_catalogue_bytes(
         meter.string_capacity(&surface.record_id);
         meter.add_product(
             surface.actions.capacity(),
-            std::mem::size_of::<BrokerActionDescriptor>(),
+            std::mem::size_of::<ExportedAction>(),
         );
         for action in &surface.actions {
-            broker_action_bytes(action, meter);
+            exported_action_bytes(action, meter);
         }
     }
 }
@@ -12684,7 +12631,7 @@ mod tests {
             "operation_kind": tilo_actions::OperationKind::View,
             "params": [tilo_actions::ActionParam::required("page", tilo_actions::ParamType::Resource, "The page to open")],
             "contract": tilo_actions::ActionContract::view(),
-            "input": {"kind": "none"}
+            "input": ExportedInput::None
         })).collect();
         serde_json::json!({"version": 1, "surfaces": [{
             "peer_id": 1, "app_id": "so.tilo.notes", "cluster_id": cluster.to_string(),

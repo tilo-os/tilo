@@ -202,6 +202,23 @@ pub(crate) fn output_budget() -> &'static ReplayBudget {
 }
 
 impl DetachedReplay {
+    /// [`Self::advance`] for up to a slice while it is still preparing, as
+    /// an owner transaction runs: one quantum per pool round trip made a
+    /// newcomer's replay wait behind every other replay's trips.
+    fn advance_slice(
+        &mut self,
+        authority: &Arc<Authority>,
+        mut written: Option<WrittenBatch>,
+        budget: &ReplayBudget,
+    ) -> Result<ReplayAdvance, StoreError> {
+        let start = std::time::Instant::now();
+        loop {
+            let advance = self.advance(authority, written.take(), budget)?;
+            if !matches!(advance, ReplayAdvance::Preparing) || start.elapsed() >= super::SLICE {
+                return Ok(advance);
+            }
+        }
+    }
     fn advance(
         &mut self,
         authority: &Arc<Authority>,
@@ -292,7 +309,7 @@ impl ReplayHandle {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .as_mut()
                     .ok_or_else(|| error("stale replay handle"))?
-                    .advance(&authority, acknowledged, output_budget())
+                    .advance_slice(&authority, acknowledged, output_budget())
             })
             .await??;
             match advance {
@@ -308,7 +325,7 @@ impl State {
         &mut self,
         authority: &Arc<Authority>,
     ) -> Result<Step<ReplayHandle>, StoreError> {
-        self.capture_replay_at(authority, false, None)
+        self.capture_replay_at(authority, None, None)
     }
     /// A replay that leaves out the retained frames the resuming device
     /// already holds.
@@ -317,22 +334,25 @@ impl State {
         authority: &Arc<Authority>,
         skip: Option<crate::store::replay::ResumeSkip>,
     ) -> Result<Step<ReplayHandle>, StoreError> {
-        self.capture_replay_at(authority, false, skip)
+        self.capture_replay_at(authority, None, skip)
     }
+    /// The final cut of a catch-up: what the workspace committed while it
+    /// ran, held under `held`.
     pub(crate) fn capture_pending_replay(
         &mut self,
         authority: &Arc<Authority>,
+        held: &std::path::Path,
     ) -> Result<Step<ReplayHandle>, StoreError> {
-        self.capture_replay_at(authority, true, None)
+        self.capture_replay_at(authority, Some(held), None)
     }
     fn capture_replay_at(
         &mut self,
         authority: &Arc<Authority>,
-        pending_only: bool,
+        held: Option<&std::path::Path>,
         skip: Option<crate::store::replay::ResumeSkip>,
     ) -> Result<Step<ReplayHandle>, StoreError> {
         #[cfg(test)]
-        if pending_only {
+        if held.is_some() {
             crate::store::test_barrier::pause(self.store.root(), "replay-pending-capture");
         }
         if !authority.active() {
@@ -369,9 +389,9 @@ impl State {
             }
         }
         if !self.replays.entries.contains_key(&authority.id.0) {
-            let build = if pending_only {
+            let build = if let Some(held) = held {
                 self.store
-                    .start_pending_replay_capture(authority.id, authority.device)
+                    .start_pending_replay_capture(authority.id, authority.device, held)
             } else {
                 self.store
                     .start_replay_capture(authority.id, authority.device)
