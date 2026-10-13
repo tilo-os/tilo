@@ -5,7 +5,8 @@
 pub mod changes;
 pub mod columns;
 pub mod comments;
-pub mod container;
+#[cfg(test)]
+mod container;
 pub mod content;
 pub mod export;
 pub mod headers;
@@ -35,7 +36,7 @@ impl FormatProvider for OdtCodec {
         inputs: &mut ContentInputs,
     ) -> Result<(), CodecError> {
         doc.bulk(|doc| {
-            let container = container::OdtContainer::read(bytes)?;
+            let container = crate::package::ZipPackage::read(bytes)?;
             let content = container
                 .get("content.xml")
                 .ok_or_else(|| CodecError::Parse("odt: missing content.xml".into()))?

@@ -11,7 +11,7 @@
 
 use proptest::prelude::*;
 use tilo_doc::Document;
-use tilo_doc_codecs::odt::container::OdtContainer;
+use tilo_doc_codecs::package::ZipPackage;
 use tilo_doc_codecs::{FormatProvider, OdtCodec};
 
 #[derive(Debug, Clone)]
@@ -141,7 +141,7 @@ fn content_xml(doc: &Document) -> Vec<u8> {
     let odt = OdtCodec
         .export(doc.as_ref(), &tilo_content::NoContent)
         .unwrap();
-    OdtContainer::read(&odt)
+    ZipPackage::read(&odt)
         .unwrap()
         .get("content.xml")
         .unwrap()
