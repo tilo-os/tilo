@@ -28,12 +28,6 @@ mod native_identity;
 
 use crate::shell::shared_display_actions;
 
-const WORKSPACE_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
-    "name",
-    ParamType::Text,
-    "1 to 120 characters without control characters. Omit to use the localized default name.",
-)];
-
 fn workspace_create_context(
     state: &ChromeState,
 ) -> Result<
@@ -7909,7 +7903,7 @@ mod tests {
         assert_ne!(created.id, original.id);
         assert_ne!(created.room, original.room);
         assert_eq!(created.name, "Research");
-        assert_eq!(created.owner.as_deref(), Some(FIXTURE_USER));
+        assert_eq!(created.owner().map(String::as_str), Some(FIXTURE_USER));
         assert_eq!(
             created.role_of(&FIXTURE_USER.to_string()),
             Some(CapRole::Owner)
@@ -7923,12 +7917,15 @@ mod tests {
                 .all(|strip| strip.window_groups.is_empty())
         );
         assert!(created.tasks.is_empty());
-        assert_eq!(created.capabilities.len(), 1);
+        let created_room = created.room.to_string();
+        assert_eq!(created.policy.room, created_room);
+        assert!(!created.policy.grants.is_empty());
         assert!(
             created
-                .capabilities
+                .policy
+                .grants
                 .iter()
-                .all(|cap| !original.capabilities.iter().any(|old| old.id == cap.id))
+                .all(|grant| grant.node.room_id() == Some(created_room.as_str()))
         );
         let preserved = tree
             .desktop
@@ -7937,8 +7934,7 @@ mod tests {
             .find(|ws| ws.id == original.id)
             .unwrap();
         assert_eq!(preserved.room, original.room);
-        assert_eq!(preserved.owner, original.owner);
-        assert_eq!(preserved.capabilities, original.capabilities);
+        assert_eq!(preserved.policy, original.policy);
         let mut restored = tilo_desktop_model::DesktopTree::default();
         tilo_desktop_model::desktop_doc::rebuild(&tree.doc, &mut restored);
         drop(tree);
@@ -7950,8 +7946,7 @@ mod tests {
             .unwrap();
         assert_eq!(restored.room, created.room);
         assert_eq!(restored.name, created.name);
-        assert_eq!(restored.owner, created.owner);
-        assert_eq!(restored.capabilities, created.capabilities);
+        assert_eq!(restored.policy, created.policy);
     }
 
     #[test]
