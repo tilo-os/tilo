@@ -12944,9 +12944,11 @@ pub fn run() {
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
         // Is there room in the pipe? Building another scene while the render
         // thread is behind would only grow the queue (and input-to-photon latency); capped at the presenter's queue depth plus the frame presenting, the tick still services input/clients without rendering.
+        // A frame still waiting for the render thread is replaced by the one built now (latest
+        // wins), so a full pipe whose newest frame has not started takes it too.
         let pipe_ready = present_pipe
             .as_ref()
-            .is_none_or(super::present::PresentPipe::has_capacity);
+            .is_none_or(|pipe| pipe.has_capacity() || pipe.can_replace_queued());
         credit_transition_hold = present_hold_credit(
             !pipe_ready,
             cadence_due,
@@ -13514,13 +13516,18 @@ pub fn run() {
             let mut render_thread_lost = false;
             let mut submitted_serial = None;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
-                submitted_serial = pipe.submit_frame_with_input_age(
+                let submission = pipe.submit_frame_with_input_age(
                     frame_paint,
                     OutputId(0),
                     metrics.pending_input_age(t_submit_start),
                 );
-                if let Some(serial) = submitted_serial {
-                    state.presentation_feedback.submitted(serial, feedback);
+                submitted_serial = submission.map(|submission| submission.serial);
+                if let Some(submission) = submission {
+                    state.presentation_feedback.submitted_replacing(
+                        submission.serial,
+                        feedback,
+                        submission.replaced,
+                    );
                 }
                 render_thread_lost = submitted_serial.is_none();
                 // This serial belongs to the scene submitted above.  Do not

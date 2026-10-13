@@ -22,6 +22,14 @@
 //! behind one rendering: the GPU is busy either way, and a queued frame would only age, so the
 //! frame rendered next is always built from the newest state.
 //!
+//! Latest wins. A frame the loop builds while the pipe has no capacity, but a frame handed over
+//! earlier still waits for the render thread, replaces that frame instead of queueing behind it
+//! ([`PresentPipe::can_replace_queued`]): the waiting frame would only show older state one
+//! render later. The replacement takes over the waiting frame's admission (so [`admits`] bounds
+//! hold), repaints both frames' damage ([`FramePaint::superseding`]), and retires the frames it
+//! replaced with itself, each serial exactly once and in submission order. The client buffers
+//! only the replaced frame drew go back to their clients at once: it is never rendered.
+//!
 //! A presenter panic unwinds the render thread; the next [`PresentPipe::submit`] then sees a
 //! closed channel and drops to no presenter, so a lost display doesn't take the session (and
 //! clients' unsaved work) with it. The headless backend stays synchronous, since its `submit_frame` output is read back immediately by the test-control `snapshot` command.
@@ -235,33 +243,59 @@ pub trait Presenter: Send {
 }
 
 enum PresentMsg {
-    // Boxed so the message is no bigger than its next-largest variant — a `Scene` inline here
-    // would size every `Resize`/`Dpms`/`Stop` message (and the channel's internal buffer slot)
-    // to match it.
-    Frame {
-        frame: Box<FramePaint>,
-        output: OutputId,
-        /// Assigned by the logic thread at submit time. It lets a caller wait for one
-        /// *specific* frame rather than treating any frame that happened to retire afterwards
-        /// as an acknowledgement. That distinction is security-critical for the pre-sleep lock
-        /// frame: a desktop frame already queued before the lock must not release the logind
-        /// delay inhibitor.
-        serial: u64,
-        enqueued_at: Instant,
-        input_age_at_enqueue: Option<Duration>,
-        inflight_at_enqueue: usize,
-        /// The client frames `frame` draws, held until it was presented: their
-        /// buffers do not go back to their clients while it can be rendered.
-        pins: crate::shell::gpu_frames::FramePins,
-        /// The frame's share of the pipe's capacity, given back however the frame ends.
-        admission: Admission,
-    },
+    /// A frame waits in [`PendingFrames`]: take the oldest. One message per frame queued there;
+    /// a frame that replaces a waiting one sends none.
+    Frame,
     /// Idle work for [`Presenter::warm`]; never presented, never counted in
     /// flight. Its client frames stay pinned until it is done.
     Warm(Box<Warm>),
     Resize((u32, u32)),
     Dpms(bool),
     Stop,
+}
+
+/// A frame handed to the render thread and not yet taken by it.
+struct QueuedFrame {
+    // Boxed so moving it between the queue and the render thread copies a pointer, not a scene.
+    frame: Box<FramePaint>,
+    output: OutputId,
+    /// Assigned by the logic thread at submit time. It lets a caller wait for one
+    /// *specific* frame rather than treating any frame that happened to retire afterwards
+    /// as an acknowledgement. That distinction is security-critical for the pre-sleep lock
+    /// frame: a desktop frame already queued before the lock must not release the logind
+    /// delay inhibitor.
+    serial: u64,
+    enqueued_at: Instant,
+    input_age_at_enqueue: Option<Duration>,
+    inflight_at_enqueue: usize,
+    /// The client frames `frame` draws, held until it was presented: their
+    /// buffers do not go back to their clients while it can be rendered.
+    pins: crate::shell::gpu_frames::FramePins,
+    /// The frame's share of the pipe's capacity, given back however the frame ends.
+    admission: Admission,
+    /// Serials of the frames this one replaced while they waited, oldest first. They retire
+    /// with it, just before it.
+    superseded: Vec<u64>,
+}
+
+/// Frames handed over that the render thread has not taken yet, oldest first. Shared so the
+/// logic thread can replace the newest while it still waits; the channel carries one
+/// [`PresentMsg::Frame`] per entry, so frames keep their order against the other messages.
+type PendingFrames = Arc<Mutex<VecDeque<QueuedFrame>>>;
+
+fn lock_pending(pending: &PendingFrames) -> std::sync::MutexGuard<'_, VecDeque<QueuedFrame>> {
+    pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// A frame the pipe accepted ([`PresentPipe::submit_frame_with_input_age`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Submission {
+    pub serial: u64,
+    /// The waiting frame this one replaced (latest wins). It is never rendered and retires
+    /// with this frame; whatever was owed to it on presentation is now this frame's.
+    pub replaced: Option<u64>,
 }
 
 /// Idle work for the render thread ([`PresentPipe::warm`]).
@@ -277,6 +311,11 @@ pub type RetireSignal = Box<dyn Fn() + Send>;
 /// Handle to the render thread.
 pub struct PresentPipe {
     tx: Sender<PresentMsg>,
+    /// Frames handed over and not yet taken by the render thread.
+    pending: PendingFrames,
+    /// The newest message sent is a frame: a frame built now may replace it while it waits.
+    /// Cleared by any other message, which must not be overtaken by a frame built after it.
+    frame_is_newest: AtomicBool,
     /// Frames handed over but not yet presented; the logic thread reads it to decide whether to build the next frame.
     inflight: Arc<AtomicUsize>,
     /// Frames presented whose flip has not retired ([`Presenter::owes_retirement`]).
@@ -545,12 +584,15 @@ struct Rendered {
     phases: Option<FramePhaseTiming>,
     owed: bool,
     overlapped: bool,
+    /// Frames this one replaced before they rendered; they retire with it.
+    superseded: Vec<u64>,
 }
 
 /// The `tilo-present` thread: presents frames, and publishes each one's
 /// retirement in submission order.
 struct RenderThread {
     presenter: Box<dyn Presenter>,
+    pending: PendingFrames,
     board: RetireBoard,
     on_retire: RetireSignal,
     queue: RetireQueue<Rendered>,
@@ -562,6 +604,9 @@ impl Drop for RenderThread {
     /// the screen. Reporting them as owed would keep the pipe refusing frames for good, and
     /// the loop would never submit again to find the channel closed and drop the presenter.
     fn drop(&mut self) {
+        // Frames still waiting will never be rendered: their capacity and client buffers go
+        // back now, and a replacement can no longer land on them.
+        lock_pending(&self.pending).clear();
         self.board.unretired.store(0, Ordering::Release);
         (self.on_retire)();
     }
@@ -595,16 +640,21 @@ impl RenderThread {
                 }
             };
             match msg {
-                PresentMsg::Frame {
-                    frame,
-                    output,
-                    serial,
-                    enqueued_at,
-                    input_age_at_enqueue,
-                    inflight_at_enqueue,
-                    pins,
-                    admission,
-                } => {
+                PresentMsg::Frame => {
+                    let Some(QueuedFrame {
+                        frame,
+                        output,
+                        serial,
+                        enqueued_at,
+                        input_age_at_enqueue,
+                        inflight_at_enqueue,
+                        pins,
+                        admission,
+                        superseded,
+                    }) = lock_pending(&self.pending).pop_front()
+                    else {
+                        continue;
+                    };
                     let render_started = Instant::now();
                     let queue_wait = render_started.saturating_duration_since(enqueued_at);
                     let physical = self.presenter.present_frame_observed(&frame, output);
@@ -630,6 +680,7 @@ impl RenderThread {
                         phases: self.presenter.frame_phase_timing(),
                         owed,
                         overlapped,
+                        superseded,
                     };
                     let outcome = (!owed).then(|| OwedRetirement {
                         physical,
@@ -704,6 +755,18 @@ impl RenderThread {
                     overlapped: frame.overlapped,
                 },
             );
+            // The frames it replaced are shown by it: each retires once, before it.
+            for serial in frame.superseded {
+                self.board.retire(
+                    Retirement {
+                        serial,
+                        at,
+                        queue_wait: frame.queue_wait,
+                        display: outcome.display,
+                    },
+                    outcome.physical,
+                );
+            }
             self.board.retire(
                 Retirement {
                     serial: frame.serial,
@@ -784,6 +847,8 @@ impl PresentPipe {
             unretired: unretired.clone(),
             inflight: inflight.clone(),
         };
+        let pending: PendingFrames = Arc::new(Mutex::new(VecDeque::new()));
+        let thread_pending = pending.clone();
         let finished = Arc::new(AtomicBool::new(false));
         let thread_finished = finished.clone();
         let spawned = std::thread::Builder::new()
@@ -797,6 +862,7 @@ impl PresentPipe {
                 ::launcher::priority::request_realtime(::launcher::priority::PRESENT_RT_PRIORITY);
                 RenderThread {
                     presenter,
+                    pending: thread_pending,
                     board,
                     on_retire,
                     queue: RetireQueue::default(),
@@ -822,6 +888,8 @@ impl PresentPipe {
         };
         Self {
             tx,
+            pending,
+            frame_is_newest: AtomicBool::new(false),
             inflight,
             unretired,
             presented: presented_frames,
@@ -853,6 +921,12 @@ impl PresentPipe {
             self.unretired(),
             self.queue_depth(),
         )
+    }
+
+    /// The pipe has no capacity, but the newest frame handed over still waits for the render
+    /// thread, so a frame built now would replace it rather than queue behind it (latest wins).
+    pub fn can_replace_queued(&self) -> bool {
+        self.frame_is_newest.load(Ordering::Acquire) && !lock_pending(&self.pending).is_empty()
     }
 
     /// Frames admitted beyond the one presenting: the presenter's own depth,
@@ -950,17 +1024,76 @@ impl PresentPipe {
     /// Hand a finished scene with retained-damage authority to the render thread.
     pub fn submit_frame(&mut self, frame: FramePaint, output: OutputId) -> Option<u64> {
         self.submit_frame_with_input_age(frame, output, None)
+            .map(|submission| submission.serial)
     }
 
     /// Submit while preserving the age of the oldest input represented by
-    /// this frame. This is diagnostic metadata only; presentation semantics
-    /// and FIFO ordering are unchanged.
+    /// this frame (diagnostic metadata only).
+    ///
+    /// Without capacity, a frame replaces the newest frame handed over if that one still waits
+    /// for the render thread and nothing was sent after it ([`Self::can_replace_queued`]);
+    /// otherwise frames queue in order.
     pub fn submit_frame_with_input_age(
         &mut self,
         frame: FramePaint,
         output: OutputId,
         input_age_at_enqueue: Option<Duration>,
-    ) -> Option<u64> {
+    ) -> Option<Submission> {
+        if !self.has_capacity() && self.frame_is_newest.load(Ordering::Acquire) {
+            match self.replace_queued(frame, output, input_age_at_enqueue) {
+                Ok(submission) => return submission,
+                Err(frame) => return self.enqueue(*frame, output, input_age_at_enqueue),
+            }
+        }
+        self.enqueue(frame, output, input_age_at_enqueue)
+    }
+
+    /// Put `frame` in place of the newest frame still waiting for the render thread, keeping
+    /// its admission. `Err` hands the frame back when none waits any more.
+    fn replace_queued(
+        &mut self,
+        frame: FramePaint,
+        output: OutputId,
+        input_age_at_enqueue: Option<Duration>,
+    ) -> Result<Option<Submission>, Box<FramePaint>> {
+        let mut pending = lock_pending(&self.pending);
+        let Some(queued) = pending.back_mut() else {
+            return Err(Box::new(frame));
+        };
+        let serial = self
+            .submitted
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        let frame = frame.superseding(&queued.frame);
+        let pins = frame.client_frame_pins();
+        let replaced = std::mem::replace(&mut queued.serial, serial);
+        queued.superseded.push(replaced);
+        *queued.frame = frame;
+        queued.output = output;
+        queued.enqueued_at = Instant::now();
+        queued.input_age_at_enqueue = input_age_at_enqueue;
+        queued.inflight_at_enqueue = self.inflight.load(Ordering::Acquire);
+        // The replaced frame's client buffers go back unless this frame draws them too.
+        queued.pins = pins;
+        drop(pending);
+        if self.finished.load(Ordering::Acquire) {
+            // The render thread left after the frame was replaced: nothing will render it.
+            lock_pending(&self.pending).clear();
+            return Ok(None);
+        }
+        Ok(Some(Submission {
+            serial,
+            replaced: Some(replaced),
+        }))
+    }
+
+    /// Queue `frame` behind the frames handed over before it.
+    fn enqueue(
+        &mut self,
+        frame: FramePaint,
+        output: OutputId,
+        input_age_at_enqueue: Option<Duration>,
+    ) -> Option<Submission> {
         // Serial zero is the unambiguous "no frame" value used by callers
         // before their first successful submit.  A closed pipe may consume a
         // number, but its caller immediately takes the lost-presenter path,
@@ -972,20 +1105,27 @@ impl PresentPipe {
         let (admission, inflight_at_enqueue) = Admission::admit(&self.inflight);
         let enqueued_at = Instant::now();
         let pins = frame.client_frame_pins();
-        // A refused send hands the frame back; dropping it returns its admission.
-        self.tx
-            .send(PresentMsg::Frame {
-                frame: Box::new(frame),
-                output,
-                serial,
-                enqueued_at,
-                input_age_at_enqueue,
-                inflight_at_enqueue,
-                pins,
-                admission,
-            })
-            .ok()?;
-        Some(serial)
+        lock_pending(&self.pending).push_back(QueuedFrame {
+            frame: Box::new(frame),
+            output,
+            serial,
+            enqueued_at,
+            input_age_at_enqueue,
+            inflight_at_enqueue,
+            pins,
+            admission,
+            superseded: Vec::new(),
+        });
+        if self.tx.send(PresentMsg::Frame).is_err() {
+            // No render thread: dropping the frame returns its admission.
+            lock_pending(&self.pending).clear();
+            return None;
+        }
+        self.frame_is_newest.store(true, Ordering::Release);
+        Some(Submission {
+            serial,
+            replaced: None,
+        })
     }
 
     /// Hand the render thread idle work: `frame`'s layers, drawn while the
@@ -995,16 +1135,19 @@ impl PresentPipe {
     /// gets no serial. Returns `false` if the render thread has gone away.
     pub fn warm(&self, frame: FramePaint) -> bool {
         let pins = frame.client_frame_pins();
+        self.frame_is_newest.store(false, Ordering::Release);
         self.tx
             .send(PresentMsg::Warm(Box::new(Warm { frame, pins })))
             .is_ok()
     }
 
     pub fn resize(&self, size: (u32, u32)) {
+        self.frame_is_newest.store(false, Ordering::Release);
         let _ = self.tx.send(PresentMsg::Resize(size));
     }
 
     pub fn set_dpms(&self, on: bool) {
+        self.frame_is_newest.store(false, Ordering::Release);
         let _ = self.tx.send(PresentMsg::Dpms(on));
     }
 
@@ -1022,6 +1165,7 @@ impl PresentPipe {
         let Some(handle) = self.handle.take() else {
             return;
         };
+        self.frame_is_newest.store(false, Ordering::Release);
         let _ = self.tx.send(PresentMsg::Stop);
         // An unrepresentable deadline degrades to "already due" — the loop below then gives up
         // on its very first check rather than panicking on the addition.
@@ -1528,6 +1672,159 @@ mod tests {
         the_pipe_refuses_more_than_queue_depth_frames_beyond_the_one_in_flight();
         resize_and_dpms_are_ordered_behind_queued_frames();
         the_loop_is_woken_after_the_capacity_is_restored_not_before();
+    }
+
+    /// What a presenter was handed: revision, predecessor and damage of each frame it rendered.
+    type RenderLog = Arc<Mutex<Vec<(u64, Option<u64>, Option<Vec<vello::FineDamageRect>>)>>>;
+
+    /// Blocks inside each frame until released and records what it renders.
+    struct Recording {
+        gate: Arc<Mutex<()>>,
+        rendered: RenderLog,
+    }
+    impl Presenter for Recording {
+        fn present(&mut self, _scene: &Scene, _output: OutputId) {}
+        fn present_frame(&mut self, frame: &FramePaint, _output: OutputId) {
+            let _held = self
+                .gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.rendered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((
+                    frame.revision,
+                    frame.previous_revision,
+                    frame.damage_regions.clone(),
+                ));
+        }
+    }
+
+    fn line(y: u32) -> vello::FineDamageRect {
+        vello::FineDamageRect {
+            x: 0,
+            y,
+            width: 100,
+            height: 20,
+        }
+    }
+
+    fn damaged(revision: u64, previous: u64, regions: Vec<vello::FineDamageRect>) -> FramePaint {
+        FramePaint {
+            revision,
+            previous_revision: Some(previous),
+            damage_regions: Some(regions),
+            ..FramePaint::full(Scene::new())
+        }
+    }
+
+    /// Latest wins: a frame built while the pipe is full replaces the frame still waiting
+    /// behind the one rendering instead of queueing behind it. The waiting frame is never
+    /// rendered; the replacement repaints both frames' damage from the frame the presenter
+    /// holds, takes over the waiting frame's admission, and every serial retires exactly
+    /// once, in submission order.
+    #[test]
+    fn a_frame_built_while_the_pipe_is_full_replaces_the_frame_still_waiting() {
+        let gate = Arc::new(Mutex::new(()));
+        let rendered: RenderLog = Arc::new(Mutex::new(Vec::new()));
+        let mut pipe = spawn_with_retire(Box::new(Recording {
+            gate: gate.clone(),
+            rendered: rendered.clone(),
+        }));
+        let held = gate.lock().expect("hold the presenter inside its frame");
+        let rendering = pipe
+            .submit_frame(damaged(1, 0, vec![line(0)]), OutputId(0))
+            .expect("first frame");
+        let waiting = pipe
+            .submit_frame(damaged(2, 1, vec![line(100)]), OutputId(0))
+            .expect("queued frame");
+        assert!(!pipe.has_capacity(), "one frame renders and one waits");
+        assert!(
+            pipe.can_replace_queued(),
+            "the waiting frame has not started, so a newer one may take its place"
+        );
+        let newest = pipe
+            .submit_frame_with_input_age(damaged(3, 2, vec![line(200)]), OutputId(0), None)
+            .expect("replacing frame");
+        assert_eq!(newest.replaced, Some(waiting));
+        assert_eq!(
+            pipe.inflight(),
+            2,
+            "the replacement holds the waiting frame's admission, not one of its own"
+        );
+        assert!(!pipe.has_capacity());
+        drop(held);
+        tilo_test_env::wait_until("the replacing frame to retire", || {
+            pipe.presented() == newest.serial
+        });
+        assert_eq!(
+            pipe.take_physical_results(),
+            vec![(rendering, None), (waiting, None), (newest.serial, None)],
+            "each serial retires once, in submission order"
+        );
+        let rendered = rendered.lock().expect("rendered").clone();
+        assert_eq!(
+            rendered,
+            vec![
+                (1, Some(0), Some(vec![line(0)])),
+                (3, Some(1), Some(vec![line(100), line(200)])),
+            ],
+            "the replaced frame is never rendered; the replacement repaints its damage too, \
+             relative to the frame the presenter holds"
+        );
+        assert!(pipe.has_capacity());
+        assert!(!pipe.can_replace_queued(), "nothing waits any more");
+        pipe.shutdown();
+    }
+
+    /// A message sent after a waiting frame (a resize, a blank) must not be overtaken by a
+    /// frame built after it, so that frame queues instead of replacing.
+    #[test]
+    fn a_frame_never_replaces_one_a_control_message_followed() {
+        let gate = Arc::new(Mutex::new(()));
+        let rendered: RenderLog = Arc::new(Mutex::new(Vec::new()));
+        let mut pipe = spawn_with_retire(Box::new(Recording {
+            gate: gate.clone(),
+            rendered: rendered.clone(),
+        }));
+        let held = gate.lock().expect("hold the presenter inside its frame");
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        pipe.resize((640, 480));
+        assert!(!pipe.can_replace_queued());
+        let third = pipe
+            .submit_frame_with_input_age(FramePaint::full(Scene::new()), OutputId(0), None)
+            .expect("queued behind the resize");
+        assert_eq!(third.replaced, None);
+        drop(held);
+        tilo_test_env::wait_until("every frame", || pipe.presented() == third.serial);
+        assert_eq!(rendered.lock().expect("rendered").len(), 3);
+        pipe.shutdown();
+    }
+
+    /// A replacement that does not follow the waiting frame's revision cannot prove what
+    /// changed since the frame the presenter holds, so it repaints everything.
+    #[test]
+    fn a_replacement_not_chained_to_the_waiting_frame_repaints_everything() {
+        let older = damaged(2, 1, vec![line(0)]);
+        let chained = damaged(3, 2, vec![line(40)]).superseding(&older);
+        assert_eq!(chained.previous_revision, Some(1));
+        assert_eq!(chained.damage_regions, Some(vec![line(0), line(40)]));
+        let unrelated = damaged(9, 7, vec![line(40)]).superseding(&older);
+        assert_eq!(unrelated.damage_regions, None);
+        assert_eq!(unrelated.previous_revision, None);
+        let dense_older = FramePaint {
+            revision: 2,
+            previous_revision: Some(1),
+            ..FramePaint::full(Scene::new())
+        };
+        assert_eq!(
+            damaged(3, 2, vec![line(40)])
+                .superseding(&dense_older)
+                .damage_regions,
+            None,
+            "a dense waiting frame keeps the replacement dense"
+        );
     }
 
     #[test]
