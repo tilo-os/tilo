@@ -28,6 +28,7 @@ const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
     clippy::significant_drop_tightening,
     reason = "the broker fixture owns its authority and invocation registry for the whole scenario"
 )]
+#[allow(clippy::too_many_lines, reason = "one end-to-end ownership scenario")]
 async fn runtime_invocation_ownership_survives_device_normalization() {
     use tilo_action_broker::{
         collab_broker::CrdtRoute,
@@ -97,6 +98,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         confirmation: None,
         revision: None,
         wait_ms: None,
+        appearance: None,
     };
     let PendingPoll::Ready(Ok(receipt)) = host.invoke(&owner, request.clone()).poll_ready() else {
         panic!("the synthetic app must accept the invocation");

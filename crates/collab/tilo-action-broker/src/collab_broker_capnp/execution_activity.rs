@@ -67,7 +67,9 @@ impl ExecutionScope {
             CallerPrincipal::Agent(_) if caller.acting_for_person().is_some() => {
                 (BrokerActor::for_caller(caller).id().to_owned(), true)
             }
-            CallerPrincipal::Agent(_) | CallerPrincipal::App(_) => return None,
+            CallerPrincipal::Agent(_) | CallerPrincipal::App(_) | CallerPrincipal::Bot(_) => {
+                return None;
+            }
         };
         let lifetime = caller.execution_lease()?;
         Some(Self {

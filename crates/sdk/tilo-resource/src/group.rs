@@ -190,6 +190,14 @@ where
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         group_change_kind(&self.members())
     }
+
+    /// A gesture that records a received message among others still
+    /// records one.
+    fn incoming_message(&self) -> bool {
+        self.actions
+            .iter()
+            .any(tilo_actions::Action::incoming_message)
+    }
 }
 
 /// Apply `members`, a group encoded as `payload`, in order as one.

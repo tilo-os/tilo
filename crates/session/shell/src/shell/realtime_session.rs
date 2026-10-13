@@ -9,8 +9,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -900,7 +898,7 @@ impl RealtimeSessionBroker {
         cutover_timeout: Duration,
     ) -> Self {
         Self {
-            instance: BrokerInstanceId(random_nonzero()),
+            instance: BrokerInstanceId(crate::random::nonzero::<16>()),
             sessions: BTreeMap::new(),
             capture_authorizations: BTreeMap::new(),
             max_sessions: max_sessions.clamp(1, MAX_REALTIME_SESSIONS),
@@ -1616,7 +1614,7 @@ impl RealtimeSessionBroker {
         loop {
             let id = RealtimeSessionId {
                 broker: self.instance,
-                nonce: random_nonzero(),
+                nonce: crate::random::nonzero::<16>(),
             };
             if !self.sessions.contains_key(&id) {
                 return id;
@@ -1628,7 +1626,7 @@ impl RealtimeSessionBroker {
         loop {
             let id = CaptureAuthorizationId {
                 broker: self.instance,
-                nonce: random_nonzero(),
+                nonce: crate::random::nonzero::<16>(),
             };
             if !self.capture_authorizations.contains_key(&id) {
                 return id;
@@ -1646,14 +1644,6 @@ fn live_device(entry: &SessionEntry) -> &DeviceId {
         | SessionState::AwaitingSourceStop { .. } => &entry.source,
         SessionState::TargetLive { target } => target,
     }
-}
-
-fn random_nonzero() -> [u8; 16] {
-    let mut value = [0; 16];
-    while value == [0; 16] {
-        UnwrapErr(SysRng).fill_bytes(&mut value);
-    }
-    value
 }
 
 fn deadline(now: Instant, duration: Duration) -> Instant {

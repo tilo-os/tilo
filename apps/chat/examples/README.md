@@ -22,30 +22,41 @@ resulting PNGs through that builder's artifact mechanism.
 ```sh
 cargo run --locked -p chat --bin chat -- --shots target/chat-task-shots/normal.png --scenario agent-task
 cargo run --locked -p chat --bin chat -- --shots target/chat-task-shots/compact.png --scenario agent-task-compact
+cargo run --locked -p chat --bin chat -- --shots target/chat-task-shots/queued.png --scenario agent-task-queued
+cargo run --locked -p chat --bin chat -- --shots target/chat-task-shots/queued-compact.png --scenario agent-task-queued-compact
 ```
 
-The scenarios draw the production Chat surface at 1280×800 and 420×680.
-They are **explicit fixtures**, not evidence that an agent executed work:
-task `task:review`, run 7, an executing frontier, one accepted direction at
-revision 2, with revision 1 applied. **Direction saved** is therefore correct;
-**Stop**, not **Start**, is correct for this already-active run. The fixtures
-use the same turn projection as hydrated conversations but do not contact the
-backend or prove hydration. Start and reopened history need live acceptance.
+The scenarios draw the production Chat surface at 1280×800 and 420×680,
+using the executable's current shared text renderer and installed fonts. Keep
+that font environment unchanged when comparing captures. Repeat under light,
+dark and high-contrast themes (`TILO_SHOTS_THEME`).
 
-### Original capture review
+These are **explicit examples**, not evidence of a live model session. The
+active fixture has the original instruction, three public work updates
+(including example action/resource output descriptions), and a saved direction
+at revision 6 awaiting application; revision 1 is applied. **Stop**, not
+**Start task**, is correct for that active run. The queued fixtures have just
+the saved instruction and an inactive epoch-0 frontier: nothing runs until
+explicit **Start task** approval.
 
-The original `target/chat-task-shots/{normal,compact}.png` captures predate
-explicit Start and durable conversation hydration. In both, the direction is
-legible, Saved is distinct from Executing, and controls do not overlap. Compact
-wraps the direction and the task/run status above the composer correctly.
-There is substantial empty timeline space because this fixture contains only
-one turn, not because history has been loaded and lost.
+The fixtures use the actual `read-conversation` turn schema and production
+projection. That schema currently exposes public outputs as text; example
+output descriptions do not claim clickable resource references or verified
+action receipts. Captures do not contact the backend or prove hydration.
+Check fresh images for full wrapped task context, legible work attribution,
+Saved versus Applied, and composer/control separation at both widths.
 
-Visible limitations: at normal width the agent subtitle is reduced to `Scri…`
-despite ample overall header space; compact elides the task title and clips the
-long composer hint near the trailing controls. Verify those text-fit issues in
-fresh captures before attributing them to current code. They are not evidence
-of failed task execution. No colour/UX redesign is required for this MVP.
+The reviewed captures are in `target/chat-avatar-fixed/{dark,light}/`, with
+`normal.png`, `compact.png`, `queued.png` and `queued-compact.png` in each
+folder. To reproduce one with the portable Cargo interface:
+
+```sh
+cargo run --locked -p chat --bin chat -- --shots target/chat-avatar-fixed/light/compact.png --scenario agent-task-compact --theme light
+```
+
+Dark normal and light compact show avatars aligned beside their messages,
+legible initials and separate composer controls. These are offscreen production
+Chat draws, not a mounted desktop or a live model session.
 
 ## Live acceptance
 
@@ -56,11 +67,11 @@ instruction, not just its bounded title. Queueing saves the task; it must **not*
 start execution. Chat follows the queue receipt's exact task into its queued
 frontier (run epoch 0 for a new task).
 
-In **Task conversation**, verify **Start** is offered for the selected queued,
+Above the composer, verify **Start task** is offered for the selected queued,
 inactive task. Explicitly press Start: Chat invokes the backend's `approve-run`
 action with the expected run epoch and revision. **Start approved** means run
 approval, not proof of execution. Chat follows the returned new epoch; only the
-backend execution frontier may say Accepted, Planning or Executing. Start is
+backend execution frontier may say Accepted, Planning or Working. Start is
 also available through the contextual semantic action locus, not a separate
 Chat `start-agent-task` resource action.
 
@@ -75,8 +86,9 @@ resource's **`read-conversation`** with `run_epoch`: the original full instructi
 (epoch 0) and the selected run's durable directions must reappear, attributed
 and without duplicates. `read-task` supplies the frontier, not message text.
 A stale or mismatched conversation result must never populate another task/run.
-This is durable accepted instruction/direction history, not a claim that agent
-output or arbitrary private drafts are replayed.
+Public work updates reported for that run also reappear in chronological order.
+They are published execution updates, not hidden reasoning. Private drafts are
+not part of this read.
 
 Float and return the conversation using the shared floating host. Verify that
 the selected task/run, pending receipt, private draft, caret/selection and IME

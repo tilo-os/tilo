@@ -452,6 +452,9 @@ impl ActionHost for RuntimeActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Err(refused) = tilo_actions::appearance::refuse_here(&request) {
+            return Pending::ready(Err(refused));
+        }
         if let Some(session) = &self.session {
             if let Err(error) = session.check(caller, &self.joined) {
                 return Pending::ready(Err(error));

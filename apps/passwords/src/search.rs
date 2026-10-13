@@ -31,7 +31,7 @@ fn kind_slug(kind: SecretItemKind) -> &'static str {
         .map_or("other", |(_, slug, _)| slug)
 }
 
-fn icon(kind: SecretItemKind) -> Icon {
+pub(crate) fn icon(kind: SecretItemKind) -> Icon {
     match kind {
         SecretItemKind::Login => Icon::Globe,
         SecretItemKind::ApiKey => Icon::Code,

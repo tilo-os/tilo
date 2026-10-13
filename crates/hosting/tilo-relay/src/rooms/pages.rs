@@ -60,6 +60,7 @@ const fn member_role(role: RoomRole) -> MemberRole {
         RoomRole::Viewer => MemberRole::Viewer,
         RoomRole::Commenter => MemberRole::Commenter,
         RoomRole::Editor => MemberRole::Editor,
+        RoomRole::Moderator => MemberRole::Moderator,
     }
 }
 
@@ -68,6 +69,7 @@ const fn room_role(role: MemberRole) -> RoomRole {
         MemberRole::Viewer => RoomRole::Viewer,
         MemberRole::Commenter => RoomRole::Commenter,
         MemberRole::Editor => RoomRole::Editor,
+        MemberRole::Moderator => RoomRole::Moderator,
     }
 }
 
@@ -731,6 +733,7 @@ impl Rooms {
                     collab_types::role::Role::Owner | collab_types::role::Role::Editor => {
                         RoomRole::Editor
                     }
+                    collab_types::role::Role::Moderator => RoomRole::Moderator,
                     collab_types::role::Role::Commenter => RoomRole::Commenter,
                     collab_types::role::Role::Viewer => RoomRole::Viewer,
                 },
