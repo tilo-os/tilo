@@ -13,6 +13,29 @@ pub enum AttrVal {
     Float(f64),
 }
 
+impl AttrVal {
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            Self::Int(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DocSnapshot {
     pub schema: String,
@@ -220,6 +243,45 @@ pub struct BlockView {
     pub marks: Vec<MarkSpan>,
     pub attrs: BTreeMap<String, AttrVal>,
     pub children: Vec<BlockView>,
+}
+
+impl BlockView {
+    /// The string attribute `key`; `None` when unset or not a string.
+    pub fn str_attr(&self, key: &str) -> Option<&str> {
+        self.attrs.get(key).and_then(AttrVal::as_str)
+    }
+
+    /// The integer attribute `key`; `None` when unset or not an integer.
+    pub fn int_attr(&self, key: &str) -> Option<i64> {
+        self.attrs.get(key).and_then(AttrVal::as_int)
+    }
+
+    /// The boolean attribute `key`; `None` when unset or not a boolean.
+    pub fn bool_attr(&self, key: &str) -> Option<bool> {
+        self.attrs.get(key).and_then(AttrVal::as_bool)
+    }
+
+    /// Whether the boolean attribute `key` is set and true.
+    pub fn flag(&self, key: &str) -> bool {
+        self.bool_attr(key) == Some(true)
+    }
+
+    /// A table cell's `(row, col)`; a missing or negative index reads as 0.
+    pub fn cell_position(&self) -> (usize, usize) {
+        let index = |key| {
+            self.int_attr(key)
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(0)
+        };
+        (index("row"), index("col"))
+    }
+
+    /// A table cell's `colspan` or `rowspan`: at least 1, capped at 1024.
+    pub fn cell_span(&self, key: &str) -> usize {
+        self.int_attr(key)
+            .and_then(|n| usize::try_from(n).ok())
+            .map_or(1, |n| n.clamp(1, 1024))
+    }
 }
 
 /// The document as of position `version` of

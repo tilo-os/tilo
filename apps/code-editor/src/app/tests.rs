@@ -487,9 +487,9 @@ fn the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop() {
         "documents are desktop tabs; the editor draws no tab strip"
     );
     assert!(
-        crate::commands::Command::all()
+        crate::effects::CodeEditorEffect::specs()
             .iter()
-            .all(|(command, label)| command.id() != "close-tab" && !label.contains("Tab")),
+            .all(|spec| !spec.id.contains("tab")),
         "closing is the desktop's tab lifecycle, not an editor command"
     );
 }

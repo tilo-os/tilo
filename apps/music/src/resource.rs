@@ -21,15 +21,14 @@ use crate::actions::MusicEffect;
 use crate::app::MusicApp;
 use crate::model::{CatalogueTrack, Library, Playlist};
 
-/// Music's Fluent catalog of history sentences.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
 #[resource(
     kind = "music.library",
     label = "Music",
     params = library,
+    version = 2,
+    migrate = crate::library_migration::migrate,
     search = Library::search_entries
 )]
 impl Library {

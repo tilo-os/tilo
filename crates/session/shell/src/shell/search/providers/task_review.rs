@@ -358,17 +358,16 @@ impl SearchProvider for TaskReviewProvider {
         if cursor.is_some_and(|cursor| cursor.revision != revision) {
             return SearchPage::stale(revision);
         }
-        let mut task_index = 0;
-        let mut row_index = 0;
-        if let Some(cursor) = cursor {
-            let Some((task, row)) = cursor.token.split_once(':').and_then(|(task, row)| {
+        let (mut task_index, mut row_index) = if let Some(cursor) = cursor {
+            let Some(position) = cursor.token.split_once(':').and_then(|(task, row)| {
                 Some((task.parse::<usize>().ok()?, row.parse::<usize>().ok()?))
             }) else {
                 return SearchPage::stale(revision);
             };
-            task_index = task;
-            row_index = row;
-        }
+            position
+        } else {
+            (0, 0)
+        };
         let needle = ctx.needle.to_lowercase();
         let mut results = Vec::new();
         let mut bytes = 0usize;

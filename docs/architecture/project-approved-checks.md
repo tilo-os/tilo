@@ -99,3 +99,40 @@ effect custody and foreign-target, changed-ID, cancellation and retirement
 refusals. Startup tests exercise actual private-file loading, cross-record
 registrations and guest-visible artifact rejection. These checks do not establish
 that an LLM caused a patch or that a complete evaluator run has succeeded.
+
+## Reported phases on the original job
+
+`EffectCx::approved_check_reported` attaches command reports to the original
+background effect's `Progress::report`. Git uses this helper; the app remains the
+only publisher of that action's `InvocationUpdate` sequences. Humans,
+accessibility and agents observe the same existing job resource. Reports describe
+what the command says it is doing; they never establish success, cleanup or a
+grading result. Execution Activity keeps its lifecycle-only metadata.
+
+A host may configure `reported_phases` on a fixed check, with at most 32 unique
+`id`/`label` pairs. Labels are nonempty, control-free and bounded to 128 characters
+and 512 UTF-8 bytes. Empty or absent configuration disables reports. The guest
+receives `TILO_CHECK_REPORT_ID` and a separate informational
+`TILO_CHECK_REPORT_TOKEN`; this nonce is never the private supervisor permit or
+completion token. The fixed command may emit newline-framed stderr records:
+
+```text
+TILO_CHECK_REPORT_V1 {"token":"<informational nonce>","check_id":"<approved ID>","sequence":1,"phase_id":"synthesis","completed":1,"total":2}
+```
+
+Only the host's allowlisted label reaches job progress. Unknown fields or phases,
+wrong correlation, nonconsecutive sequences, invalid counts, oversized frames
+and capture-observation backpressure disable only the informational lane with a
+closed reason. The same owned stderr capture remains byte-for-byte unchanged;
+the same run still produces its independently observed terminal receipt.
+
+The native channel appends `approvedCheckReportedProgress @60`, returning a
+client-pulled capability with a bounded latest report and the existing terminal
+receipt. Every report and read rechecks original custody; completion freezes
+late reports. The capability shares the existing execution/replay registry and
+creates no runner, scheduler, job resource or history store. The existing
+`approvedCheck @58` is unchanged. New clients require a broker supporting @60;
+unsupported brokers refuse without falling back to a second execution. Deliver
+the broker, runtime client, SDK, Git application and registered ush supervisor
+runtime together when enabling this path. Checks without reporting retain the
+legacy private supervisor configuration format.

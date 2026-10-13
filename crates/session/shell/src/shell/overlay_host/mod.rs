@@ -10,7 +10,10 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
+mod agent_actions;
+mod agent_markers;
 mod axis_navigation;
+pub(crate) use agent_markers::AccessibleAgentMarker;
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
@@ -902,6 +905,11 @@ pub struct ShellOverlayHost {
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
+    agent_markers: agent_markers::AgentMarkers,
+    agent_actions:
+        HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
+    agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,
+    agent_quick_composer_node: Option<NodeId>,
     /// The tiles shown and the pointer, kept current for a presence pump
     /// that runs outside this tree (the hosted shell's). `None` unless
     /// [`Self::share_desk`] asked; the native frame loop reads them directly.
@@ -2301,7 +2309,13 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "one shared initialization body for the host interaction surfaces"
     )]
-    fn from_inputs(content: Box<dyn Widget>, inputs: OverlayInputs) -> Self {
+    fn from_inputs(content: Box<dyn Widget>, mut inputs: OverlayInputs) -> Self {
+        let file_picker_overlay = FilePickerOverlay::default();
+        inputs.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::file_picker::FilePickerProvider::new(
+                file_picker_overlay.actions(),
+            ),
+        ));
         // Palette entries come from the search registry on every
         // keystroke. New providers slot in via `SearchRegistry::register`;
         // the palette picks up their resource-kind chips automatically.
@@ -2412,7 +2426,7 @@ impl ShellOverlayHost {
             portal_prompts: None,
             host_shell_allows: Vec::new(),
             terminal_device_shell: None,
-            file_picker_overlay: FilePickerOverlay::default(),
+            file_picker_overlay,
             portal_dialogs: inputs.portal_dialogs,
             peer_sync_enabled: false,
             peer_sync_bridge: None,
@@ -2477,6 +2491,10 @@ impl ShellOverlayHost {
             follow_chip_rect: Rect::ZERO,
             follow_stop_rect: Rect::ZERO,
             follow_cursor_targets: Vec::new(),
+            agent_markers: agent_markers::AgentMarkers::default(),
+            agent_actions: HashMap::new(),
+            agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
+            agent_quick_composer_node: None,
             shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),
             instant_captures: Vec::new(),
@@ -2701,6 +2719,7 @@ impl ShellOverlayHost {
         self.layers.power_menu.is_open()
             || self.screenshot_markup.is_some()
             || self.capture_studio.modal_capture().is_some()
+            || self.agent_quick_composer.modal_capture().is_some()
     }
 
     /// Whether the pointer is over the shell-owned controls painted above a
@@ -3949,6 +3968,15 @@ impl ShellOverlayHost {
         started
     }
 
+    /// Keep OS identification labels in the current shared display order.
+    pub(crate) fn number_identified_displays(
+        &mut self,
+        layout: &settings_store::person_displays::Layout,
+    ) {
+        self.display_identify
+            .number_by_shared_order(&self.outputs, layout);
+    }
+
     /// Ask the person to keep or revert display transaction `transaction`,
     /// which a layout tool applied. Settings and the Super+P sheet ask in
     /// their own UI; this is for changes from anywhere else.
@@ -4131,6 +4159,9 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        let closing_visual = self
+            .desktop_surface_mut()
+            .is_some_and(|surface| surface.close_animation_in_flight());
         let (rebuild, stale) = {
             let st = chrome.borrow();
             let tree = st.tree();
@@ -4155,7 +4186,7 @@ impl ShellOverlayHost {
                 }
                 Some(cur)
                     if cur == active_raw
-                        && self.content_built_empty == Some(active_empty)
+                        && (self.content_built_empty == Some(active_empty) || closing_visual)
                         && self.rows_cover_active_strips(&tree) =>
                 {
                     None
@@ -4904,7 +4935,10 @@ impl ShellOverlayHost {
         chrome.borrow_mut().retry_new_tab_records();
         self.place_new_groups();
         let current_rev = chrome.borrow().revision;
-        if current_rev == self.last_chrome_revision {
+        let closing_visuals = self
+            .desktop_surface_mut()
+            .is_some_and(|surface| surface.has_closing_visuals());
+        if current_rev == self.last_chrome_revision && !closing_visuals {
             return false;
         }
         self.last_chrome_revision = current_rev;
@@ -6312,6 +6346,13 @@ impl ShellOverlayHost {
 
     /// The live file-chooser dialog, if one is up. For the frame
     /// builder's widget walk and for tests.
+    #[cfg(test)]
+    pub(crate) fn file_picker_actions_for_test(
+        &self,
+    ) -> crate::shell::file_picker_overlay::actions::PickerActions {
+        self.file_picker_overlay.actions()
+    }
+
     pub fn file_picker(&self) -> Option<&ui::widget::FilePicker> {
         self.file_picker_overlay.widget()
     }
@@ -8069,6 +8110,7 @@ impl ShellOverlayHost {
                 confirmation: None,
                 revision: None,
                 wait_ms: None,
+                appearance: None,
             },
         );
         self.pending_launchpad_actions
@@ -8430,6 +8472,9 @@ impl ShellOverlayHost {
             // accessor.
             let row: &GroupRow = unsafe { &*ptr };
             for (idx, wg) in row.groups.iter().enumerate() {
+                if wg.is_closing() {
+                    continue;
+                }
                 live_active.insert(wg.id, wg.active_tab_id());
                 if !tree_ids.contains(&wg.id) {
                     writes.push((strip_id, idx, build_state_group_from_widget(wg)));
@@ -9896,16 +9941,21 @@ impl ShellOverlayHost {
     /// Mirror of the geometry in `draw_quick_settings`. The panel is sized
     /// from the controls actually visible on this device, not a fixed grid of
     /// unavailable radios.
-    fn quick_settings_rect(&self) -> Rect {
+    fn quick_settings_width(&self) -> f64 {
         // Under the tray, on the display whose full top bar holds it.
         let area = self.tray_area();
-        let popover_w = if area.width() >= 1200.0 {
+        if area.width() >= 1200.0 {
             400.0
         } else if area.width() >= 720.0 {
             360.0
         } else {
             320.0
-        };
+        }
+    }
+
+    fn quick_settings_rect(&self) -> Rect {
+        let area = self.tray_area();
+        let popover_w = self.quick_settings_width();
         let x1 = area.x1 - 16.0;
         let y0 = area.y0 + 48.0;
         let desired_h = self.chrome.as_ref().map_or(360.0, |chrome| {
@@ -9995,9 +10045,11 @@ impl ShellOverlayHost {
                 let rows = state.quick_settings.vpns.len();
                 DrillInList::list_height(qs::LIST_TOP, rows)
             }
-            QsLevel::Notifications => self
-                .notification_center
-                .preferred_height(state.notification_log(), self.qs_type_lines),
+            QsLevel::Notifications => self.notification_center.preferred_height_for_width(
+                state.notification_log(),
+                self.qs_type_lines,
+                self.quick_settings_width(),
+            ),
             QsLevel::Clipboard => {
                 let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -11610,9 +11662,13 @@ impl ShellOverlayHost {
     /// `Pressed` — otherwise `Released`/`CursorMoved` fall through and
     /// light up affordances underneath.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
+        (self.palette_visible && self.palette.get_rect().contains(p))
+            || self.cursor_over_other_open_overlay(p)
+    }
+
+    fn cursor_over_other_open_overlay(&self, p: Point) -> bool {
         let f = self.overlay_flags();
         self.dictation_pointer_at((p.x, p.y))
-            || (self.palette_visible && self.palette.get_rect().contains(p))
             || (f.collaborators && self.collaborators_overlay.contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
@@ -12266,8 +12322,7 @@ impl ShellOverlayHost {
     fn route_absorbable_pointer_and_toast_click(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        handled: &mut bool,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let covered = self
             .last_cursor
@@ -12291,14 +12346,14 @@ impl ShellOverlayHost {
             let changed = self.notification_stack.handle_pointer_event(
                 &ChromeNotifications::new(&chrome),
                 event,
-                scale_factor,
+                ctx.scale_factor,
                 &mut banner_handled,
             );
             if changed {
                 chrome.borrow_mut().bump();
             }
             if banner_handled {
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
@@ -12315,7 +12370,20 @@ impl ShellOverlayHost {
             && let Some(p) = self.last_cursor
             && self.cursor_over_open_overlay(p)
         {
-            *handled = true;
+            // The palette owns hover before this guard isolates the app below.
+            // Another covering overlay keeps its existing input priority.
+            if self.palette_visible
+                && self.palette.get_rect().contains(p)
+                && !self.cursor_over_other_open_overlay(p)
+            {
+                let palette_child = ctx
+                    .taffy
+                    .children(ctx.node_id)
+                    .ok()
+                    .and_then(|children| children.get(1).copied());
+                self.route_palette_event(event, ctx, palette_child);
+            }
+            *ctx.handled = true;
             return true;
         }
         false
@@ -13290,7 +13358,7 @@ impl ShellOverlayHost {
     /// Requires the debug environment gate and a known fixture phase.
     #[cfg(debug_assertions)]
     pub fn seed_dictation_for_shots(&mut self, phase: &str) -> Result<(), &'static str> {
-        use crate::compositor::dictation::DictationStatus;
+        use crate::compositor::dictation_status::DictationStatus;
         if std::env::var_os("TILO_UI_DEBUG").is_none() {
             return Err("dictation shots require TILO_UI_DEBUG and a debug build");
         }
@@ -13310,7 +13378,7 @@ impl ShellOverlayHost {
             }
             "dictation-model-required" => {
                 self.layers.dictation.status(DictationStatus::Unavailable(
-                    crate::compositor::dictation::runtime::RuntimeError::Worker(
+                    crate::compositor::dictation_status::RuntimeError::Worker(
                         agent_provider_config::speech::SpeechError::ModelUnavailable,
                     ),
                 ));
@@ -17444,7 +17512,7 @@ impl ShellOverlayHost {
                 }
                 self.layers
                     .dictation
-                    .status(crate::compositor::dictation::DictationStatus::Idle);
+                    .status(crate::compositor::dictation_status::DictationStatus::Idle);
                 self.layers.dictation.request_cancel();
                 if let Some(chrome) = self.chrome.clone() {
                     self.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
@@ -17729,6 +17797,7 @@ impl Widget for ShellOverlayHost {
             sidebar.sync(s, p);
         }
         self.palette.sync(s, p);
+        self.agent_quick_composer.sync(s, p);
         self.capture_studio.sync(s, p);
         for (_, mirror) in &mut self.capture_mirrors {
             mirror.sync(s, p);
@@ -17754,10 +17823,25 @@ impl Widget for ShellOverlayHost {
     )]
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let (doc, path) = ui::doc::document_ref(doc, path);
+        let action_dirty = self
+            .agent_actions
+            .values_mut()
+            .fold(false, |changed, actions| {
+                actions.pump(&mut self.agent_quick_composer) | changed
+            });
+        if action_dirty {
+            self.agent_quick_composer.sync(doc, path);
+        }
+        let agent_quick_dirty = action_dirty | self.agent_quick_composer.update(doc, path);
+        let marker_dirty = self
+            .agent_markers
+            .retain(|source| source.is_fresh(Instant::now()));
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
             let mut apps = apps.borrow_mut();
+            // Only Linux enrollment asks for a provider's network access.
+            #[cfg(target_os = "linux")]
             if let Some(prompts) = &self.portal_prompts {
                 apps.bind_messaging_network_prompts(prompts.clone());
             }
@@ -17934,7 +18018,9 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
-        content_dirty
+        agent_quick_dirty
+            || marker_dirty
+            || content_dirty
             || quick_settings_dirty
             || radio_dirty
             || display_storage_dirty
@@ -18036,6 +18122,12 @@ impl Widget for ShellOverlayHost {
         self.push_display_layout();
         let content_node = self.content.build_layout(taffy, theme, node_map);
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
+        // Match children(): a closed composer has no live controls to measure
+        // or query. Visibility changes retire/rebuild the map below.
+        self.agent_quick_composer_node = self.agent_quick_composer.is_open().then(|| {
+            self.agent_quick_composer
+                .build_layout(taffy, theme, node_map)
+        });
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
         self.capture_node = Some(capture_node);
         self.screenshot_markup_node = self
@@ -18146,6 +18238,11 @@ impl Widget for ShellOverlayHost {
             Some(s) => vec![content_node, palette_node, s, capture_node],
             None => vec![content_node, palette_node, capture_node],
         };
+        children.extend(self.agent_quick_composer_node);
+        children.extend(
+            self.agent_markers
+                .build(taffy, theme, node_map, self.rect.origin()),
+        );
         if let Some(markup_node) = self.screenshot_markup_node {
             children.push(markup_node);
         }
@@ -18221,6 +18318,13 @@ impl Widget for ShellOverlayHost {
             }
             return;
         }
+        // The dedicated OOBE tree does not mount desktop agent controls.
+        // Their cached nodes belong only to the desktop layout built below.
+        if let Some(agent_node) = self.agent_quick_composer_node {
+            self.agent_quick_composer
+                .apply_layout(taffy, agent_node, self.rect.origin());
+        }
+        self.agent_markers.apply(taffy, self.rect.origin());
         // One more pass if the card sized against stale host dimensions or
         // focus moved to another display; settles in a single extra frame.
         if self.palette_layout_host != Some((self.rect, self.overlay_area())) {
@@ -18412,6 +18516,13 @@ impl Widget for ShellOverlayHost {
         self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
         self.draw_dropdowns_and_sheets(scene, transform, text_renderer, theme, presence, flags);
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
+        let suppress_agent_markers = self.agent_quick_composer.is_open()
+            || self.onboarding_active()
+            || self.inner_surface_captures_input()
+            || self.modal_sheet_owns_keyboard();
+        self.agent_markers.refresh(presence, suppress_agent_markers);
+        self.agent_quick_composer
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
             self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
@@ -18744,6 +18855,19 @@ impl Widget for ShellOverlayHost {
         if self.route_capture_mirror_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
+        if self.agent_quick_composer.is_open()
+            && let Some(node) = self.agent_quick_composer_node
+        {
+            self.agent_quick_composer
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled || self.agent_quick_composer.modal_capture().is_some() {
+                return;
+            }
+        }
+        self.agent_markers.route_event(event, ctx);
+        if *ctx.handled {
+            return;
+        }
         if let Some(chrome) = self.chrome.clone() {
             let reading = {
                 let st = chrome.borrow();
@@ -18790,7 +18914,10 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
-        if self.route_absorbable_pointer_and_toast_click(event, ctx.scale_factor, ctx.handled) {
+        if self.route_absorbable_pointer_and_toast_click(
+            event,
+            &mut ctx.reborrow(ctx.path, ctx.node_id),
+        ) {
             return;
         }
         if self.route_permission_prompt_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
@@ -18957,6 +19084,8 @@ impl Widget for ShellOverlayHost {
                 | LayerId::Dictation => {}
                 LayerId::CommandPalette => {
                     if let Some(mut palette) = self.palette.accessibility() {
+                        // The query owns focus, not its synthetic parent dialog.
+                        palette.state.focused = false;
                         // The filter band is the host's, painted over the
                         // palette's reserved strip; it joins the palette's
                         // tree after the palette's own children (query,
@@ -19443,6 +19572,14 @@ impl Widget for ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        if target.starts_with(agent_markers::TARGET_PREFIX) {
+            if self.accessible_agent_marker_request_is_inert(target) {
+                return true;
+            }
+            return self
+                .agent_markers
+                .semantic_action(target, action, state, path);
+        }
         // The palette is published inside this host's tree (see
         // `accessibility_represents_child`), so its query's semantic target
         // arrives here, not at the palette widget. Setting it is typing it:
@@ -19676,6 +19813,10 @@ impl Widget for ShellOverlayHost {
         if let Some(pairing) = self.pairing.view() {
             out.push(pairing);
         }
+        if self.agent_quick_composer.is_open() {
+            out.push(&self.agent_quick_composer);
+        }
+        out.extend(self.agent_markers.children());
         out
     }
 
@@ -19704,11 +19845,16 @@ impl Widget for ShellOverlayHost {
         if let Some(pairing) = self.pairing.view_mut() {
             out.push(pairing);
         }
+        if self.agent_quick_composer.is_open() {
+            out.push(&mut self.agent_quick_composer);
+        }
+        out.extend(self.agent_markers.children_mut());
         out
     }
 
     fn take_focus_reset(&mut self) -> bool {
-        self.pairing.take_focus_reset()
+        self.agent_quick_composer.take_focus_reset()
+            | self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
             | self
                 .onboarding
@@ -19760,7 +19906,16 @@ impl Widget for ShellOverlayHost {
         let palette = std::mem::take(&mut self.palette_layout_dirty);
         let capture_mirrors = std::mem::take(&mut self.capture_mirrors_structure_dirty);
         let pairing = self.pairing.take_structure_dirty();
-        content | sidebar | palette | capture_mirrors | resynced | workspace_layout | pairing
+        content
+            | sidebar
+            | palette
+            | capture_mirrors
+            | resynced
+            | workspace_layout
+            | pairing
+            | self.agent_markers.take_structure_dirty()
+            | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
+            | self.agent_quick_composer.take_structure_dirty()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -19771,6 +19926,13 @@ impl Widget for ShellOverlayHost {
         self.wake_deadline_sources(Instant::now())
             .into_iter()
             .filter_map(|(_, deadline)| deadline)
+            .chain(self.agent_markers.deadline())
+            .chain(
+                self.agent_actions
+                    .values()
+                    .filter_map(agent_actions::AgentActions::deadline),
+            )
+            .chain(self.agent_quick_composer.next_wake_deadline())
             .min()
     }
 }

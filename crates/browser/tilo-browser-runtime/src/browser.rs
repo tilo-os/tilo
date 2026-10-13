@@ -473,6 +473,21 @@ pub fn mount(
     Ok(id)
 }
 
+/// Load the code of application `app` when the bundle fetches it on
+/// demand, before a page mounts it alone; the session desktop loads its
+/// apps itself as their windows open. Resolves `false` for an application
+/// the page does not have or whose code failed to load.
+#[wasm_bindgen]
+pub async fn load_application(app: String) -> bool {
+    match app.as_str() {
+        "desktop" | "scratch" => true,
+        app => {
+            ui::application::registry::load(app).await.is_some()
+                || crate::desktop::application(app).is_some()
+        }
+    }
+}
+
 /// Close one mount and return its remaining writes (`[{key, bytes, actor,
 /// revision}]`) for the page to commit and acknowledge.
 ///
@@ -985,7 +1000,7 @@ fn present_component(
             reveal: None,
         },
         None if named_new.is_some() => LaunchTarget::New,
-        None => definition.unsaved_target(&record),
+        None => definition.unsaved_target(&record).map_err(error)?,
     };
     let views = Rc::new(
         InstanceViewStore::with_store(dyn_store, &config.device, &config.room).map_err(error)?,
@@ -1597,6 +1612,9 @@ impl Mount {
                 }
                 reasons.extend(wakers.iter().map(|app| format!("wake: {app}")));
             }
+            if desktop.shared.take_arrived() {
+                desktop.shared.retry_waiting(&desktop.handle);
+            }
             host_changed = true;
         }
         // A peer's change merged into an open record.
@@ -1943,8 +1961,9 @@ pub fn component_catalogue_response(id: u64, response: &str) -> Result<(), JsVal
     if !matches!(
         message,
         tilo_actions::remote::RemoteActionMessage::CatalogueResponse { .. }
+            | tilo_actions::remote::RemoteActionMessage::Receipt(_)
     ) {
-        return Err(error("not a catalogue response"));
+        return Err(error("not a catalogue response or receipt"));
     }
     with_mount(id, |m| {
         // This only reports the originating command's actual system transfer.
@@ -2238,6 +2257,59 @@ pub fn desktop_set_node_apps(id: u64, apps: &str) -> Result<(), JsValue> {
     })
 }
 
+/// Offer what only the page can do for the person (`[{id, title,
+/// subtitle?}]` JSON; in place of earlier ones): desktop search lists them
+/// beside the desktop's commands, and choosing one reaches the page as a
+/// host request `{action: id}`.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount or malformed JSON.
+#[wasm_bindgen]
+pub fn desktop_set_host_actions(id: u64, actions: &str) -> Result<(), JsValue> {
+    let actions: Vec<tilo_desktop_surface::HostAction> =
+        serde_json::from_str(actions).map_err(error)?;
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?
+            .handle
+            .set_host_actions(actions);
+        Ok(())
+    })
+}
+
+/// Show a banner offering a host action (`{action: {id, title}, title,
+/// body}` JSON) until the person chooses or dismisses it; choosing it
+/// reaches the page as that action.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount or malformed JSON.
+#[wasm_bindgen]
+pub fn desktop_offer_host_action(id: u64, offer: &str) -> Result<(), JsValue> {
+    #[derive(serde::Deserialize)]
+    struct Offer {
+        action: tilo_desktop_surface::HostAction,
+        title: String,
+        #[serde(default)]
+        body: String,
+    }
+    let offer: Offer = serde_json::from_str(offer).map_err(error)?;
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        desktop
+            .persistence
+            .notifications
+            .post(offer.action.notice(offer.title, offer.body));
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
 /// The node applications the person asked to open since the last call (a
 /// JSON array of their ids): the page asks the node to open each, and its
 /// window arrives as a legacy window.
@@ -2426,7 +2498,7 @@ pub fn desktop_navigate(id: u64, command: &str) -> Result<(), JsValue> {
     let command: tilo_desktop_surface::navigation::Command =
         serde_json::from_str(command).map_err(error)?;
     if let tilo_desktop_surface::navigation::Command::Launch { app, .. } = &command
-        && crate::desktop::application(app).is_none()
+        && crate::desktop::known_application(app).is_none()
     {
         return Err(error(format!("{app} is not available in the browser")));
     }

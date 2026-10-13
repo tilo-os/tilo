@@ -1823,10 +1823,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn umu_csv_imports_proton_records_with_primary_store_ids() {
         // Phase `umu_metadata_maps_known_aliases`.
         {

@@ -9,8 +9,6 @@ use serial_test::serial;
 use ui::presence::PresenceCtx;
 use ui::testing::Dispatch;
 use ui::widget::Edits;
-use winit::dpi::PhysicalPosition;
-use winit::event::DeviceId;
 
 /// Point the compatibility `TILO_WORKSPACE_DIR` override at `path` until the
 /// returned scope is dropped, including during unwinding.
@@ -331,7 +329,6 @@ fn reader_controls_are_accessible_and_live() {
         Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters = (0..4)
             .map(|index| crate::model::Chapter {
                 title: format!("Part {}", index + 1),
-                href: format!("part-{}.xhtml", index + 1),
                 blocks: chapter.blocks.clone(),
             })
             .collect();
@@ -588,16 +585,9 @@ fn find_reading_hit(
 
 /// Route a real left-click at `p` (logical px) through `handle_event`.
 fn click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) -> bool {
-    let mv = WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: PhysicalPosition::new(p.x, p.y),
-    };
+    let mv = ui::synthetic_input::cursor_moved(p.x, p.y);
     let moved = Dispatch::new().doc(doc).send(app, &mv);
-    let press = WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    };
+    let press = ui::synthetic_input::mouse_press();
     Dispatch::new()
         .doc(doc)
         .focus_target(moved.focus_target)
@@ -607,22 +597,14 @@ fn click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) -> bool {
 
 /// Route a wheel event (`lines` positive == scroll up) through `handle_event`.
 fn wheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
-    let ev = WindowEvent::MouseWheel {
-        device_id: DeviceId::dummy(),
-        delta: MouseScrollDelta::LineDelta(0.0, lines),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let ev = ui::synthetic_input::mouse_wheel(0.0, lines);
     Dispatch::new().doc(doc).send(app, &ev).handled
 }
 
 /// Route a horizontal wheel/scroll through `handle_event`. Positive
 /// `lines` is a physical scroll-right, matching winit's `LineDelta` x sign.
 fn hwheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
-    let ev = WindowEvent::MouseWheel {
-        device_id: DeviceId::dummy(),
-        delta: MouseScrollDelta::LineDelta(lines, 0.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let ev = ui::synthetic_input::mouse_wheel(lines, 0.0);
     Dispatch::new().doc(doc).send(app, &ev).handled
 }
 
@@ -631,36 +613,13 @@ fn send(app: &mut BooksApp, doc: &mut AutoCommit, ev: &WindowEvent) {
     Dispatch::new().doc(doc).send(app, ev);
 }
 fn ptr_move(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) {
-    send(
-        app,
-        doc,
-        &WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(p.x, p.y),
-        },
-    );
+    send(app, doc, &ui::synthetic_input::cursor_moved(p.x, p.y));
 }
 fn ptr_down(app: &mut BooksApp, doc: &mut AutoCommit) {
-    send(
-        app,
-        doc,
-        &WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-    );
+    send(app, doc, &ui::synthetic_input::mouse_press());
 }
 fn ptr_up(app: &mut BooksApp, doc: &mut AutoCommit) {
-    send(
-        app,
-        doc,
-        &WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-    );
+    send(app, doc, &ui::synthetic_input::mouse_release());
 }
 
 /// Draw one settled frame into a `Scene` (for pixel-level assertions).
@@ -849,7 +808,6 @@ fn wheel_over_rails_scrolls_the_rail_not_the_book() {
         Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters = (0..32)
             .map(|index| crate::model::Chapter {
                 title: format!("Long chapter {}", index + 1),
-                href: format!("chapter-{}.xhtml", index + 1),
                 blocks: template.blocks.clone(),
             })
             .collect();
@@ -2046,6 +2004,74 @@ fn type_popover_values_edit_and_persist() {
     }
 }
 
+/// Edge coverage, in premultiplied 8-bit channel steps, that one GPU
+/// rasterizer may compute differently from another for the same geometry.
+const FOREIGN_RASTERIZER_EDGE_STEPS: u16 = 16;
+
+/// Pixels of `actual` that differ from a reader reference.
+///
+/// The Linux references are Mesa llvmpipe renders, the adapter Linux CI pins
+/// (`WGPU_ADAPTER_NAME=llvmpipe`), and the Windows ones renders of that
+/// platform's adapter; there the comparison keeps the ±1 antialiasing
+/// tolerance. Another rasterizer (Metal on a Mac, a desktop Vulkan driver)
+/// evaluates the same coverage with its own float arithmetic: glyph edges
+/// land up to about 15 channel steps away, at thousands of edge pixels,
+/// while every stroke, line break and position matches. There the comparison
+/// is of premultiplied colour within those edge steps, so near-transparent
+/// chrome pixels cannot magnify a coverage difference through their alpha,
+/// yet a changed glyph, wrap or offset still moves whole strokes and fails.
+fn pixels_differing_from_reader_reference(
+    renderer: &ui::offscreen::OffscreenRenderer,
+    actual: &[u8],
+    expected: &[u8],
+) -> usize {
+    let adapter = renderer.adapter_info();
+    if cfg!(windows)
+        || adapter
+            .as_ref()
+            .is_some_and(|info| info.name.contains("llvmpipe"))
+    {
+        return ui::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(actual, expected);
+    }
+    eprintln!(
+        "reader reference is an llvmpipe render; comparing a {:?} render within \
+         {FOREIGN_RASTERIZER_EDGE_STEPS} premultiplied edge steps",
+        adapter.map(|info| info.name)
+    );
+    let premultiplied = |pixel: &[u8]| {
+        let alpha = u16::from(pixel[3]);
+        [
+            u16::from(pixel[0]).saturating_mul(alpha) / 255,
+            u16::from(pixel[1]).saturating_mul(alpha) / 255,
+            u16::from(pixel[2]).saturating_mul(alpha) / 255,
+            alpha,
+        ]
+    };
+    let beyond_edge_steps = |a: &[u8], b: &[u8]| {
+        a.chunks_exact(4)
+            .zip(b.chunks_exact(4))
+            .filter(|(a, b)| {
+                premultiplied(a)
+                    .iter()
+                    .zip(premultiplied(b))
+                    .any(|(x, y)| x.abs_diff(y) > FOREIGN_RASTERIZER_EDGE_STEPS)
+            })
+            .count()
+    };
+    // The tolerance must still see text move: the reference against itself
+    // one pixel to the right differs along every glyph.
+    let shifted = beyond_edge_steps(
+        &expected[4..],
+        &expected[..expected.len().saturating_sub(4)],
+    );
+    assert!(
+        shifted > 1000,
+        "a one-pixel shift of the reference must exceed the edge tolerance, got {shifted} pixels"
+    );
+    beyond_edge_steps(actual, expected)
+        .saturating_add(actual.len().abs_diff(expected.len()).div_ceil(4))
+}
+
 fn reader_typography_baseline(filename: &str) -> std::path::PathBuf {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let result = std::process::Command::new("python3")
@@ -2113,7 +2139,7 @@ fn serif_reader_matches_typography_baseline() {
         (width, height),
         "ebook typography baseline changed dimensions"
     );
-    let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, expected.as_raw());
+    let differing = pixels_differing_from_reader_reference(&renderer, &actual, expected.as_raw());
     if differing != 0 {
         let output = std::env::temp_dir().join(baseline.file_name().unwrap());
         image::save_buffer(output, &actual, width, height, image::ColorType::Rgba8).unwrap();
@@ -2162,7 +2188,7 @@ fn mathematical_reader_matches_shared_typesetting_baseline() {
         })
         .to_rgba8();
     assert_eq!(expected.dimensions(), (width, height));
-    let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, expected.as_raw());
+    let differing = pixels_differing_from_reader_reference(&renderer, &actual, expected.as_raw());
     if differing != 0 {
         let output = std::env::temp_dir().join(baseline.file_name().unwrap());
         image::save_buffer(output, &actual, width, height, image::ColorType::Rgba8).unwrap();
@@ -3273,10 +3299,6 @@ fn library_shelf_layout_filtering_and_keyboard() {
 // ---- library: open-from-anywhere, import, share ------------------------
 
 /// Books open by path or picker, failures settle visibly, watch scans never replace explicit opens, one book has one identity and removal keeps dedup.
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-)]
 #[test]
 #[serial]
 fn importing_and_removing_books_keeps_one_identity() {
@@ -3552,10 +3574,6 @@ fn import_worker_is_non_blocking_and_wakes_its_host() {
 }
 
 /// Workspace books surface as shared; sharing materialises before success, remote opens verify content ids, and share jobs report their lifecycle.
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-)]
 #[test]
 #[serial]
 fn workspace_sharing_materialises_and_verifies_books() {

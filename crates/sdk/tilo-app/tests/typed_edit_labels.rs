@@ -1,9 +1,4 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test assertions"
-)]
+#![allow(clippy::expect_used, clippy::panic, reason = "test assertions")]
 
 //! A custom surface's typed edits are recorded in history as what they did:
 //! the action the edit is, never the generic `apply` they travel as.

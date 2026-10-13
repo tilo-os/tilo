@@ -23,8 +23,7 @@ use crate::widget::Widget;
 use crate::widget::chart_data::{ChartLink, ChartNode};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchTracker, InteractiveChart, chart_leaf, handle_chart_event,
-    moved_index,
+    ChartInspection, ChartNavAction, InteractiveChart, chart_leaf, handle_chart_event, moved_index,
 };
 
 fn polar(center: Point, radius: f64, angle: f64) -> Point {
@@ -38,10 +37,6 @@ fn append_arc(path: &mut BezPath, center: Point, radius: f64, start: f64, sweep:
         .to_cubic_beziers(0.1, |a, b, c| path.curve_to(a, b, c));
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent chord presentation switches are composable"
-)]
 #[derive(Clone, Debug)]
 pub struct ChordStyle {
     pub start_angle: f64,
@@ -98,13 +93,10 @@ pub struct ChordChart {
     title: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
+    inspection: ChartInspection<ChordSelection>,
     node_geometry: Vec<NodeGeom>,
     link_geometry: Vec<LinkGeom>,
-    hovered: Option<ChordSelection>,
     activated: Option<ChordSelection>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
     /// The room the arc labels need beside the ring, measured at paint.
     label_room: f64,
 }
@@ -117,30 +109,17 @@ impl ChordChart {
             title: String::new(),
             height: 360.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
+            inspection: ChartInspection::default(),
             node_geometry: Vec::new(),
             link_geometry: Vec::new(),
-            hovered: None,
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
             label_room: 0.0,
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: ChordStyle) -> Self {
+    pub fn with_style(mut self, style: ChordStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: ChordStyle) -> Self {
-        self.styled(style)
-    }
-    pub fn style(&self) -> &ChordStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut ChordStyle {
-        &mut self.style
     }
     #[must_use]
     pub fn titled(mut self, title: impl Into<String>) -> Self {
@@ -155,13 +134,13 @@ impl ChordChart {
     pub fn set_data(&mut self, nodes: Vec<ChartNode>, links: Vec<ChartLink>) {
         self.nodes = nodes;
         self.links = links;
-        self.hovered = None;
+        self.inspection.hovered = None;
     }
     pub fn take_activated(&mut self) -> Option<ChordSelection> {
         self.activated.take()
     }
     pub fn inspect(&mut self, selection: &ChordSelection) -> bool {
-        self.hovered = match selection {
+        self.inspection.hovered = match selection {
             ChordSelection::Node(id) => self.nodes.iter().any(|node| node.id == *id),
             ChordSelection::Link(id) => self
                 .links
@@ -169,12 +148,11 @@ impl ChordChart {
                 .any(|link| link.id == *id && link.value.is_finite() && link.value > 0.0),
         }
         .then(|| selection.clone());
-        self.keyboard_inspection = self.hovered.is_some();
-        self.hovered.is_some()
+        self.inspection.keyboard = self.inspection.hovered.is_some();
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
     fn inspection_anchor(&self, selection: &ChordSelection) -> Point {
         let (center, inner, outer) = self.geometry();
@@ -341,21 +319,15 @@ fn ribbon(center: Point, radius: f64, a0: f64, a1: f64, b0: f64, b1: f64) -> Bez
 }
 
 impl InteractiveChart for ChordChart {
-    fn interaction(&mut self) -> (&mut Point, &mut bool, &mut ChartTouchTracker) {
-        (
-            &mut self.pointer,
-            &mut self.keyboard_inspection,
-            &mut self.touch,
-        )
+    type Hover = ChordSelection;
+    fn inspection(&mut self) -> &mut ChartInspection<ChordSelection> {
+        &mut self.inspection
     }
     fn update_hover(&mut self) {
-        self.hovered = self.hit(self.pointer);
-    }
-    fn clear_hover(&mut self) {
-        self.hovered = None;
+        self.inspection.hovered = self.hit(self.inspection.pointer);
     }
     fn activate_hovered(&mut self) -> bool {
-        let Some(selection) = self.hovered.clone() else {
+        let Some(selection) = self.inspection.hovered.clone() else {
             return false;
         };
         self.activated = Some(selection);
@@ -374,15 +346,16 @@ impl InteractiveChart for ChordChart {
             )
             .collect::<Vec<_>>();
         let current = self
+            .inspection
             .hovered
             .as_ref()
             .and_then(|selection| candidates.iter().position(|item| item == selection));
-        self.hovered = moved_index(current, candidates.len(), action)
+        self.inspection.hovered = moved_index(current, candidates.len(), action)
             .and_then(|index| candidates.get(index).cloned());
-        if let Some(selection) = self.hovered.as_ref() {
-            self.pointer = self.inspection_anchor(selection);
+        if let Some(selection) = self.inspection.hovered.as_ref() {
+            self.inspection.pointer = self.inspection_anchor(selection);
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
 }
 
@@ -509,7 +482,8 @@ impl Widget for ChordChart {
             });
         }
         for geom in &self.link_geometry {
-            let hovered = self.hovered.as_ref() == Some(&ChordSelection::Link(geom.id.clone()));
+            let hovered =
+                self.inspection.hovered.as_ref() == Some(&ChordSelection::Link(geom.id.clone()));
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -526,7 +500,8 @@ impl Widget for ChordChart {
             );
         }
         for geom in &self.node_geometry {
-            let hovered = self.hovered.as_ref() == Some(&ChordSelection::Node(geom.id.clone()));
+            let hovered =
+                self.inspection.hovered.as_ref() == Some(&ChordSelection::Node(geom.id.clone()));
             scene.fill(Fill::NonZero, transform, geom.color, None, &geom.path);
             if hovered {
                 scene.stroke(
@@ -541,12 +516,17 @@ impl Widget for ChordChart {
         if self.style.show_labels {
             self.draw_labels(scene, transform, tr, theme, center, outer);
         }
-        if self.keyboard_inspection
-            && let Some(selection) = self.hovered.as_ref()
+        if self.inspection.keyboard
+            && let Some(selection) = self.inspection.hovered.as_ref()
         {
-            self.pointer = self.inspection_anchor(selection);
+            self.inspection.pointer = self.inspection_anchor(selection);
         }
-        if let Some(selection) = self.hovered.as_ref().filter(|_| self.style.tooltip) {
+        if let Some(selection) = self
+            .inspection
+            .hovered
+            .as_ref()
+            .filter(|_| self.style.tooltip)
+        {
             let (label, detail) = match selection {
                 ChordSelection::Node(id) => self.node(id).map(|n| {
                     (
@@ -578,7 +558,7 @@ impl Widget for ChordChart {
                 transform,
                 tr,
                 theme,
-                self.pointer,
+                self.inspection.pointer,
                 self.rect,
                 150.0,
                 (&label, &detail),
@@ -602,10 +582,7 @@ impl Widget for ChordChart {
                     .with_action_target(format!("node:{}", n.id))
                     .with_name(&n.label)
                     .with_description(&n.detail)
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .chain(
                 self.links
@@ -620,10 +597,7 @@ impl Widget for ChordChart {
                             } else {
                                 l.detail.clone()
                             })
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true))
                     }),
             )
             .collect();

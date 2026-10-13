@@ -5,8 +5,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::panic,
-    clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
 

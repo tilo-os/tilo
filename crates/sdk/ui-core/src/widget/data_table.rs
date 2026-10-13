@@ -3559,7 +3559,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         // The row under the pointer, before a control in it takes the move.
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 self.last_cursor = Some(pt);
                 self.track_hover(Some(pt));
             }
@@ -3579,7 +3579,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 self.on_cursor_moved(pt, ctx.handled);
             }
             WindowEvent::MouseInput {
@@ -3721,11 +3721,11 @@ impl<Row: 'static> Widget for DataTable<Row> {
         let selected_pos = self.primary_index();
         // Human header, not the internal key, so the announcement reads naturally.
         let description = accessible_sort_description(&self.columns, self.sort_state());
-        let mut node = AccessNode::new(Role::Table).with_state(AccessState {
-            focusable: self.is_focusable(),
-            focused: self.is_focused(),
-            ..Default::default()
-        });
+        let mut node = AccessNode::new(Role::Table).with_state(
+            AccessState::new()
+                .focusable(self.is_focusable())
+                .focused(self.is_focused()),
+        );
         if let Some(name) = &self.accessible_name {
             node = node.with_name(crate::i18n::I18nManager::lookup_plain(name));
         }
@@ -5450,16 +5450,7 @@ mod tests {
                     position: (20.0, 10.0).into(),
                 },
             );
-            dispatch(
-                &mut t,
-                &tree,
-                node,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
 
             assert_eq!(*hits.borrow(), vec![0], "header click reported column 0");
             // Sort direction unchanged because the callback replaced toggle.
@@ -5524,11 +5515,7 @@ mod tests {
                         &mut table,
                         &tree,
                         node,
-                        &WindowEvent::MouseInput {
-                            device_id: winit::event::DeviceId::dummy(),
-                            state,
-                            button: MouseButton::Left,
-                        },
+                        &crate::synthetic_input::mouse_input(state, MouseButton::Left),
                     );
                 }
             }
@@ -5831,10 +5818,7 @@ mod tests {
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
-                size: Size {
-                    width: Dimension::length(300.0),
-                    height: Dimension::length(400.0),
-                },
+                size: Size::from_lengths(300.0, 400.0),
                 ..Default::default()
             },
             &[tnode],
@@ -5961,14 +5945,7 @@ mod tests {
             );
             let handled = Dispatch::new()
                 .layout(&tree, node)
-                .send(
-                    &mut table,
-                    &WindowEvent::MouseWheel {
-                        device_id: winit::event::DeviceId::dummy(),
-                        delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-                        phase: TouchPhase::Moved,
-                    },
-                )
+                .send(&mut table, &crate::synthetic_input::mouse_wheel(0.0, -3.0))
                 .handled;
             assert!(!handled, "the wheel is the host's");
         }
@@ -6002,21 +5979,13 @@ mod tests {
                 &mut table,
                 &tree,
                 node,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
+                &crate::synthetic_input::mouse_press(),
             );
             dispatch(
                 &mut table,
                 &tree,
                 node,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
+                &crate::synthetic_input::mouse_release(),
             );
 
             assert_eq!(clicks.get(), 1, "real cell button receives activation");
@@ -6048,16 +6017,7 @@ mod tests {
                     position: (50.0, HEADER_HEIGHT + 2.5 * ROW_HEIGHT).into(),
                 },
             );
-            dispatch(
-                &mut t,
-                &tree,
-                node,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
 
             assert!(t.selection().is_selected(2), "row 2 selected");
             assert_eq!(t.selection().primary(), Some(2));
@@ -6077,16 +6037,7 @@ mod tests {
                     position: (50.0, 85.0).into(),
                 },
             );
-            dispatch(
-                &mut t,
-                &tree,
-                node,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
             assert!(
                 t.selection().is_empty(),
                 "read-only table keeps empty selection"
@@ -6277,11 +6228,7 @@ mod tests {
         fn wheel_scrolls_in_internal_mode() {
             let (mut t, tree, node) = scrolling_table();
             assert_eq!(t.scroll_y(), 0.0);
-            let wheel = WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
             dispatch(&mut t, &tree, node, &wheel);
             assert!(
                 t.scroll_y() > 0.0,
@@ -6423,16 +6370,7 @@ mod tests {
                     position: (x, mid_y).into(),
                 },
             );
-            dispatch(
-                &mut t,
-                &tree,
-                node,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
             assert!(t.vbar.is_dragging(), "press on thumb begins a drag");
             assert!(t.wants_pointer_capture(), "drag captures the pointer");
             assert_eq!(t.scroll_y(), 0.0);
@@ -6471,11 +6409,7 @@ mod tests {
                 &mut t,
                 &tree,
                 node,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
+                &crate::synthetic_input::mouse_release(),
             );
             assert!(!t.vbar.is_dragging(), "release ends the drag");
         }
@@ -6495,16 +6429,7 @@ mod tests {
                     position: (x, below_y).into(),
                 },
             );
-            dispatch(
-                &mut t,
-                &tree,
-                node,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
             assert!(!t.vbar.is_dragging(), "track click is not a drag");
             // Paged by ≈ one viewport (five rows) × PAGE_FRACTION.
             let expected =
@@ -6531,16 +6456,7 @@ mod tests {
                     position: (x, mid_y).into(),
                 },
             );
-            dispatch(
-                &mut t,
-                &tree,
-                node,
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
             assert!(
                 t.selection().is_empty(),
                 "scrollbar press must not select a row"
@@ -6564,11 +6480,7 @@ mod tests {
                 device_id: winit::event::DeviceId::dummy(),
                 position: (20.0, y).into(),
             };
-            let button = |state| WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button: MouseButton::Left,
-            };
+            let button = |state| crate::synthetic_input::mouse_input(state, MouseButton::Left);
 
             dispatch(&mut table, &tree, node, &move_cursor(body_top + 100.0));
             dispatch(&mut table, &tree, node, &button(ElementState::Pressed));
@@ -6750,7 +6662,6 @@ mod content_edge_tests {
     use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use winit::event::DeviceId;
 
     #[derive(Clone)]
     struct Item {
@@ -6794,10 +6705,7 @@ mod content_edge_tests {
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::length(width),
-                        height: Dimension::length(height),
-                    },
+                    size: Size::from_lengths(width, height),
                     ..Default::default()
                 },
                 &[tnode],
@@ -6842,18 +6750,11 @@ mod content_edge_tests {
     }
 
     fn at(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
+        crate::synthetic_input::cursor_moved(x, y)
     }
 
     fn button(state: ElementState, button: MouseButton) -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state,
-            button,
-        }
+        crate::synthetic_input::mouse_input(state, button)
     }
 
     #[test]
@@ -6936,11 +6837,7 @@ mod content_edge_tests {
         assert!(table.h_overflow(), "what still does not fit scrolls");
         let before = table.scroll_x();
         send(&mut table, &tree, node, &at(60.0, 60.0), false);
-        let wheel = WindowEvent::MouseWheel {
-            device_id: DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-            phase: TouchPhase::Moved,
-        };
+        let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
         assert!(
             send(&mut table, &tree, node, &wheel, true),
             "shift-wheel scrolls sideways"
@@ -6981,11 +6878,7 @@ mod content_edge_tests {
         assert!(table.h_overflow());
         let before = table.scroll_x();
         send(&mut table, &tree, node, &at(100.0, 60.0), false);
-        let wheel = WindowEvent::MouseWheel {
-            device_id: DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-            phase: TouchPhase::Moved,
-        };
+        let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
         assert!(send(&mut table, &tree, node, &wheel, true));
         assert!(table.scroll_x() > before);
         assert!(table.h_track().is_some());

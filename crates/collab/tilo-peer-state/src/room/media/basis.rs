@@ -122,21 +122,6 @@ fn project<'a, R: RoomRead, D: Decode>(
     extra: impl IntoIterator<Item = &'a RevocationEntry>,
     work: &mut Work,
 ) -> Result<[u8; 32], Error> {
-    struct Hash<'a>(&'a mut blake3::Hasher);
-    impl postcard::ser_flavors::Flavor for Hash<'_> {
-        type Output = ();
-        fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
-            self.0.update(&[byte]);
-            Ok(())
-        }
-        fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-            self.0.update(bytes);
-            Ok(())
-        }
-        fn finalize(self) -> postcard::Result<()> {
-            Ok(())
-        }
-    }
     let owner = read::strict_string(room, &room.root(), "owner").map_err(strict_error)?;
     let owner_key = super::canonical_key(&owner).map_err(policy)?;
     let grant_map = read::strict_map(room, &room.root(), "grants").map_err(strict_error)?;
@@ -266,9 +251,10 @@ fn project<'a, R: RoomRead, D: Decode>(
     }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"tilo-room-media-auth-basis-v1\0");
-    postcard::serialize_with_flavor(
+    crate::postcard_sink::hash_into(
         &(owner_key, members, grants, roster, rows, revocations),
-        Hash(&mut hasher),
+        &mut hasher,
+        usize::MAX,
     )
     .map_err(|_| policy(MediaPolicyError::Malformed))?;
     Ok(*hasher.finalize().as_bytes())
@@ -292,24 +278,7 @@ impl Work {
         self.collections.push(values, value).map_err(capacity)
     }
     fn encoded<T: Serialize>(&mut self, value: &T) -> Result<Vec<u8>, Error> {
-        struct Count(usize);
-        impl postcard::ser_flavors::Flavor for Count {
-            type Output = usize;
-            fn try_push(&mut self, _: u8) -> postcard::Result<()> {
-                self.try_extend(&[0])
-            }
-            fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-                self.0 = self
-                    .0
-                    .checked_add(bytes.len())
-                    .ok_or(postcard::Error::SerializeBufferFull)?;
-                Ok(())
-            }
-            fn finalize(self) -> postcard::Result<usize> {
-                Ok(self.0)
-            }
-        }
-        let length = postcard::serialize_with_flavor(value, Count(0))
+        let length = crate::postcard_sink::encoded_len(value, usize::MAX)
             .map_err(|_| policy(MediaPolicyError::Malformed))?;
         let mut bytes = self.collections.zeroed(length).map_err(capacity)?;
         postcard::to_slice(value, &mut bytes).map_err(|_| policy(MediaPolicyError::Malformed))?;

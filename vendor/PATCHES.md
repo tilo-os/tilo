@@ -260,6 +260,18 @@ Adds `WgpuEngine::clear_pool()`: drops every buffer the size-class pool is
 holding for reuse. Called only when the budget just grew, so old size
 classes stop being kept for a request that will not come again.
 
+## `vendor/vello_encoding/src/encoding.rs`: append keeps forced state
+
+Upstream `Encoding::append` sets `self.flags = other.flags`. A glyph run
+writes its own transform into the resolved stream and sets
+`FORCE_NEXT_TRANSFORM` so the next draw re-encodes its transform. Appending
+an encoding that encodes no transform (an empty sub-scene) cleared that flag,
+so the next draw whose transform equalled `transforms.last()` skipped it and
+was placed with the glyph run's transform instead — in Chat, pictures painted
+after a line of text landed off their card and never showed. `append` now
+keeps our force bits when the appended encoding has no transforms (or
+styles) of its own.
+
 ## `vendor/vello_encoding/src/resolve.rs`
 
 Adds `report_dropped_image`: when the image atlas is full and an image is
@@ -345,7 +357,7 @@ Upstream evicts a resident image only when an allocation fails, and never
 shrinks the atlas. A Wayland client's frame is a new image on every commit,
 so every superseded frame kept its CPU pixels alive until the atlas was full,
 the atlas grew to its maximum on the way, and the compositor kept that
-high-water mark for the rest of the session (TIL-692: about 14 MiB per app
+high-water mark for the rest of the session (#3971: about 14 MiB per app
 opened and closed, past 1 GiB). Now:
 
 - `ImageCache::finish_resolve` evicts every resident no pass drew in the last
@@ -367,7 +379,7 @@ opened and closed, past 1 GiB). Now:
   (`SHRINK_SOON_RESOLVES`) a pass after a sparse one halves the atlas at once,
   as often as the eighth-full rule allows, instead of after 60. A desktop that
   goes idle after a close draws a handful of frames, so the slow rule kept a
-  256 MiB atlas after four apps closed (TIL-731).
+  256 MiB atlas after four apps closed.
 
 Own tests in `image_cache.rs`: stale residents are released without
 allocation pressure, an image survives two passes that skip it, a committing

@@ -1,15 +1,5 @@
 //! Asserts `TileContent::App` holds an `AppWidget`, not a bare `Widget`.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_ui::widget::TaffyTreeExt;
 use tilo_ui::widget::{TileContent, TileHost};
 use tilo_ui::{AppKind, AppWidget, IconDescriptor, Theme, Widget};
@@ -39,9 +29,6 @@ impl AppWidget for DummyApp {
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("T")
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
     }
 }
 

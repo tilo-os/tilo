@@ -69,6 +69,8 @@ pub enum RegistryError {
     NotListed(String),
     #[error("registry version index proof failed: {0}")]
     VersionIndex(#[from] registry_types::VersionIndexError),
+    #[error("bot program does not match its listing: {0}")]
+    ProgramMismatch(String),
 }
 
 /// Trust classification for a fetched entry.
@@ -221,7 +223,11 @@ pub fn fetch_all_versions(
 }
 
 /// GET `url`, refusing a body over `limit` bytes or an empty one.
-fn fetch_bounded(url: &reqwest::Url, limit: u64, what: &str) -> Result<Vec<u8>, RegistryError> {
+pub(crate) fn fetch_bounded(
+    url: &reqwest::Url,
+    limit: u64,
+    what: &str,
+) -> Result<Vec<u8>, RegistryError> {
     let c = client()?;
     let response = c
         .get(url.clone())
@@ -376,6 +382,7 @@ mod tests {
         let pk_hex = hex::encode(key.verifying_key().to_bytes());
         let mut entry = RegistryEntry {
             package_id: "so.tilo.editor".into(),
+            kind: registry_types::EntryKind::App,
             name: "Editor".into(),
             description: "CRDT-native editor".into(),
             tagline: "Native Tilo OS app".into(),
@@ -390,18 +397,20 @@ mod tests {
             publisher_pubkey_hex: pk_hex,
             versions: vec![RegistryVersion {
                 version: "0.1.0".into(),
-                tapp_url: "https://apps.tilo.so/editor/0.1.0.tapp".into(),
-                tapp_root_hash_hex: "cd".repeat(32),
-                tapp_size_bytes: 1024,
                 released_at_unix: 100,
-                tapp_blake3_hex: "ef".repeat(32),
-                target: registry_types::RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: std::env::consts::ARCH.into(),
-                    isa: "x86_64".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: "https://apps.tilo.so/editor/0.1.0.tapp".into(),
+                    tapp_root_hash_hex: "cd".repeat(32),
+                    tapp_size_bytes: 1024,
+                    tapp_blake3_hex: "ef".repeat(32),
+                    target: registry_types::RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: std::env::consts::ARCH.into(),
+                        isa: "x86_64".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 200,
             signature_hex: String::new(),
@@ -426,6 +435,7 @@ mod tests {
             entries: vec![entry],
             owner_signature_hex: String::new(),
             channel_authorization: None,
+            bots_signature_hex: String::new(),
         };
         registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
         CatalogueSnapshot::Full(snapshot)

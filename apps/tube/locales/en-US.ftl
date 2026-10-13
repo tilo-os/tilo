@@ -112,7 +112,6 @@ tube-dearrow-thumbnails = Replace thumbnails
 tube-segment-sponsor = Sponsor
 tube-segment-sponsor-about = Paid promotion, paid referrals and direct advertisements.
 tube-segment-selfpromo = Self-promo
-tube-segment-selfpromo-about = Unpaid self-promotion: merchandise, donations and charity.
 tube-segment-interaction = Interaction reminder
 tube-segment-interaction-about = Reminders to like, subscribe or follow, with no other content.
 tube-segment-intro = Intro and intermission
@@ -125,9 +124,6 @@ tube-segment-music-offtopic = Non-music section
 tube-segment-music-offtopic-about = The parts of a music video that are not music.
 tube-segment-filler = Filler tangent
 tube-segment-filler-about = Tangents added only to make the video longer.
-tube-mode-skip = Auto-skip
-tube-mode-show = Show
-tube-mode-off = Off
 
 ## Device sync
 tube-device-sync = Device sync
@@ -163,17 +159,11 @@ tube-notice-playlist-gone = That playlist is no longer available
 tube-notice-no-downloads = Tube can't save videos for offline viewing
 tube-notice-pairing-busy = Device pairing is busy or unavailable
 tube-notice-sync-busy = Device sync is busy or unavailable
-tube-notice-approval-failed = Could not queue device approval
-tube-notice-revocation-failed = Could not queue device revocation
 tube-notice-skipped-to = Skipped to { $time }
 tube-notice-skipped-segment = Skipped { $segment } ({ $start }–{ $end })
 tube-notice-history-cleared = Watch history cleared for this profile
 tube-notice-pair-first = Paste a pairing invite first, or unlock the desktop's secret store
 tube-notice-sync-unavailable = Device sync is unavailable
-tube-notice-approval-unavailable = Device approval is unavailable
-tube-notice-revocation-unavailable = Device revocation is unavailable
-tube-notice-busy = Too many requests are pending. Please try again.
-tube-notice-stopped = Tube can't reach its sources here; it is offline.
 
 ## History: what each change to the shared library did
 

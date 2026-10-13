@@ -17,7 +17,6 @@ pub const APP_TITLE: &str = "QR Code";
 
 pub mod locales;
 
-use locales::keys;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
 
@@ -82,10 +81,10 @@ impl ResourceApp for App {
         let input = cx
             .input(p.payload.clone())
             .with_id("qr-input")
-            .with_placeholder(keys::QR_INPUT_PLACEHOLDER);
+            .with_placeholder("qr-input-placeholder");
         let payload = cx.value_at(&p.payload);
         let output = ModelView::from_state(&payload, |payload| code_view(payload));
-        let clear = cx.button(keys::QR_CLEAR_BUTTON, Code::CLEAR.invoke());
+        let clear = cx.button("qr-clear-button", Code::CLEAR.invoke());
         Box::new(ui::column![
             Text::new("qr-title").with_role(TextRole::Title),
             labeled_field("qr-input-label", input),

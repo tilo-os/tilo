@@ -43,6 +43,7 @@
 //!         <blake3>.tapp.zst          # its compressed twin
 //!     uploads/
 //!         <blake3>.tapp              # publisher uploads awaiting review; private
+//!         <blake3>.program           # bot programs awaiting review; private
 //! ```
 //!
 //! Writes go through atomic rename (`.tmp` → target path) so a
@@ -414,6 +415,75 @@ impl Storage {
             atomic_write(&path, tapp_bytes)?;
         }
         self.write_artifact_twin(&digest, tapp_bytes)?;
+        Ok(digest)
+    }
+
+    fn program_upload_path(&self, blake3_hex: &str) -> Option<PathBuf> {
+        is_hex_digest(blake3_hex).then(|| {
+            self.root
+                .join("uploads")
+                .join(format!("{}.program", blake3_hex.to_ascii_lowercase()))
+        })
+    }
+
+    /// Keep a publisher's bot program, which the caller authenticated and
+    /// checked, under its BLAKE3. Like package uploads it stays private until
+    /// review approves a version that binds it.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be written.
+    pub fn save_program_upload(&self, bytes: &[u8]) -> Result<String, StorageError> {
+        let digest = blake3::hash(bytes).to_hex().to_string();
+        let path = self
+            .program_upload_path(&digest)
+            .ok_or_else(|| StorageError::Encode("invalid program digest".into()))?;
+        if !path.exists() {
+            atomic_write(&path, bytes)?;
+        }
+        Ok(digest)
+    }
+
+    /// The uploaded program named `blake3_hex`, re-checked against its name.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be read or no longer matches its name.
+    pub fn load_program_upload(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        let Some(path) = self.program_upload_path(blake3_hex) else {
+            return Ok(None);
+        };
+        let Some(bytes) = read_if_exists(&path, "program upload")? else {
+            return Ok(None);
+        };
+        if !blake3::hash(&bytes)
+            .to_hex()
+            .eq_ignore_ascii_case(blake3_hex)
+        {
+            return Err(StorageError::Parse(
+                "program upload does not match its name".into(),
+            ));
+        }
+        Ok(Some(bytes))
+    }
+
+    /// Publish an approved program as a payload blob, served at
+    /// `/blobs/<blake3>` with its compressed twin like any package blob.
+    /// Holding the registry lock keeps a concurrent prune from seeing the
+    /// blob before the entry that binds it.
+    ///
+    /// # Errors
+    /// Returns an error if the lock cannot be taken or the blob or its twin
+    /// cannot be written.
+    pub fn save_program_blob(&self, bytes: &[u8]) -> Result<String, StorageError> {
+        let _lock = self.lock_snapshot()?;
+        let hash = tilo_app_package::BlobHash::of(bytes);
+        let digest = hash.to_hex();
+        let path = self
+            .payload_blob_path(&digest)
+            .ok_or_else(|| StorageError::Encode("invalid program digest".into()))?;
+        if !path.exists() {
+            atomic_write(&path, bytes)?;
+        }
+        self.write_payload_twin(&hash, bytes)?;
         Ok(digest)
     }
 
@@ -907,13 +977,6 @@ impl Storage {
     pub fn moderation_head(&self) -> Result<String, StorageError> {
         let mut events = self.load_transparency::<ModerationEvent>()?;
         events.sort_by_key(|event| event.sequence);
-        for (index, event) in events.iter().enumerate() {
-            if event.sequence != u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1) {
-                return Err(StorageError::Parse(
-                    "moderation log is not contiguous".into(),
-                ));
-            }
-        }
         let head = registry_types::verify_transparency_chain(&events, "")
             .map_err(|error| StorageError::Parse(error.to_string()))?;
         let identity = self.load_identity()?;
@@ -1609,12 +1672,15 @@ impl<'a> SnapshotLock<'a> {
                         .versions
                         .iter()
                         .filter(|version| !kept.contains(version))
-                        .map(|version| DroppedVersion {
-                            package_id: entry.package_id.clone(),
-                            version: version.version.clone(),
-                            platform: version.target.platform.clone(),
-                            architecture: version.target.architecture.clone(),
-                            tapp_size_bytes: version.tapp_size_bytes,
+                        .filter_map(|version| {
+                            let tapp = version.tapp()?;
+                            Some(DroppedVersion {
+                                package_id: entry.package_id.clone(),
+                                version: version.version.clone(),
+                                platform: tapp.target.platform.clone(),
+                                architecture: tapp.target.architecture.clone(),
+                                tapp_size_bytes: tapp.tapp_size_bytes,
+                            })
                         }),
                 );
             }
@@ -1687,9 +1753,13 @@ impl<'a> SnapshotLock<'a> {
         let storage = self.storage;
         let mut digests = BTreeSet::new();
         let mut roots = BTreeSet::new();
-        for version in entries.iter().flat_map(|entry| &entry.versions) {
-            digests.insert(version.tapp_blake3_hex.to_ascii_lowercase());
-            roots.insert(version.tapp_root_hash_hex.to_ascii_lowercase());
+        for tapp in entries
+            .iter()
+            .flat_map(|entry| &entry.versions)
+            .filter_map(registry_types::RegistryVersion::tapp)
+        {
+            digests.insert(tapp.tapp_blake3_hex.to_ascii_lowercase());
+            roots.insert(tapp.tapp_root_hash_hex.to_ascii_lowercase());
         }
 
         let mut plan = PrunePlan::default();
@@ -1708,6 +1778,14 @@ impl<'a> SnapshotLock<'a> {
         }
         let thin_dir = storage.root.join("thin-packages");
         let mut blobs = BTreeSet::new();
+        // A bot program has no thin package; the entry binding it keeps it.
+        blobs.extend(
+            entries
+                .iter()
+                .flat_map(|entry| &entry.versions)
+                .filter_map(registry_types::RegistryVersion::bot)
+                .map(|bot| bot.program_blake3_hex.to_ascii_lowercase()),
+        );
         for root in list_digests(&thin_dir, ".tapp")? {
             let path = thin_dir.join(format!("{root}.tapp"));
             if !roots.contains(&root) {
@@ -2299,6 +2377,7 @@ mod tests {
     fn sample_entry(id: &str) -> RegistryEntry {
         RegistryEntry {
             package_id: id.into(),
+            kind: registry_types::EntryKind::App,
             name: "Test".into(),
             description: "Native test app".into(),
             tagline: "Test on Tilo OS".into(),
@@ -2329,6 +2408,7 @@ mod tests {
             entries: vec![sample_entry(marker)],
             owner_signature_hex: marker.to_string(),
             channel_authorization: None,
+            bots_signature_hex: String::new(),
         }
     }
 

@@ -34,6 +34,8 @@ mod direct;
 mod reference;
 mod remark;
 
+pub mod link;
+
 pub use delivery::{
     Delivery, Destination, DestinationDisplay, Id, MentionRef, RoomMember, Target, deliver,
     resolve_mentions,

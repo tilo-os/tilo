@@ -341,6 +341,8 @@ pub enum ParticipantKind {
     Shortcut,
     /// An application acting under its own identity.
     App,
+    /// An installed bot acting as itself, for its installer.
+    Bot,
 }
 
 impl From<tilo_actions::ActorKind> for ParticipantKind {
@@ -350,6 +352,7 @@ impl From<tilo_actions::ActorKind> for ParticipantKind {
             tilo_actions::ActorKind::Agent => Self::Agent,
             tilo_actions::ActorKind::Shortcut => Self::Shortcut,
             tilo_actions::ActorKind::App => Self::App,
+            tilo_actions::ActorKind::Bot => Self::Bot,
         }
     }
 }
@@ -716,6 +719,14 @@ impl PresenceCtx {
             return;
         }
         self.self_participant = Some((id, name.into()));
+    }
+
+    /// Clear the room-certified spelling of this session after a complete
+    /// roster replacement no longer contains an exact self row. Local
+    /// process identities remain in `own`; this only withdraws the room's
+    /// authenticated answer.
+    pub(crate) fn clear_self_participant(&mut self) {
+        self.self_participant = None;
     }
 
     /// Which participant in the room this session is, if the room has said.
@@ -1187,6 +1198,9 @@ impl PresenceCtx {
             }
             ParticipantKind::App => {
                 crate::i18n::widget_format("participant-app", &[("name", name.into())])
+            }
+            ParticipantKind::Bot => {
+                crate::i18n::widget_format("participant-bot", &[("name", name.into())])
             }
             ParticipantKind::Person | ParticipantKind::Agent => {
                 crate::history_source::agent_display_label(name)

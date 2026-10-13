@@ -145,15 +145,8 @@ fn native_snapshot_observes_real_wheel_input_with_explicit_units() {
                 },
             );
         };
-        send(WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(300.0, 100.0),
-        });
-        send(WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        send(ui::synthetic_input::cursor_moved(300.0, 100.0));
+        send(ui::synthetic_input::mouse_wheel(0.0, -3.0));
         app.native_input_snapshot(doc.doc(), &automerge::ROOT)
             .unwrap()
     });
@@ -346,7 +339,7 @@ fn live_editor_views_follow_repeated_positions_without_editing_or_focus() {
                 serde_json::from_slice(&metadata.bytes).unwrap();
             position.resource_id = "99999999-2222-4333-8444-555555555555".into();
             let foreign = ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
+                schema_version: ui::collaboration::semantic_schema::TEXT_POSITION_V1,
                 bytes: serde_json::to_vec(&position).unwrap(),
             };
             assert!(
@@ -392,7 +385,7 @@ fn cold_live_continuation_opens_existing_text_and_preserves_local_focus() {
         serde_json::from_slice(&metadata.bytes).unwrap();
     position.resource_id = "99999999-2222-4333-8444-555555555555".into();
     let foreign = ui::collaboration::ContinuationMetadata {
-        schema_version: 1,
+        schema_version: ui::collaboration::semantic_schema::TEXT_POSITION_V1,
         bytes: serde_json::to_vec(&position).unwrap(),
     };
     let mut target = CodeApp::new();
@@ -488,7 +481,7 @@ fn assert_foreign_view_refused(
         serde_json::from_slice(&metadata.bytes).unwrap();
     position.resource_id = "99999999-2222-4333-8444-555555555555".into();
     let foreign = ui::collaboration::ContinuationMetadata {
-        schema_version: 1,
+        schema_version: ui::collaboration::semantic_schema::TEXT_POSITION_V1,
         bytes: serde_json::to_vec(&position).unwrap(),
     };
     crate::test_support::with_doc(app, move |app, doc| {
@@ -511,15 +504,8 @@ fn stage_continuation_view(app: &mut CodeApp, doc: &mut ui::widget::Edits<'_>) {
         .force_geometry(Rect::new(200.0, 40.0, 800.0, 560.0), 8.0);
     app.editor.set_selection_lc((20, 3), (22, 5));
     for event in [
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(300.0, 100.0),
-        },
-        WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.25),
-            phase: winit::event::TouchPhase::Moved,
-        },
+        ui::synthetic_input::cursor_moved(300.0, 100.0),
+        ui::synthetic_input::mouse_wheel(0.0, -3.25),
     ] {
         app.editor.handle_event(
             &event,

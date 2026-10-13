@@ -39,7 +39,7 @@ pub fn format_relative(ts_min: i64, now_min: i64) -> String {
         // Today → clock time.
         clock(ts_min)
     } else if day_diff == 1 {
-        "Yesterday".to_string()
+        ui::format::near_day(-1).unwrap_or_default()
     } else if (0..7).contains(&day_diff) {
         weekday(that_day).to_string()
     } else {
@@ -79,10 +79,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn date_helpers_compute_weekdays_relative_and_absolute_labels() {
         // Phase `weekday_of_known_dates`.
         {

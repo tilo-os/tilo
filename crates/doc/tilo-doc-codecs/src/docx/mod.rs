@@ -15,10 +15,9 @@ mod section;
 mod side_part;
 pub mod styles;
 
-use crate::format::{CodecError, Confidence, FormatProvider};
+use crate::format::{CodecError, FormatProvider};
 use tilo_content::{ContentInputs, ContentSource};
 use tilo_doc::model::{DocMut, DocRef};
-use tilo_doc::schema::SCHEMA_ID;
 
 /// Preservation-layer key of the imported `word/document.xml` root start tag.
 pub(crate) const DOCUMENT_ROOT_KEY: &str = "docx/document-root";
@@ -26,19 +25,6 @@ pub(crate) const DOCUMENT_ROOT_KEY: &str = "docx/document-root";
 pub struct DocxCodec;
 
 impl FormatProvider for DocxCodec {
-    fn schema_id(&self) -> &str {
-        SCHEMA_ID
-    }
-
-    fn detect(&self, head: &[u8]) -> Confidence {
-        // OOXML is an OPC zip ("PK.."); a weak content hint shared with other zip-based formats.
-        if head.starts_with(b"PK") {
-            Confidence::Low
-        } else {
-            Confidence::None
-        }
-    }
-
     fn import(
         &self,
         bytes: &[u8],
@@ -73,10 +59,10 @@ impl FormatProvider for DocxCodec {
             }
             // Comments are parsed first so the body parser can wire range markers onto the
             // canonical comment via the returned `docx-id → comment-id` map.
-            let mut comment_map = std::collections::BTreeMap::new();
-            if let Some(xml) = container.get(comments::COMMENTS_PART) {
-                comment_map = comments::import_comments_part(xml, doc);
-            }
+            let comment_map = container
+                .get(comments::COMMENTS_PART)
+                .map(|xml| comments::import_comments_part(xml, doc))
+                .unwrap_or_default();
             // Resolve each `r:embed` rel id to its media part's bytes for the body parser to store.
             let image_map = content::build_image_map(&container);
             let link_map = content::build_link_map(&container);
