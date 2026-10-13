@@ -118,9 +118,12 @@ target_dir=$(cargo metadata --format-version 1 --no-deps --offline |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 mkdir -p "$out/pkg" "$out/fonts"
 linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
-# The linked module this pkg/ was made from, and how.
-made_from="$(stat -c '%s %Y' "$linked") split=$split"
-if kept pkg/.made-from && [[ "$(cat "$out/pkg/.made-from")" == "$made_from" ]]; then
+# The linked module this pkg/ was made from, and how; empty when there is
+# no module to read (a wasm-bindgen that makes its output itself), so
+# such a pkg/ is never reused.
+made_from=""
+if [[ -f "$linked" ]]; then made_from="$(stat -c '%s %Y' "$linked") split=$split"; fi
+if [[ -n "$made_from" ]] && kept pkg/.made-from && [[ "$(cat "$out/pkg/.made-from")" == "$made_from" ]]; then
   echo "pkg: unchanged module, kept" >&2
 else
   # Made beside the old pkg/ and swapped in, so a page reloading meanwhile
@@ -136,7 +139,7 @@ else
   fi
   if [[ -d "$out/pkg/compute" ]]; then mv "$out/pkg/compute" "$next/compute"; fi
   # A release bundle ships exactly what it was built from; no stamp.
-  if [[ $profile != release ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
+  if [[ $profile != release && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
   rm -rf "$out/pkg"
   mv "$next" "$out/pkg"
 fi
