@@ -30,9 +30,6 @@ impl AppWidget for DummyApp {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("T")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 
 #[test]

@@ -410,22 +410,6 @@ pub enum ComposeFormat {
     Text,
 }
 
-impl ComposeFormat {
-    pub fn as_key(self) -> &'static str {
-        match self {
-            ComposeFormat::Html => "html",
-            ComposeFormat::Text => "text",
-        }
-    }
-
-    pub fn from_key(s: &str) -> Self {
-        match s {
-            "text" => ComposeFormat::Text,
-            _ => ComposeFormat::Html,
-        }
-    }
-}
-
 /// A draft message being composed. Persisted to the CRDT so it survives a
 /// crash and syncs across peers.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

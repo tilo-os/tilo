@@ -10,7 +10,7 @@
 //! discovery logic is exercised in every build.
 //!
 //! ## The lookup (network, `live`)
-//! [`discover`] queries the standard autoconfig locations in order and parses
+//! [`discover_cancellable`] queries the standard autoconfig locations in order and parses
 //! the first that answers. It is gated behind `live`; offline (and `--shots`)
 //! the setup form falls back to [`AccountConfig::autofill_from_email`]'s
 //! heuristic guess.
@@ -249,7 +249,7 @@ pub fn known_provider_for_domain(domain: &str) -> Option<KnownProvider> {
 /// email domain. This is the instant, network-free fill the setup form applies
 /// the moment a recognised address is typed — so `me@gmail.com` pre-fills the
 /// Gmail servers without any lookup, and it doubles as the offline fallback for
-/// the [`discover`] network path. Covers the OAuth providers via
+/// the [`discover_cancellable`] network path. Covers the OAuth providers via
 /// [`known_provider_for_domain`] plus the large European/free webmail hosts the
 /// ISPDB may not resolve offline (GMX, web.de, mail.com, Zoho, AOL, Proton
 /// bridge). Returns `None` for domains that need real discovery.
@@ -288,7 +288,7 @@ pub fn builtin_autoconfig(domain: &str) -> Option<Autoconfig> {
 /// signal for **hosted** domains: a company on Google Workspace or Microsoft
 /// 365 has its own vanity domain, but its MX points at the provider, so
 /// `example.com` with MX `aspmx.l.google.com` resolves to Google. Pure +
-/// unit-tested; the live `discover` feeds it the DNS answer.
+/// unit-tested; the live `discover_cancellable` feeds it the DNS answer.
 pub fn provider_from_mx_host(mx_host: &str) -> Option<KnownProvider> {
     let h = mx_host.to_ascii_lowercase();
     let h = h.trim_end_matches('.');
@@ -326,7 +326,7 @@ pub fn provider_from_mx_records(mut records: Vec<(u16, String)>) -> Option<Known
 /// Parse a DNS-over-HTTPS JSON answer (RFC 8484 / the `application/dns-json`
 /// shape Google and Cloudflare serve) into `(preference, exchange)` MX records.
 /// The `data` field of an MX answer is `"<pref> <host>"`. Pure + unit-tested;
-/// the live `discover` fetches the JSON.
+/// the live `discover_cancellable` fetches the JSON.
 pub fn parse_doh_mx(json: &str) -> Vec<(u16, String)> {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
         return Vec::new();
@@ -347,7 +347,7 @@ pub fn parse_doh_mx(json: &str) -> Vec<(u16, String)> {
 }
 
 /// The autoconfig URLs to try, in priority order, for a domain + email.
-/// Public so the (network) `discover` and its test can share the list.
+/// Public so the (network) `discover_cancellable` and its test can share the list.
 pub fn discovery_urls(domain: &str, email: &str) -> Vec<String> {
     let enc_email = email.replace('@', "%40");
     vec![
@@ -363,13 +363,8 @@ pub fn discovery_urls(domain: &str, email: &str) -> Vec<String> {
 /// locations, then falling back to a curated known-provider table and finally
 /// an MX-record lookup. Network path — compiled only under `live`. Returns
 /// `None` when nothing matched, so the caller can prompt "enter details
-/// manually".
-#[cfg(feature = "live")]
-pub fn discover(email: &str) -> Option<Autoconfig> {
-    discover_cancellable(email, &std::sync::atomic::AtomicBool::new(false))
-}
-
-/// Discover on a worker, dropping active HTTP requests when setup closes.
+/// manually". Runs on a worker and drops active HTTP requests once
+/// `cancellation` is set (setup closed).
 #[cfg(feature = "live")]
 pub fn discover_cancellable(
     email: &str,

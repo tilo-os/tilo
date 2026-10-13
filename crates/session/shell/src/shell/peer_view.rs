@@ -720,10 +720,6 @@ impl AppWidget for PeerView {
         // Stands in for "remote / peer surface" until a dedicated icon ships.
         IconDescriptor::Glyph("\u{f0ac}")
     }
-
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 
 #[cfg(test)]

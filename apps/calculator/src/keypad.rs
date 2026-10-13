@@ -844,10 +844,6 @@ impl CalcScreen {
         changed
     }
 
-    pub fn hover(&self) -> Hover {
-        self.hover
-    }
-
     /// Whether `p` hit the history panel's show/hide button.
     pub fn toggle_at(&self, p: Point) -> bool {
         self.panel.toggle_at(p)

@@ -652,10 +652,7 @@ impl Widget for CodeEditor {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.hover = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
+            self.hover = Some(ctx.logical(position));
         }
         if let WindowEvent::CursorLeft { .. } = event {
             self.hover = None;

@@ -52,21 +52,6 @@ use crate::resource::{SampleForecasts, Weather};
 /// The overview rail's places (id, name, condition glyph) and the selected one.
 type RailPlaces = (Vec<(String, String, Icon)>, Option<String>);
 
-/// The screenshot scenarios a capture can stage (`--shots --scenario NAME`).
-pub const SCENARIOS: &[&str] = &[
-    "onboarding",
-    "detail",
-    "drag",
-    "menu",
-    "scrolled",
-    "detail_scrolled",
-    "search",
-    "search_loading",
-    "search_empty",
-    "offline",
-    "error",
-];
-
 /// A refresh someone invoked, waiting for the requests it sent.
 struct PendingRefresh {
     /// The requests that belong to this refresh and have not settled.
@@ -495,7 +480,7 @@ impl WeatherApp {
     /// Stage a screenshot scenario's view state, once its places are
     /// presented.
     ///
-    /// Recognised scenarios ([`SCENARIOS`]):
+    /// Recognised scenarios:
     /// * `"detail"` — push the forecast in (a narrow window shows the
     ///   pushed forecast and its Back button).
     /// * `"drag"` — a reorder drag of the second saved place is in flight.

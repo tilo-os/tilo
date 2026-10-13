@@ -790,8 +790,7 @@ impl FindBar {
     /// have none). Returns whether the bar consumed it.
     pub fn route(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
             self.hover = self.part_at(self.last_cursor);
         }
         if let WindowEvent::MouseInput {
@@ -1381,8 +1380,7 @@ impl Widget for FindScope {
             // A press in the band gives the query the keyboard; a press in
             // the content hands it back and leaves the bar open.
             if let WindowEvent::CursorMoved { position, .. } = event {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.pointer = ctx.logical(position);
             }
             if matches!(
                 event,

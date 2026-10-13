@@ -346,34 +346,6 @@ pub fn parse_dislikes(resp: &serde_json::Value) -> Option<u64> {
     resp.get("dislikes").and_then(serde_json::Value::as_u64)
 }
 
-/// Minimal Invidious search → [`Video`] mapping. Best-effort; missing
-/// fields fall back to sensible defaults.
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or the response body isn't valid JSON.
-pub async fn search(
-    client: &tilo_net::Client,
-    instance: &str,
-    query: &str,
-) -> anyhow::Result<Vec<Video>> {
-    let url = format!("{}/api/v1/search", instance.trim_end_matches('/'));
-    let resp = get_json(client, &url, &[("q", query), ("type", "video")])
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("HTTP 404"))?;
-
-    Ok(resp
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .take(40)
-                .filter_map(|item| video_from_item(item, "Search"))
-                .collect()
-        })
-        .unwrap_or_default())
-}
-
 /// One Invidious list item (a search hit, a trending or recommended video,
 /// a channel upload) as a [`Video`]; `None` for other kinds and id-less rows.
 fn video_from_item(item: &serde_json::Value, category: &str) -> Option<Video> {
