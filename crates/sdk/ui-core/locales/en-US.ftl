@@ -1,5 +1,4 @@
 counter = Value: { $count }
-btn_1 = Click Me
 tab-modified = Unsaved changes
 standalone-search-title = Search
 standalone-history-title = History
