@@ -1016,20 +1016,10 @@ mod selection_tests {
             touch.is_some(),
             "the actual shared touch handler must emit inspection"
         );
-        map.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(15.0, 15.0),
-            },
-            &mut ctx,
-        );
+        map.handle_event(&crate::synthetic_input::cursor_moved(15.0, 15.0), &mut ctx);
         for state in [ElementState::Pressed, ElementState::Released] {
             map.handle_event(
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state,
-                    button: winit::event::MouseButton::Left,
-                },
+                &crate::synthetic_input::mouse_input(state, winit::event::MouseButton::Left),
                 &mut ctx,
             );
         }

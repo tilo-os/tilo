@@ -2064,11 +2064,7 @@ mod host_driven_tests {
                 None,
                 ElementState::Pressed,
             );
-            let event = WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            };
+            let event = crate::synthetic_input::keyboard_input(ev);
             Dispatch::new().modifiers(modifiers).send(scope, &event);
         };
         use winit::keyboard::ModifiersState;

@@ -1798,11 +1798,7 @@ mod tests {
 
     fn pointer_event(picker: &mut EmojiPicker, state: ElementState, point: Point) {
         picker.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button: MouseButton::Left,
-            },
+            &ui::synthetic_input::mouse_input(state, MouseButton::Left),
             1.0,
             ModifiersState::empty(),
             Some(point),
@@ -1898,11 +1894,7 @@ mod tests {
                 Interruption::Scroll => {
                     for delta in [-1.0, 1.0] {
                         picker.handle_event(
-                            &WindowEvent::MouseWheel {
-                                device_id: winit::event::DeviceId::dummy(),
-                                delta: MouseScrollDelta::LineDelta(0.0, delta),
-                                phase: TouchPhase::Moved,
-                            },
+                            &ui::synthetic_input::mouse_wheel(0.0, delta),
                             1.0,
                             ModifiersState::empty(),
                             Some(cell),
@@ -2086,11 +2078,7 @@ mod tests {
         let cursor = picker.geometry.tabs.first().expect("first group").center();
         for state in [ElementState::Pressed, ElementState::Released] {
             picker.handle_event(
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state,
-                    button: MouseButton::Left,
-                },
+                &ui::synthetic_input::mouse_input(state, MouseButton::Left),
                 1.0,
                 ModifiersState::empty(),
                 Some(cursor),

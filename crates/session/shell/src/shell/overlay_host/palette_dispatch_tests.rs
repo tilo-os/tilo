@@ -1350,11 +1350,7 @@ fn shortcut_guide_opens_from_every_help_route_and_is_keyboard_editable() {
         host.shortcut_binding_rects
             .push((action, Rect::new(20.0, 20.0, 80.0, 50.0)));
         host.last_cursor = Some(Point::new(40.0, 35.0));
-        let click = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        };
+        let click = ui::synthetic_input::mouse_press();
         let mut handled = false;
         assert!(host.handle_shell_mouse_click_event(&click, &mut handled));
         assert!(handled);

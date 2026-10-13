@@ -1102,7 +1102,6 @@ mod tests {
     use ui::framework::testing::TestApp;
     use ui::headless::Framed;
     use ui::tilo_resource::{Replica, Resource as _};
-    use winit::event::MouseButton;
 
     /// The record `replica` holds, as a document a frame host edits.
     fn document_of(mut replica: Replica<Session>) -> ui::State {
@@ -1431,17 +1430,11 @@ mod tests {
     }
 
     fn keyboard_event(key: Key) -> WindowEvent {
-        use winit::event::DeviceId;
-
         // `KeyEvent` has an opaque platform payload. The public fields below
         // are exactly the ones the widget reads; this mirrors the toolkit's
         // own headless keyboard helpers.
         let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
-        WindowEvent::KeyboardInput {
-            device_id: DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     fn selected_compact_source(app: &DiffMergeApp) -> String {
@@ -1767,9 +1760,6 @@ mod tests {
     /// source state. The test drives the real event/semantic routes rather
     /// than calling the selection helper directly.
     fn compact_source_switcher_has_pointer_keyboard_and_a11y_parity() {
-        use winit::dpi::PhysicalPosition;
-        use winit::event::DeviceId;
-
         let (app, state) = demo();
         let mut app = merge_frame(app, state, (390.0, 760.0));
         let (app, state) = Framed::split(&mut app);
@@ -1784,26 +1774,13 @@ mod tests {
         let moved = ui::testing::Dispatch::new()
             .doc(&mut state.doc)
             .path(&state.root)
-            .send(
-                app,
-                &WindowEvent::CursorMoved {
-                    device_id: DeviceId::dummy(),
-                    position: PhysicalPosition::new(theirs.x, theirs.y),
-                },
-            );
+            .send(app, &ui::synthetic_input::cursor_moved(theirs.x, theirs.y));
         let pressed = ui::testing::Dispatch::new()
             .doc(&mut state.doc)
             .path(&state.root)
             .handled(moved.handled)
             .focus_target(moved.focus_target)
-            .send(
-                app,
-                &WindowEvent::MouseInput {
-                    device_id: DeviceId::dummy(),
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            .send(app, &ui::synthetic_input::mouse_press());
         assert!(pressed.handled);
         assert_eq!(selected_compact_source(app), "Show Theirs source");
 

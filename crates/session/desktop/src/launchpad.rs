@@ -1180,10 +1180,7 @@ mod tests {
     }
 
     fn pointer_at(point: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-        }
+        ui::synthetic_input::cursor_moved(point.x, point.y)
     }
 
     use ui::synthetic_input::mouse_press;

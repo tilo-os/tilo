@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn the_release_chord_is_ctrl_alt_escape_and_not_the_kill_switch() {
-        use winit::event::{ElementState, Modifiers, WindowEvent};
+        use winit::event::{ElementState, Modifiers};
         use winit::keyboard::{Key, ModifiersState, NamedKey};
         let escape = |pressed: bool| {
             let event = ui::synthetic_input::key_event(
@@ -340,11 +340,7 @@ mod tests {
                     ElementState::Released
                 },
             );
-            WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event,
-                is_synthetic: false,
-            }
+            ui::synthetic_input::keyboard_input(event)
         };
         let ctrl_alt = Modifiers::from(ModifiersState::CONTROL | ModifiersState::ALT);
         assert!(is_release_chord(&escape(true), ctrl_alt));

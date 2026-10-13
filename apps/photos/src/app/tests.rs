@@ -809,7 +809,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
 fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
     eprintln!("phase pinch_and_ctrl_wheel_use_the_same_density_event_path");
     {
-        use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
+        use winit::event::{DeviceId, TouchPhase, WindowEvent};
         use winit::keyboard::ModifiersState;
 
         let mut app = test_app();
@@ -833,14 +833,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
             .modifiers(ctrl)
             .doc(&mut doc)
             .focus_target(pinch.focus_target)
-            .send(
-                &mut app,
-                &WindowEvent::MouseWheel {
-                    device_id: DeviceId::dummy(),
-                    delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                    phase: TouchPhase::Moved,
-                },
-            )
+            .send(&mut app, &ui::synthetic_input::mouse_wheel(0.0, -1.0))
             .handled;
         assert!(handled);
         assert_eq!(app.timeline_density, after_pinch + 1);
@@ -1328,7 +1321,6 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
 
     eprintln!("phase album_editor_keeps_its_draft_local_while_the_timeline_scrolls");
     {
-        use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
         let mut app = test_app();
         let mut doc = AutoCommit::new();
         let mut library = crate::model::PhotoLibrary::default();
@@ -1358,14 +1350,9 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
         let before = crate::test_doc::library(&doc);
         app.pointer = Point::new(400.0, 400.0);
-        ui::testing::Dispatch::new().doc(&mut doc).send(
-            &mut app,
-            &WindowEvent::MouseWheel {
-                device_id: DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-                phase: TouchPhase::Moved,
-            },
-        );
+        ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .send(&mut app, &ui::synthetic_input::mouse_wheel(0.0, -3.0));
         assert!(!app.can_page_library(false));
         assert!(app.can_page_library(true));
         lay_out_header(&mut app, 1280.0);
