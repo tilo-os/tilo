@@ -2748,6 +2748,22 @@ impl State {
             };
             // Its subsurfaces are drawn with it, so they render at its scale.
             prefer_scale_for_tree(&surface, scale);
+            // Configure the window again after its new scale. A client that
+            // sizes its buffer when it handles a configure — Xwayland through
+            // xwayland-satellite sizes the X window to the tile times the
+            // scale it last heard — otherwise keeps the size it computed for
+            // the output it left: a window moved back from a 1.25x monitor
+            // stayed 1.25 times too large for its 1x tile. The tile's own
+            // configure is sent when it moves, often before this scale.
+            if let Some(toplevel) = self
+                .xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .find(|toplevel| toplevel.wl_surface() == &surface)
+                && toplevel.is_initial_configure_sent()
+            {
+                toplevel.send_configure();
+            }
         }
         // Surfaces no longer placed lose their cached scale, so a re-placed one is recomputed, not resurrected at its last value.
         let live: HashSet<u64> = placements.iter().map(|(id, _)| *id).collect();
