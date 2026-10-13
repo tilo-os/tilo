@@ -58,7 +58,8 @@ impl Mode {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum Request {
     /// Hold a record ([`Mode::Replica`]): a new one when `seed` is `None`,
-    /// otherwise the record named with its durable changes in order.
+    /// a new one under the record named when it has no changes, otherwise
+    /// the record named with its durable changes in order.
     Open {
         app_id: String,
         room: String,
