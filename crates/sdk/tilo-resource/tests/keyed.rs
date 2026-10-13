@@ -2,8 +2,6 @@
 //! edits between two values.
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::float_cmp,
     reason = "test assertions over exact values written and read back"
 )]

@@ -1,6 +1,6 @@
 //! What this crate provides on each target, as data an app can query.
 
-pub use tilo_platform_caps::{Availability, availability};
+pub use tilo_platform_caps::{Availability, availability, available};
 
 /// A feature this target, or this particular host, cannot provide.
 pub type Unsupported = tilo_platform_caps::Unsupported<Feature>;

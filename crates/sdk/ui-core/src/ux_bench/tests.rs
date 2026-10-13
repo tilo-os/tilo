@@ -1,8 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
 use super::*;
 
 #[test]

@@ -20,12 +20,9 @@
 //! baselines fails in every run rather than only where llvmpipe renders.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 

@@ -1097,7 +1097,6 @@ impl Dropdown {
                     self.highlight = vi;
                     self.select_highlighted(state, root);
                 }
-                *handled = true;
             } else if self.rect.contains(pos) {
                 if self.supports_filter() && self.query_rect.contains(pos) {
                     *focus_target = Some(node_id);
@@ -1109,12 +1108,11 @@ impl Dropdown {
                 } else {
                     self.close();
                 }
-                *handled = true;
             } else {
                 // Click-outside dismissal.
                 self.close();
-                *handled = true;
             }
+            *handled = true;
         } else if self.rect.contains(pos) {
             *focus_target = Some(node_id);
             self.do_open();
@@ -1282,10 +1280,7 @@ impl Widget for Dropdown {
             self.caption_height = 0.0;
             let side = f32_of_f64(self.control_size.height(theme));
             let node = taffy.leaf_node(Style {
-                size: Size {
-                    width: Dimension::length(side),
-                    height: Dimension::length(side),
-                },
+                size: Size::from_lengths(side, side),
                 flex_shrink: 0.0,
                 ..Default::default()
             });

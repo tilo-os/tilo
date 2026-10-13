@@ -19,7 +19,7 @@
 use crate::app::replace_chars;
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::gesture::{DragSelect, Granularity};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -223,10 +223,6 @@ struct BufferProjection {
 const EAGER_HIGHLIGHT_BYTES: usize = 256 * 1024;
 const INACTIVE_SOURCE_BYTES: usize = 48 * 1024 * 1024;
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent, unrelated flag (focus, dirty, popup state, zero-state click) rather than a set of options that combine — a bitflag/enum would not read better"
-)]
 pub struct EditorView {
     rect: Rect,
     /// The buffer's lines (cache of the CRDT Text split on '\n').
@@ -2407,12 +2403,12 @@ impl EditorView {
     /// F12 (go to definition) and F1 (hover — instant for an on-caret
     /// diagnostic, plus an LSP request). Returns `true` when consumed.
     fn handle_lsp_trigger_keys(&mut self, logical_key: &Key, handled: &mut bool) -> bool {
-        if let Key::Named(NamedKey::F12) = logical_key {
+        if matches!(logical_key, Key::Named(NamedKey::F12)) {
             self.lsp_ask = Some(LspAsk::Definition);
             *handled = true;
             return true;
         }
-        if let Key::Named(NamedKey::F1) = logical_key {
+        if matches!(logical_key, Key::Named(NamedKey::F1)) {
             // Instant, server-free hover: if the caret sits on a diagnostic,
             // show its message immediately. Also ask the LSP for a richer
             // hover (which supersedes this when it arrives).
@@ -2655,19 +2651,14 @@ impl Widget for EditorView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -2813,10 +2804,6 @@ impl Widget for EditorView {
                         .multiline(true),
                 ),
         )
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

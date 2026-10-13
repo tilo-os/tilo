@@ -836,10 +836,7 @@ pub enum ChatRuntime {
 /// Whether this host imports attachments from native paths. Voice support
 /// is reported independently through the host's local media lane.
 pub(crate) fn native_file_access() -> bool {
-    matches!(
-        tilo_files::availability(tilo_files::Feature::NativePaths),
-        tilo_files::Availability::Available
-    )
+    tilo_files::available(tilo_files::Feature::NativePaths)
 }
 
 impl ChatApp {
@@ -2968,15 +2965,16 @@ impl ChatApp {
     /// when the active workspace changed (the caller must reload so the
     /// channel + message lists refresh).
     pub(crate) fn ensure_selection(&mut self) -> bool {
-        let mut ws_changed = false;
-        if !self.workspaces.iter().any(|w| w.id == self.active_ws)
+        let ws_changed = if !self.workspaces.iter().any(|w| w.id == self.active_ws)
             && let Some(first) = self.workspaces.first()
         {
             self.active_ws = first.id.clone();
             self.context_ws = first.id.clone();
             self.active_channel.clear();
-            ws_changed = true;
-        }
+            true
+        } else {
+            false
+        };
         // Drop a stale open thread whose parent isn't in this workspace.
         if let Some(t) = self.thread_open.clone()
             && self.message(&t).is_none()
@@ -4071,10 +4069,7 @@ impl Widget for ChatApp {
                     right: LengthPercentageAuto::auto(),
                     bottom: LengthPercentageAuto::auto(),
                 },
-                size: Size {
-                    width: taffy::style_helpers::length(w),
-                    height: taffy::style_helpers::length(h),
-                },
+                size: Size::from_lengths(w, h),
                 ..Default::default()
             }
         } else {
@@ -4087,10 +4082,7 @@ impl Widget for ChatApp {
                     right: LengthPercentageAuto::auto(),
                     bottom: LengthPercentageAuto::auto(),
                 },
-                size: Size {
-                    width: percent(f.2 as f32),
-                    height: percent(f.3 as f32),
-                },
+                size: Size::from_percent(f.2 as f32, f.3 as f32),
                 ..Default::default()
             }
         };
@@ -4106,10 +4098,7 @@ impl Widget for ChatApp {
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
+                    size: Size::from_percent(1.0_f32, 1.0_f32),
                     ..Default::default()
                 },
                 &[video_node],

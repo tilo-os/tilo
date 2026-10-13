@@ -198,10 +198,10 @@ impl Widget for ShortcutRecorder {
         self.gap = f64::from(theme.tokens.spacing.s2);
         self.layout_theme = Some(theme.clone());
         let style = Style {
-            size: Size {
-                width: Dimension::length(crate::num::f32_of_f64(self.content_width())),
-                height: Dimension::length(crate::num::f32_of_f64(self.height)),
-            },
+            size: Size::from_lengths(
+                crate::num::f32_of_f64(self.content_width()),
+                crate::num::f32_of_f64(self.height),
+            ),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
             ..Default::default()
@@ -231,9 +231,7 @@ impl Widget for ShortcutRecorder {
         tree.set_style(node, style).is_ok()
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -380,9 +378,6 @@ impl Widget for ShortcutRecorder {
     }
     fn test_id(&self) -> Option<&str> {
         Some(&self.id)
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.rect

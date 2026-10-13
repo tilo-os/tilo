@@ -7414,7 +7414,7 @@ impl FileExplorerWidget {
                 }
                 return true;
             }
-            if let Some(FileCommand::OpenWithMenu) = cmd {
+            if cmd == Some(FileCommand::OpenWithMenu) {
                 let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
                 self.open_open_with_submenu(anchor);
                 return true;
@@ -7467,13 +7467,13 @@ impl FileExplorerWidget {
         } else {
             self.menu_commands.get(index).cloned().flatten()
         };
-        if let Some(FileCommand::OpenTemplatesMenu) = command {
+        if command == Some(FileCommand::OpenTemplatesMenu) {
             let rect = self.context_menu.get_rect();
             self.open_templates_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if let Some(FileCommand::OpenShortcutsMenu) = command {
+        } else if command == Some(FileCommand::OpenShortcutsMenu) {
             let rect = self.context_menu.get_rect();
             self.open_shortcuts_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
-        } else if let Some(FileCommand::OpenWithMenu) = command {
+        } else if command == Some(FileCommand::OpenWithMenu) {
             let rect = self.context_menu.get_rect();
             let row = self
                 .context_menu
@@ -8956,10 +8956,7 @@ impl Widget for FileExplorerWidget {
         let style = taffy::Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         // `new_with_children` only fails when a child belongs to a

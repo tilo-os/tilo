@@ -995,10 +995,6 @@ fn chip_fitting(
 }
 
 /// Paint the chip into a rectangle the caller has already chosen.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine multiplication is f64 matrix composition; it cannot panic or overflow"
-)]
 fn draw_name_chip_in(ctx: &mut PaintCtx<'_>, color: Color, name: &str, chip_rect: Rect) {
     let theme = ctx.theme;
     // Solid fill in the peer's colour so the chip reads as "them".

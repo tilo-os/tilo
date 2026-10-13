@@ -14,10 +14,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -97,7 +94,7 @@ fn spawn_with_control() -> (Child, PathBuf, tempfile::TempDir) {
         }
     });
 
-    if let Ok(()) = rx.recv_timeout(tilo_test_env::hang_bound()) {
+    if rx.recv_timeout(tilo_test_env::hang_bound()) == Ok(()) {
         (child, socket_path, control_dir)
     } else {
         let _ = child.kill();
@@ -312,10 +309,6 @@ fn control_socket_lists_targets_and_answers_clicks_and_bad_commands() {
 
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn control_socket_drags_types_snapshots_and_dumps_state() {
     // Phase `drag_smoke_completes_round_trip`.
     {

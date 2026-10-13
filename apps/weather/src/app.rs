@@ -162,7 +162,7 @@ impl WeatherApp {
                 if !self.core.borrow_mut().open_location(id) {
                     return Err("Weather location is no longer saved".into());
                 }
-                if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
+                if self.core.borrow_mut().take_nav_request() == Some(NavIntent::ShowDetail) {
                     self.nav.show(NavPane::Content);
                 }
                 Ok(Effected::done())
@@ -441,8 +441,7 @@ impl WeatherApp {
 
         let reqs = self.core.borrow_mut().take_tracked_outbox();
         let mut completions = Vec::new();
-        let mut disconnected = false;
-        if let Some(svc) = self.service.as_ref() {
+        let disconnected = if let Some(svc) = self.service.as_ref() {
             if !reqs.is_empty() {
                 self.last_activity = ui::time::now();
             }
@@ -453,8 +452,10 @@ impl WeatherApp {
             }
             let (ready, closed) = svc.drain_with_status();
             completions.extend(ready);
-            disconnected = closed;
-        }
+            closed
+        } else {
+            false
+        };
         for response in completions {
             self.apply_network_response(response);
         }
@@ -484,7 +485,7 @@ impl WeatherApp {
     /// the selected place.
     fn follow_core(&mut self) -> bool {
         let navigate = self.core.borrow_mut().take_nav_request();
-        if let Some(NavIntent::ShowDetail) = navigate {
+        if navigate == Some(NavIntent::ShowDetail) {
             self.nav.show(NavPane::Content);
         }
         self.sync_title();
@@ -617,7 +618,7 @@ impl ui::widget::Decorator for WeatherApp {
         self.nav.handle_event(event, ctx);
 
         // The overview raises a push intent when a city is selected.
-        if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
+        if self.core.borrow_mut().take_nav_request() == Some(NavIntent::ShowDetail) {
             self.nav.show(NavPane::Content);
         }
 
@@ -837,10 +838,6 @@ mod interaction_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
     fn layout_reflows_and_scrolls() {
         // Case `resize_reflows_between_side_by_side_and_push`.
         {
@@ -1100,10 +1097,6 @@ mod interaction_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
     fn live_weather_starts_empty_and_fetches_only_restored_or_selected_places() {
         // Case `onboarding_scenario_matches_the_live_empty_state`.
         {
@@ -1628,10 +1621,6 @@ mod interaction_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
     fn provider_cache_is_device_local_across_remote_and_local_changes() {
         // Case `remote_location_change_preserves_device_local_provider_cache`.
         {

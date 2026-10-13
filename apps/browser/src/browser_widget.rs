@@ -18,7 +18,7 @@
 //!    displays.
 
 use automerge::{AutoCommit, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -3709,10 +3709,7 @@ impl Widget for BrowserWidget {
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         // `new_with_children` only fails when a child belongs to a different
@@ -6718,10 +6715,7 @@ mod tests {
         let layout_root = tree
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(width),
-                        height: Dimension::length(height),
-                    },
+                    size: Size::from_lengths(width, height),
                     ..Default::default()
                 },
                 &[child],
@@ -7696,10 +7690,7 @@ mod tests {
             let layout_root = tree
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(390.0),
-                            height: Dimension::length(844.0),
-                        },
+                        size: Size::from_lengths(390.0, 844.0),
                         ..Default::default()
                     },
                     &[child],
@@ -7805,10 +7796,7 @@ mod tests {
             let layout_root = tree
                 .new_with_children(
                     Style {
-                        size: Size {
-                            width: Dimension::length(900.0),
-                            height: Dimension::length(620.0),
-                        },
+                        size: Size::from_lengths(900.0, 620.0),
                         ..Default::default()
                     },
                     &[child],

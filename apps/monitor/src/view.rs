@@ -886,10 +886,7 @@ impl Widget for ProcessesPane {
                     top: length(tokens.spacing.rhythm.sibling),
                     bottom: length(0.0_f32),
                 },
-                size: Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
+                size: Size::from_percent(1.0_f32, 1.0_f32),
                 ..Default::default()
             },
             &children,
@@ -1488,10 +1485,7 @@ impl Widget for ResourcesPane {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
                 flex_grow: 1.0,
-                size: Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
+                size: Size::from_percent(1.0_f32, 1.0_f32),
                 ..Default::default()
             },
             &children,

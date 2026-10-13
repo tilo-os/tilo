@@ -855,10 +855,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 SplitOrientation::Horizontal => taffy::FlexDirection::Row,
                 SplitOrientation::Vertical => taffy::FlexDirection::Column,
             },
-            size: taffy::Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
-            },
+            size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
             ..Default::default()
         };
         taffy.widget_node(style, &children, node_map, self)
@@ -905,8 +902,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         if let Some(&n) = children.get(1) {
             self.right.apply_layout(taffy, n, new_origin);
         }
-        let mut divider_followed_content = false;
-        if self.content_sized_first {
+        let divider_followed_content = self.content_sized_first && {
             // The divider sits where the content-sized pane ends.
             let first = self.left.get_rect();
             let (along, extent) = match self.orientation {
@@ -917,8 +913,8 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 SplitOrientation::Horizontal => self.rect.x0,
                 SplitOrientation::Vertical => self.rect.y0,
             };
-            divider_followed_content = self.handle.ratio_mut().follow(along, start, extent);
-        }
+            self.handle.ratio_mut().follow(along, start, extent)
+        };
         self.layout_dirty = divider_followed_content && self.handle.test_id.is_some();
         self.handle.set_bounds(self.rect);
     }

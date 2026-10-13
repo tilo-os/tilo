@@ -104,12 +104,13 @@ impl DailyControls {
         true
     }
     pub fn sync(&mut self, engine: &SharedEngine) -> bool {
-        let mut dirty = false;
-        if let Some(action) = self.pending.get() {
+        let mut dirty = if let Some(action) = self.pending.get() {
             self.pending.set(None);
             self.act(action, engine);
-            dirty = true;
-        }
+            true
+        } else {
+            false
+        };
         let query: String = self.query.get().chars().take(1024).collect();
         if self.open && query != self.sent {
             self.sent = query;
@@ -231,10 +232,6 @@ mod tests {
     use super::*;
     /// Find queries, buffered text and zoom bounds per tab.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn find_and_zoom_state_is_per_tab_race_free_and_bounded() {
         // Phase `changing_query_ignores_stale_results_and_keeps_other_tab_untouched`.
         {

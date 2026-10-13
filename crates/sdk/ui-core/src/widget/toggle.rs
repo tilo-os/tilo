@@ -5,7 +5,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 
@@ -376,10 +376,7 @@ impl Widget for Toggle {
         let (track_w, track_h) = (track_w as f32, track_h as f32);
         let target = self.control.interaction.minimum_target();
         let style = Style {
-            size: Size {
-                width: Dimension::length(track_w.max(target)),
-                height: Dimension::length(track_h.max(target)),
-            },
+            size: Size::from_lengths(track_w.max(target), track_h.max(target)),
             // A switch is a fixed target, like a button: in a row that also
             // holds a percent-width field it must not be the item that gives.
             // With the default shrink factor and no measured minimum, taffy

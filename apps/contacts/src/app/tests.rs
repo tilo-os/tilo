@@ -11,7 +11,7 @@ use automerge::AutoCommit;
 use automerge::ROOT;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use taffy::{AvailableSpace, Dimension, Size, Style};
+use taffy::{AvailableSpace, Size, Style};
 use ui::a11y::{AccessNode, Role};
 use ui::tilo_resource::{Invoke, Replica};
 use ui::time::Duration;
@@ -725,10 +725,6 @@ fn the_window_offers_import_and_export_on_the_book() {
 }
 
 /// Search hits and published open operations reveal the addressed contact or group.
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario test: each labelled phase is one case"
-)]
 #[test]
 fn search_and_open_operations_reveal_their_target() {
     // --- phase: search_hit_invokes_the_exported_open_action ---
@@ -868,10 +864,7 @@ fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) 
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
+                size: Size::from_lengths(w as f32, h as f32),
                 ..Default::default()
             },
             &[child],
@@ -1344,10 +1337,6 @@ impl Harness {
 }
 
 /// Detail fields enter edit on double click only, focus scrolls below-the-fold fields into view, and every slot has a placeholder.
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-)]
 #[test]
 fn detail_fields_enter_edit_on_double_click_with_placeholders() {
     // The shared property's Edit action replaces the old private double-click
@@ -3147,10 +3136,6 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
 
 /// The on-disk book persists creations and deletions, merges with a
 /// diverged replica, and imports real vCard files.
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario test: each labelled phase is one case"
-)]
 #[test]
 #[serial_test::serial]
 fn saved_book_persists_across_restarts_and_imports() {
@@ -3867,10 +3852,6 @@ fn rerender_at(app: &mut Live, w: u32, h: u32) {
 }
 
 /// Form rows, pills, panel lifts, rows and toolbar faces are authored at 1x and grow with the text scale on every preset.
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-)]
 #[test]
 fn duplicates_are_reviewed_field_by_field_before_merging() {
     let mut app = synced();

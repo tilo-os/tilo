@@ -734,13 +734,14 @@ pub fn paint_card(
     let text_x0 = rect.x0 + leading_column(theme);
 
     // Dismiss (X) button — a ghost `Button` face, top-right.
-    let mut text_right = rect.x1 - pad_x;
-    if let Some(close_rect) =
+    let mut text_right = if let Some(close_rect) =
         paint_dismiss_button(scene, transform, text_renderer, theme, rect, card, a)
     {
         hit.close_rect = close_rect;
-        text_right = close_rect.x0 - f64::from(theme.tokens.spacing.s1);
-    }
+        close_rect.x0 - f64::from(theme.tokens.spacing.s1)
+    } else {
+        rect.x1 - pad_x
+    };
     if card.single_action() {
         let action = paint_single_action(
             scene,
@@ -1254,10 +1255,7 @@ impl Widget for ToastStack {
         let (w, h) = self.stack_size();
         self.laid_out = self.toasts.len();
         let style = Style {
-            size: Size {
-                width: Dimension::length(w),
-                height: Dimension::length(h),
-            },
+            size: Size::from_lengths(w, h),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -1313,9 +1311,7 @@ impl Widget for ToastStack {
         self.laid_out != self.toasts.len()
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -1387,10 +1383,6 @@ impl Widget for ToastStack {
 
     fn name(&self) -> &'static str {
         "ToastStack"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

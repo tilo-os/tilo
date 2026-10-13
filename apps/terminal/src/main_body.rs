@@ -3919,9 +3919,7 @@ impl TerminalWidget {
         handled: &mut bool,
     ) {
         // Escape dismisses an open context menu before the app sees it.
-        if self.context_menu.is_open()
-            && let Key::Named(NamedKey::Escape) = logical_key
-        {
+        if self.context_menu.is_open() && matches!(logical_key, Key::Named(NamedKey::Escape)) {
             self.context_menu.close();
             *handled = true;
             return;

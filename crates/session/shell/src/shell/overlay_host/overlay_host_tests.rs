@@ -582,7 +582,7 @@ fn activity_refresh_skips_unchanged_frames() {
 }
 
 use std::collections::HashMap as StdHashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
@@ -738,10 +738,7 @@ impl Widget for StubContent {
         node_map: &mut StdHashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -1121,10 +1118,7 @@ fn build_harness_with_host(
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
+                size: Size::from_lengths(1600.0, 900.0),
                 ..Default::default()
             },
             &[child],
@@ -1834,10 +1828,6 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn app_pickers_and_alt_tab_target_the_focused_group_and_strip() {
     fn super_t_opens_a_workspace_scoped_app_picker_in_the_focused_group() {
         use crate::shell::chrome_state::{OpenTarget, SearchScope};
@@ -2305,10 +2295,6 @@ fn assert_no_peer_sync_work_from_a_click_in_the_panel(h: &mut Harness) {
 
 #[test]
 #[serial_test::serial(process_env)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
     /// Opening the palette with a stale query must both focus the input
     /// and clear it. Drives the configured Super+Space path through

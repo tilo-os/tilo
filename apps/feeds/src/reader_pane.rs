@@ -36,10 +36,7 @@ pub(crate) fn fill_leaf<W: Widget + 'static>(
     widget: &mut W,
 ) -> NodeId {
     let node = taffy.leaf_node(Style {
-        size: taffy::Size {
-            width: taffy::Dimension::percent(1.0),
-            height: taffy::Dimension::percent(1.0),
-        },
+        size: taffy::Size::from_percent(1.0, 1.0),
         ..Default::default()
     });
     node_map.insert(node, std::ptr::from_mut::<dyn Widget>(widget));

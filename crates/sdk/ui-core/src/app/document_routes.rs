@@ -373,17 +373,17 @@ impl App {
         if self.document_routes.witness.is_none() {
             return Err("the admitted document route is unavailable");
         }
-        let mut blocked = None;
-        if current.iter().any(|owner| {
-            !self.document_routes.owners.iter().any(|entry| {
-                entry
-                    .owners
-                    .iter()
-                    .any(|installed| installed.same_owner(owner))
+        let mut blocked = current
+            .iter()
+            .any(|owner| {
+                !self.document_routes.owners.iter().any(|entry| {
+                    entry
+                        .owners
+                        .iter()
+                        .any(|installed| installed.same_owner(owner))
+                })
             })
-        }) {
-            blocked = Some("a live document owner has no usable publication route");
-        }
+            .then_some("a live document owner has no usable publication route");
         let mut sends = vec![];
         for entry in &mut self.document_routes.owners {
             let Some(owner) = entry.owners.first() else {

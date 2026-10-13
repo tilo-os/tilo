@@ -10278,10 +10278,6 @@ impl Widget for WordProcessorWidget {
         }))
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the editor binds, rebases and reconciles in one sync pass"
-    )]
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // The toolbar is painted inside the document's authored chrome rather
         // than exposed as another accessibility child. Its deferred native
@@ -10400,9 +10396,7 @@ impl Widget for WordProcessorWidget {
         changed
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn needs_animation_frame(&self) -> bool {
         // Only the outline and inspector drawers move, while they open or
@@ -10428,10 +10422,6 @@ impl Widget for WordProcessorWidget {
         self.modal_capture().is_some()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the frame compositor keeps its ordered page/chrome layers together"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -10801,9 +10791,6 @@ impl Widget for WordProcessorWidget {
         self.segmented_touch.is_active()
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
     }

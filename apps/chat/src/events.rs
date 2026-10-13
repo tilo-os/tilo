@@ -1361,7 +1361,7 @@ impl ChatApp {
 
     fn on_key(&mut self, key: &Key, modifiers: Modifiers, doc: &mut ui::widget::Edits<'_>) -> bool {
         // Escape unwinds the top-most layer.
-        if let Key::Named(NamedKey::Escape) = key {
+        if matches!(key, Key::Named(NamedKey::Escape)) {
             if self.attach_open {
                 self.attach_open = false;
             } else if self.menu.is_some() {
@@ -1985,7 +1985,7 @@ fn prepare_attachment_import(
 /// (a browser page, where the job's workspace reads fail fast). A native
 /// thread that cannot start leaves the reason on the status line.
 fn run_worker(name: &str, job: impl FnOnce() + Send + 'static, status: &mut Option<String>) {
-    if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
+    if !ui::rt::available(ui::rt::Feature::Threads) {
         job();
         return;
     }
@@ -2461,10 +2461,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn live_start_workspace_switch_and_inbox_navigate_real_conversations() {
         // Phase: live_starter_selects_first_real_workspace_and_channel.
         {
@@ -4881,10 +4877,6 @@ mod tests {
     // --- sidebar mute/deafen (were dead outside a call) -----------------
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one labelled phase per original scenario, each with its own fresh fixture"
-    )]
     fn calls_start_join_leave_and_mute_through_shared_voice_membership() {
         // Phase: start_call_creates_a_voice_channel_when_the_workspace_has_none.
         {

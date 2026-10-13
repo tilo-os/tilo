@@ -6,7 +6,6 @@
 //! `TILO_UPDATE_GOLDEN=1 cargo test -p canvas --test agent_surface`.
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     reason = "test assertions over exact, hand-written fixtures"
 )]
 

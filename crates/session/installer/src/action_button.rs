@@ -314,10 +314,7 @@ impl Widget for ActionButton {
         };
         let style = match self.width {
             Some(width) => Style {
-                size: Size {
-                    width: Dimension::length(width),
-                    height: Dimension::length(height),
-                },
+                size: Size::from_lengths(width, height),
                 flex_grow: 0.0,
                 flex_shrink: 1.0,
                 ..Default::default()
@@ -338,9 +335,7 @@ impl Widget for ActionButton {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -499,10 +494,6 @@ impl Widget for ActionButton {
 
     fn test_id(&self) -> Option<&str> {
         Some(self.test_id.as_deref().unwrap_or(self.label.as_str()))
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_focusable(&self) -> bool {

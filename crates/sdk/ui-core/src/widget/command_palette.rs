@@ -9,7 +9,7 @@ use crate::widget::ModelPath;
 use automerge::ObjId;
 use std::collections::HashSet;
 use std::sync::Arc;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_search::FieldWeight;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -1862,9 +1862,9 @@ impl CommandPalette {
         );
         let avail = (text_right - text_x).max(0.0);
 
+        let label =
+            text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
         if let Some(desc) = &entry.description {
-            let label =
-                text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
             let sub = elide_middle(text_renderer, desc, &desc_style, avail);
             let (_, label_height) = text_renderer.measure_style(&label, None, &label_style);
             let (_, desc_height) = text_renderer.measure_style(&sub, None, &desc_style);
@@ -1888,8 +1888,6 @@ impl CommandPalette {
                 &desc_style,
             );
         } else {
-            let label =
-                text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
             let (_, height) = text_renderer.measure_style(&label, None, &label_style);
             let ly = row.y0 + (row.height() - f64::from(height)) / 2.0;
             text_renderer.draw_style(
@@ -2089,18 +2087,13 @@ impl Widget for CommandPalette {
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();
         let style = Style {
-            size: Size {
-                width: Dimension::length(f32_of_f64(width)),
-                height: Dimension::length(f32_of_f64(height)),
-            },
+            size: Size::from_lengths(f32_of_f64(width), f32_of_f64(height)),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -2316,10 +2309,6 @@ impl Widget for CommandPalette {
     /// lands inside the input row in all supported viewports.
     fn test_id(&self) -> Option<&str> {
         Some("command_palette_input")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_focusable(&self) -> bool {

@@ -129,9 +129,7 @@ impl Widget for DiskRow {
         taffy.widget_leaf(crate::full_width_row(ROW_HEIGHT), node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -273,10 +271,6 @@ impl Widget for DiskRow {
 
     fn test_id(&self) -> Option<&str> {
         Some(self.disk.name.as_str())
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_focusable(&self) -> bool {
