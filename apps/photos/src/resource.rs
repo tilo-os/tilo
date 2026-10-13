@@ -53,7 +53,7 @@ impl PhotoLibrary {
         #[param("When it was taken, as its file says")] captured_at: Option<String>,
         #[param("Where it was taken, as its file says")] location: Option<PhotoLocation>,
     ) -> Result<(), Refusal> {
-        let mut photo = LibraryPhoto::from_image(image.portable());
+        let mut photo = LibraryPhoto::from_image(image);
         photo.captured_at = captured_at
             .map(|value| {
                 crate::model::canonical_capture_at_value(&value)
@@ -170,7 +170,7 @@ impl PhotoLibrary {
         if !crate::model::valid_analysis(&analysis)
             || !matches!(
                 analysis.provenance.source.as_str(),
-                "local-ocr" | "local-vision" | "local-description"
+                "local-ocr" | "local-vision"
             )
         {
             return Err(Refusal::new(
@@ -186,7 +186,7 @@ impl PhotoLibrary {
         let merged = crate::model::merge_image_analysis(
             photo.analysis().as_ref(),
             analysis,
-            photo.image.content.as_deref(),
+            &photo.image.content,
         );
         photo.set_analysis(Some(merged));
         Ok(())
@@ -445,9 +445,7 @@ impl ResourceApp for PhotosShell {
                 return Vec::new();
             }
         };
-        let open = OpenImage::from_path(file.name(), image.w, image.h)
-            .with_content(hash)
-            .portable();
+        let open = OpenImage::new(file.name(), image.w, image.h, hash);
         vec![import(&LibraryPhoto::from_image(open))]
     }
 
