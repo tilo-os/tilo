@@ -1233,6 +1233,23 @@ impl PhotosApp {
         true
     }
 
+    /// Settle a completed library analysis with its counts.
+    fn finish_library_analysis(&mut self, invocation: tilo_actions::InvocationId) {
+        self.active_analysis.remove(&invocation);
+        self.settle(tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({
+                    "analyzed": self.library_analysis.succeeded,
+                    "failed": self.library_analysis.failed,
+                    "unavailable": self.library_analysis.unavailable,
+                })),
+                resources: vec!["photos.library-analysis".to_owned()],
+            },
+        });
+        self.notice = Some(self.analysis_finished_notice());
+    }
+
     fn schedule_next_library_analysis(
         &mut self,
         library: &crate::model::PhotoLibrary,
@@ -1245,19 +1262,7 @@ impl PhotosApp {
                 if self.library_analysis.finish_if_empty()
                     && let Some(invocation) = self.library_analysis.invocation
                 {
-                    self.active_analysis.remove(&invocation);
-                    self.settle(tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::json!({
-                                "analyzed": self.library_analysis.succeeded,
-                                "failed": self.library_analysis.failed,
-                                "unavailable": self.library_analysis.unavailable,
-                            })),
-                            resources: vec!["photos.library-analysis".to_owned()],
-                        },
-                    });
-                    self.notice = Some(self.analysis_finished_notice());
+                    self.finish_library_analysis(invocation);
                 }
                 return Ok(());
             };
@@ -1294,10 +1299,6 @@ impl PhotosApp {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "each analysis outcome variant is reconciled against the presented library and library-analysis progress in one exhaustive match"
-    )]
     fn drain_library_analysis_result(&mut self, completed: AnalysisResult) {
         let photo_name = self
             .library_analysis
@@ -1351,19 +1352,7 @@ impl PhotosApp {
             if self.library_analysis.phase
                 == crate::library_analysis::LibraryAnalysisPhase::Complete
             {
-                self.active_analysis.remove(&invocation);
-                self.settle(tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput {
-                        value: Some(serde_json::json!({
-                            "analyzed": self.library_analysis.succeeded,
-                            "failed": self.library_analysis.failed,
-                            "unavailable": self.library_analysis.unavailable,
-                        })),
-                        resources: vec!["photos.library-analysis".to_owned()],
-                    },
-                });
-                self.notice = Some(self.analysis_finished_notice());
+                self.finish_library_analysis(invocation);
             } else {
                 self.settle(tilo_actions::InvocationUpdate::Progress {
                     invocation,
