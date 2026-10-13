@@ -184,7 +184,15 @@ so a client that commits faster than the compositor presents made the
 compositor late. Capture now runs on workers, coalesced to the newest
 buffer per surface. For a dma-buf no thread waits on the client's GPU:
 the commit's buffer is captured once the loop sees its implicit fence
-signal, so a slow client delays only its own commits. The shared GPU
+signal, so a slow client delays only its own commits. The GPU orders its
+reads after the client's writes as well, whoever imports the buffer: each
+commit's import exports the buffer's pending write fence as a sync file
+(`DMA_BUF_IOCTL_EXPORT_SYNC_FILE`) and, when it has not signalled yet,
+imports it as a semaphore the presenting queue's next submission waits for
+(`ui::dmabuf_import::wait_for_writes`, `VK_KHR_external_semaphore_fd`); no
+thread waits on it. Vulkan does not follow a dma-buf's implicit fences on
+its own, and without this a frame sampled what the buffer held a frame or
+two earlier. The shared GPU
 route imports each client buffer once and copies nothing at capture: the
 presenter draws the frame into Vello's image atlas straight from the
 client's buffer (`vello::Renderer::draw_image_from`, a render pass that
