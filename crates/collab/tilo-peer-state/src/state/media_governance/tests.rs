@@ -25,8 +25,11 @@ fn voice_binding_waits_only_for_exact_channel_admission() {
         .unwrap();
     peer.publish_document("so.tilo.chat", "", chat.save(), &key, now)
         .unwrap();
-    let channel = chat
+    let entry = chat
         .put_object(&channels, "voice", automerge::ObjType::Map)
+        .unwrap();
+    let channel = chat
+        .put_object(&entry, "v", automerge::ObjType::Map)
         .unwrap();
     chat.put(&channel, "kind", "voice").unwrap();
     chat.put(&channel, "workspace", "home").unwrap();
