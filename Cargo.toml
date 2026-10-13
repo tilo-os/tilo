@@ -6,6 +6,7 @@
 # `crates/doc/tilo-doc-codec-markdown-wasm/build.sh`.
 exclude = [
     "vendor/buffa-build",
+    "tools/web/wasm-split",
     "fuzz",
     "crates/doc/tilo-doc-codec-markdown-wasm",
     "vendor/vello",
@@ -905,6 +906,14 @@ opt-level = 3
 panic = "abort"
 debug = false
 strip = "symbols"
+
+# `wasm-release` with the symbol table kept: the desktop bundle is split into
+# a start module and per-app modules loaded on demand, and the splitter reads
+# function names and relocations from the linked module. The modules it
+# writes are stripped.
+[profile.wasm-split]
+inherits = "wasm-release"
+strip = "none"
 
 # Thin-app profile: release settings minus those incompatible with dynamic SDK
 # linking.

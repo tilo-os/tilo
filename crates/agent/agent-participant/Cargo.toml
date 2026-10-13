@@ -129,6 +129,8 @@ tokio = { workspace = true, features = ["full"] }
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 postcard = { workspace = true, features = ["use-std"] }
+# Reads the links the host mints back the way a page does.
+tilo-reference = { path = "../../collab/reference" }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.

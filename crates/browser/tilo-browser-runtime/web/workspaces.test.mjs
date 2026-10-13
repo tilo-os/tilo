@@ -1,0 +1,193 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {chooseDisplayName, chosenDisplayName, HostAdmissionError, joinViaHost, keptMembership, listedWorkspaces, pairViaHost, randomDisplayName, spectate, workspaceAt} from './workspaces.mjs';
+
+const identity = key => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(key), userPublicKey: key.toString(16).padStart(2, '0').repeat(32), sign: async () => new Uint8Array(64)});
+
+const commons = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
+const KEY = 'tilo-host-memberships';
+
+const reply = ({status = 200, headers = {}, body = {}}) => ({
+  ok: status === 200, status, headers: new Map(Object.entries(headers)), json: async () => body,
+});
+
+function harness({person = identity(0x22), membership = null, joinReply = {status: 200, body: {invitation: 'INV', admissionToken: 'TOKEN', origin: 'https://rooms.example'}}, connectFails = false} = {}) {
+  const calls = {posted: [], joined: [], connected: []};
+  const store = new Map(membership ? [[KEY, JSON.stringify({'https://rooms.example': membership})]] : []);
+  return {
+    calls,
+    options: {
+      workspace: commons,
+      identity: person,
+      displayName: 'Brave Otter',
+      memberships: {getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key)},
+      fetch: async (url, init) => {
+        calls.posted.push({url: String(url), body: JSON.parse(init.body)});
+        return reply(joinReply);
+      },
+      join: async options => { calls.joined.push(options); options.onProgress?.({phase: 'admitted', room: 'ROOM'}); return {room: 'ROOM'}; },
+      connect: async options => { calls.connected.push(options); if (connectFails) throw new Error('refused: not a member'); return {room: options.room}; },
+    },
+    store,
+  };
+}
+
+test('a person new to the host is pre-admitted by it and joins with the pre-admission', async () => {
+  const {calls, options, store} = harness();
+  await joinViaHost(options);
+  assert.equal(calls.posted[0].url, 'https://rooms.example/join');
+  assert.deepEqual(calls.posted[0].body, {userPublicKey: '22'.repeat(32), displayName: 'Brave Otter'});
+  assert.equal(calls.joined[0].invitation, 'INV');
+  assert.equal(calls.joined[0].admissionToken, 'TOKEN');
+  assert.equal(calls.joined[0].origin, 'https://rooms.example');
+  assert.equal(calls.joined[0].identity.userPublicKey, '22'.repeat(32));
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}), {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '22'.repeat(32)});
+});
+
+test('a person joins at once under a random adjective-animal name when none is given', async () => {
+  const {calls, options} = harness();
+  delete options.displayName;
+  await joinViaHost(options);
+  assert.match(calls.posted[0].body.displayName, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  assert.equal(calls.joined[0].displayName, calls.posted[0].body.displayName);
+});
+
+test('a person who joined the host before reconnects without asking it', async () => {
+  const {calls, options} = harness({person: identity(0x11), membership: {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)}});
+  await joinViaHost(options);
+  assert.equal(calls.posted.length, 0);
+  assert.equal(calls.connected[0].identity.userPublicKey, '11'.repeat(32));
+  assert.equal(calls.connected[0].room, 'ROOM');
+});
+
+test('a person who was pruned is pre-admitted again as the same person', async () => {
+  const {calls, options} = harness({person: identity(0x11), membership: {origin: 'o', room: 'ROOM', userPublicKey: '11'.repeat(32)}, connectFails: true});
+  await joinViaHost(options);
+  assert.equal(calls.posted[0].body.userPublicKey, '11'.repeat(32));
+});
+
+test('a membership kept for another person is not reused for this one', async () => {
+  const {calls, options} = harness({person: identity(0x33), membership: {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: '11'.repeat(32)}});
+  await joinViaHost(options);
+  assert.equal(calls.connected.length, 0);
+  assert.equal(calls.posted[0].body.userPublicKey, '33'.repeat(32));
+});
+
+test('a workspace whose host needs an invitation, or a call without a person, is refused before anything is asked', async () => {
+  const {calls, options} = harness();
+  await assert.rejects(joinViaHost({...options, workspace: {name: 'Team', host: {origin: 'https://team.example'}}}),
+    error => error instanceof HostAdmissionError && error.code === 'invitation-only');
+  await assert.rejects(joinViaHost({...options, identity: undefined}), TypeError);
+  assert.equal(calls.posted.length, 0);
+});
+
+test('a full room and a cooldown are told apart', async () => {
+  const full = harness({joinReply: {status: 503, headers: {'retry-after': '60'}, body: {error: 'the workspace is full'}}});
+  await assert.rejects(joinViaHost(full.options), error => error instanceof HostAdmissionError && error.code === 'full' && error.retryAfter === 60);
+  const down = harness({joinReply: {status: 503, body: {error: 'the room is starting'}}});
+  await assert.rejects(joinViaHost(down.options), error => error.code === 'unavailable');
+  const cooling = harness({joinReply: {status: 403, body: {error: 'removed'}}});
+  await assert.rejects(joinViaHost(cooling.options), error => error.code === 'cooling-down');
+});
+
+test('display names are an adjective and an animal', () => {
+  assert.match(randomDisplayName(() => 0), /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+});
+
+test('the home workspace is listed first, then the person\u2019s own, each host once', () => {
+  const team = {name: 'Team', host: {origin: 'https://team.example'}, room: 'r'};
+  const again = {name: 'Commons again', host: {origin: 'https://rooms.example/'}};
+  assert.deepEqual(listedWorkspaces({stored: [team]}), [team]);
+  assert.deepEqual(listedWorkspaces({home: commons, stored: [again, team]}), [commons, team]);
+  assert.deepEqual(listedWorkspaces(), []);
+  assert.equal(workspaceAt(listedWorkspaces({stored: [team]}), 'https://team.example'), team);
+  assert.equal(workspaceAt([team], 'https://elsewhere.example'), null);
+});
+
+function spectating(spectateReply) {
+  const calls = {posted: [], connected: []};
+  const certificate = {user_public_key: Array(32).fill(0x5e), device_public_key: Array(32).fill(1), device_label: 'Spectator'};
+  return {
+    calls,
+    certificate,
+    options: {
+      workspace: commons,
+      fetch: async (url, init) => {
+        calls.posted.push({url: String(url), body: JSON.parse(init.body)});
+        return reply(spectateReply ?? {body: {certificate, origin: 'https://rooms.example', room: 'ROOM'}});
+      },
+      runtime: {hostInfo: async () => JSON.stringify({hostCert: {device_public_key: Array(32).fill(9)}})},
+      connect: async options => { calls.connected.push(options); return {room: options.room}; },
+    },
+  };
+}
+
+test('a spectator certifies an in-memory device key and connects without a person or storage', async () => {
+  const {calls, certificate, options} = spectating();
+  await spectate(options);
+  assert.equal(calls.posted[0].url, 'https://rooms.example/spectate');
+  const {devicePublicKey} = calls.posted[0].body;
+  assert.match(devicePublicKey, /^[0-9a-f]{64}$/);
+  const [connected] = calls.connected;
+  assert.equal(connected.identity, undefined);
+  assert.equal(connected.profile, undefined);
+  assert.equal(connected.origin, 'https://rooms.example');
+  assert.equal(connected.room, 'ROOM');
+  assert.equal(connected.userPublicKey, '5e'.repeat(32));
+  assert.equal(Array.from(connected.custody.publicKey, b => b.toString(16).padStart(2, '0')).join(''), devicePublicKey);
+  assert.deepEqual(JSON.parse(connected.deviceCertificate), {cert: certificate, hostCert: {device_public_key: Array(32).fill(9)}});
+  // The key signs, and cannot be exported: nothing about it outlives the page.
+  assert.equal((await connected.custody.sign(new Uint8Array([1]))).length, 64);
+  await connected.store.put('k', 'v');
+  assert.equal(await connected.store.get('k'), 'v');
+});
+
+test('above the spectator cap the embed is told the room is full', async () => {
+  const {calls, options} = spectating({status: 503, headers: {'retry-after': '30'}, body: {error: 'too many people are watching'}});
+  await assert.rejects(spectate(options), error => error instanceof HostAdmissionError && error.code === 'full' && error.retryAfter === 30);
+  assert.equal(calls.connected.length, 0);
+});
+
+test('a paired device is kept as its person and reconnects as them, never as a person of its own', async () => {
+  const {calls, options, store} = harness();
+  const person = '33'.repeat(32);
+  const codes = [];
+  await pairViaHost({origin: 'https://rooms.example', room: 'ROOM', userPublicKey: person, workspace: commons, displayName: 'Ada',
+    memberships: options.memberships, fetch: options.fetch, onPairingCode: code => codes.push(code),
+    pair: async pairing => { calls.connected.push(pairing); calls.offer = await pairing.admission(); return {room: 'ROOM'}; }});
+  const paired = calls.connected[0];
+  assert.equal(paired.userPublicKey, person);
+  assert.equal(paired.identity, undefined, 'the root stays on the device that approves');
+  assert.equal(paired.profile, `tilo-identity:${person}@rooms.example`);
+  assert.equal(typeof paired.onPairingCode, 'function');
+  assert.deepEqual(calls.posted, [{url: 'https://rooms.example/join', body: {userPublicKey: person, displayName: 'Ada'}}],
+    'the new device joins the person\u2019s workspace through the host\u2019s door');
+  assert.equal(calls.offer.invitation, 'INV');
+  calls.posted.length = 0;
+  assert.deepEqual(keptMembership(commons, {getItem: key => store.get(key)}),
+    {origin: 'https://rooms.example', room: 'ROOM', userPublicKey: person, paired: true});
+
+  await joinViaHost({...options, identity: undefined});
+  assert.equal(calls.posted.length, 0, 'the host is not asked to admit another person');
+  assert.equal(calls.connected[1].userPublicKey, person);
+  assert.equal(calls.connected[1].profile, paired.profile);
+  assert.equal(calls.connected[1].room, 'ROOM');
+});
+
+test('a pairing link that names no person is refused before anything is asked', async () => {
+  const {calls, options} = harness();
+  await assert.rejects(pairViaHost({origin: 'https://rooms.example', room: 'ROOM', userPublicKey: 'nobody', pair: options.connect,
+    memberships: options.memberships}), {code: 'invalid'});
+  assert.equal(calls.connected.length, 0);
+});
+
+test('a chosen name is kept per person in this browser', () => {
+  const store = new Map();
+  const names = {getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, value)};
+  assert.equal(chosenDisplayName('aa', names), null);
+  assert.equal(chooseDisplayName('aa', '  Ada Lovelace ', names), 'Ada Lovelace');
+  assert.equal(chosenDisplayName('aa', names), 'Ada Lovelace');
+  assert.equal(chosenDisplayName('bb', names), null);
+  chooseDisplayName('aa', '', names);
+  assert.equal(chosenDisplayName('aa', names), null);
+});
