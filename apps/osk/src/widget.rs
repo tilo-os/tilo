@@ -124,24 +124,6 @@ use crate::presentation::{AlternatesPopup, KeyboardPresentation, keyboard_geomet
 use crate::toolbar::{OskToolbarAction, OskToolbarItem};
 use crate::touch_model::{HitCell, NextKeyCache, TouchKey, TouchModel};
 
-/// A held or opened state the keyboard is photographed in: what a finger on
-/// the glass does, which a capture cannot do by itself. Applied once, after
-/// the first layout, through the same paths a touch takes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Pose {
-    /// A finger is down on the key labelled so.
-    Pressed(String),
-    /// The key labelled `key` is held past the long-press delay and the
-    /// finger has slid to alternate `pick`.
-    LongPress { key: String, pick: usize },
-    /// The space bar is being dragged to steer the caret.
-    SpaceCursor,
-    /// The emoji search is open with this query.
-    EmojiSearch(String),
-    /// The emoji panel is open with the skin-tone row open on this emoji.
-    EmojiTones(String),
-}
-
 /// A key row is one header-bar tall: well above the minimum touch target, and
 /// the same code serves a phone (small surface) and a desktop (wide surface);
 /// only the width differs.
@@ -317,8 +299,6 @@ pub struct OskWidget {
     cursor_drag: Option<CursorDrag>,
     /// Paint the effective hit areas over the keys (a debug aid).
     hit_overlay: bool,
-    /// A state to take on after the first layout (captures).
-    pose: Option<Pose>,
 
     // --- emoji ---
     emoji_panel: EmojiPanel,
@@ -449,7 +429,6 @@ impl OskWidget {
             alternates: None,
             cursor_drag: None,
             hit_overlay: false,
-            pose: None,
             emoji_panel: EmojiPanel::new(emoji::Catalogue::for_locale(
                 &ui::i18n::I18nManager::current_locale(),
             )),
@@ -2779,9 +2758,6 @@ impl Widget for OskWidget {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.layout_bands();
-        if let Some(pose) = self.pose.take() {
-            self.take_pose(pose);
-        }
     }
 
     fn draw(
@@ -5477,58 +5453,3 @@ mod tests {
 #[cfg(test)]
 #[path = "visual_review.rs"]
 mod visual_review;
-
-impl OskWidget {
-    fn key_labelled(&self, label: &str) -> Option<(KeyId, Rect)> {
-        let layout = self.current_layout();
-        self.key_geom
-            .iter()
-            .find(|(id, _)| layout.key(*id).is_some_and(|k| k.label == label))
-            .copied()
-    }
-    fn take_pose(&mut self, pose: Pose) {
-        match pose {
-            Pose::Pressed(label) => {
-                self.pressed_key = self.key_labelled(&label).map(|(id, _)| id);
-            }
-            Pose::LongPress { key, pick } => {
-                let Some((id, _)) = self.key_labelled(&key) else {
-                    return;
-                };
-                self.pressed_key = Some(id);
-                let now = Instant::now();
-                self.begin_hold(id, None, now);
-                self.poll_hold(now + LONG_PRESS);
-                if let Some((_, popup)) = self.alternates.as_mut()
-                    && let Some(cell) = popup.cells.get(pick)
-                {
-                    let x = cell.center().x;
-                    popup.track(x);
-                }
-            }
-            Pose::SpaceCursor => {
-                let Some((id, rect)) = self.key_labelled("space") else {
-                    return;
-                };
-                self.pressed_key = Some(id);
-                let x = rect.center().x;
-                self.begin_cursor_drag(id, None, x);
-                self.drag_cursor(None, x - rect.width() * 0.2);
-            }
-            Pose::EmojiSearch(query) => {
-                self.open_emoji_panel();
-                self.emoji_panel.start_search();
-                self.emoji_panel.set_query(&query);
-                self.structure_dirty = true;
-                self.layout_bands();
-            }
-            Pose::EmojiTones(text) => {
-                self.open_emoji_panel();
-                // The row belongs to an emoji on screen: show its group first.
-                self.emoji_panel.show_group_of(&text);
-                self.layout_bands();
-                self.open_emoji_tones(&text);
-            }
-        }
-    }
-}
