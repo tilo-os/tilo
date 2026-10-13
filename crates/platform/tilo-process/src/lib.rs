@@ -84,12 +84,13 @@ pub fn probe_process_table() -> std::io::Result<()> {
 /// app starts with, as far as the hard limit allows. macOS starts processes
 /// at 256, which one app retaining a descriptor per selected file exhausts.
 /// The limit is never lowered and the hard limit is left alone; it stops at
-/// 1024 so code bounded by `select`'s `FD_SETSIZE` keeps working.
+/// 1024 so code bounded by `select`'s `FD_SETSIZE` keeps working. Other
+/// platforms already start at least that high, so it does nothing there.
 pub fn raise_open_file_limit() {
     limits::raise_open_files();
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 mod limits {
     const OPEN_FILES: libc::rlim_t = 1024;
 
@@ -113,7 +114,7 @@ mod limits {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(target_os = "macos"))]
 mod limits {
     pub const fn raise_open_files() {}
 }
