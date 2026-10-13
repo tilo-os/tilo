@@ -6,8 +6,11 @@ Runs `shell --backend headless` with a render thread and a simulated display
 offscreen target, its flip is queued behind the previous one and retires on a
 vblank grid at the panel's rate, as the DRM presenter does. A synthetic
 `wl_shm` client (`crates/session/shell/examples/latency_client.rs`) redraws its
-whole window on every key. Keys are injected through the control socket at
-random phases of the refresh interval. The compositor's own `KEY-LATENCY`
+whole window on every key and damages either all of it (`--damage full`) or
+only the text line the key typed on (`--damage line`). Keys are injected through the control socket at
+random phases of the refresh interval, through the compositor's input funnel as
+a physical keyboard's keys arrive (`--input seat`) or straight to the focused
+client (`--input direct`). The compositor's own `KEY-LATENCY`
 lines give each key's journey:
 
     key -> client commit -> compositor submit -> vblank that shows it
@@ -48,6 +51,11 @@ KEY_LINE = re.compile(
     r"KEY-LATENCY app=(?P<app>\S*) key_to_commit_us=(?P<key_to_commit_us>\d+) "
     r"key_to_submit_us=(?P<key_to_submit_us>\d+) key_to_present_us=(?P<key_to_present_us>\d+)")
 GPU_LINE = re.compile(r"CPU-FRAME serial=\d+ .*?\bgpu_us=(\d+)")
+UPLOAD_LINE = re.compile(r"CPU-FRAME serial=\d+ .*?\bshm_upload_bytes=(\d+)")
+# What each rendered frame repainted (damage) and rasterised, and whether it
+# rendered the whole output.
+PAINT_LINE = re.compile(
+    r"CPU-FRAME serial=\d+ .*?\bdamage_px=(\d+) raster_px=(\d+) dense=([01])")
 
 
 def _bench():
@@ -71,6 +79,12 @@ def distribution(values_us: list[int]) -> dict:
             "max_ms": ordered[-1]}
 
 
+def pixel_distribution(values: list[int]) -> dict:
+    ordered = sorted(values)
+    return {"n": len(ordered), "p50": percentile(ordered, 50), "p90": percentile(ordered, 90),
+            "p99": percentile(ordered, 99), "max": ordered[-1]}
+
+
 def parse_samples(text: str, app: str) -> list[dict]:
     rows = []
     for match in KEY_LINE.finditer(text):
@@ -81,12 +95,19 @@ def parse_samples(text: str, app: str) -> list[dict]:
 
 def summarize(rows: list[dict], gpu_us: list[int]) -> dict:
     out = {stage: distribution([row[stage] for row in rows]) for stage in STAGES}
+    # The legs between the compositor's own marks, key by key.
+    out["commit_to_submit_us"] = distribution(
+        [row["key_to_submit_us"] - row["key_to_commit_us"] for row in rows])
+    out["submit_to_present_us"] = distribution(
+        [row["key_to_present_us"] - row["key_to_submit_us"] for row in rows])
     if gpu_us:
         out["gpu_frame_us"] = distribution(gpu_us)
     return out
 
 
 def session_env(root: Path, args: argparse.Namespace, ctl: Path) -> dict[str, str]:
+    """The private session's environment; its per-tick frame trace (paint
+    reasons and the clients that committed) lands next to the log."""
     env = dict(os.environ)
     for name in ("WAYLAND_DISPLAY", "DISPLAY", "TILO_RUN_SECONDS"):
         env.pop(name, None)
@@ -96,6 +117,7 @@ def session_env(root: Path, args: argparse.Namespace, ctl: Path) -> dict[str, st
         "TILO_HEADLESS_SIZE": f"{args.width}x{args.height}",
         "TILO_HEADLESS_VBLANK_HZ": str(args.hz),
         "TILO_PROFILE_PRESENTATION": "1",
+        "TILO_FRAME_TRACE": str((args.out / f"{args.label}.trace.csv").resolve()),
         "HOME": str(root / "home"),
         "XDG_CONFIG_HOME": str(root / "config"),
         "XDG_DATA_HOME": str(root / "data"),
@@ -152,7 +174,8 @@ def measure(args: argparse.Namespace) -> dict:
                     sys.exit(f"{app} did not open: {why}")
             else:
                 client_proc = subprocess.Popen(
-                    [str(client), app], env={**env, "WAYLAND_DISPLAY": wayland},
+                    [str(client), app, "--damage", args.damage, "--buffers", args.buffers],
+                    env={**env, "WAYLAND_DISPLAY": wayland},
                     stdout=subprocess.PIPE, text=True)
                 ready = client_proc.stdout.readline()
                 if not ready.startswith("READY"):
@@ -162,7 +185,8 @@ def measure(args: argparse.Namespace) -> dict:
             rng = random.Random(args.seed)
             keys = "abcdefghijklmnopqrstuvwxyz"
             for index in range(args.warmup + args.keys):
-                reply = control.send({"op": "key", "key": keys[index % len(keys)]})
+                op = "seat_key" if args.input == "seat" else "key"
+                reply = control.send({"op": op, "key": keys[index % len(keys)]})
                 if "err" in reply:
                     sys.exit(f"key refused: {reply}")
                 # Random phase against the display so no refresh position is favoured.
@@ -180,23 +204,62 @@ def measure(args: argparse.Namespace) -> dict:
     if len(rows) < args.keys * 0.8:
         sys.exit(f"only {len(rows)} of {args.keys} keys were answered and timed; see {log}")
     gpu = [int(m[1]) for m in GPU_LINE.finditer(text)]
+    # Frames rendered while typing: between the first and the last answered key, so the
+    # window's opening animation does not count against the keys.
+    key_lines = [m.start() for m in KEY_LINE.finditer(text) if m["app"] == app]
+    typing_frames = sum(1 for m in GPU_LINE.finditer(text)
+                        if key_lines and key_lines[0] < m.start() < key_lines[-1])
+    painted = [(int(m[1]), int(m[2]), m[3] == "1") for m in PAINT_LINE.finditer(text)]
+    paint = {}
+    # A frame proven unchanged keeps the image and repaints nothing.
+    rendered = [frame for frame in painted if frame[0] > 0]
+    if rendered:
+        paint = {"dense_frames": sum(dense for _, _, dense in rendered),
+                 "kept_frames": len(painted) - len(rendered),
+                 "damage_px": pixel_distribution([d for d, _, _ in rendered]),
+                 "raster_px": pixel_distribution([r for _, r, _ in rendered])}
+    uploads = [int(m[1]) for m in UPLOAD_LINE.finditer(text)]
+    if uploads:
+        paint["shm_upload_bytes"] = pixel_distribution(uploads)
     result = {"label": args.label, "app": app, "size": f"{args.width}x{args.height}",
-              "hz": args.hz, "keys_sent": args.keys, **summarize(rows, gpu)}
+              "hz": args.hz, "keys_sent": args.keys, "damage": args.damage, "input": args.input,
+              "buffers": args.buffers, **paint,
+              # Rendered frames per key sent: a key answered by one commit should cost one.
+              "frames_per_key": round(len(gpu) / (args.keys + args.warmup), 2),
+              "typing_frames_per_key": round(typing_frames / max(1, len(key_lines) - 1), 2),
+              **summarize(rows, gpu)}
     (args.out / f"{args.label}.json").write_text(json.dumps(result, indent=2))
     return result
 
 
 def table(results: list[dict]) -> str:
-    head = ("| run | n | commit p50 | submit p50 | present p50 | present p90 "
-            "| present p99 | GPU frame p50 |\n|---|---|---|---|---|---|---|---|")
-    lines = [head]
+    """One row per run and stage: p50 / p90 / p99 in milliseconds."""
+    stages = [("key_to_commit_us", "key->commit"), ("commit_to_submit_us", "commit->submit"),
+              ("submit_to_present_us", "submit->present"), ("key_to_present_us", "key->present"),
+              ("gpu_frame_us", "GPU frame")]
+    lines = ["| run | stage | n | p50 | p90 | p99 |", "|---|---|---|---|---|---|"]
     for r in results:
-        gpu = r.get("gpu_frame_us", {}).get("p50_ms")
-        lines.append(
-            f"| {r['label']} | {r['key_to_present_us']['n']} "
-            f"| {r['key_to_commit_us']['p50_ms']:.1f} | {r['key_to_submit_us']['p50_ms']:.1f} "
-            f"| {r['key_to_present_us']['p50_ms']:.1f} | {r['key_to_present_us']['p90_ms']:.1f} "
-            f"| {r['key_to_present_us']['p99_ms']:.1f} | {'' if gpu is None else f'{gpu:.1f}'} |")
+        for key, name in stages:
+            d = r.get(key)
+            if d:
+                lines.append(f"| {r['label']} | {name} | {d['n']} | {d['p50_ms']:.1f} "
+                             f"| {d['p90_ms']:.1f} | {d['p99_ms']:.1f} |")
+    lines.append("")
+    lines.extend(f"{r['label']}: {r['frames_per_key']} rendered frames per key sent, "
+                 f"{r.get('typing_frames_per_key', '?')} per key while typing"
+                 for r in results if "frames_per_key" in r)
+    for r in results:
+        if "raster_px" in r:
+            frames = r["raster_px"]["n"]
+            lines.append(
+                f"{r['label']}: {r['dense_frames']}/{frames} rendered frames drew the whole "
+                f"output, {r.get('kept_frames', 0)} more kept the image unchanged; "
+                f"damage p50 {r['damage_px']['p50']} px, "
+                f"rasterised p50 {r['raster_px']['p50']} px p90 {r['raster_px']['p90']} px")
+        if "shm_upload_bytes" in r:
+            up = r["shm_upload_bytes"]
+            lines.append(f"{r['label']}: wl_shm bytes uploaded per frame p50 {up['p50']} "
+                         f"p90 {up['p90']} max {up['max']}")
     return "\n".join(lines)
 
 
@@ -215,6 +278,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval-ms", type=float, default=100.0)
     parser.add_argument("--settle", type=float, default=2.0)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--input", choices=("seat", "direct"), default="seat",
+                        help="seat: keys enter the compositor's input funnel as a physical "
+                             "keyboard's do; direct: straight to the focused client")
+    parser.add_argument("--buffers", choices=("shm", "dmabuf"), default="shm",
+                        help="the synthetic client's buffers: wl_shm, or LINEAR dma-bufs")
+    parser.add_argument("--damage", choices=("full", "line"), default="full",
+                        help="what the synthetic client damages per key")
     parser.add_argument("--app", help="type into this installed app instead of the synthetic client")
     parser.add_argument("--app-timeout", type=float, default=60.0)
     parser.add_argument("--startup-timeout", type=float, default=120.0)

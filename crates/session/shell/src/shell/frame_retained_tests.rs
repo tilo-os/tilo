@@ -1229,6 +1229,99 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
     }
 }
 
+/// A client that damages one text line (a typed character in a terminal)
+/// repaints only that line of the output: the frame's damage is the line's
+/// rows across the tile, the retained render takes the sparse path and writes
+/// no pixel outside them, and the result matches a dense render of the scene.
+#[test]
+fn one_line_of_client_damage_repaints_only_that_line() {
+    let _ambient = DenyAmbientStarts::new();
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    clock.set("TILO_CLOCK", "09:41");
+    let surface = 8_493_301;
+    let (mut fixture, size) = foreign_damage_fixture(ui::widget::WindowWidth::Narrow, surface);
+    let mut retained = bridge();
+    let mut oracle = bridge();
+    let mut pixels = [32, 32, 32, 255].repeat(size.0 as usize * size.1 as usize);
+    let store = crate::shell::foreign::store();
+    store.publish_rgba(surface, &pixels, size.0, size.1);
+    let first = fixture.paint_with_damage();
+    paint_retained_and_compare(&mut retained, &mut oracle, &first, "the empty grid");
+    // One line of a text grid, 20 buffer rows, across the whole buffer.
+    let line = Rect::new(0.0, 100.0, f64::from(size.0), 120.0);
+    for y in line.y0 as usize..line.y1 as usize {
+        for x in 0..size.0 as usize {
+            let index = (y * size.0 as usize + x) * 4;
+            pixels[index..index + 4].copy_from_slice(&[224, 224, 224, 255]);
+        }
+    }
+    store.publish_damaged_rgba_for_test(surface, &pixels, size, vec![line]);
+    let typed = fixture.paint_with_damage();
+    let mounted = fixture.foreign_surface_rect(surface).expect("mounted");
+    let placement = fixture
+        .layout_rect_to_scene(mounted)
+        .expect("scene placement");
+    let scale_y = placement.height() / f64::from(size.1);
+    let line_top = placement.y0 + line.y0 * scale_y;
+    let line_bottom = placement.y0 + line.y1 * scale_y;
+    // A filtered image's damage reaches one pixel past the changed texels,
+    // and is repainted in whole 16-pixel tiles, Vello's fine tile.
+    let tile = 16.0;
+    let (rows_top, rows_bottom) = (
+        ((line_top - 1.0) / tile).floor() * tile,
+        ((line_bottom + 1.0) / tile).ceil() * tile,
+    );
+    let (columns_left, columns_right) = (
+        ((placement.x0 - 1.0) / tile).floor() * tile,
+        ((placement.x1 + 1.0) / tile).ceil() * tile,
+    );
+    let damage = typed
+        .damage_regions
+        .as_ref()
+        .expect("a one-line commit keeps bounded damage");
+    assert!(!damage.is_empty(), "the typed line must be repainted");
+    for rect in damage {
+        assert!(
+            f64::from(rect.y) >= rows_top && f64::from(rect.y + rect.height) <= rows_bottom,
+            "damage {rect:?} reaches outside the tile rows {rows_top}..{rows_bottom} of the \
+             typed line {line_top}..{line_bottom}"
+        );
+        assert!(
+            f64::from(rect.x) >= columns_left && f64::from(rect.x + rect.width) <= columns_right,
+            "damage {rect:?} reaches outside the tile {placement:?}"
+        );
+    }
+    let damaged: u64 = damage
+        .iter()
+        .map(|rect| u64::from(rect.width) * u64::from(rect.height))
+        .sum();
+    let line_pixels = ((rows_bottom - rows_top) * (columns_right - columns_left)) as u64;
+    assert!(
+        damaged <= line_pixels,
+        "{damaged} damaged pixels for a line of at most {line_pixels}"
+    );
+    paint_retained_and_compare(&mut retained, &mut oracle, &typed, "one typed line");
+    assert!(
+        retained.last_sparse_render_attempts() >= 1,
+        "a one-line commit renders through the sparse path, not the whole output"
+    );
+    let stats = retained
+        .last_sparse_render_stats()
+        .expect("the sparse render reports what it wrote");
+    assert!(
+        stats.written_pixels <= damaged,
+        "the sparse render wrote {} pixels for {damaged} damaged",
+        stats.written_pixels
+    );
+    assert_foreign_pixel(
+        &mut oracle,
+        &typed,
+        Point::new(placement.center().x, f64::midpoint(line_top, line_bottom)),
+        [224, 224, 224],
+    );
+    store.forget(surface);
+}
+
 #[cfg(target_os = "linux")]
 fn render_cpu(scene: &Scene, (width, height): (u32, u32)) -> Vec<u8> {
     let mut pixels = vec![0u8; width as usize * height as usize * 4];

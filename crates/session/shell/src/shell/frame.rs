@@ -484,6 +484,37 @@ impl FramePaint {
         self
     }
 
+    /// This frame in place of `older`, a frame handed to the presenter before
+    /// it and never rendered ([`crate::shell::present::PresentPipe`]: latest
+    /// wins). The presenter then goes straight from the frame it holds, the
+    /// one `older` was relative to, to this one: the damage is the union of
+    /// both frames' damage, relative to `older`'s predecessor, when this frame
+    /// was produced right after `older`, and the whole output otherwise.
+    /// Copies are dropped: they move pixels of `older`'s image, which the
+    /// presenter never had, and `damage_regions` already repaints where they
+    /// land.
+    #[must_use]
+    pub fn superseding(mut self, older: &Self) -> Self {
+        self.repaint_copies();
+        let chained = self.revision != 0
+            && older.revision != 0
+            && self.previous_revision == Some(older.revision);
+        self.damage_regions = match (&self.damage_regions, &older.damage_regions) {
+            (Some(newer), Some(earlier)) if chained => {
+                let mut union = earlier.clone();
+                union.extend_from_slice(newer);
+                Some(without_contained_regions(&union))
+            }
+            _ => None,
+        };
+        self.previous_revision = if chained {
+            older.previous_revision
+        } else {
+            None
+        };
+        self
+    }
+
     /// Drop the copies: `damage_regions` already repaints where they land.
     fn repaint_copies(&mut self) {
         self.scroll_copies = None;

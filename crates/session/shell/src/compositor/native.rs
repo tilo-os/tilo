@@ -445,11 +445,17 @@ struct NativeRedrawReasons {
     lock_animation: bool,
     /// A media-key readout drawn over the lock surface is fading or due to clear.
     lock_osd: bool,
+    /// An earlier tick counted a change but painted no frame for it: the
+    /// frame clock was not due yet, or the presenter was full. Most reasons
+    /// are edges seen once (a client commit, input, a session change), so
+    /// the change is owed until a frame is painted.
+    owed: bool,
 }
 
 impl NativeRedrawReasons {
     fn content_changed(self, session_locked: bool) -> bool {
-        self.force
+        self.owed
+            || self.force
             || self.backend_event
             || self.visible_input
             || self.session
@@ -490,10 +496,52 @@ impl NativeRedrawReasons {
             (session_locked && self.lock_clock, r::LOCK_CLOCK),
             (session_locked && self.lock_animation, r::LOCK_ANIMATION),
             (session_locked && self.lock_osd, r::LOCK_OSD),
+            (self.owed, r::OWED),
         ]
         .into_iter()
         .filter(|(held, _)| *held)
         .fold(0, |bits, (_, bit)| bits | bit)
+    }
+}
+
+/// The backend events one loop iteration dispatched, for whether they ask for
+/// a frame by themselves ([`NativeRedrawReasons::backend_event`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DispatchedInput {
+    /// Keyboard presses and releases.
+    keys: u64,
+    /// Every other backend event.
+    other: u64,
+}
+
+impl DispatchedInput {
+    fn note(&mut self, event: &BackendEvent) {
+        let key = matches!(
+            event,
+            BackendEvent::Input(WindowEvent::KeyboardInput { .. })
+                | BackendEvent::PhysicalKey {
+                    event: WindowEvent::KeyboardInput { .. },
+                    ..
+                }
+        );
+        if key {
+            self.keys = self.keys.saturating_add(1);
+        } else {
+            self.other = self.other.saturating_add(1);
+        }
+    }
+
+    /// Whether this input needs a frame of its own, with `keys_to_clients` of
+    /// its keys forwarded to a client. A key only a client took changes no
+    /// shell pixels: the client's commit asks for the frame that shows it.
+    /// Painting for the key as well spent the frame clock's next deadline on
+    /// a frame identical to the last one, so the commit that followed a
+    /// millisecond later waited a refresh interval for the next deadline. A
+    /// key the shell kept (a shortcut, typing into the chrome), and any other
+    /// event, asks for a frame as before; whatever the shell changed in
+    /// response asks again through its own reason.
+    fn asks_for_frame(self, keys_to_clients: u64) -> bool {
+        self.other > 0 || self.keys > keys_to_clients
     }
 }
 
@@ -3901,6 +3949,18 @@ struct TestControlCtx {
     /// precisely the ownership handoff DRM uses before emitting real
     /// `wl_touch` traffic to its Wayland clients.
     direct_touch: DirectTouchOwnership,
+    /// Control-socket actions the focused Wayland client took, counted so a
+    /// batch the client alone answered is told from one that changed the
+    /// chrome ([`Self::client_input_only`]).
+    client_routed_actions: usize,
+    /// The last batch of actions went to the client alone: the client's own
+    /// commit is the frame it asks for, so the loop does not repaint for it,
+    /// as it does not for a physical key.
+    client_input_only: bool,
+    /// Keys a control client asked to arrive as a physical keyboard's do
+    /// ([`PlannedAction::SeatKey`]); the loop takes them with the backend's
+    /// own events on its next iteration.
+    seat_events: Vec<BackendEvent>,
     /// Touch the chrome or a touch-less client receives as pointer input;
     /// shared by physical and injected touch.
     touch_pointer: crate::compositor::touch_pointer::TouchPointer,
@@ -3951,6 +4011,9 @@ impl TestControlCtx {
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
+            client_routed_actions: 0,
+            client_input_only: false,
+            seat_events: Vec::new(),
             touch_pointer: crate::compositor::touch_pointer::TouchPointer::default(),
             gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
             input: InputEnvironment::default(),
@@ -4317,6 +4380,7 @@ fn dispatch_synth_event(
     state: &mut Option<&mut State>,
 ) {
     if to_client(state, fb, event, ctx.modifiers) {
+        ctx.client_routed_actions = ctx.client_routed_actions.saturating_add(1);
         return;
     }
     if let Some(st) = state.as_deref_mut() {
@@ -4774,6 +4838,13 @@ fn execute_planned_action(
             }
             dispatch_synth_event(&event, fb, ctx, &mut state);
         }
+        PlannedAction::SeatKey { key, pressed } => {
+            ctx.seat_events
+                .push(BackendEvent::Input(keyboard_input_event(
+                    &keytag_into_winit_key(*key),
+                    *pressed,
+                )));
+        }
         PlannedAction::MouseWheel { dx, dy } => {
             let event = WindowEvent::MouseWheel {
                 device_id: winit::event::DeviceId::dummy(),
@@ -4918,6 +4989,15 @@ fn execute_locked_action(
             }
             client_input::consume_keyboard_while_captured(state, &event);
             lock.handle_key(winit_event_to_lock_key(&event));
+            None
+        }
+        // The loop routes it to the lock as it does a physical key.
+        PlannedAction::SeatKey { key, pressed } => {
+            ctx.seat_events
+                .push(BackendEvent::Input(keyboard_input_event(
+                    &keytag_into_winit_key(*key),
+                    *pressed,
+                )));
             None
         }
         // Action invocations and snapshots are refused while locked, and say
@@ -6061,6 +6141,7 @@ fn pump_test_control_conn(
                 }
                 // A planned action that could not run replaces this command's answer.
                 // Actions execute before the reply is written; first failure wins, the rest still run.
+                let routed_before = ctx.client_routed_actions;
                 let mut failed: Option<InvokeFailure> = None;
                 let mut receipt: Option<crate::shell::search::ActionReceipt> = None;
                 let mut pending: Option<crate::shell::search::PendingInvocation> = None;
@@ -6101,7 +6182,22 @@ fn pump_test_control_conn(
                 // Re-run layout so the next command/paint sees rects post-mutation — a
                 // chrome state change can alter structural layout, leaving stale rects otherwise.
                 if !actions.is_empty() {
-                    injected_input = true;
+                    // Input only the client took changes no shell pixels: the
+                    // client's commit will ask for the frame that shows it.
+                    // Repainting here as well put a full-screen frame ahead of
+                    // it that a physical key never causes.
+                    // Keys queued for the input funnel ask for a frame
+                    // there, as a physical key would, or not.
+                    let seat_keys = actions
+                        .iter()
+                        .filter(|action| matches!(action, PlannedAction::SeatKey { .. }))
+                        .count();
+                    let handled_here = actions.len().saturating_sub(seat_keys);
+                    if ctx.client_routed_actions.saturating_sub(routed_before) < handled_here {
+                        injected_input = true;
+                    } else if handled_here > 0 {
+                        ctx.client_input_only = true;
+                    }
                     frame_builder.relayout();
                     frame_builder.reconcile_native_focus(&mut ctx.focus);
                 }
@@ -10110,6 +10206,8 @@ pub fn run() {
     let mut lock_keyboard = lock_screen::LockTouchKeyboard::default();
     let mut last_lock_media_poll = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
+    // A change counted on a tick that painted nothing ([`NativeRedrawReasons::owed`]).
+    let mut content_owed = false;
     let mut force_first_paint = true;
     let mut animation_settle = AnimationSettle::default();
     // When the frame being made was first wanted, for its trace lateness.
@@ -10332,6 +10430,9 @@ pub fn run() {
                 event,
             ));
         });
+        // Keys a control client queued as a physical keyboard's arrive here, with the
+        // backend's own events.
+        pending_events.extend(test_control_ctx.seat_events.drain(..));
         input_steps.step("backend-poll");
         let t_backend_poll_done = iter_t0.elapsed();
         if slow_prepaint_phase(t_backend_poll_done) {
@@ -10516,6 +10617,8 @@ pub fn run() {
                 .map(BackendEvent::Input),
         );
         let had_backend_events = !pending_events.is_empty();
+        let mut dispatched_input = DispatchedInput::default();
+        let client_keys_before = state.client_keys_delivered;
         let mut session_changed = false;
         let mut accessibility_changed = false;
         let mut visible_input_changed = pen_moved;
@@ -10584,6 +10687,7 @@ pub fn run() {
         // events that must run next, before anything the backend queued later.
         let mut event_step = "accessibility";
         while let Some(event) = pending_events.pop_front() {
+            dispatched_input.note(&event);
             state.physical_key_input_time_ns = match &event {
                 BackendEvent::PhysicalKey { input_time_ns, .. } => Some(*input_time_ns),
                 _ => None,
@@ -12884,7 +12988,8 @@ pub fn run() {
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
         let redraw_reasons = NativeRedrawReasons {
             force: force_first_paint,
-            backend_event: had_backend_events,
+            backend_event: dispatched_input
+                .asks_for_frame(state.client_keys_delivered.wrapping_sub(client_keys_before)),
             visible_input: visible_input_changed,
             session: session_changed || injected_redraw,
             revision: revision_changed,
@@ -12916,6 +13021,7 @@ pub fn run() {
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
             lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
+            owed: content_owed,
         };
         let content_changed = redraw_reasons.content_changed(session.is_locked());
         demand_onset.note_tick(content_changed, iter_t0);
@@ -12924,9 +13030,11 @@ pub fn run() {
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
         // Is there room in the pipe? Building another scene while the render
         // thread is behind would only grow the queue (and input-to-photon latency); capped at the presenter's queue depth plus the frame presenting, the tick still services input/clients without rendering.
+        // A frame still waiting for the render thread is replaced by the one built now (latest
+        // wins), so a full pipe whose newest frame has not started takes it too.
         let pipe_ready = present_pipe
             .as_ref()
-            .is_none_or(super::present::PresentPipe::has_capacity);
+            .is_none_or(|pipe| pipe.has_capacity() || pipe.can_replace_queued());
         credit_transition_hold = present_hold_credit(
             !pipe_ready,
             cadence_due,
@@ -12941,6 +13049,9 @@ pub fn run() {
             metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
+        // A change this tick saw but could not paint is still to be shown: the
+        // next tick that may paint does, even if nothing new happens by then.
+        content_owed = content_changed && !should_paint;
         animation_settle.after_tick(still_moving, should_paint);
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
@@ -12968,7 +13079,7 @@ pub fn run() {
             }
             if should_paint {
                 frames_painted = frames_painted.saturating_add(1);
-                if had_backend_events {
+                if redraw_reasons.backend_event {
                     cause_events = cause_events.saturating_add(1);
                 }
                 if session_changed {
@@ -12989,7 +13100,10 @@ pub fn run() {
                     }
                 }
                 if keepalive_due
-                    && !(had_backend_events || session_changed || revision_changed || animating)
+                    && !(redraw_reasons.backend_event
+                        || session_changed
+                        || revision_changed
+                        || animating)
                 {
                     cause_keepalive = cause_keepalive.saturating_add(1);
                 }
@@ -13494,13 +13608,18 @@ pub fn run() {
             let mut render_thread_lost = false;
             let mut submitted_serial = None;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
-                submitted_serial = pipe.submit_frame_with_input_age(
+                let submission = pipe.submit_frame_with_input_age(
                     frame_paint,
                     OutputId(0),
                     metrics.pending_input_age(t_submit_start),
                 );
-                if let Some(serial) = submitted_serial {
-                    state.presentation_feedback.submitted(serial, feedback);
+                submitted_serial = submission.map(|submission| submission.serial);
+                if let Some(submission) = submission {
+                    state.presentation_feedback.submitted_replacing(
+                        submission.serial,
+                        feedback,
+                        submission.replaced,
+                    );
                 }
                 render_thread_lost = submitted_serial.is_none();
                 // This serial belongs to the scene submitted above.  Do not
@@ -13752,6 +13871,8 @@ pub fn run() {
             if injected {
                 metrics.note_input(Instant::now());
                 injected_redraw_pending = true;
+            } else if std::mem::take(&mut test_control_ctx.client_input_only) {
+                metrics.note_input(Instant::now());
             }
             // An agent at work is the person's activity on a hosted machine:
             // without this it locks under its agents after the idle timeout.
@@ -14016,6 +14137,10 @@ pub fn run() {
                     control_invocation_deadline(&test_control_conns, park_now),
                 ),
                 ("control-followup", control_followup.then_some(park_now)),
+                (
+                    "seat-input",
+                    (!test_control_ctx.seat_events.is_empty()).then_some(park_now),
+                ),
             ],
         );
         // Work (startup, a burst of input, windows closing) leaves freed heap glibc keeps. A
@@ -14672,6 +14797,51 @@ mod tests {
         assert!(settle.due(false));
     }
 
+    /// A key the focused client alone took asks for no frame: the client's
+    /// commit does, and a frame painted for the key itself would spend the
+    /// frame clock's deadline on an unchanged desktop and hold the commit's
+    /// frame back a refresh interval. Keys the shell kept, and every other
+    /// backend event, still ask for one.
+    #[test]
+    fn a_key_only_a_client_took_asks_for_no_frame_of_its_own() {
+        let key = |pressed| {
+            BackendEvent::Input(keyboard_input_event(
+                &winit::keyboard::Key::Character("a".into()),
+                pressed,
+            ))
+        };
+        let mut typed = DispatchedInput::default();
+        typed.note(&key(true));
+        typed.note(&key(false));
+        assert!(
+            !typed.asks_for_frame(2),
+            "a press and release forwarded to the client change no shell pixels"
+        );
+        assert!(
+            typed.asks_for_frame(1),
+            "a key the shell kept (a shortcut, typing into the chrome) asks for a frame"
+        );
+        let mut physical = DispatchedInput::default();
+        physical.note(&BackendEvent::PhysicalKey {
+            event: keyboard_input_event(&winit::keyboard::Key::Character("a".into()), true),
+            input_time_ns: 1,
+        });
+        assert!(
+            !physical.asks_for_frame(1),
+            "a physical key counts as a key"
+        );
+        let mut pointer = typed;
+        pointer.note(&BackendEvent::Redraw);
+        assert!(
+            pointer.asks_for_frame(2),
+            "any other backend event in the same tick still asks for a frame"
+        );
+        assert!(
+            !DispatchedInput::default().asks_for_frame(0),
+            "no input, no frame"
+        );
+    }
+
     #[test]
     fn redraw_edges_and_idle_parking_follow_real_wake_sources() {
         // Phase `consumed_shell_input_is_a_redraw_edge`.
@@ -15085,6 +15255,25 @@ mod tests {
             );
             assert_eq!(dimmer.overlay_alpha(), None);
         }
+    }
+
+    /// A client commit is an edge the loop sees once. Seen on a tick that may
+    /// not paint (the frame clock is not due, or the presenter is full), it
+    /// stays owed until a frame is painted: before, the frame waited for the
+    /// next unrelated event, a key's release a tenth of a second later.
+    #[test]
+    fn a_change_seen_on_a_tick_that_could_not_paint_is_still_owed() {
+        use crate::compositor::metrics::paint_reason as r;
+        let owed = NativeRedrawReasons {
+            owed: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert!(owed.content_changed(false));
+        assert!(
+            owed.content_changed(true),
+            "only changes the tick counted are owed, so the lock does not filter them again"
+        );
+        assert_eq!(owed.paint_reason_bits(false, false), r::OWED);
     }
 
     #[test]
