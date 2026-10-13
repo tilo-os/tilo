@@ -4,20 +4,15 @@
 //! itself would follow the old inode and go quiet after the first save. The watch sits on the
 //! containing directory instead and reports only events that name the settings file.
 //!
-//! On Linux the watch asks inotify for changes only: writes, creation, removal and renames.
-//! Opening and reading a file are left out, and so are attribute changes. The `notify` crate's
-//! watch always includes opens, so its thread woke for every read of any file in the watched
-//! directory, the process's own included: the identity directory is read whenever the desktop
+//! The watches are change-only ([`tilo_files::native::watch_changes`]): reading a file in a
+//! watched directory does not wake them. The identity directory is read whenever the desktop
 //! checks who is signed in, and an idle desktop woke a watcher for each of those reads.
 
 use std::path::Path;
 
 /// A live watch; dropping it stops notifications.
 pub struct SettingsWatch {
-    #[cfg(target_os = "linux")]
-    _watch: changes::DirectoryWatch,
-    #[cfg(not(target_os = "linux"))]
-    _watcher: notify::RecommendedWatcher,
+    _watch: tilo_files::native::ChangeWatch,
 }
 
 /// Call `on_change` every time the configured settings file is created, rewritten, renamed
@@ -111,122 +106,14 @@ pub(crate) fn watch_dictionary_at(
 
 /// Call `on_change` when an entry of `directory` that `names` accepts (given its full path)
 /// changes, and when changes may have been missed.
-#[cfg(target_os = "linux")]
 fn watch_directory(
     directory: &Path,
     names: impl Fn(&Path) -> bool + Send + 'static,
     on_change: impl Fn() + Send + 'static,
 ) -> std::io::Result<SettingsWatch> {
     Ok(SettingsWatch {
-        _watch: changes::DirectoryWatch::start(directory, names, on_change)?,
+        _watch: tilo_files::native::watch_changes(directory, names, on_change)?,
     })
-}
-
-#[cfg(not(target_os = "linux"))]
-fn watch_directory(
-    directory: &Path,
-    names: impl Fn(&Path) -> bool + Send + 'static,
-    on_change: impl Fn() + Send + 'static,
-) -> std::io::Result<SettingsWatch> {
-    use notify::{EventKind, RecursiveMode, Watcher as _};
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        let Ok(event) = event else {
-            // An overflowed or failed queue may have hidden a change; re-reading is cheap.
-            on_change();
-            return;
-        };
-        if matches!(event.kind, EventKind::Access(_)) {
-            return;
-        }
-        if event.paths.iter().any(|path| names(path)) {
-            on_change();
-        }
-    })
-    .map_err(std::io::Error::other)?;
-    watcher
-        .watch(directory, RecursiveMode::NonRecursive)
-        .map_err(std::io::Error::other)?;
-    Ok(SettingsWatch { _watcher: watcher })
-}
-
-#[cfg(target_os = "linux")]
-mod changes {
-    use std::path::Path;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
-
-    /// Writes, creation, removal and renames of the directory's entries.
-    const MASK: WatchMask = WatchMask::CLOSE_WRITE
-        .union(WatchMask::MODIFY)
-        .union(WatchMask::CREATE)
-        .union(WatchMask::DELETE)
-        .union(WatchMask::MOVED_FROM)
-        .union(WatchMask::MOVED_TO)
-        .union(WatchMask::ONLYDIR);
-
-    /// One directory watched by a thread of its own, which blocks in `read` until the kernel
-    /// reports a change.
-    pub(super) struct DirectoryWatch {
-        watches: Watches,
-        descriptor: WatchDescriptor,
-        stopped: Arc<AtomicBool>,
-    }
-
-    impl DirectoryWatch {
-        pub(super) fn start(
-            directory: &Path,
-            names: impl Fn(&Path) -> bool + Send + 'static,
-            on_change: impl Fn() + Send + 'static,
-        ) -> std::io::Result<Self> {
-            let mut inotify = Inotify::init()?;
-            let mut watches = inotify.watches();
-            let descriptor = watches.add(directory, MASK)?;
-            let stopped = Arc::new(AtomicBool::new(false));
-            let stop = Arc::clone(&stopped);
-            let root = directory.to_owned();
-            std::thread::Builder::new()
-                .name("settings-watch".to_owned())
-                .spawn(move || {
-                    let mut buffer = [0_u8; 4096];
-                    while !stop.load(Ordering::Acquire) {
-                        let Ok(events) = inotify.read_events_blocking(&mut buffer) else {
-                            // The descriptor failed: nothing more will be reported.
-                            on_change();
-                            return;
-                        };
-                        let mut changed = false;
-                        for event in events {
-                            if event.mask.contains(EventMask::IGNORED) {
-                                // Dropped, or the directory itself went away.
-                                return;
-                            }
-                            // An overflowed queue may have hidden a change; re-reading is
-                            // cheap.
-                            changed |= event.mask.contains(EventMask::Q_OVERFLOW)
-                                || event.name.is_some_and(|name| names(&root.join(name)));
-                        }
-                        if changed && !stop.load(Ordering::Acquire) {
-                            on_change();
-                        }
-                    }
-                })?;
-            Ok(Self {
-                watches,
-                descriptor,
-                stopped,
-            })
-        }
-    }
-
-    impl Drop for DirectoryWatch {
-        fn drop(&mut self) {
-            self.stopped.store(true, Ordering::Release);
-            // Removing the watch queues `IN_IGNORED`, which wakes the thread to see `stopped`.
-            let _ = self.watches.remove(self.descriptor.clone());
-        }
-    }
 }
 
 #[cfg(test)]
@@ -265,7 +152,7 @@ mod tests {
             .map(|task| task.file_name().to_string_lossy().into_owned())
             .filter(|tid| {
                 std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
-                    .is_ok_and(|name| name.trim() == "settings-watch")
+                    .is_ok_and(|name| name.trim() == tilo_files::native::CHANGE_WATCH_THREAD)
             })
             .collect()
     }
