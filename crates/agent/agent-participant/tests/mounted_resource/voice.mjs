@@ -116,7 +116,9 @@ try {
   for (const tab of pages) {
     const controls = await tab.evaluate("mount.actions(fixture.callRow)");
     for (const name of ['join-call','call-status','mute','unmute','leave-call']) assert.ok(controls.some(row => row.address.action === name), `public ${name} missing`);
-    assert.equal(controls.find(row => row.address.action === 'join-call').contract.confirmation.mode, 'confirm', 'public join-call requires host confirmation');
+    for (const name of ['join-call', 'unmute']) assert.equal(
+      controls.find(row => row.address.action === name).contract.confirmation.mode,
+      'confirm', `public ${name} requires host confirmation`);
     const unconfirmed = await tab.send('Runtime.evaluate', {expression:
       "mount.invokeAction(fixture.callRow, 'join-call')", returnByValue:true});
     assert.match(JSON.stringify(unconfirmed.result?.exceptionDetails ?? {}),
@@ -132,7 +134,11 @@ try {
     assert.equal(await tab.evaluate('voiceEvidence.streams.length'), 0, 'join must not request a microphone');
   }
   stage('actual-chat-joins-muted-without-capture');
-  await action(first, 'unmute', true);
+  const unconfirmedUnmute = await first.send('Runtime.evaluate', {expression:
+    "mount.invokeAction(fixture.callRow, 'unmute')", returnByValue:true, userGesture:true});
+  assert.match(JSON.stringify(unconfirmedUnmute.result?.exceptionDetails ?? {}),
+    /action_confirmation_required/, 'unconfirmed browser unmute must be refused');
+  await action(first, 'unmute', true, true);
   await activateMuteControl(second);
   for (const tab of pages) {
     await tab.waitFor('peer.voice.call.stats().captureActive === true', {timeout:10_000});
@@ -150,7 +156,7 @@ try {
   assert.equal(await inactive(second), true);
   assert.equal(await first.evaluate('peer.voice.call.stats().captureActive'), true, 'one device mute must not mute the other');
   stage('actual-chat-mute-stops-only-local-capture');
-  await action(second, 'unmute', true);
+  await action(second, 'unmute', true, true);
   await waitReported(second, value => value.reported.capture_active);
   await action(second, 'leave-call');
   await second.waitFor('peer.voice.call.state.phase === "idle" && !peer.voice.call.stats().captureActive');
@@ -160,7 +166,7 @@ try {
   await action(second, 'join-call', false, true);
   await second.waitFor('peer.voice.call.state.phase === "live" && peer.voice.call.state.participants.length === 2');
   assert.equal(await inactive(second), true, 'rejoin requires fresh consent');
-  await action(second, 'unmute', true);
+  await action(second, 'unmute', true, true);
   await waitReported(second, value => value.reported.capture_active);
   stage('actual-chat-rejoin-requires-fresh-unmute');
   stage('revoke');
@@ -193,8 +199,9 @@ try {
     devices:2, syntheticAudio:true, physicalMicrophone:false, decodedRmsThreshold:0.015,
     observations, stages, checkpoints}, null, 2) + '\n');
 } catch (error) {
-  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({runId, stage:currentStage, checkpoint:currentCheckpoint, error:error.name, checkpoints}, null, 2));
-  throw Error(`Mounted Chat voice failed at ${currentStage}: ${error.name}`);
+  writeFileSync(join(evidence, 'failure.json'), JSON.stringify({runId, stage:currentStage, checkpoint:currentCheckpoint,
+    error:error.name, message:error.message, stack:error.stack, checkpoints}, null, 2));
+  throw new Error(`Mounted Chat voice failed at ${currentStage}`, {cause:error});
 } finally {
   clearTimeout(deadline);
   input.close();
