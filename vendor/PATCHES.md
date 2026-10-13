@@ -35,7 +35,9 @@ kernel cancels on resume or a clock step replaces it), and no gossip cache
 sweep once a topic's caches are empty. Network changes still arrive through
 netlink at once, and `netwatch` has the kernel drop the address-lifetime refreshes
 a router sends every few seconds (a BPF filter on its netlink socket) instead of
-waking the process to ignore them. Each directory's `TILO-PATCH.md` has the details and an
+waking the process to ignore them. Its monitor also re-reads the interfaces
+once its netlink socket has subscribed, so a change made while it starts is
+not lost. Each directory's `TILO-PATCH.md` has the details and an
 upstream-ready description; `crates/system/fs/tests/iroh_idle.rs` pins them.
 `iroh` and `iroh-gossip` build an `rlib` only: as path packages their
 upstream `cdylib` dropped the hash from the library filenames, so two builds

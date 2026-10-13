@@ -2,7 +2,7 @@
 
 crates.io `netwatch` 0.19.1, verbatim (archive SHA-256
 `4d9cbe01741347ef750d743d6690603f5eed8341e679fb51c8e629337aa11976`, upstream
-commit `051ab8761006d7f2155e34a49f6bb881b582d5ab`) but for the two changes below,
+commit `051ab8761006d7f2155e34a49f6bb881b582d5ab`) but for the three changes below,
 marked `TILO PATCH` in the source. netwatch 0.19.3, the newest release when
 this was written, has the same actor loop. Pinned by
 `crates/system/fs/tests/iroh_idle.rs`.
@@ -74,3 +74,26 @@ endpoint still sleeps.
 > reads and discards each one as "already known", at a wakeup apiece. Proposed:
 > attach a BPF filter to the netlink socket that drops `RTM_NEWADDR`
 > repeating a known (interface, prefix length, flags, scope, address).
+
+## A change made while the monitor subscribes is no longer lost
+
+`Monitor::new` takes the interface snapshot (`State::new` in `Actor::new`)
+first and only then starts the route monitor, whose task subscribes to
+netlink later, when the runtime first runs it. A change in between reaches no
+socket, so the snapshot stays stale until some unrelated event: an interface
+brought up right after the endpoint binds was not noticed at all. The
+address dump added above widens the gap for addresses, since an address the
+dump already lists is read afterwards as a repeat. Once subscribed and done
+with the dump (at start and after every reconnect), the route monitor now
+sends the actor one `Change`, and the actor compares a fresh snapshot with
+the old one as for any event. Delaying the subscription by 700 ms made
+`iroh_idle::an_endpoint_hears_of_network_changes_through_netlink` fail every
+time without this and pass with it.
+
+### Upstream
+
+> **netmon can miss a change made while it starts.** `Actor::new` reads the
+> interface state before the route monitor's task has subscribed to netlink,
+> and nothing re-reads it until the next event, so a change in that window
+> (or during a reconnect) is lost. Proposed: once subscribed, have the route
+> monitor send one `NetworkMessage::Change` so the actor re-reads the state.
