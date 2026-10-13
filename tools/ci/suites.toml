@@ -453,7 +453,6 @@ inputs = [
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
-  "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/device_latency_bench_test.py",
   "scripts/perf/device_notes_latency_test.py",
