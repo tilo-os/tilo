@@ -1158,16 +1158,24 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && test -s /out/tilo/tilo-logo.png \
     && dnf clean all
 
+# The runtimes travel with their publishers' keys from the one builder result:
+# a non-publishing build signs them with keys it generates, so a key taken from
+# another stage (native-builder-payload, which buildkit may serve from an
+# earlier invocation's cache while the builder re-runs) would not be theirs.
 FROM ${BASE_REF} AS runtime-image-payload
 RUN --network=none \
     --mount=type=bind,from=builder,source=/usr/lib/tilo-runtime,target=/tilo-runtime,ro \
     --mount=type=bind,from=builder,source=/out/runtime-version,target=/tilo-runtime-version,ro \
+    --mount=type=bind,from=builder,source=/out/runtime-bundle-publisher.hex,target=/tilo-runtime-publisher.hex,ro \
+    --mount=type=bind,from=builder,source=/out/browser-runtime-publisher.hex,target=/tilo-browser-runtime-publisher.hex,ro \
     --mount=type=bind,from=os-fonts,source=/out/fonts,target=/tilo-os-fonts,ro \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
     --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/tilo-src/hardlink-identical.py,ro \
     mkdir -p /image/usr/lib /image/usr/share/tilo/font-catalogs /image/usr/share/fonts \
     && cp -a /tilo-runtime /image/usr/lib/tilo-runtime \
+    && cp /tilo-runtime-publisher.hex /image/usr/share/tilo/runtime-bundle-publisher.hex \
+    && cp /tilo-browser-runtime-publisher.hex /image/usr/share/tilo/browser-runtime-publisher.hex \
     && fonts="/image/usr/lib/tilo-runtime/$(cat /tilo-runtime-version)/lib/fonts" \
     && catalog="$(sha256sum "$fonts/manifest.toml" | cut -d ' ' -f1)" \
     && python3 /tilo-src/tools/font-catalog.py link "$fonts" \
@@ -3105,7 +3113,9 @@ COPY --from=component-files /image/windows/ /
 # comments. The baked publisher is the only entry by default; operators
 # can extend it via `echo <hex> >> /etc/tilo/runtime-bundle-trusted-publishers.txt`.
 # The same tree carries the font catalog's two other names, hard links to the
-# runtime's fonts, so the bytes are in this one layer (runtime-image-payload).
+# runtime's fonts, so the bytes are in this one layer (runtime-image-payload),
+# and the publishers of the runtimes it carries (runtime-bundle-publisher.hex,
+# browser-runtime-publisher.hex), from the same builder result as the bundles.
 COPY --from=runtime-image-payload /image/usr/ /usr/
 # registry-runtime-publisher.hex is the publisher of the runtimes the Tilo
 # registry offers. An app installed or updated from the Store is linked against
@@ -3113,8 +3123,6 @@ COPY --from=runtime-image-payload /image/usr/ /usr/
 # Store installs that runtime beside it; the launcher mounts it only when its
 # publisher is trusted here.
 COPY --from=native-builder-payload \
-    /out/runtime-bundle-publisher.hex \
-    /out/browser-runtime-publisher.hex \
     /out/registry-runtime-publisher.hex \
     /out/app-publisher.hex \
     /usr/share/tilo/
