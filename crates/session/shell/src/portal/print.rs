@@ -39,8 +39,6 @@ use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 #[cfg(any(test, target_os = "linux"))]
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -419,9 +417,7 @@ impl PreparedPrintJobs {
 }
 
 fn random_token() -> u32 {
-    let mut bytes = [0u8; 4];
-    UnwrapErr(SysRng).fill_bytes(&mut bytes);
-    u32::from_le_bytes(bytes)
+    u32::from_le_bytes(crate::random::bytes())
 }
 
 // D-Bus surface

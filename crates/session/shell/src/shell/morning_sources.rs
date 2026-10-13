@@ -248,6 +248,7 @@ impl NativeMorningSources {
             confirmation: None,
             revision: None,
             wait_ms: None,
+            appearance: None,
         });
         commands.insert(
             key,
@@ -315,6 +316,7 @@ fn refresh_draft(source: &MorningSource) -> tilo_automation::Shortcut {
                 ),
                 resource: tilo_automation::Selector::Fixed(source.resource.clone()),
                 args: std::collections::BTreeMap::default(),
+                appearance: None,
             },
         )],
         output: None,

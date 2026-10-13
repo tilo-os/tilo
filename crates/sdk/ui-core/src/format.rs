@@ -122,12 +122,6 @@ pub fn timecode(total_secs: u64) -> String {
     }
 }
 
-/// Alias for [`timecode`] — some call sites read better as "duration".
-#[must_use]
-pub fn duration(total_secs: u64) -> String {
-    timecode(total_secs)
-}
-
 const MINUTE: i64 = 60;
 const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
@@ -458,7 +452,6 @@ mod tests {
         ] {
             assert_eq!(timecode(secs), want, "timecode({secs})");
         }
-        assert_eq!(duration(3661), timecode(3661));
 
         for (secs, want) in [
             (0, "just now"),

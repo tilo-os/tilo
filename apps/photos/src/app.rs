@@ -212,7 +212,7 @@ struct ThumbnailResult {
 struct AnalysisResult {
     invocation: tilo_actions::InvocationId,
     photo_id: String,
-    content: Option<String>,
+    content: String,
     result: AnalysisOutcome,
 }
 
@@ -314,7 +314,6 @@ enum AnalysisOutcome {
 struct AnalysisJob {
     invocation: tilo_actions::InvocationId,
     photo_id: String,
-    content: Option<String>,
     image: OpenImage,
     kind: AnalysisJobKind,
 }
@@ -369,7 +368,7 @@ fn analysis_worker(
             .send(AnalysisResult {
                 invocation: job.invocation,
                 photo_id: job.photo_id,
-                content: job.content,
+                content: job.image.content.clone(),
                 result: match job.kind {
                     AnalysisJobKind::Ocr { language } => AnalysisOutcome::Image {
                         component: ImageAnalysisComponent::Ocr,
@@ -399,15 +398,12 @@ fn with_thumbnail_wake(service: thumbnail::ThumbnailService) -> thumbnail::Thumb
     service
 }
 
-/// The shared-pipeline request for one library photograph. A content
+/// The shared-pipeline request for one library photograph. Its content
 /// reference is the preview's content address and persists in the preview
-/// cache; a legacy path-only photograph has no stable content identity, so its
-/// preview is generated for this session only.
+/// cache; a malformed address has no stable identity, so its preview is
+/// generated for this session only.
 fn thumbnail_request(image: &OpenImage, content: &ContentStore) -> thumbnail::ThumbRequest {
-    let persistent = image
-        .content
-        .as_deref()
-        .and_then(|address| thumbnail::ThumbKey::of_address(address, THUMBNAIL_SIZE));
+    let persistent = thumbnail::ThumbKey::of_address(&image.content, THUMBNAIL_SIZE);
     let key = persistent.unwrap_or_else(|| {
         thumbnail::ThumbKey::of_bytes(decode_key(image).as_bytes(), THUMBNAIL_SIZE)
     });
@@ -1004,8 +1000,7 @@ pub struct PhotosApp {
     /// shared metadata changes so a fresh content reference gets a retry.
     thumbnail_unavailable: HashSet<String>,
     /// A bad peer-provided image must not be decoded once per frame. Content
-    /// hashes are immutable, and a user reopening a changed legacy path makes
-    /// a new attempt through `open_path`, so retaining this failure is safe.
+    /// hashes are immutable, so retaining this failure is safe.
     original_decode_failed: Option<String>,
     /// The shared preview pipeline; its one worker serializes disk and
     /// content-store access. Results are stamped with a visible-library
@@ -1161,16 +1156,11 @@ impl PhotosApp {
                 .values()
                 .filter(|photo| {
                     !photo.analysis().is_some_and(|analysis| {
-                        analysis.has_vision_component(
-                            photo.image.content.as_deref(),
-                            &capability.revision,
-                        )
+                        analysis.has_vision_component(&photo.image.content, &capability.revision)
                     })
                 })
                 .filter_map(|photo| {
-                    if photo.image.content.is_some()
-                        && crate::model::bytes_of(&photo.image, &self.content).is_some()
-                    {
+                    if crate::model::bytes_of(&photo.image, &self.content).is_some() {
                         Some(photo.id.clone())
                     } else {
                         unavailable += 1;
@@ -1296,7 +1286,6 @@ impl PhotosApp {
                 .try_send(AnalysisJob {
                     invocation,
                     photo_id,
-                    content: photo.image.content.clone(),
                     image: photo.image,
                     kind: AnalysisJobKind::Vision { capability },
                 })
@@ -1825,8 +1814,12 @@ impl PhotosApp {
             self.show_library();
             self.begin_directory_import(path, None, DirectoryImportMode::Import, true);
         } else if let Some(bytes) = bounded_file_bytes(&path.to_string_lossy()) {
-            let image = OpenImage::from_path(&path.to_string_lossy(), 1, 1)
-                .with_content(tilo_content::hash_bytes(&bytes));
+            let image = OpenImage::new(
+                &path.to_string_lossy(),
+                1,
+                1,
+                tilo_content::hash_bytes(&bytes),
+            );
             self.show_photo(&LibraryPhoto::from_image(image).id);
         }
     }
@@ -1902,9 +1895,9 @@ impl PhotosApp {
                         return;
                     }
                 };
-                let open = OpenImage::from_path(path, img.w, img.h).with_content(content);
+                let open = OpenImage::new(path, img.w, img.h, content);
                 self.original = Some((path.to_string(), img));
-                self.original_identity = Some(decode_key(&open.clone().portable()));
+                self.original_identity = Some(decode_key(&open));
                 self.rendered = None;
                 self.close_viewer();
                 self.original_decode_failed = None;
@@ -3169,7 +3162,7 @@ impl PhotosApp {
     /// Default save destination: the source file with `-edited` before the
     /// extension, so Save never silently overwrites the original.
     pub fn suggested_save_path(open: &OpenImage) -> String {
-        let p = std::path::Path::new(&open.path);
+        let p = std::path::Path::new(&open.name);
         let stem = p
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -4702,8 +4695,7 @@ impl PhotosApp {
     }
 
     /// Project the open photograph's portable library record into the small
-    /// viewer card. Content identity wins; old path-only records retain their
-    /// legacy match so opening one still has useful context.
+    /// viewer card, found by its content identity.
     fn viewer_details_for(
         library: &crate::model::PhotoLibrary,
         open: &OpenImage,
@@ -4712,11 +4704,7 @@ impl PhotosApp {
         let photo = library
             .photos
             .values()
-            .find(|photo| match (&open.content, &photo.image.content) {
-                (Some(open_content), Some(photo_content)) => open_content == photo_content,
-                (None, None) => open.path == photo.image.path,
-                _ => false,
-            })
+            .find(|photo| photo.image.content == open.content)
             .cloned();
         let _ = edits;
         ViewerDetails {
@@ -4771,7 +4759,7 @@ impl PhotosApp {
             }
             let bytes = crate::model::bytes_of(&open, &self.content);
             if let Some(img) = bytes.as_deref().and_then(pixels::decode) {
-                self.original = Some((open.path, img));
+                self.original = Some((open.name, img));
                 self.original_identity = Some(identity.clone());
                 self.original_decode_failed = None;
             } else {
@@ -10407,14 +10395,9 @@ fn to_peniko(img: &Rgba) -> ImageData {
     pixels::to_peniko(img)
 }
 
-/// A local decode-cache key. The content hash, when present, is immutable;
-/// include the legacy path too so older documents remain distinguishable.
+/// A local decode-cache key: the content hash, which is immutable.
 fn decode_key(open: &OpenImage) -> String {
-    format!(
-        "{}\0{}",
-        open.path,
-        open.content.as_deref().unwrap_or_default()
-    )
+    open.content.clone()
 }
 
 fn thumbnail_key(open: &OpenImage) -> String {
@@ -10800,8 +10783,8 @@ impl PhotosApp {
             self.thumbnail_queued.clear();
             if document_changed {
                 self.library_thumbnails.clear();
-                // Bytes behind an unchanged address may have arrived, and a
-                // legacy path may name new pixels: ask the pipeline afresh.
+                // Bytes behind an unchanged address may have arrived: ask the
+                // pipeline afresh.
                 for photo in &sources {
                     self.thumbnail_service
                         .forget(&thumbnail_request(&photo.image, &self.content).key());
@@ -11003,7 +10986,7 @@ impl Widget for PhotosApp {
             |(analyzed, available, awaiting), photo| {
                 if photo.analysis().is_some_and(|analysis| {
                     analysis
-                        .vision_provenance_for_content(photo.image.content.as_deref())
+                        .vision_provenance_for_content(&photo.image.content)
                         .is_some()
                 }) {
                     (analyzed + 1, available, awaiting)
@@ -12574,9 +12557,6 @@ impl PhotosApp {
                 let photo = library
                     .photo(&resource_id)
                     .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
-                if photo.image.content.is_none() {
-                    return Err("This photograph needs a verified content identity before text recognition can be shared".to_owned());
-                }
                 let sender = self.analysis_sender().ok_or_else(|| {
                     "local text recognition is unavailable on this device".to_owned()
                 })?;
@@ -12584,7 +12564,6 @@ impl PhotosApp {
                     .try_send(AnalysisJob {
                         invocation,
                         photo_id: resource_id,
-                        content: photo.image.content.clone(),
                         image: photo.image.clone(),
                         kind: AnalysisJobKind::Ocr { language },
                     })
@@ -12598,9 +12577,6 @@ impl PhotosApp {
                 let photo = library
                     .photo(&resource_id)
                     .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
-                if photo.image.content.is_none() {
-                    return Err("This photograph needs a verified content identity before image analysis can be shared".to_owned());
-                }
                 let capability = tilo_vision::discover_local_capability(
                     &agent_provider_config::ProviderConfig::load(),
                 )
@@ -12615,7 +12591,6 @@ impl PhotosApp {
                     .try_send(AnalysisJob {
                         invocation,
                         photo_id: resource_id,
-                        content: photo.image.content.clone(),
                         image: photo.image.clone(),
                         kind: AnalysisJobKind::Vision { capability },
                     })
@@ -12888,7 +12863,6 @@ impl PhotosApp {
             .try_send(AnalysisJob {
                 invocation,
                 photo_id: "photos.people".to_owned(),
-                content: None,
                 image: first.clone(),
                 kind: AnalysisJobKind::People {
                     capability,
@@ -13004,8 +12978,8 @@ mod history_reconcile_tests {
         crate::test_doc::set_library(doc, &library);
     }
     fn setup() -> (PhotosApp, AutoCommit, String) {
-        let mut doc = AutoCommit::new();
-        let image = OpenImage::from_path("historical-missing.png", 4, 3);
+        let mut doc = crate::test_doc::new_doc();
+        let image = OpenImage::fixture("historical-missing.png", 4, 3);
         let id = crate::test_doc::put_image(&mut doc, &image);
         let mut app = test_app();
         app.show_photo(&id);
@@ -13018,13 +12992,15 @@ mod history_reconcile_tests {
             "phase newly_visible_timeline_photo_uses_immutable_thumbnail_outside_queued_window"
         );
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let mut library = crate::model::PhotoLibrary::default();
             for index in 0..80 {
-                let mut photo = crate::model::LibraryPhoto::from_image(
-                    OpenImage::from_path(&format!("missing-timeline-{index}.png"), 30, 20)
-                        .with_content(format!("{index:064x}")),
-                );
+                let mut photo = crate::model::LibraryPhoto::from_image(OpenImage::new(
+                    &format!("missing-timeline-{index}.png"),
+                    30,
+                    20,
+                    format!("{index:064x}"),
+                ));
                 photo.captured_at =
                     Some(format!("2026-{:02}-{:02}", 1 + index / 28, 1 + index % 28));
                 library.add_photo(photo);
@@ -13078,7 +13054,7 @@ mod history_reconcile_tests {
             app.library_thumbnails
                 .insert(id.clone(), to_peniko(&crate::shots_pattern(4, 3)));
             let mut lib = crate::test_doc::library(&doc);
-            lib.photos.iter_mut().next().unwrap().1.image.content = Some("a".repeat(64));
+            lib.photos.iter_mut().next().unwrap().1.image.content = "a".repeat(64);
             crate::test_doc::set_library(&mut doc, &lib);
             sync(&mut app, &mut doc);
             assert!(!app.library_thumbnails.contains_key(&id));
@@ -13160,7 +13136,7 @@ mod history_reconcile_tests {
         eprintln!("phase changed_second_batch_photo_invalidates_the_whole_metadata_draft");
         {
             let (mut app, mut doc, first) = setup();
-            let second = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
+            let second = crate::model::LibraryPhoto::from_image(OpenImage::fixture(
                 "second-missing.png",
                 4,
                 3,
@@ -13320,11 +13296,10 @@ mod history_reconcile_tests {
 
         eprintln!("phase failed_import_reports_failure_even_when_previous_photo_is_still_decoded");
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let store = ContentStore::memory();
             let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
-            let open =
-                OpenImage::from_path("existing.png", 6, 4).with_content(store.put(&bytes).unwrap());
+            let open = OpenImage::new("existing.png", 6, 4, store.put(&bytes).unwrap());
             let id = crate::test_doc::put_image(&mut doc, &open);
             let mut app = test_app_on(store);
             app.show_photo(&id);
@@ -13351,11 +13326,10 @@ mod history_reconcile_tests {
 
         eprintln!("phase content_restore_drops_active_viewer_drag_before_next_pointer_move");
         {
-            let mut doc = AutoCommit::new();
+            let mut doc = crate::test_doc::new_doc();
             let store = ContentStore::memory();
             let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
-            let open =
-                OpenImage::from_path("same.png", 6, 4).with_content(store.put(&bytes).unwrap());
+            let open = OpenImage::new("same.png", 6, 4, store.put(&bytes).unwrap());
             let id = crate::test_doc::put_image(&mut doc, &open);
             crate::test_doc::set_photo_edits(&mut doc, &id, Edits::default().rotated_right());
             let selected = doc.get_heads();
@@ -13442,15 +13416,17 @@ mod history_reconcile_tests {
     }
 
     fn album_membership_fixture() -> (PhotosApp, AutoCommit, [String; 4]) {
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::test_doc::new_doc();
         // Browse order deliberately differs from lexical identity order.
         let photos: Vec<_> = ["c", "a", "d", "b"]
             .into_iter()
             .map(|label| {
-                LibraryPhoto::from_image(
-                    OpenImage::from_path(&format!("{label}.png"), 4, 3)
-                        .with_content(label.repeat(64)),
-                )
+                LibraryPhoto::from_image(OpenImage::new(
+                    &format!("{label}.png"),
+                    4,
+                    3,
+                    label.repeat(64),
+                ))
             })
             .collect();
         let ids = std::array::from_fn(|i| photos[i].id.clone());

@@ -4113,7 +4113,6 @@ mod command_path_tests {
         let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(43));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Review merge".into(),
             summary: "Checking".into(),
             lines: Vec::new(),
@@ -4173,7 +4172,6 @@ mod command_path_tests {
         let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(52));
         let mut widget = FileExplorerWidget::new();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Delete permanently?".into(),
             summary: "This cannot be undone".into(),
             lines: Vec::new(),
@@ -5401,7 +5399,6 @@ mod accessibility_tests {
     fn collaboration_sheet_is_a_focused_modal_semantic_subtree() {
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: "Sharing — report.pdf".into(),
             summary: "Shared with 2 people".into(),
             lines: vec!["Alice can view".into(), "Bob can edit".into()],
@@ -5434,7 +5431,6 @@ mod accessibility_tests {
         std::fs::write(&file, b"only local copy").unwrap();
         let (_home, mut widget) = empty_widget();
         widget.show_collab_panel(CollabPanel {
-            history: None,
             title: t("files-destructive-eviction-title"),
             summary: t_args("files-destructive-eviction-summary", &[arg("count", 1_i64)]),
             lines: vec![t("files-destructive-eviction-loss")],

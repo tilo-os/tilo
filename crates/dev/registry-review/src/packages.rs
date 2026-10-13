@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use registry_server::{InspectedVersion, InspectionPolicy, ModerationService, PendingSubmission};
+use registry_server::{
+    InspectedVersion, Inspection, InspectionPolicy, ModerationService, PendingSubmission,
+};
 use ui::framework::EffectAnswer;
 use ui::prelude::*;
 
@@ -204,13 +206,21 @@ fn run(
                 &snapshot.pending,
                 InspectionPolicy::default(),
             )
-            .map(|versions| {
+            .map_err(|error| error.to_string())
+            .and_then(|versions| {
                 versions
                     .into_iter()
-                    .map(|(inspection, _bytes)| inspection)
+                    .map(|(inspection, _bytes)| match inspection {
+                        Inspection::Package(version) => Ok(version),
+                        // This window renders package sandboxes only; a bot
+                        // program's needs are shown by the operator CLI.
+                        Inspection::Program(_) => Err(
+                            "Bot programs are reviewed with `tilo-registry-server review show`."
+                                .to_owned(),
+                        ),
+                    })
                     .collect()
-            })
-            .map_err(|error| error.to_string());
+            });
             Ok(Outcome::Inspected(Box::new(snapshot)))
         }
         (
@@ -382,13 +392,18 @@ pub(super) fn detail(cx: &ViewCx<Draft>, snapshot: &Snapshot) -> Element {
     match &snapshot.inspection {
         Err(error) => body = body.push(Box::new(Banner::error(error.clone()))),
         Ok(versions) => {
-            for (version, declared) in versions.iter().zip(&entry.versions) {
+            for (version, declared) in versions.iter().zip(
+                entry
+                    .versions
+                    .iter()
+                    .filter_map(registry_types::RegistryVersion::target),
+            ) {
                 body = body
                     .push(Box::new(
                         Text::new("package-review-target")
-                            .with_arg("platform", declared.target.platform.clone())
-                            .with_arg("architecture", declared.target.architecture.clone())
-                            .with_arg("isa", declared.target.isa.clone()),
+                            .with_arg("platform", declared.platform.clone())
+                            .with_arg("architecture", declared.architecture.clone())
+                            .with_arg("isa", declared.isa.clone()),
                     ))
                     .push(Box::new(
                         Text::new("package-review-version")
@@ -406,10 +421,7 @@ pub(super) fn detail(cx: &ViewCx<Draft>, snapshot: &Snapshot) -> Element {
                         .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph)
                         .with_id(format!(
                             "sandbox-{}-{}-{}-{}",
-                            version.version,
-                            declared.target.platform,
-                            declared.target.architecture,
-                            declared.target.isa
+                            version.version, declared.platform, declared.architecture, declared.isa
                         )),
                     ));
             }

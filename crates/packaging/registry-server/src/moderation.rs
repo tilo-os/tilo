@@ -66,6 +66,27 @@ impl ModerationService {
             deferred.as_ref().or(pending.as_ref()),
             &self.artifact_hosts(),
         )?;
+        // A version already public with an identical artifact was checked
+        // when it was approved; every other bot version must name a program
+        // the registry holds whose needs match its listing.
+        if change.action != EntryAction::Delete {
+            for version in &change.entry.versions {
+                let already_public = public
+                    .as_ref()
+                    .is_some_and(|p| p.versions.contains(version));
+                if !already_public {
+                    crate::bot_review::check_submitted_version(
+                        &self.storage,
+                        &change.entry,
+                        version,
+                    )
+                    .map_err(|error| ModerationError::BotProgram {
+                        version: version.version.clone(),
+                        reason: error.to_string(),
+                    })?;
+                }
+            }
+        }
         let submission = PendingSubmission {
             // The package id is a single atomic pending slot: replacing a
             // revision is one rename rather than a delete/create window.
@@ -328,12 +349,14 @@ impl ModerationService {
     /// official artifact tree, plus this registry's own `/artifacts/` when it
     /// is a loopback development instance.
     fn artifact_hosts(&self) -> ArtifactHosts {
+        let base_url = self
+            .storage
+            .load_identity()
+            .ok()
+            .map(|identity| identity.base_url);
         ArtifactHosts {
-            local_prefix: self
-                .storage
-                .load_identity()
-                .ok()
-                .and_then(|identity| local_artifact_prefix(&identity.base_url)),
+            local_prefix: base_url.as_deref().and_then(local_artifact_prefix),
+            local_origin: base_url.as_deref().and_then(local_origin),
         }
     }
 
@@ -661,6 +684,7 @@ impl ModerationService {
 #[derive(Clone, Debug, Default)]
 struct ArtifactHosts {
     local_prefix: Option<String>,
+    local_origin: Option<String>,
 }
 
 const OFFICIAL_ARTIFACT_PREFIX: &str = "https://apps.tilo.so/artifacts/";
@@ -673,6 +697,30 @@ impl ArtifactHosts {
                 .as_deref()
                 .is_some_and(|prefix| url.starts_with(prefix))
     }
+
+    /// Whether `url` is where this registry serves the program `blake3_hex`.
+    fn allows_program(&self, url: &str, blake3_hex: &str) -> bool {
+        url == registry_types::bot_program_url(OFFICIAL_REGISTRY_ORIGIN, blake3_hex)
+            || self
+                .local_origin
+                .as_deref()
+                .is_some_and(|origin| url == registry_types::bot_program_url(origin, blake3_hex))
+    }
+}
+
+const OFFICIAL_REGISTRY_ORIGIN: &str = "https://apps.tilo.so";
+
+/// `<base_url>` without a trailing slash when it is a loopback HTTP origin
+/// with a port, as accepted for local artifacts.
+fn local_origin(base_url: &str) -> Option<String> {
+    local_artifact_prefix(base_url).map(|prefix| prefix.trim_end_matches("/artifacts/").to_owned())
+}
+
+/// The URL a version names for the bot program `blake3_hex` this registry
+/// serves: `/blobs/<blake3>` on the official origin, or on a loopback base.
+pub(crate) fn program_url(base_url: &str, blake3_hex: &str) -> String {
+    let origin = local_origin(base_url).unwrap_or_else(|| OFFICIAL_REGISTRY_ORIGIN.to_owned());
+    registry_types::bot_program_url(&origin, &blake3_hex.to_ascii_lowercase())
 }
 
 /// The URL a version names for the artifact `blake3_hex` this registry hosts:
@@ -702,6 +750,15 @@ fn validate_submission(
     pending: Option<&PendingSubmission>,
     artifacts: &ArtifactHosts,
 ) -> Result<(), ModerationError> {
+    // An app must never turn into a bot under the same id, or the reverse:
+    // what is installed would silently change what it is.
+    if let Some(current) = public.or_else(|| pending.map(|p| &p.change.entry))
+        && current.kind != change.entry.kind
+    {
+        return Err(ModerationError::KindChanged {
+            package_id: change.entry.package_id.clone(),
+        });
+    }
     match change.action {
         EntryAction::Add if public.is_some() => {
             if public == Some(&change.entry) {
@@ -926,8 +983,7 @@ fn same_version_target(
     left: &registry_types::RegistryVersion,
     right: &registry_types::RegistryVersion,
 ) -> bool {
-    left.target.platform == right.target.platform
-        && left.target.architecture == right.target.architecture
+    left.group() == right.group()
 }
 
 fn validate_bound_version(
@@ -935,12 +991,28 @@ fn validate_bound_version(
     version: &registry_types::RegistryVersion,
     artifacts: &ArtifactHosts,
 ) -> Result<(), ModerationError> {
-    let hash_ok = version.tapp_blake3_hex.len() == 64
-        && version
+    if let Some(bot) = version.bot() {
+        return if artifacts.allows_program(&bot.program_url, &bot.program_blake3_hex) {
+            Ok(())
+        } else {
+            Err(ModerationError::BotProgram {
+                version: version.version.clone(),
+                reason: "program_url must be this registry's /blobs/<program_blake3_hex>".into(),
+            })
+        };
+    }
+    let Some(tapp) = version.tapp() else {
+        return Err(ModerationError::UnsupportedPackageTarget {
+            package_id: entry.package_id.clone(),
+            version: version.version.clone(),
+        });
+    };
+    let hash_ok = tapp.tapp_blake3_hex.len() == 64
+        && tapp
             .tapp_blake3_hex
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit());
-    let target = &version.target;
+    let target = &tapp.target;
     let target_ok = match target.platform.as_str() {
         registry_types::TILO_OS_PLATFORM => matches!(
             (target.architecture.as_str(), target.isa.as_str()),
@@ -956,8 +1028,8 @@ fn validate_bound_version(
         | registry_types::ANDROID_PLATFORM => target.validate().is_ok(),
         _ => false,
     };
-    let canonical_url = artifacts.allows(&version.tapp_url);
-    if !hash_ok || !target_ok || !canonical_url || version.tapp_size_bytes == 0 {
+    let canonical_url = artifacts.allows(&tapp.tapp_url);
+    if !hash_ok || !target_ok || !canonical_url || tapp.tapp_size_bytes == 0 {
         return Err(ModerationError::UnsupportedPackageTarget {
             package_id: entry.package_id.clone(),
             version: version.version.clone(),
@@ -1036,6 +1108,10 @@ fn thread_lock(lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, Modera
 pub enum ModerationError {
     #[error("storage: {0}")]
     Storage(#[from] StorageError),
+    #[error("{package_id} is already published as another kind of entry")]
+    KindChanged { package_id: String },
+    #[error("bot version {version}: {reason}")]
+    BotProgram { version: String, reason: String },
     #[error("verification failed: {0}")]
     Verification(VerifyError),
     #[error("the moderation transition lock was poisoned")]
@@ -1109,6 +1185,7 @@ mod tests {
     fn entry(key: &SigningKey, timestamp: u64) -> RegistryEntry {
         RegistryEntry {
             package_id: "so.tilo.editor".into(),
+            kind: registry_types::EntryKind::App,
             name: "Editor".into(),
             description: "Native text editor".into(),
             tagline: "Edit together".into(),
@@ -1123,18 +1200,20 @@ mod tests {
             publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
             versions: vec![RegistryVersion {
                 version: format!("1.{timestamp}"),
-                tapp_url: "https://apps.tilo.so/artifacts/editor/e.tapp".into(),
-                tapp_root_hash_hex: "ab".repeat(32),
-                tapp_size_bytes: 1,
                 released_at_unix: timestamp,
-                tapp_blake3_hex: "cd".repeat(32),
-                target: registry_types::RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: "https://apps.tilo.so/artifacts/editor/e.tapp".into(),
+                    tapp_root_hash_hex: "ab".repeat(32),
+                    tapp_size_bytes: 1,
+                    tapp_blake3_hex: "cd".repeat(32),
+                    target: registry_types::RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: timestamp,
             signature_hex: String::new(),
@@ -1178,9 +1257,9 @@ mod tests {
         let version = |n: usize, architecture: &str| {
             let mut v = entry(&key, 1).versions[0].clone();
             v.version = format!("1.{n}");
-            v.target.architecture = architecture.into();
+            v.tapp_mut().unwrap().target.architecture = architecture.into();
             if architecture == "aarch64" {
-                v.target.isa = "aarch64".into();
+                v.tapp_mut().unwrap().target.isa = "aarch64".into();
             }
             v
         };
@@ -1199,7 +1278,8 @@ mod tests {
 
         // Dropping a target's only release is still removing history.
         let mut lost = current.clone();
-        lost.versions.retain(|v| v.target.architecture != "aarch64");
+        lost.versions
+            .retain(|v| v.tapp().unwrap().target.architecture != "aarch64");
         lost.versions.push(version(limit, "x86_64"));
         assert!(matches!(
             validate_version_history(&lost, Some(&current), &official),
@@ -1288,8 +1368,8 @@ mod tests {
             let mut new_target = current.clone();
             let mut arm = new_target.versions[0].clone();
             arm.version = "0.1.1+garm".into();
-            arm.target.architecture = "aarch64".into();
-            arm.target.isa = "aarch64-v8.2".into();
+            arm.tapp_mut().unwrap().target.architecture = "aarch64".into();
+            arm.tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
             new_target.versions.push(arm);
             assert!(validate_version_history(&new_target, Some(&current), &official).is_ok());
         }
@@ -1329,7 +1409,7 @@ mod tests {
             let key = SigningKey::generate(&mut UnwrapErr(SysRng));
             let mut aggregate = entry(&key, 10);
             let mut arm = aggregate.versions[0].clone();
-            let target = &mut arm.target;
+            let target = &mut arm.tapp_mut().unwrap().target;
             target.architecture = "aarch64".into();
             target.isa = "aarch64-v8.2".into();
             aggregate.versions.push(arm);
@@ -1365,7 +1445,7 @@ mod tests {
         for (architecture, isa) in [("aarch64", "aarch64"), ("x86_64", "x86_64")] {
             let mut android = with_android.versions[0].clone();
             android.version = "0.0.1".into();
-            android.target = registry_types::RegistryTarget {
+            android.tapp_mut().unwrap().target = registry_types::RegistryTarget {
                 platform: registry_types::ANDROID_PLATFORM.into(),
                 architecture: architecture.into(),
                 isa: isa.into(),
@@ -1378,8 +1458,8 @@ mod tests {
 
         for (architecture, isa) in [("armv7", "armv7"), ("aarch64", "")] {
             let mut bad = with_android.clone();
-            bad.versions[1].target.architecture = architecture.into();
-            bad.versions[1].target.isa = isa.into();
+            bad.versions[1].tapp_mut().unwrap().target.architecture = architecture.into();
+            bad.versions[1].tapp_mut().unwrap().target.isa = isa.into();
             assert!(matches!(
                 validate_version_history(&bad, Some(&current), &official),
                 Err(ModerationError::UnsupportedPackageTarget { .. })
@@ -1409,6 +1489,7 @@ mod tests {
         }
         let hosts = ArtifactHosts {
             local_prefix: local_artifact_prefix("http://127.0.0.1:8787"),
+            local_origin: local_origin("http://127.0.0.1:8787"),
         };
         assert!(hosts.allows("http://127.0.0.1:8787/artifacts/ab.tapp"));
         assert!(hosts.allows("https://apps.tilo.so/artifacts/ab.tapp"));
@@ -1691,6 +1772,7 @@ mod tests {
                 entries: vec![selected.change.entry.clone()],
                 owner_signature_hex: "test fixture".into(),
                 channel_authorization: None,
+                bots_signature_hex: String::new(),
             };
             service
                 .storage
@@ -1778,6 +1860,7 @@ mod tests {
                 entries: vec![selected.change.entry.clone()],
                 owner_signature_hex: "test fixture".into(),
                 channel_authorization: None,
+                bots_signature_hex: String::new(),
             };
             service
                 .storage
@@ -1842,5 +1925,31 @@ mod tests {
                 Some(successor)
             );
         }
+    }
+
+    #[test]
+    fn a_bot_version_needs_its_program_uploaded() {
+        let (_dir, service) = setup();
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let hash = "ab".repeat(32);
+        let mut entry = entry(&key, 100);
+        entry.kind = registry_types::EntryKind::Bot;
+        entry.versions = vec![registry_types::RegistryVersion {
+            version: "0.1.0".into(),
+            released_at_unix: 1,
+            artifact: registry_types::VersionArtifact::Bot(registry_types::BotArtifact {
+                program_url: registry_types::bot_program_url("https://apps.tilo.so", &hash),
+                program_blake3_hex: hash,
+                program_size_bytes: 10,
+                requires: registry_types::BotRequirements::default(),
+            }),
+        }];
+        sign_entry(&mut entry, &key);
+        let change = sign_change_request(EntryAction::Add, entry, &key);
+        let error = service.submit(change, 200).unwrap_err();
+        assert!(
+            matches!(error, ModerationError::BotProgram { .. }),
+            "{error}"
+        );
     }
 }

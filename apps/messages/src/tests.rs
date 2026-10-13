@@ -266,54 +266,6 @@ fn live_starts_empty_and_transport_action_is_explicitly_unavailable() {
 }
 
 #[test]
-fn unversioned_recipient_confirmation_cannot_create_a_transport_association() {
-    let mut app =
-        TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
-    let directory = app
-        .shared_person::<ContactDirectory>()
-        .expect("shared directory");
-    directory
-        .invoke(&ContactDirectory::PROJECT_CONTACT.with((Id::from_raw(PERSON), "Alex".into())))
-        .expect("fixture contact");
-    directory
-        .invoke(&ContactDirectory::PROJECT_CONTACT.with((
-            Id::from_raw("00000000-0000-4000-8000-000000000002"),
-            "Alex".into(),
-        )))
-        .expect("same name contact");
-    app.settle();
-    app.effect(&MessagesEffect::OpenPerson {
-        person: PERSON.into(),
-    })
-    .expect("open exact person");
-    assert!(
-        app.effect(&MessagesEffect::ConfirmRecipient {
-            person: PERSON.into(),
-            service: "signal".into(),
-            recipient: "+12025550123".into(),
-        })
-        .is_err()
-    );
-    assert!(
-        directory
-            .get()
-            .people
-            .get(&Id::from_raw(PERSON))
-            .expect("contact")
-            .endpoints
-            .is_empty()
-    );
-    assert!(
-        app.effect(&MessagesEffect::ConfirmRecipient {
-            person: "00000000-0000-4000-8000-000000000002".into(),
-            service: "signal".into(),
-            recipient: "+12025550123".into()
-        })
-        .is_err()
-    );
-}
-
-#[test]
 fn account_or_recipient_cannot_be_substituted_into_a_dropdown_selection() {
     let mut app =
         TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");

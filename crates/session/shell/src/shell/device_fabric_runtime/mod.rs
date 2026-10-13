@@ -27,11 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
-use getrandom::{
-    SysRng,
-    rand_core::{TryRng as _, UnwrapErr},
-};
-use rand_core::Rng;
+use getrandom::{SysRng, rand_core::TryRng as _};
 use serde_json::{Map, Value};
 use tilo_clock::unix_now_ms;
 
@@ -3932,13 +3928,7 @@ fn pump_fabric_clock(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
     let now_us = fabric_monotonic_us();
     let probes = with_fabric_clock(|core| {
         core.retain_peers(|peer| known.contains(peer));
-        core.due_probes(online, now, now_us, || {
-            let mut nonce = [0; 16];
-            while nonce == [0; 16] {
-                UnwrapErr(SysRng).fill_bytes(&mut nonce);
-            }
-            nonce
-        })
+        core.due_probes(online, now, now_us, crate::random::nonzero::<16>)
     });
     for (peer, probe) in probes {
         let nonce = match &probe {
@@ -3989,10 +3979,7 @@ fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
         };
         state.tracker.retain_peers(|peer| all_peers.contains(peer));
         for peer in health_probe_targets(&mut state, online, now) {
-            let mut nonce = [0; 16];
-            while nonce == [0; 16] {
-                UnwrapErr(SysRng).fill_bytes(&mut nonce);
-            }
+            let nonce = crate::random::nonzero::<16>();
             probes.push((peer, nonce));
         }
     }
@@ -4872,10 +4859,7 @@ pub fn authorize_bluetooth_handoff(
             .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-bt-approval-gone"))?;
         let transaction = transaction.clone();
         let authorization = if approved {
-            let mut authorization = [0; 16];
-            while authorization == [0; 16] {
-                UnwrapErr(SysRng).fill_bytes(&mut authorization);
-            }
+            let authorization = crate::random::nonzero::<16>();
             if let Some(pending) = state.transactions.get_mut(&request_id) {
                 pending.phase = BluetoothHandoffPhase::PairingReady;
                 pending.authorization = Some(authorization);
@@ -5106,10 +5090,7 @@ impl PreparedMediaTransfer {
             .and_then(std::ffi::OsStr::to_str)
             .and_then(portable_media_name)
             .ok_or_else(|| "media file has no portable name".to_string())?;
-        let mut transfer_id = [0_u8; 16];
-        while transfer_id == [0; 16] {
-            UnwrapErr(SysRng).fill_bytes(&mut transfer_id);
-        }
+        let transfer_id = crate::random::nonzero::<16>();
         Ok(Self {
             transfer_id,
             name,
@@ -5481,10 +5462,7 @@ pub fn request_nearby_drop(
         let source = path.to_path_buf();
         let name = file_name.clone();
         let sender = nearby_staging_queue().0.clone();
-        let mut transfer_id = [0; 16];
-        while transfer_id == [0; 16] {
-            UnwrapErr(SysRng).fill_bytes(&mut transfer_id);
-        }
+        let transfer_id = crate::random::nonzero::<16>();
         std::thread::Builder::new()
             .name("tilo-nearby-stage".into())
             .spawn(move || {
@@ -5605,10 +5583,7 @@ pub fn request_nearby_drop_secure(
         let worker_target = target.clone();
         let name = file_name.clone();
         let sender = nearby_staging_queue().0.clone();
-        let mut transfer_id = [0; 16];
-        while transfer_id == [0; 16] {
-            UnwrapErr(SysRng).fill_bytes(&mut transfer_id);
-        }
+        let transfer_id = crate::random::nonzero::<16>();
         std::thread::Builder::new()
             .name("tilo-nearby-stage".into())
             .spawn(move || {

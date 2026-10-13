@@ -42,6 +42,7 @@ fn local_host_request(directory: bool) -> tilo_actions::remote::InvokeRequest {
         revision: directory.then(|| "original-r1".into()),
         on_behalf_of: None,
         wait_ms: None,
+        appearance: None,
     }
 }
 

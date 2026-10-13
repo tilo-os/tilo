@@ -309,6 +309,7 @@ fn fold_typed_presence(
                 ui::presence::ParticipantKind::Agent => tilo_actions::ActorKind::Agent,
                 ui::presence::ParticipantKind::Shortcut => tilo_actions::ActorKind::Shortcut,
                 ui::presence::ParticipantKind::App => tilo_actions::ActorKind::App,
+                ui::presence::ParticipantKind::Bot => tilo_actions::ActorKind::Bot,
             };
             let actor = if update.actor.id == user && update.actor.kind == kind {
                 update.actor.clone()
