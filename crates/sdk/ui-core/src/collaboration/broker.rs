@@ -771,37 +771,11 @@ fn json_map_bytes(values: &serde_json::Map<String, serde_json::Value>, meter: &m
 /// to a `Vec<u8>` reuses the serializer every value is already sent with,
 /// instead of compiling a second one per type for a counting writer.
 fn serialized_bytes<T: serde::Serialize>(value: &T, meter: &mut ByteMeter) {
-    thread_local! {
-        static TEXT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-    let written = TEXT.with(|text| {
-        let Ok(mut text) = text.try_borrow_mut() else {
-            return written_len(&mut Vec::new(), value);
-        };
-        text.clear();
-        let written = written_len(&mut text, value);
-        // Keep the buffer for the next value, but not the peak of a large one.
-        if text.capacity() > SERIALIZED_TEXT_KEPT {
-            *text = Vec::new();
-        }
-        written
-    });
-    match written {
-        Some(bytes) => meter.add(bytes),
-        None => meter.0 = None,
+    match runtime_collab::wire_json_len(value) {
+        usize::MAX => meter.0 = None,
+        bytes => meter.add(bytes),
     }
 }
-
-/// The length of `value`'s JSON text, written after what `text` holds.
-fn written_len<T: serde::Serialize>(text: &mut Vec<u8>, value: &T) -> Option<usize> {
-    value
-        .serialize(&mut serde_json::Serializer::new(&mut *text))
-        .ok()
-        .map(|()| text.len())
-}
-
-/// The most text [`serialized_bytes`] keeps allocated between values.
-const SERIALIZED_TEXT_KEPT: usize = 64 * 1024;
 
 fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     meter.string_capacity(&action.resource);
