@@ -2002,10 +2002,21 @@ impl RoomActivityPane {
         };
         let record_id = range.id.clone();
         let label = range.label.clone();
+        // Reserve room for the localized continuation, not just the old label.
+        let continuation_len = t_args("activity-group-continued", &[("label", ArgValue::from(""))])
+            .chars()
+            .count();
+        let continued_label: String = label
+            .chars()
+            .take(ui::history_groups::MAX_LABEL_LEN.saturating_sub(continuation_len))
+            .collect();
         let right_label = t_args(
             "activity-group-continued",
-            &[("label", ArgValue::from(&label))],
-        );
+            &[("label", ArgValue::from(&continued_label))],
+        )
+        .chars()
+        .take(ui::history_groups::MAX_LABEL_LEN)
+        .collect();
         self.apply_history_editorial(
             tree,
             &super::HistoryEditorialRequest {

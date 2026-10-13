@@ -3480,6 +3480,8 @@ impl ShellOverlayHost {
         chrome.borrow_mut().peer_sync_enabled = self.peer_sync_enabled;
         self.projection_overlay
             .bind_shared_display_authority(chrome.clone());
+        self.room_activity
+            .bind_local_tree(&chrome.borrow().tree_handle());
         self.chrome = Some(chrome);
         self
     }

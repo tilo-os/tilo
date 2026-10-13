@@ -15,7 +15,9 @@ impl RoomActivityPane {
             && request.origin == super::super::index::HistoryOrigin::DesktopTree
             && request.frontier == self.last_heads
             && self.last_active == Some(tree.active.raw())
-            && tree.local_history_groups_writable(&request.room)
+            && self
+                .host
+                .authorizes_local_history_document(tree.document(), &request.room)
     }
 
     /// Canonical editorial door for UI and trusted in-process semantic callers.
@@ -38,7 +40,9 @@ impl RoomActivityPane {
             || request.frontier != self.last_heads
             || self.last_active != Some(tree.active.raw())
             || (!(self.host.history_groups_are_local()
-                && tree.local_history_groups_writable(&request.room))
+                && self
+                    .host
+                    .authorizes_local_history_document(tree.document(), &request.room))
                 && self
                     .host
                     .authorize_history_edit(
@@ -52,7 +56,26 @@ impl RoomActivityPane {
         let Some(operation) = self.validate_editorial(&request.operation) else {
             return false;
         };
+        let named_record = match &operation {
+            Op::Name(req) => req
+                .record_id
+                .as_deref()
+                .and_then(|id| self.editorial_record(id))
+                .cloned(),
+            _ => None,
+        };
         let doc = tree.document_mut();
+        // A trait implementation can expose different documents for reading
+        // and writing. Check the actual execution reference as well.
+        if doc.pending_ops() != 0
+            || doc.get_heads() != request.frontier
+            || (self.host.history_groups_are_local()
+                && !self
+                    .host
+                    .authorizes_local_history_document(doc, &request.room))
+        {
+            return false;
+        }
         let changed = match operation {
             Op::Name(req) => {
                 if req.label.trim().is_empty() {
@@ -60,7 +83,10 @@ impl RoomActivityPane {
                         .as_deref()
                         .is_some_and(|id| ui::history_groups::clear_name(doc, id))
                 } else {
-                    ui::history_groups::name_range(doc, &req.start, Some(&req.end), &req.label);
+                    let (start, end) = named_record
+                        .as_ref()
+                        .map_or((req.start, Some(req.end)), |range| (range.start, range.end));
+                    ui::history_groups::name_range(doc, &start, end.as_ref(), &req.label);
                     true
                 }
             }
@@ -144,19 +170,31 @@ impl RoomActivityPane {
         let label_valid = |s: &str| s.trim().chars().count() <= ui::history_groups::MAX_LABEL_LEN;
         match op {
             Op::Name(req) => {
-                self.editorial_bounds(req.start, req.end)?;
                 if !label_valid(&req.label) {
                     return None;
                 }
                 if let Some(id) = &req.record_id {
-                    let range = self.editorial_record(id)?;
-                    if range.start != req.start || range.end != Some(req.end) {
+                    self.editorial_record(id)?;
+                    // Clearing addresses the stored record, not its clipped band.
+                    if !req.label.trim().is_empty() {
+                        let (_, a, b) = self
+                            .named_positions()
+                            .into_iter()
+                            .find(|(r, _, _)| r.id == *id)?;
+                        if self.timeline.entries().get(a)?.id != req.start
+                            || self.timeline.entries().get(b)?.id != req.end
+                        {
+                            return None;
+                        }
+                        self.editorial_bounds(req.start, req.end)?;
+                    }
+                } else {
+                    self.editorial_bounds(req.start, req.end)?;
+                    if req.label.trim().is_empty()
+                        || self.named.iter().any(|r| r.start == req.start)
+                    {
                         return None;
                     }
-                } else if req.label.trim().is_empty()
-                    || self.named.iter().any(|r| r.start == req.start)
-                {
-                    return None;
                 }
             }
             Op::Split {
@@ -166,8 +204,14 @@ impl RoomActivityPane {
                 label,
                 right_label,
             } => {
-                let range = self.editorial_record(record)?;
-                let (start, end) = self.editorial_bounds(range.start, range.end?)?;
+                let (_, start, end) = self
+                    .named_positions()
+                    .into_iter()
+                    .find(|(r, _, _)| r.id == *record)?;
+                self.editorial_bounds(
+                    self.timeline.entries().get(start)?.id,
+                    self.timeline.entries().get(end)?.id,
+                )?;
                 let (left, right) = self.editorial_bounds(*left_end, *right_start)?;
                 if left < start
                     || right > end
@@ -196,8 +240,14 @@ impl RoomActivityPane {
                     if !seen.insert(id) {
                         return None;
                     }
-                    let range = self.editorial_record(id)?;
-                    let (a, b) = self.editorial_bounds(range.start, range.end?)?;
+                    let (_, a, b) = self
+                        .named_positions()
+                        .into_iter()
+                        .find(|(r, _, _)| r.id == *id)?;
+                    self.editorial_bounds(
+                        self.timeline.entries().get(a)?.id,
+                        self.timeline.entries().get(b)?.id,
+                    )?;
                     if a != next {
                         return None;
                     }
@@ -244,8 +294,12 @@ impl RoomActivityPane {
             }
             if let Some(id) = &session.record {
                 let range = self.editorial_record(id)?;
-                if range.start != session.start
-                    || range.end != Some(session.end)
+                let (_, start, end) = self
+                    .named_positions()
+                    .into_iter()
+                    .find(|(r, _, _)| r.id == *id)?;
+                if self.timeline.entries().get(start)?.id != session.start
+                    || self.timeline.entries().get(end)?.id != session.end
                     || range.label != session.label
                 {
                     return None;

@@ -145,9 +145,19 @@ const SHORTCUT_RUN_LOOK_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
 pub(crate) struct NativeActivityHost {
+    local_writer: Rc<std::cell::RefCell<Option<LocalHistoryWriter>>>,
     broker: Option<crate::shell::collab_broker::AppActionBroker>,
     review: Option<super::task_review::NativeTaskReview>,
     morning: Option<Rc<super::morning_sources::NativeMorningSources>>,
+}
+
+/// Opaque host provenance captured from the native root, not an `ActivityTree`.
+/// The weak root bounds its lifetime; the address identifies the live `AutoCommit`.
+struct LocalHistoryWriter {
+    root: super::state::WeakWorkspaceTreeHandle,
+    document: usize,
+    epoch: u64,
+    room: String,
 }
 
 /// A document's revision when a waiting run last looked at it: the heads of
@@ -712,6 +722,16 @@ impl ActivityHost for NativeActivityHost {
         // device session, not by an admitted portable or guest action session.
         true
     }
+    fn authorizes_local_history_document(&self, doc: &automerge::AutoCommit, room: &str) -> bool {
+        self.local_writer.borrow().as_ref().is_some_and(|grant| {
+            grant
+                .root
+                .upgrade()
+                .is_some_and(|root| root.history_epoch() == grant.epoch)
+                && grant.document == std::ptr::from_ref(doc) as usize
+                && grant.room == room
+        })
+    }
     fn history_groups_are_local(&self) -> bool {
         true
     }
@@ -760,12 +780,6 @@ impl ActivityTree for WorkspaceTree {
     }
     fn commit_activity_change(&mut self) {
         self.commit_room_change();
-    }
-    fn local_history_groups_writable(&self, room: &str) -> bool {
-        // A mutable borrow of this live host-owned tree is the local capability.
-        // No observation/snapshot implements it and no room owner is impersonated.
-        self.active_workspace()
-            .is_some_and(|workspace| workspace.room.to_string() == room)
     }
     /// Every room's agents whose delegation its governance verified for
     /// exactly their device ([`WorkspaceTree::verified_agents`]).
@@ -816,6 +830,7 @@ pub struct RoomActivityPane(
     tilo_desktop::activity::RoomActivityPane,
     Option<crate::shell::collab_broker::AppActionBroker>,
     ShortcutRunRecorder,
+    Rc<std::cell::RefCell<Option<LocalHistoryWriter>>>,
 );
 
 impl std::ops::Deref for RoomActivityPane {
@@ -842,6 +857,17 @@ impl Drop for RoomActivityPane {
     }
 }
 impl RoomActivityPane {
+    /// Capture only the host's actual root context, before deriving observations.
+    pub(crate) fn bind_local_tree(&self, root: &WorkspaceTreeHandle) {
+        let tree = root.read();
+        *self.3.borrow_mut() = tree.active_workspace().map(|workspace| LocalHistoryWriter {
+            root: root.downgrade(),
+            document: std::ptr::from_ref(&tree.doc) as usize,
+            epoch: root.history_epoch(),
+            room: workspace.room.to_string(),
+        });
+    }
+
     /// Derive history and load referenced records after releasing the shared
     /// workspace lock. Admission and output may read the current tree while
     /// expensive history reconstruction uses this coherent observation.
@@ -851,6 +877,7 @@ impl RoomActivityPane {
         records: &RecordStore,
         local: &dyn tilo_desktop::activity::PersistedRecordHistory,
     ) -> u64 {
+        self.bind_local_tree(tree);
         let mut observed = ActivityObservation::capture(tree);
         let workspace = observed.active.raw();
         self.observe_workspace(workspace);
@@ -861,8 +888,10 @@ impl RoomActivityPane {
 
     pub fn new() -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::new();
-        pane.set_host(Rc::new(NativeActivityHost::default()));
-        Self(pane, None, ShortcutRunRecorder::default())
+        let host = NativeActivityHost::default();
+        let writer = host.local_writer.clone();
+        pane.set_host(Rc::new(host));
+        Self(pane, None, ShortcutRunRecorder::default(), writer)
     }
     /// The production pane: the device's private seen frontiers and
     /// departures are read from and written to the user's state directory.
@@ -873,29 +902,33 @@ impl RoomActivityPane {
     }
     pub(crate) fn with_local_user(user: String) -> Self {
         let mut pane = tilo_desktop::activity::RoomActivityPane::with_local_user(user);
-        pane.set_host(Rc::new(NativeActivityHost::default()));
-        Self(pane, None, ShortcutRunRecorder::default())
+        let host = NativeActivityHost::default();
+        let writer = host.local_writer.clone();
+        pane.set_host(Rc::new(host));
+        Self(pane, None, ShortcutRunRecorder::default(), writer)
     }
     /// Attach the live broker after the session binds. Without it, agent
     /// tasks remain visible but cannot be launched into an offline queue.
     pub fn attach_task_broker(&mut self, broker: crate::shell::collab_broker::AppActionBroker) {
         self.1 = Some(broker.clone());
-        self.set_host(Rc::new(NativeActivityHost {
+        self.0.set_host(Rc::new(NativeActivityHost {
             morning: Some(Rc::new(super::morning_sources::NativeMorningSources::new(
                 broker.clone(),
             ))),
             broker: Some(broker),
             review: None,
+            local_writer: self.3.clone(),
         }));
     }
     pub(crate) fn attach_task_review(&mut self, review: super::task_review::NativeTaskReview) {
         let broker = self.1.clone();
-        self.set_host(Rc::new(NativeActivityHost {
+        self.0.set_host(Rc::new(NativeActivityHost {
             morning: broker
                 .clone()
                 .map(|broker| Rc::new(super::morning_sources::NativeMorningSources::new(broker))),
             broker,
             review: Some(review),
+            local_writer: self.3.clone(),
         }));
     }
     /// Whether a finished shortcut run waits to be recorded. Cheap: the
@@ -1452,7 +1485,11 @@ mod morning_host_regression {
         HistoryEditorialOperation, HistoryEditorialRequest, HistoryOrigin,
     };
 
-    fn native_named_group() -> (WorkspaceTree, RoomActivityPane, HistoryEditorialRequest) {
+    fn native_named_group() -> (
+        WorkspaceTreeHandle,
+        RoomActivityPane,
+        HistoryEditorialRequest,
+    ) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         tree.commit_room_change();
         for name in ["First revision", "Second revision", "Third revision"] {
@@ -1460,9 +1497,12 @@ mod morning_host_regression {
             tree.seed_doc_from_cache();
             tree.commit_room_change();
         }
+        let handle = WorkspaceTreeHandle::new(tree);
         let mut pane = RoomActivityPane::new(); // real production native host
+        pane.bind_local_tree(&handle);
+        let mut tree = handle.write();
         pane.set_view(ActivityView::Explore);
-        pane.refresh(&mut tree);
+        pane.refresh(&mut *tree);
         assert!(pane.entries().len() >= 2);
         pane.layout(vello::kurbo::Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.draw(
@@ -1508,7 +1548,7 @@ mod morning_host_regression {
             1.0,
             &modifiers,
             Some(chip),
-            &mut tree,
+            &mut *tree,
         );
         assert!(
             pane.handle_event(
@@ -1516,7 +1556,7 @@ mod morning_host_regression {
                 1.0,
                 &modifiers,
                 Some(chip),
-                &mut tree
+                &mut *tree
             )
             .handled
         );
@@ -1533,13 +1573,14 @@ mod morning_host_regression {
                 None,
                 winit::event::ElementState::Pressed,
             ));
-            let outcome = pane.handle_event(&event, 1.0, &modifiers, None, &mut tree);
+            let outcome = pane.handle_event(&event, 1.0, &modifiers, None, &mut *tree);
             if !pane.wants_keyboard() {
                 assert!(outcome.named);
             }
         }
         assert!(!pane.wants_keyboard());
-        (tree, pane, request)
+        drop(tree);
+        (handle, pane, request)
     }
 
     #[test]
@@ -1553,7 +1594,8 @@ mod morning_host_regression {
                 true
             }
         }
-        let (mut tree, mut pane, request) = native_named_group();
+        let (handle, mut pane, request) = native_named_group();
+        let mut tree = handle.write();
         let HistoryEditorialOperation::Name(name) = &request.operation else {
             unreachable!()
         };
@@ -1562,7 +1604,7 @@ mod morning_host_regression {
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].label, "Local review");
         assert!(
-            !pane.apply_history_editorial(&mut tree, &request),
+            !pane.apply_history_editorial(&mut *tree, &request),
             "stale frontier"
         );
 
@@ -1578,7 +1620,7 @@ mod morning_host_regression {
         let doc = tree.room_docs.get(&room).expect("peer room projection");
         assert!(ui::history_groups::read_named_ranges(doc, &ui::AuthorDirectory::new()).is_empty());
 
-        let handle = WorkspaceTreeHandle::new(tree);
+        drop(tree);
         let mut observed = ActivityObservation::capture(&handle);
         pane.refresh(&mut observed);
         let mut next = request.clone();
@@ -1607,7 +1649,10 @@ mod morning_host_regression {
             !pane.apply_history_editorial(&mut *live, &next),
             "non-local callers cannot borrow the host's projection capability"
         );
-        pane.set_host(Rc::new(NativeActivityHost::default()));
+        pane.0.set_host(Rc::new(NativeActivityHost {
+            local_writer: pane.3.clone(),
+            ..Default::default()
+        }));
         pane.refresh(&mut *live);
         {
             use automerge::transaction::Transactable;
@@ -1633,8 +1678,199 @@ mod morning_host_regression {
     }
 
     #[test]
+    fn native_local_writer_rejects_same_room_same_frontier_copies() {
+        // An arbitrary trait implementation has no writer-boolean door at all.
+        #[derive(Clone)]
+        struct Pretender<'a>(WorkspaceTree, &'a automerge::AutoCommit);
+        impl std::ops::Deref for Pretender<'_> {
+            type Target = tilo_desktop_model::DesktopTree;
+            fn deref(&self) -> &Self::Target {
+                &self.0.desktop
+            }
+        }
+        impl std::ops::DerefMut for Pretender<'_> {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0.desktop
+            }
+        }
+        impl ActivityTree for Pretender<'_> {
+            fn document(&self) -> &automerge::AutoCommit {
+                self.1
+            }
+            fn document_mut(&mut self) -> &mut automerge::AutoCommit {
+                &mut self.0.doc
+            }
+            fn resync_activity_cache(&mut self) -> Result<(), String> {
+                Ok(())
+            }
+            fn native_manual_tasks(&self, _: WorkspaceId) -> bool {
+                true
+            }
+        }
+        let (handle, mut pane, mut request) = native_named_group();
+        let mut live = handle.write();
+        let range =
+            ui::history_groups::read_named_ranges(&live.doc, &ui::AuthorDirectory::new()).remove(0);
+        request.frontier = live.doc.get_heads();
+        request.operation = HistoryEditorialOperation::Name(ui::GroupNameRequest {
+            start: range.start,
+            end: range.end.unwrap(),
+            label: "Original only".into(),
+            record_id: Some(range.id),
+        });
+        let mut cloned = live.clone();
+        let mut deserialized: WorkspaceTree =
+            serde_json::from_slice(&serde_json::to_vec(&*live).unwrap()).unwrap();
+        deserialized.doc = automerge::AutoCommit::load(&live.doc.save()).unwrap();
+        for copy in [&mut cloned, &mut deserialized] {
+            assert_eq!(
+                copy.active_workspace().unwrap().room.to_string(),
+                request.room
+            );
+            assert_eq!(copy.doc.get_heads(), request.frontier);
+            pane.refresh(copy);
+            assert!(!pane.apply_history_editorial(copy, &request));
+            assert_eq!(copy.doc.get_heads(), request.frontier);
+        }
+        let mut fake = Pretender(live.clone(), &live.doc);
+        pane.refresh(&mut fake);
+        assert_eq!(fake.document_mut().get_heads(), request.frontier);
+        assert!(!pane.apply_history_editorial(&mut fake, &request));
+        drop(fake);
+        pane.refresh(&mut *live);
+        assert!(pane.apply_history_editorial(&mut *live, &request));
+        request.frontier = live.doc.get_heads();
+        // Leaving and returning to the same room expires the captured epoch.
+        let original_active = live.active;
+        let another = live
+            .workspaces
+            .iter()
+            .find(|w| w.id != original_active)
+            .unwrap()
+            .id;
+        drop(live);
+        handle.write().active = another;
+        handle.write().active = original_active;
+        let mut live = handle.write();
+        assert_eq!(live.doc.get_heads(), request.frontier);
+        assert!(!pane.apply_history_editorial(&mut *live, &request));
+        drop(live);
+        pane.bind_local_tree(&handle);
+        let mut live = handle.write();
+        assert!(pane.apply_history_editorial(&mut *live, &request));
+        request.frontier = live.doc.get_heads();
+        // Revocation destroys provenance even with the original room and heads.
+        *pane.3.borrow_mut() = None;
+        assert!(!pane.apply_history_editorial(&mut *live, &request));
+        drop(live);
+    }
+
+    #[test]
+    fn native_local_open_and_clipped_record_edits_preserve_stored_bounds() {
+        let (handle, mut pane, mut request) = native_named_group();
+        let mut live = handle.write();
+        let range =
+            ui::history_groups::read_named_ranges(&live.doc, &ui::AuthorDirectory::new()).remove(0);
+        let end = range.end.unwrap();
+        let middle = pane.entries()[1].id;
+        for stored_end in [None, Some(ui::HistoryEntryId::from_bytes([239; 16]))] {
+            ui::history_groups::name_range(
+                &mut live.doc,
+                &range.start,
+                stored_end.as_ref(),
+                "Open or clipped",
+            );
+            live.commit_room_change();
+            pane.refresh(&mut *live);
+            request.frontier = live.doc.get_heads();
+            request.operation = HistoryEditorialOperation::Name(ui::GroupNameRequest {
+                start: range.start,
+                end,
+                label: "Renamed without closing".into(),
+                record_id: Some(range.id.clone()),
+            });
+            assert!(pane.apply_history_editorial(&mut *live, &request));
+            let renamed =
+                ui::history_groups::read_named_ranges(&live.doc, &ui::AuthorDirectory::new())
+                    .remove(0);
+            assert_eq!(renamed.end, stored_end);
+            assert_eq!(renamed.label, "Renamed without closing");
+            request.frontier = live.doc.get_heads();
+            request.operation = HistoryEditorialOperation::Name(ui::GroupNameRequest {
+                start: range.start,
+                end,
+                label: String::new(),
+                record_id: Some(range.id.clone()),
+            });
+            assert!(pane.apply_history_editorial(&mut *live, &request));
+            assert!(
+                ui::history_groups::read_named_ranges(&live.doc, &ui::AuthorDirectory::new())
+                    .is_empty()
+            );
+        }
+        ui::history_groups::name_range(
+            &mut live.doc,
+            &range.start,
+            None,
+            &"a".repeat(ui::history_groups::MAX_LABEL_LEN),
+        );
+        live.commit_room_change();
+        pane.refresh(&mut *live);
+        pane.timeline_mut().set_selection(Some((1, 1)));
+        pane.draw(
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
+            &mut ui::text_render::TextRenderer::new(),
+            &ui::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+        );
+        let split_label = tilo_desktop::i18n::t("activity-detail-split");
+        let split = pane
+            .accessibility_snapshot()
+            .children
+            .iter()
+            .position(|node| node.name.as_deref() == Some(&split_label))
+            .expect("native Split action");
+        assert!(pane.focus_accessibility_path(&[0, split]));
+        let event = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+            None,
+            winit::event::ElementState::Pressed,
+        ));
+        let outcome = pane.handle_event(
+            &event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            None,
+            &mut *live,
+        );
+        assert!(
+            outcome.named,
+            "maximum-length labels remain splittable through the real native UI"
+        );
+        let ranges = ui::history_groups::read_named_ranges(&live.doc, &ui::AuthorDirectory::new());
+        drop(live);
+        assert!(
+            ranges
+                .iter()
+                .any(|r| r.start == range.start && r.end == Some(range.start))
+        );
+        let continued = ranges.iter().find(|r| r.start == middle).unwrap();
+        assert!(continued.end.is_none());
+        assert_eq!(
+            continued.label.chars().count(),
+            ui::history_groups::MAX_LABEL_LEN
+        );
+        assert_ne!(
+            continued.label,
+            "a".repeat(ui::history_groups::MAX_LABEL_LEN)
+        );
+    }
+
+    #[test]
     fn native_local_split_boundary_and_merge_use_the_canonical_executor() {
-        let (mut tree, mut pane, mut request) = native_named_group();
+        let (handle, mut pane, mut request) = native_named_group();
+        let mut tree = handle.write();
         let HistoryEditorialOperation::Name(name) = &request.operation else {
             unreachable!()
         };
@@ -1650,7 +1886,7 @@ mod morning_host_regression {
             label: "First part".into(),
             right_label: "Second part".into(),
         };
-        assert!(pane.apply_history_editorial(&mut tree, &request));
+        assert!(pane.apply_history_editorial(&mut *tree, &request));
         let mut ranges =
             ui::history_groups::read_named_ranges(&tree.doc, &ui::AuthorDirectory::new());
         assert_eq!(ranges.len(), 2);
@@ -1672,7 +1908,7 @@ mod morning_host_regression {
             left_end: middle,
             right_start: end,
         };
-        assert!(pane.apply_history_editorial(&mut tree, &request));
+        assert!(pane.apply_history_editorial(&mut *tree, &request));
         let mut moved =
             ui::history_groups::read_named_ranges(&tree.doc, &ui::AuthorDirectory::new());
         assert!(
@@ -1693,15 +1929,17 @@ mod morning_host_regression {
             end,
             label: "Joined locally".into(),
         };
-        assert!(pane.apply_history_editorial(&mut tree, &request));
+        assert!(pane.apply_history_editorial(&mut *tree, &request));
         let ranges = ui::history_groups::read_named_ranges(&tree.doc, &ui::AuthorDirectory::new());
         assert_eq!(ranges.len(), 1);
         assert_eq!(ranges[0].label, "Joined locally");
+        drop(tree);
     }
 
     #[test]
     fn native_selected_undo_still_appends_the_inverse_change() {
-        let (mut tree, mut pane, request) = native_named_group();
+        let (handle, mut pane, request) = native_named_group();
+        let mut tree = handle.write();
         let HistoryEditorialOperation::Name(name) = &request.operation else {
             unreachable!()
         };
@@ -1718,12 +1956,13 @@ mod morning_host_regression {
         let before = tree.doc.get_heads();
         let outcome = pane.apply_selection_history_action(
             tilo_desktop::activity::HISTORY_UNDO,
-            &mut tree,
+            &mut *tree,
             None,
         );
         assert!(outcome.reverted);
         assert_ne!(tree.doc.get_heads(), before);
         assert_eq!(tree.active_workspace().unwrap().name, "Second revision");
+        drop(tree);
     }
 
     #[test]

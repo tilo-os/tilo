@@ -31,6 +31,8 @@ struct TreeCell {
     /// held, so a reader that loads `n` and then takes the read lock sees
     /// every write up to `n`.
     generation: AtomicU64,
+    history_epoch: AtomicU64,
+    history_context: parking_lot::Mutex<Option<(super::WorkspaceId, super::RoomId)>>,
     /// What authorization last read from the tree; a released write that
     /// changes it announces a policy change.
     policy: parking_lot::Mutex<PolicySnapshot>,
@@ -125,6 +127,8 @@ impl PolicySnapshot {
 pub struct WorkspaceTreeWriteGuard<'a> {
     guard: parking_lot::RwLockWriteGuard<'a, WorkspaceTree>,
     generation: &'a AtomicU64,
+    history_epoch: &'a AtomicU64,
+    history_context: &'a parking_lot::Mutex<Option<(super::WorkspaceId, super::RoomId)>>,
     policy: &'a parking_lot::Mutex<PolicySnapshot>,
 }
 
@@ -132,9 +136,13 @@ impl WorkspaceTreeHandle {
     /// Wrap `tree` in a new handle at generation 0.
     pub fn new(tree: WorkspaceTree) -> Self {
         let policy = parking_lot::Mutex::new(PolicySnapshot::of(&tree));
+        let history_context =
+            parking_lot::Mutex::new(tree.active_workspace().map(|w| (w.id, w.room)));
         Self(Arc::new(TreeCell {
             lock: parking_lot::RwLock::new(tree),
             generation: AtomicU64::new(0),
+            history_epoch: AtomicU64::new(0),
+            history_context,
             policy,
         }))
     }
@@ -156,6 +164,8 @@ impl WorkspaceTreeHandle {
         WorkspaceTreeWriteGuard {
             guard: self.0.lock.write(),
             generation: &self.0.generation,
+            history_epoch: &self.0.history_epoch,
+            history_context: &self.0.history_context,
             policy: &self.0.policy,
         }
     }
@@ -165,6 +175,8 @@ impl WorkspaceTreeHandle {
         Some(WorkspaceTreeWriteGuard {
             guard: self.0.lock.try_write()?,
             generation: &self.0.generation,
+            history_epoch: &self.0.history_epoch,
+            history_context: &self.0.history_context,
             policy: &self.0.policy,
         })
     }
@@ -173,6 +185,12 @@ impl WorkspaceTreeHandle {
     /// moments mean the tree was not written in between.
     pub fn generation(&self) -> u64 {
         self.0.generation.load(Ordering::Acquire)
+    }
+
+    /// Local history provenance expires on a scope switch or authorization change.
+    /// Reading the epoch never takes the tree lock, including during execution.
+    pub(crate) fn history_epoch(&self) -> u64 {
+        self.0.history_epoch.load(Ordering::Acquire)
     }
 
     /// A weak handle to the same tree.
@@ -256,6 +274,16 @@ impl Drop for WorkspaceTreeWriteGuard<'_> {
             }
             changed
         };
+        let switched = {
+            let current = self.guard.active_workspace().map(|w| (w.id, w.room));
+            let mut context = self.history_context.lock();
+            let switched = *context != current;
+            *context = current;
+            switched
+        };
+        if changed || switched {
+            self.history_epoch.fetch_add(1, Ordering::Release);
+        }
         if changed {
             tilo_identity_host::policy_change::announce();
         }

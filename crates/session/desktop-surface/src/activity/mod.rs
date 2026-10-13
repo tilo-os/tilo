@@ -52,12 +52,6 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
         Vec::new()
     }
     fn commit_activity_change(&mut self) {}
-    /// Local projection writer capability. Only the live device-owned tree
-    /// implements this; admitted room snapshots and observation clones do not.
-    /// This is not permission to edit a collaborative room or record document.
-    fn local_history_groups_writable(&self, _room: &str) -> bool {
-        false
-    }
     fn native_manual_tasks(&self, _workspace: WorkspaceId) -> bool {
         false
     }
@@ -217,6 +211,10 @@ pub trait ActivityHost {
     }
     /// Whether organization edits are private to this device's projection.
     fn history_groups_are_local(&self) -> bool {
+        false
+    }
+    /// Check the host-held live document capability, never a tree's claim of authority.
+    fn authorizes_local_history_document(&self, _doc: &AutoCommit, _room: &str) -> bool {
         false
     }
     /// Discovery only. Execution must independently recheck the writer capability.
