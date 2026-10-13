@@ -13,8 +13,8 @@ use tilo_peer_state::join::{
     JoinChallenge, JoinChallengeRequest, JoinProof, MemberRole, VerifiedRedemption,
 };
 use tilo_relay_protocol::rooms::{
-    Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_NAME_CHARS, MAX_JOIN_REQUESTS,
-    PendingInvite, PreAdmission, Room, RoomMember, RoomNotice, RoomRole, RoomsReply, RoomsRequest,
+    Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_REQUESTS, PendingInvite, PreAdmission,
+    Room, RoomMember, RoomNotice, RoomRole, RoomsReply, RoomsRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -133,14 +133,9 @@ fn page_room(room: &GovernedRoom) -> Room {
 }
 
 fn valid_name(name: &str) -> Result<String, CollaborationError> {
-    let name = name.trim();
-    if name.is_empty()
-        || name.chars().count() > MAX_JOIN_NAME_CHARS
-        || name.chars().any(char::is_control)
-    {
-        return Err(CollaborationError::new("name is invalid"));
-    }
-    Ok(name.to_owned())
+    tilo_user_identity::display_name(name)
+        .map(str::to_owned)
+        .map_err(|error| CollaborationError::new(error.reason()))
 }
 
 impl Rooms {

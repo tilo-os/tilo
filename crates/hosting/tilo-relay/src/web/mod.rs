@@ -1157,19 +1157,19 @@ async fn route(
                 })
         }
         "/envelope/fetch" | "/profile/fetch" => match if route == "/profile/fetch" {
-            web.profiles.fetch(&bytes)
+            web.profiles.answer(&bytes)
         } else {
-            web.envelopes.fetch(&bytes)
+            web.envelopes.answer(&bytes)
         } {
             Some(json) => {
-                let mut response = reply(StatusCode::OK, json.into_bytes());
+                let mut response = reply(StatusCode::OK, json);
                 response.headers_mut().insert(
                     header::CONTENT_TYPE,
                     header::HeaderValue::from_static("application/json"),
                 );
                 Ok(response)
             }
-            None => Err(status(StatusCode::NOT_FOUND, "nothing kept for this root")),
+            None => Err(status(StatusCode::BAD_REQUEST, "malformed root public key")),
         },
         _ if path == FALLBACK_OPEN_PATH => {
             let id: [u8; 16] = rand::random();
