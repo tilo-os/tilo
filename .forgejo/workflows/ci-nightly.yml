@@ -132,6 +132,10 @@ jobs:
       - name: Ensure session-bus test tools
         run: bash tools/ci/ensure-session-bus-tools.sh
 
+      # And for the X11 bridge the shell's X11 clipboard and focus tests drive.
+      - name: Ensure X11 bridge test tools
+        run: bash tools/ci/ensure-x11-bridge-tools.sh
+
       # Pinned/older builders may predate native PDF capture coverage. Stage
       # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
       # Where the runner's kernel can enforce Landlock, the PDF helper's
