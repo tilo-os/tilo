@@ -1935,10 +1935,6 @@ impl CalculatorApp {
             .with_children(children)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one parser keeps every retained graph control on the same action-dispatch path"
-    )]
     fn perform_graph_semantic_action(
         &mut self,
         target: &str,

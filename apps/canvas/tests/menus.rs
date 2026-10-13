@@ -1,10 +1,5 @@
 //! What a right-click offers, used as a person uses it: the menu over a
 //! layer's row renames it, the one over the canvas acts on what it lands on.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "test assertions over exact, hand-written fixtures"
-)]
 
 use canvas::App;
 use serde_json::json;

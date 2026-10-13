@@ -15,10 +15,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -170,10 +167,6 @@ fn launched_commands(log: &Path, want: usize) -> Vec<String> {
     clippy::significant_drop_tightening,
     reason = "st's only use is producing tree via tree(), read from through the inner \
 block's final assert_eq!; nothing to drop earlier"
-)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn documents_opened_from_the_palette_or_a_drop_open_in_their_own_app() {
     // Phase `activating_a_file_row_in_the_palette_opens_it_in_its_own_app`.

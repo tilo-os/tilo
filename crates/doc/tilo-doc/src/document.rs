@@ -811,10 +811,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn blocks_text_and_marks_edit_in_order_and_materialize() {
         // Phase `insert_blocks_are_ordered`.
         {

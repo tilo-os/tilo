@@ -378,10 +378,6 @@ impl InteractiveChart for FunnelChart {
 impl Widget for FunnelChart {
     crate::widget::chart_navigation::chart_leaf!();
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the retained draw pass keeps stages, labels, conversions, and tooltip painting together"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,

@@ -138,10 +138,6 @@ fn tap_control(a: &mut MapsApp, action: MapControlAction) {
 /// Panning and zooming: model clamps, pointer drag/wheel over the map (not the
 /// panel), and the zoom/arrow keys.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn pan_and_zoom_follow_pointer_wheel_and_keys() {
     // Phase `pan_changes_center`.
     {
@@ -344,10 +340,6 @@ fn zoom_scroll_and_search_typing_stay_under_frame_budget() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn local_view_state_never_fabricates_or_overwrites_shared_state() {
     // Phase `a_peer_bookmark_arrives_without_moving_the_camera`.
     {
@@ -587,10 +579,6 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn traffic_overlay_populates_honestly_and_draws_its_legend_only_when_on() {
     // Phase `traffic_toggle_populates_from_sample_cartography`.
     {
@@ -1207,10 +1195,6 @@ fn demo_poi(id: &str, lat: f64, lon: f64) -> crate::model::Poi {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn poi_fetch_debounces_caches_versions_and_clears() {
     // Phase `poi_fetch_debounces_caches_and_versions`.
     // A pan arms the POI refetch; it fires exactly once after the debounce,
@@ -2819,10 +2803,6 @@ fn region_test_cache(tag: &str) -> std::path::PathBuf {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn semantic_controls_are_stable_modal_and_operable() {
     // Phase `map_controls_are_operable_semantic_children_with_matching_geometry`.
     {
@@ -2933,10 +2913,6 @@ fn semantic_controls_are_stable_modal_and_operable() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn authored_geometry_keeps_gaps_and_scales_with_text() {
     // Phase `navigation_card_holds_its_stack_and_grows_with_the_text`.
     // The navigation card is the list-panel width and exactly as tall as

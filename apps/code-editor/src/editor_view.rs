@@ -223,10 +223,6 @@ struct BufferProjection {
 const EAGER_HIGHLIGHT_BYTES: usize = 256 * 1024;
 const INACTIVE_SOURCE_BYTES: usize = 48 * 1024 * 1024;
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent, unrelated flag (focus, dirty, popup state, zero-state click) rather than a set of options that combine — a bitflag/enum would not read better"
-)]
 pub struct EditorView {
     rect: Rect,
     /// The buffer's lines (cache of the CRDT Text split on '\n').

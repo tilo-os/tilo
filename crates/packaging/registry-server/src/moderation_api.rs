@@ -285,10 +285,6 @@ impl ModerationApiService {
         })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "keeping all four wire mutations in one exhaustive authorization match makes role and package-owner checks auditable together"
-    )]
     fn authorize_and_prepare(
         &self,
         request: &SignedModerationMutation,

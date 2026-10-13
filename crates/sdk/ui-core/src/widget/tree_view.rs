@@ -3204,10 +3204,6 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     .and_then(|decoration| decoration.presence.as_ref())
                 {
                     // Mist is painted in device space.
-                    #[allow(
-                        clippy::arithmetic_side_effects,
-                        reason = "kurbo Affine application is floating-point matrix math; it cannot overflow or panic"
-                    )]
                     let device = transform.transform_rect_bbox(row_rect);
                     for user in presence.peers_on(key) {
                         presence.draw_peer_mist(scene, theme, user, device);

@@ -1897,10 +1897,6 @@ struct QueuedLifecycleResult {
     value: String,
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the fixture tracks independent lifecycle and owner-policy states"
-)]
 struct RetainedLifecycleProbe {
     id: &'static str,
     expected_owner: &'static str,
@@ -2918,10 +2914,6 @@ fn refused_transition_does_not_repoll_an_undrained_stream_update() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "The test keeps old-owner release and new-owner admission in one ordered lifecycle."
-)]
 fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_work() {
     let (_directory, _owners, store) = lifecycle_store("release-direct");
     let first = note(723);

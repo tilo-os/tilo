@@ -1802,10 +1802,6 @@ fn allowing_once_admits_that_call_and_the_next_asks_again() {
 /// word: the person is asked on their sheet each time, and the call runs
 /// only on their answer.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "a confirmed call and a declined one are one grant's life"
-)]
 fn a_grant_that_asks_first_runs_each_call_on_the_persons_confirmation() {
     let (mut door, mut sheet) = door_asking(true);
     let socket = door.dir.path().join("collab.sock");
