@@ -1775,6 +1775,7 @@ impl HistoryHost {
 }
 
 mod browse;
+pub(crate) use browse::FILTER_OPERATION;
 mod surface;
 
 mod review;

@@ -109,7 +109,7 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
         let mut unrelated_branch = base.fork();
         unrelated_branch.set_actor(ActorId::from("bob".as_bytes()));
         unrelated_branch.put(ROOT, "status", "bob-only").unwrap();
-        unrelated_branch.commit().unwrap();
+        let unrelated_hash = unrelated_branch.commit().unwrap();
         selected_branch.merge(&mut unrelated_branch).unwrap();
 
         let selected = entry_id_from_hash(&selected_hash.to_string());
@@ -122,6 +122,28 @@ fn selected_snapshots_are_exact_isolated_and_reachable() {
         assert_eq!(value(&historical, "title").as_deref(), Some("alice-only"));
         assert_eq!(value(&historical, "status"), None);
         assert_eq!(snapshot.heads(), &[selected_hash]);
+
+        let unrelated = entry_id_from_hash(&unrelated_hash.to_string());
+        history
+            .select(&selected_branch, &[selected, unrelated])
+            .unwrap();
+        let expected = [selected, unrelated].map(|id| {
+            history
+                .entries()
+                .iter()
+                .find(|entry| entry.id == id)
+                .unwrap()
+                .summary
+                .clone()
+        });
+        assert_eq!(history.selected_summaries(), &expected);
+        let snapshot = history.snapshot().unwrap();
+        assert_eq!(snapshot.heads().len(), 2);
+        assert!(snapshot.heads().contains(&selected_hash));
+        assert!(snapshot.heads().contains(&unrelated_hash));
+        let historical = load(snapshot);
+        assert_eq!(value(&historical, "title").as_deref(), Some("alice-only"));
+        assert_eq!(value(&historical, "status").as_deref(), Some("bob-only"));
     }
     // phase: controller_keeps_older_entries_reachable_beyond_its_first_page
     {
@@ -186,6 +208,23 @@ fn the_pinned_preview_survives_refresh_until_back_to_live() {
             HistoryController::new(resource("profile-a", "workspace-a"), &doc).unwrap();
         history.select(&doc, &[one]).unwrap();
         let pinned = history.snapshot().unwrap().bytes().to_vec();
+        let summary = history
+            .entries()
+            .iter()
+            .find(|entry| entry.id == one)
+            .unwrap()
+            .summary
+            .clone();
+        assert_eq!(history.selected_summaries(), std::slice::from_ref(&summary));
+
+        // Move the selected row outside the newest projection page.
+        for i in 0..=HISTORY_PAGE {
+            doc.put(ROOT, "later", i.to_string()).unwrap();
+            doc.commit().unwrap();
+        }
+        history.refresh(&doc).unwrap();
+        assert!(!history.entries().iter().any(|entry| entry.id == one));
+        assert_eq!(history.selected_summaries(), std::slice::from_ref(&summary));
 
         doc.set_actor(ActorId::from("bob".as_bytes()));
         doc.put(ROOT, "remote", "arrived").unwrap();
@@ -201,6 +240,7 @@ fn the_pinned_preview_survives_refresh_until_back_to_live() {
         assert_eq!(history.snapshot().unwrap().bytes(), pinned.as_slice());
 
         history.back_to_live();
+        assert!(history.selected_summaries().is_empty());
         assert!(history.snapshot().is_none());
         assert!(!history.has_live_updates());
     }

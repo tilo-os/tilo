@@ -4,7 +4,7 @@ use crate::widget::{Dropdown, HistoryFilter};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
 
-const OPERATION: &str = "tilo.host.history.filter";
+pub(crate) const FILTER_OPERATION: &str = "tilo.host.history.filter";
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -26,9 +26,9 @@ impl BrowseFilter {
             }
         };
         HistoryFilter {
-            resources: lens(&self.resource),
-            authors: lens(&self.actor),
-            work_groups: lens(&self.group),
+            resource_ids: lens(&self.resource),
+            actor_ids: lens(&self.actor),
+            work_group_ids: lens(&self.group),
             ..HistoryFilter::default()
         }
     }
@@ -46,7 +46,7 @@ impl HistoryHost {
             I18nManager::lookup_plain("history-browse-filter"),
             I18nManager::lookup_plain("history-browse-owner"),
             OperationKind::View,
-            OPERATION,
+            FILTER_OPERATION,
             ["resource", "actor", "group"]
                 .into_iter()
                 .map(|name| {
@@ -58,7 +58,7 @@ impl HistoryHost {
                 })
                 .collect(),
             |args| EncodedAction {
-                type_id: OPERATION.into(),
+                type_id: FILTER_OPERATION.into(),
                 payload: serde_json::to_vec(&BrowseFilter {
                     resource: args.text("resource").unwrap_or_default().into(),
                     actor: args.text("actor").unwrap_or_default().into(),
@@ -69,7 +69,7 @@ impl HistoryHost {
         ))
     }
     pub(super) fn invoke_browse(&self, encoded: &EncodedAction) -> Option<Result<(), String>> {
-        if encoded.type_id != OPERATION {
+        if encoded.type_id != FILTER_OPERATION {
             return None;
         }
         Some((|| {
@@ -98,84 +98,63 @@ impl HistoryHost {
             ("actor", "history-browse-actor", &self.browse_filter.actor),
             ("group", "history-browse-group", &self.browse_filter.group),
         ] {
-            let mut labels: Vec<String> = self
+            // Only the captured owner's admitted projection supplies choices.
+            // Labels are presentation, never selection identities.
+            let mut options: Vec<(String, String)> = self
                 .timeline
                 .entries()
                 .iter()
                 .filter_map(|entry| match id {
-                    "actor" => (!entry.is_genesis()).then(|| entry.author.name.clone()),
+                    "actor" if !entry.is_genesis() => entry
+                        .context
+                        .as_ref()?
+                        .invoker
+                        .as_ref()
+                        .map(|invoker| (invoker.actor.clone(), entry.author.name.clone())),
                     "resource" => entry
                         .context
                         .as_ref()?
                         .resource
                         .as_ref()
-                        .map(|resource| resource.label.clone()),
-                    _ => entry
+                        .map(|resource| (resource.id.clone(), resource.label.clone())),
+                    "group" => entry
                         .context
                         .as_ref()?
                         .group
                         .as_ref()
-                        .map(|group| group.label.clone()),
+                        .map(|group| (group.id.clone(), group.label.clone())),
+                    _ => None,
                 })
-                .filter(|label| !label.is_empty())
+                .filter(|(value, _)| !value.is_empty())
                 .collect();
-            labels.sort();
-            labels.dedup();
-            let display = if selected.is_empty() {
-                all.clone()
-            } else if labels.contains(selected) {
-                selected.clone()
-            } else {
-                // Programmatic filters may address stable IDs. Only labels
-                // from the published context belong in the chooser face.
-                self.timeline
-                    .entries()
-                    .iter()
-                    .find_map(|entry| {
-                        let context = entry.context.as_ref()?;
-                        match id {
-                            "resource" => context
-                                .resource
-                                .as_ref()
-                                .filter(|resource| resource.id == *selected)
-                                .map(|resource| resource.label.clone()),
-                            "group" => context
-                                .group
-                                .as_ref()
-                                .filter(|group| group.id == *selected)
-                                .map(|group| group.label.clone()),
-                            _ => None,
-                        }
-                    })
-                    .filter(|label| !label.is_empty())
-                    .unwrap_or_else(|| I18nManager::lookup_plain("history-browse-filter"))
-            };
-            if display != all && !labels.contains(&display) {
-                labels.push(display.clone());
+            options.sort();
+            options.dedup_by(|a, b| a.0 == b.0);
+            options.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+            if !selected.is_empty() && !options.iter().any(|(value, _)| value == selected) {
+                options.push((
+                    selected.clone(),
+                    I18nManager::lookup_plain("history-browse-filter"),
+                ));
             }
-            labels.insert(0, all.clone());
-            let state = crate::LocalState::new(display);
+            // Empty is the explicit no-filter value, independent of locale.
+            options.insert(0, (String::new(), all.clone()));
+            let state = crate::LocalState::new(selected.clone());
             let requests = self.browse_request.clone();
             let filter = self.browse_filter.clone();
-            let all = all.clone();
-            let picker = Dropdown::from_state(labels, &state)
+            let mut picker = Dropdown::from_state(Vec::new(), &state)
                 .with_id(&format!("history-filter-{id}"))
                 .with_accessible_name(title)
                 .caption(title)
                 .on_change(move |value| {
                     let mut next = filter.clone();
-                    let value = if value == all {
-                        String::new()
-                    } else {
-                        value.to_owned()
-                    };
                     match id {
-                        "resource" => next.resource = value,
-                        "actor" => next.actor = value,
-                        _ => next.group = value,
+                        "resource" => value.clone_into(&mut next.resource),
+                        "actor" => value.clone_into(&mut next.actor),
+                        _ => value.clone_into(&mut next.group),
                     }
                     *requests.borrow_mut() = Some(next);
                 });
+            picker.set_value_options(options);
             row = row.push(Box::new(picker));
         }
         let requests = self.browse_request.clone();
@@ -216,13 +195,10 @@ impl HistoryHost {
     }
     pub(super) fn compare_description(&self) -> String {
         let summaries = self
-            .timeline
-            .entries()
-            .iter()
-            .filter(|entry| self.selected.contains(&entry.id))
-            .map(|entry| entry.summary.as_str())
-            .collect::<Vec<_>>()
-            .join(" · ");
+            .controller
+            .as_ref()
+            .map(|controller| controller.selected_summaries().join(" · "))
+            .unwrap_or_default();
         I18nManager::format("history-compare-pinned", &[("changes", summaries.into())])
     }
 }

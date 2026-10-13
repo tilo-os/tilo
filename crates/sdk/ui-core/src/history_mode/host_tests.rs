@@ -1,11 +1,11 @@
 use super::*;
 use crate::widget::{AppModel, ModelPath};
+use crate::{I18nManager, text_render::TextRenderer, theme::Theme};
 use crate::{
     State,
     headless::FrameHarness,
     widget::{Button, Column, Widget},
 };
-use crate::{text_render::TextRenderer, theme::Theme};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::{cell::Cell, rc::Rc};
 use vello::{
@@ -1448,6 +1448,14 @@ fn checked_files_activity_keeps_the_wide_live_surface() {
     )
     .unwrap();
     driver.click_named("history-open").unwrap();
+    assert!(!driver.targets().contains_key("history-filter-resource"));
+    assert!(!driver.targets().contains_key("history-filter-actor"));
+    assert!(!driver.targets().contains_key("history-filter-group"));
+    let filter = tilo_actions::ActionAddress::new(
+        crate::standalone_history_host::HISTORY_RESOURCE,
+        "filter",
+    );
+    assert!(driver.invoke_local_history_action(&filter, None).is_err());
     assert!(
         driver
             .inspection_json()
@@ -1797,6 +1805,184 @@ fn managed_browse_filters_use_the_canonical_door_without_changing_live_content()
             )
             .unwrap();
         assert_eq!(driver.state_mut().doc.clone().save(), bytes);
+    }
+}
+
+/// These contexts are admitted by this fixture's captured document owner.
+/// Distinct leaf resources and principals deliberately share presentation names.
+fn populated_browse_driver() -> (FrameHarness, Vec<String>) {
+    let mut state = State::new();
+    let mut targets = Vec::new();
+    for (resource, label, actor, group) in [
+        ("leaf-all", "All", "app:All", "work-all"),
+        ("folder-a/leaf", "Leaf", "app:Same", "work-a"),
+        ("folder-b/leaf", "Leaf", "agent:Same", "work-b"),
+    ] {
+        let context = tilo_actions::ActionContext::for_resource(resource, "note", label)
+            .with_invoker(tilo_actions::ActionInvoker::actor(actor))
+            .with_group(group, if label == "All" { "All" } else { "Work" }, "task");
+        state.doc.put(ROOT, "body", resource).unwrap();
+        let hash = state
+            .doc
+            .commit_with(
+                automerge::transaction::CommitOptions::default()
+                    .with_message(context.change_message().unwrap()),
+            )
+            .unwrap();
+        let id = crate::history_source::entry_id_from_hash(&hash.to_string());
+        targets.push(format!(
+            "timeline-entry:{}",
+            crate::widget::history_group::hex16(&id)
+        ));
+    }
+    let mut driver = FrameHarness::from_managed_root(
+        state,
+        ManagedRoot::new(Box::new(Column::new()), registration()),
+        (1000, 800),
+    )
+    .unwrap();
+    driver.open_history().unwrap();
+    (driver, targets)
+}
+
+fn select_browse_choice(
+    driver: &mut FrameHarness,
+    lens: &str,
+    route: &str,
+    ordinal: u32,
+    value: &str,
+) {
+    let id = format!("history-filter-{lens}");
+    match route {
+        "pointer" => {
+            driver.click_named(&id).unwrap();
+            let rect = driver.targets()[&id];
+            // This toolbar has room below for every option. Use the shared
+            // menu metrics, not the closed control's (caption-inclusive) height.
+            let row = f64::from(driver.theme().tokens.metrics.menu_row_height);
+            let inset = crate::widget::floating_surface::menu_inset(driver.theme());
+            driver.click_at(
+                rect.center().x,
+                rect.y1 + 4.0 + inset + (f64::from(ordinal) + 0.5) * row,
+            );
+        }
+        "keyboard" => {
+            driver
+                .perform_named(&id, &crate::a11y::Action::Focus)
+                .unwrap();
+            driver.key("Enter");
+            // Start at the first row even when resetting a populated lens.
+            for _ in 0..4 {
+                driver.key("ArrowUp");
+            }
+            for _ in 0..ordinal {
+                driver.key("ArrowDown");
+            }
+            driver.key("Enter");
+        }
+        "accesskit" => {
+            let title = I18nManager::lookup_plain(&format!("history-browse-{lens}"));
+            let node = driver.a11y_node_named(&title).unwrap();
+            driver
+                .perform_a11y_action(node, &crate::a11y::Action::SetValue(value.into()))
+                .unwrap();
+        }
+        _ => panic!("unknown input route"),
+    }
+}
+
+fn expand_browse_fixture_groups(driver: &mut FrameHarness) {
+    for group in ["work-all", "work-a", "work-b"] {
+        let target = format!("timeline-group:n:action-group:{group}");
+        let inspection = driver.inspection();
+        if find_access(&inspection.root, &target)
+            .is_some_and(|node| node.state.expanded == Some(false))
+        {
+            driver
+                .perform_semantic_named(
+                    "activity_timeline",
+                    Some(&target),
+                    &crate::a11y::Action::Activate,
+                )
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn populated_history_dropdowns_select_exact_ids_despite_duplicate_labels() {
+    for route in ["pointer", "keyboard", "accesskit"] {
+        for (lens, values, labels) in [
+            (
+                "resource",
+                ["leaf-all", "folder-a/leaf", "folder-b/leaf"],
+                ["All", "Leaf", "Leaf"],
+            ),
+            (
+                "actor",
+                ["app:All", "agent:Same", "app:Same"],
+                ["All", "Same", "Same"],
+            ),
+            (
+                "group",
+                ["work-all", "work-a", "work-b"],
+                ["All", "Work", "Work"],
+            ),
+        ] {
+            let (mut driver, targets) = populated_browse_driver();
+            let bytes = driver.state_mut().doc.clone().save();
+            for (index, (value, label)) in values.into_iter().zip(labels).enumerate() {
+                // Always start at the explicit no-filter option. The literal
+                // "All" entry is the next row, not the empty sentinel.
+                driver.click_named("history-filter-clear").unwrap();
+                select_browse_choice(
+                    &mut driver,
+                    lens,
+                    route,
+                    u32::try_from(index + 1).unwrap(),
+                    value,
+                );
+                let expected = if lens == "actor" {
+                    [0, 2, 1][index]
+                } else {
+                    index
+                };
+                expand_browse_fixture_groups(&mut driver);
+                let inspection = driver.inspection();
+                for (entry, target) in targets.iter().enumerate() {
+                    assert_eq!(
+                        find_access(&inspection.root, target).is_some(),
+                        entry == expected,
+                        "{route} {lens} selected {value}: {target}"
+                    );
+                }
+                let title = I18nManager::lookup_plain(&format!("history-browse-{lens}"));
+                let node = driver.a11y_node_named(&title).unwrap();
+                let selected = driver
+                    .a11y_nodes()
+                    .into_iter()
+                    .find(|(id, _)| *id == node)
+                    .unwrap()
+                    .1;
+                assert_eq!(selected.value(), Some(label), "{route} {lens}");
+            }
+            // Reset through the dropdown itself, proving empty is a selectable
+            // stable value distinct from the real entry labelled "All".
+            select_browse_choice(&mut driver, lens, route, 0, "");
+            expand_browse_fixture_groups(&mut driver);
+            let inspection = driver.inspection();
+            for target in &targets {
+                assert!(
+                    find_access(&inspection.root, target).is_some(),
+                    "{route} {lens}: {target}"
+                );
+            }
+            assert_eq!(
+                driver.state_mut().doc.clone().save(),
+                bytes,
+                "{route} {lens}"
+            );
+        }
     }
 }
 

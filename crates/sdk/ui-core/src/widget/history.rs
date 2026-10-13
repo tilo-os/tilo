@@ -224,6 +224,12 @@ pub struct HistoryFilter {
     /// typeahead "author:alice" filter doesn't depend on the user
     /// guessing the canonical casing.
     pub authors: Vec<String>,
+    /// Exact authenticated actor ids; separate from legacy name matching.
+    pub actor_ids: Vec<String>,
+    /// Exact resource ids, never matched against labels or case folded.
+    pub resource_ids: Vec<String>,
+    /// Exact task-group ids, never matched against labels or case folded.
+    pub work_group_ids: Vec<String>,
     /// Empty = all op classes.
     pub entry_kinds: Vec<EntryKind>,
     /// `None` disables the range. Half-open, matching the convention
@@ -280,6 +286,33 @@ impl HistoryFilter {
             HistoryClassification::Any
             | HistoryClassification::Classified
             | HistoryClassification::Unclassified => {}
+        }
+        if !self.actor_ids.is_empty()
+            && !entry
+                .context
+                .as_ref()
+                .and_then(|context| context.invoker.as_ref())
+                .is_some_and(|invoker| self.actor_ids.contains(&invoker.actor))
+        {
+            return false;
+        }
+        if !self.resource_ids.is_empty()
+            && !entry
+                .context
+                .as_ref()
+                .and_then(|context| context.resource.as_ref())
+                .is_some_and(|resource| self.resource_ids.contains(&resource.id))
+        {
+            return false;
+        }
+        if !self.work_group_ids.is_empty()
+            && !entry
+                .context
+                .as_ref()
+                .and_then(|context| context.group.as_ref())
+                .is_some_and(|group| self.work_group_ids.contains(&group.id))
+        {
+            return false;
         }
         if !self.authors.is_empty() {
             let needle = entry.author.name.to_lowercase();
@@ -664,6 +697,44 @@ mod tests {
         filter_matches_entry_kind_subset();
         filter_matches_time_range();
         semantic_facets_filter_context_without_guessing_legacy_entries();
+    }
+
+    #[test]
+    fn exact_identity_lenses_do_not_change_legacy_string_filters() {
+        let mut row = entry(EntryKind::Details, "Alice", 100);
+        row.context = Some(
+            ActionContext::for_resource("Doc:A", "note", "Doc:B")
+                .with_group("Task:A", "Task:B", "task")
+                .with_invoker(tilo_actions::ActionInvoker::actor("Agent:A")),
+        );
+        assert!(HistoryFilter::default().with_author("ALICE").matches(&row));
+        assert!(
+            HistoryFilter::default()
+                .with_resource("doc:b")
+                .matches(&row)
+        );
+        assert!(
+            HistoryFilter::default()
+                .with_work_group("task:b")
+                .matches(&row)
+        );
+        for (resource, actor, group, expected) in [
+            ("Doc:A", "Agent:A", "Task:A", true),
+            ("Doc:B", "Agent:A", "Task:A", false),
+            ("doc:a", "Agent:A", "Task:A", false),
+            ("Doc:A", "Alice", "Task:A", false),
+            ("Doc:A", "agent:a", "Task:A", false),
+            ("Doc:A", "Agent:A", "Task:B", false),
+            ("Doc:A", "Agent:A", "task:a", false),
+        ] {
+            let filter = HistoryFilter {
+                resource_ids: vec![resource.into()],
+                actor_ids: vec![actor.into()],
+                work_group_ids: vec![group.into()],
+                ..HistoryFilter::default()
+            };
+            assert_eq!(filter.matches(&row), expected);
+        }
     }
 
     #[test]

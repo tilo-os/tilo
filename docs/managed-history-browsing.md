@@ -15,8 +15,9 @@ filters.
 
 The local canonical `tilo.host:history` resource exposes `filter` with optional
 `resource`, `actor`, and `group` text parameters. An empty argument object clears
-these lenses. Resource and group parameters accept the same labels or stable
-addresses as the shared HistoryFilter model. This is local presentation state,
+these lenses. Parameters accept exact resource, authenticated actor, and task-group
+IDs, with separate display labels. Duplicate labels remain distinct choices, including
+labels equal to All. Legacy string filters retain their case-insensitive label semantics. This is local presentation state,
 not an edit or a new remote permission bypass.
 
 Selecting changes opens Compare pinned versions with a changed-action summary.

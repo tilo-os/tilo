@@ -25,6 +25,9 @@ impl App {
         if encoded.type_id == SEARCH_OPERATION {
             return self.document_history.has_search();
         }
+        if encoded.type_id == crate::history_mode::host::FILTER_OPERATION {
+            return self.history.is_some();
+        }
         if encoded.type_id == HISTORY_OPERATION {
             return self.history_chrome_enabled || self.history.is_some();
         }
@@ -276,6 +279,9 @@ impl App {
                 .map_err(|_| "Invalid Search operation")?;
             self.open_search(request);
             return Ok(());
+        }
+        if encoded.type_id == crate::history_mode::host::FILTER_OPERATION {
+            return self.invoke_framework_history(encoded);
         }
         if encoded.type_id == HISTORY_OPERATION && !self.history_chrome_enabled {
             return self.invoke_framework_history(encoded);
@@ -1052,6 +1058,184 @@ mod tests {
             assert!(app.select_document_history(&[old]).is_err());
             assert!(!app.document_history.is_open());
         }
+    }
+
+    static BROWSE_HISTORY: crate::history_mode::HistoryDefinition =
+        crate::history_mode::HistoryDefinition {
+            app_id: "dev.tilo.app-history-browse",
+            scopes: &[crate::history_mode::HistoryScopeDefinition {
+                key: "document",
+                title: "Document",
+                presentation: crate::history_mode::HistoryPresentation::Domain {
+                    create: crate::history_mode::test_preview,
+                },
+                content_schema: None,
+            }],
+        };
+
+    fn browse_root() -> crate::history_mode::ManagedRoot {
+        use crate::history_mode::{
+            HistoryRegistration, HistoryResource, HistorySourceRegistration, ManagedRoot,
+        };
+        let registration = HistoryRegistration::new(
+            &BROWSE_HISTORY,
+            vec![HistorySourceRegistration::HostDocument {
+                scope: "document",
+                resource: HistoryResource::new(
+                    "browse-document",
+                    "browse-lifetime",
+                    BROWSE_HISTORY.app_id,
+                    crate::RecordId::for_tab(905),
+                ),
+            }],
+        )
+        .unwrap();
+        ManagedRoot::new(Box::new(crate::widget::Column::new()), registration)
+    }
+
+    fn browse_state() -> crate::State {
+        let mut state = crate::State::new();
+        state.doc.put(ROOT, "body", "committed").unwrap();
+        state.commit_action(None, None);
+        state
+    }
+
+    fn browse_address() -> tilo_actions::ActionAddress {
+        tilo_actions::ActionAddress::new(crate::standalone_history_host::HISTORY_RESOURCE, "filter")
+    }
+
+    fn browse_argument(arguments: serde_json::Value) -> String {
+        format!("{}{arguments}", tilo_actions::ARGUMENTS_JSON_PREFIX)
+    }
+
+    #[test]
+    fn managed_history_filter_dispatches_locally_without_document_writes() {
+        let mut app =
+            App::from_managed_root_with_controlled_inputs(browse_state(), browse_root()).unwrap();
+        super::super::framework_history_tests::layout(&mut app);
+        app.state.doc.put(ROOT, "body", "pending typing").unwrap();
+        let pending = app.state.doc.pending_ops();
+        let heads = app.state.doc.clone().get_heads();
+        let address = browse_address();
+        let resources = app.history_local_resources();
+        let spec = tilo_actions::door::resolve(&resources, &address).unwrap();
+        let encoded = spec
+            .build_json(
+                serde_json::json!({"resource": "absent-resource"})
+                    .as_object()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(app.is_history_encoded_local(&encoded));
+
+        for lens in ["resource", "actor", "group"] {
+            let argument = browse_argument(serde_json::json!({lens: "absent-value"}));
+            app.invoke_history_address_local(&address, Some(&argument))
+                .expect("managed History publishes the local filter door")
+                .expect("filter dispatch reaches the managed History host");
+            super::super::framework_history_tests::layout(&mut app);
+            assert!(app.history.as_ref().unwrap().is_open());
+            assert!(!app.document_history.is_open(), "not the standalone host");
+            app.refresh_semantic_tree();
+            assert!(
+                app.build_a11y_tree_update(1.0)
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.description().is_some_and(
+                        |description| description.contains("No activity matches these filters")
+                    )),
+                "the requested lens changes the managed timeline"
+            );
+            assert_eq!(app.state.doc.pending_ops(), pending);
+            assert_eq!(app.state.doc.clone().get_heads(), heads);
+        }
+        app.invoke_history_address_local(&address, Some(&browse_argument(serde_json::json!({}))))
+            .unwrap()
+            .unwrap();
+        super::super::framework_history_tests::layout(&mut app);
+        app.refresh_semantic_tree();
+        assert!(
+            !app.build_a11y_tree_update(1.0)
+                .nodes
+                .iter()
+                .any(|(_, node)| node.description().is_some_and(
+                    |description| description.contains("No activity matches these filters")
+                ))
+        );
+        use automerge::ReadDoc;
+        assert_eq!(
+            app.state.doc.get(ROOT, "body").unwrap().unwrap().0.as_str(),
+            Some("pending typing")
+        );
+    }
+
+    #[test]
+    fn managed_history_filter_refuses_unbound_scope_and_unmanaged_host() {
+        let mut app =
+            App::from_managed_root_with_controlled_inputs(browse_state(), browse_root()).unwrap();
+        super::super::framework_history_tests::layout(&mut app);
+        let argument = browse_argument(serde_json::json!({"scope": "other-document"}));
+        assert!(
+            app.invoke_history_address_local(&browse_address(), Some(&argument))
+                .unwrap()
+                .is_err()
+        );
+        assert!(!app.history.as_ref().unwrap().is_open());
+        let encoded = tilo_actions::EncodedAction {
+            type_id: "tilo.host.history.filter".into(),
+            payload: serde_json::to_vec(&serde_json::json!({"scope": "other-document"})).unwrap(),
+        };
+        assert!(app.execute_history_encoded_local(&encoded).is_err());
+        assert!(!app.history.as_ref().unwrap().is_open());
+        let mut standalone = App::new_with_controlled_inputs(
+            browse_state(),
+            Box::new(crate::widget::Text::new("Document")),
+        );
+        standalone.enable_document_history_chrome();
+        let encoded = tilo_actions::EncodedAction {
+            type_id: "tilo.host.history.filter".into(),
+            payload: b"{}".to_vec(),
+        };
+        assert!(!standalone.is_history_encoded_local(&encoded));
+        assert!(standalone.execute_history_encoded_local(&encoded).is_err());
+        assert!(!standalone.document_history.is_open());
+    }
+
+    #[test]
+    fn managed_history_filter_headless_local_door_is_not_a_published_broker_action() {
+        let mut driver = crate::headless::FrameHarness::from_managed_root(
+            browse_state(),
+            browse_root(),
+            (900, 650),
+        )
+        .unwrap();
+        let address = browse_address();
+        let arguments = serde_json::json!({"actor": "absent-actor"});
+        let before = driver.state_mut().doc.clone().save();
+        assert!(matches!(
+            driver.invoke_action(&address, arguments.as_object().unwrap(), false, None),
+            Err(tilo_actions::DoorError::Unknown(ref denied)) if denied == &address
+        ));
+        driver
+            .invoke_local_history_action(&address, Some(&browse_argument(arguments)))
+            .unwrap();
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("No activity matches these filters")
+        );
+        assert!(
+            driver
+                .invoke_local_history_action(
+                    &address,
+                    Some(&browse_argument(
+                        serde_json::json!({"scope": "other-document"})
+                    )),
+                )
+                .is_err()
+        );
+        assert_eq!(driver.state_mut().doc.clone().save(), before);
     }
 
     fn layout(app: &mut App, width: u32) {

@@ -173,6 +173,7 @@ struct SelectedPreview {
     before: HistorySnapshot,
     after: HistorySnapshot,
     effect_only: bool,
+    summaries: Vec<String>,
 }
 
 pub struct HistoryController {
@@ -292,6 +293,12 @@ impl HistoryController {
         &self.entries
     }
 
+    pub(crate) fn selected_summaries(&self) -> &[String] {
+        self.selected
+            .as_ref()
+            .map_or(&[], |selected| &selected.summaries)
+    }
+
     pub fn groups(&self) -> &[HistoryGroup] {
         &self.groups
     }
@@ -379,6 +386,27 @@ impl HistoryController {
                 .is_some_and(is_effect_receipt)
         });
 
+        // Retain the admitted projection's metadata with the pinned frontiers,
+        // not the paged list that can evict these rows on a later refresh.
+        let all_entries;
+        let factual_entries = if entries
+            .iter()
+            .all(|id| factual_entries.iter().any(|entry| entry.id == *id))
+        {
+            factual_entries
+        } else {
+            all_entries = self.source.entries(&mut projection);
+            &all_entries
+        };
+        let summaries = entries
+            .iter()
+            .filter_map(|id| {
+                factual_entries
+                    .iter()
+                    .find(|entry| entry.id == *id)
+                    .map(|entry| entry.summary.clone())
+            })
+            .collect();
         let before_heads = sorted_heads(comparison.before_heads);
         let after_heads = sorted_heads(comparison.after_heads);
         let selection = entries.to_vec();
@@ -408,6 +436,7 @@ impl HistoryController {
             before,
             after,
             effect_only,
+            summaries,
         });
         self.side = PreviewSide::After;
         self.live_updates = live_updates;
