@@ -1727,6 +1727,19 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     installed_apps_snapshot().map(|(_, apps)| apps)
 }
 
+/// Resolve one canonical installed package without parsing every app's
+/// manifest on the compositor loop. Keep the registry watch armed so a real
+/// update invalidates the input-method service before its TTL fallback.
+pub(crate) fn installed_app(app_id: &str) -> Result<Option<InstalledApp>, LaunchError> {
+    let app = tilo_installed_apps::read_one_from_env(app_id).map_err(|e| {
+        LaunchError::RegistryUnreadable {
+            detail: e.to_string(),
+        }
+    });
+    ensure_app_cache_watch();
+    app
+}
+
 /// Pair records with their cache revision while holding the cache lock.
 fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
     {
