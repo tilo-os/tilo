@@ -50,8 +50,6 @@ pub mod commands;
 mod files;
 mod i18n;
 mod library_migration;
-#[cfg(test)]
-pub mod live_search;
 pub mod local_file;
 pub mod lyrics;
 pub mod model;

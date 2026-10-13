@@ -1844,8 +1844,8 @@ impl DaySection {
     fn title(self) -> String {
         crate::i18n::widget_format(
             match self {
-                Self::Today => "history-day-today",
-                Self::Yesterday => "history-day-yesterday",
+                Self::Today => "day-today",
+                Self::Yesterday => "day-yesterday",
                 Self::ThisWeek => "history-day-this-week",
                 Self::Earlier => "history-day-earlier",
             },

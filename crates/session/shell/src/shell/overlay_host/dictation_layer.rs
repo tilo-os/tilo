@@ -1,7 +1,7 @@
 //! Local speech controls on the existing shell overlay stack. A request opens
 //! one-shot consent; neither a shortcut nor an action grants microphone access.
 use super::layers::{LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer};
-use crate::compositor::dictation::{DictationError, DictationStatus, SessionId};
+use crate::compositor::dictation_status::{DictationError, DictationStatus, SessionId};
 use crate::shell::i18n::{t, t_args};
 use std::time::Instant;
 use ui::a11y::AccessNode;
@@ -268,16 +268,16 @@ impl DictationSurface {
                     "dictation-transcript-copied"
                 } else {
                     match reason {
-                        crate::compositor::dictation::RecoveryReason::VocabularyChanged => {
+                        crate::compositor::dictation_status::RecoveryReason::VocabularyChanged => {
                             "dictation-vocabulary-draft-retained"
                         }
-                        crate::compositor::dictation::RecoveryReason::TooLong => {
+                        crate::compositor::dictation_status::RecoveryReason::TooLong => {
                             "dictation-transcript-retained"
                         }
-                        crate::compositor::dictation::RecoveryReason::Rejected => {
+                        crate::compositor::dictation_status::RecoveryReason::Rejected => {
                             "dictation-edit-rejected"
                         }
-                        crate::compositor::dictation::RecoveryReason::UnknownDelivery => {
+                        crate::compositor::dictation_status::RecoveryReason::UnknownDelivery => {
                             "dictation-delivery-unknown"
                         }
                     }
@@ -365,8 +365,8 @@ impl DictationSurface {
     }
 }
 
-fn error_key(error: crate::compositor::dictation::runtime::RuntimeError) -> &'static str {
-    use crate::compositor::dictation::runtime::RuntimeError as E;
+fn error_key(error: crate::compositor::dictation_status::RuntimeError) -> &'static str {
+    use crate::compositor::dictation_status::RuntimeError as E;
     use agent_provider_config::speech::SpeechError as S;
     match error {
         E::Worker(S::ModelUnavailable | S::ModelReceipt) => "dictation-model-required",
@@ -661,7 +661,7 @@ mod tests {
             Some(LayerIntent::Dictation(_))
         ));
         surface.status(DictationStatus::Recovery {
-            reason: crate::compositor::dictation::RecoveryReason::TooLong,
+            reason: crate::compositor::dictation_status::RecoveryReason::TooLong,
             copied: false,
             copy_failed: false,
         });
