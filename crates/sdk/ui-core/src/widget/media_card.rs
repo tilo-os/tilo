@@ -1244,13 +1244,7 @@ impl Widget for MediaCard {
         matches!(action, crate::a11y::Action::Activate) && self.activation.activate()
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO

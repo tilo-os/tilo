@@ -610,9 +610,6 @@ impl Widget for NotificationLayer {
     fn name(&self) -> &'static str {
         "DesktopNotifications"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn needs_redraw(&self) -> bool {
         self.dirty || self.drawn_revision.get() != Some(self.notifications.revision())
     }
@@ -639,9 +636,7 @@ impl Widget for NotificationLayer {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(tree, node, origin);
-    }
+    ui::rect_geometry!();
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -766,14 +761,7 @@ mod tests {
 
     fn press(layer: &mut NotificationLayer, p: Point) -> bool {
         layer.cursor = Some(p);
-        layer.route(
-            &WindowEvent::MouseInput {
-                device_id: ui::winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            1.0,
-        )
+        layer.route(&ui::synthetic_input::mouse_press(), 1.0)
     }
 
     #[test]
@@ -815,13 +803,7 @@ mod tests {
                 &ui::presence::PresenceCtx::default(),
             );
             let point = layer.stack.rect().center();
-            layer.route(
-                &WindowEvent::CursorMoved {
-                    device_id: ui::winit::event::DeviceId::dummy(),
-                    position: ui::winit::dpi::PhysicalPosition::new(point.x, point.y),
-                },
-                1.0,
-            );
+            layer.route(&ui::synthetic_input::cursor_moved(point.x, point.y), 1.0);
             assert!(press(&mut layer, point));
             assert!(
                 notifications.take_outcomes().is_empty(),
@@ -830,14 +812,7 @@ mod tests {
             if interrupted {
                 layer.set_center_open(true);
             }
-            assert!(layer.route(
-                &WindowEvent::MouseInput {
-                    device_id: ui::winit::event::DeviceId::dummy(),
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-                1.0
-            ));
+            assert!(layer.route(&ui::synthetic_input::mouse_release(), 1.0));
             let outcomes = notifications.take_outcomes();
             if interrupted {
                 assert!(

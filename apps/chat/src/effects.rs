@@ -12,7 +12,7 @@
 
 use ui::framework::{EffectAnswer, EffectStatus, Effected, LiveRow};
 use ui::native_media::Command;
-use ui::tilo_actions::{ResourceViewRangeSpec, ResourceViewSpec};
+use ui::tilo_actions::{ResourceSemanticIdentity, ResourceViewRangeSpec, ResourceViewSpec};
 use ui::tilo_resource::{self, Effect};
 
 use crate::app::{ChatApp, Focus};
@@ -26,6 +26,15 @@ pub const RECENT_MESSAGES: usize = 20;
 /// The id of the item resource the record publishes for `id` of `field`.
 fn item_row_id(field: &str, id: &str) -> String {
     tilo_resource::items::item_resource_id::<Chat>(field, &tilo_resource::Id::from_raw(id))
+}
+
+/// Stable semantic key of one authenticated Agent collaborator in Chat.
+pub(crate) fn agent_row_id(agent: &str) -> String {
+    format!("chat.agent:{agent}")
+}
+
+fn agent_semantic_identity(agent: &str) -> Option<ResourceSemanticIdentity> {
+    ResourceSemanticIdentity::new("chat.agent", agent_row_id(agent))
 }
 
 /// The views an item of the chat opens in, each opened by the item's own
@@ -91,6 +100,26 @@ pub enum ChatEffect {
     /// Open person
     #[effect(view, row, item = people)]
     OpenPerson { user: String },
+    /// Open a direct conversation with an Agent authenticated by this room.
+    #[effect(view, row)]
+    OpenAgentConversation { workspace: String, agent: String },
+    /// Open the conversation for one exact task and run.
+    ///
+    /// The Agent row binds its authenticated workspace and agent, asking
+    /// only for task and run epoch; the root also supports exact navigation.
+    #[effect(view)]
+    OpenTaskConversation {
+        workspace: String,
+        agent: String,
+        task: String,
+        run_epoch: u64,
+    },
+    /// Start the selected saved task with explicit run approval.
+    ///
+    /// Saving a message never invokes this action: the caller must consciously
+    /// approve starting the selected task in the open Agent conversation.
+    #[effect(device_only)]
+    StartAgentTask,
     /// Read message
     ///
     /// The message as a value: who wrote it, whether that is an agent, its
@@ -133,7 +162,7 @@ pub enum ChatEffect {
     #[effect(device_only)]
     OpenDiscordChannel { server: String, channel: String },
     /// Join call
-    #[effect(row, device_only)]
+    #[effect(row, device_only, sensitive)]
     JoinCall { channel: String },
     /// Leave call
     #[effect(row, idempotent, device_only)]
@@ -142,7 +171,7 @@ pub enum ChatEffect {
     #[effect(row, idempotent, device_only)]
     Mute { channel: String },
     /// Unmute
-    #[effect(row, device_only)]
+    #[effect(row, device_only, sensitive)]
     Unmute { channel: String },
     /// Call status
     ///
@@ -154,7 +183,7 @@ pub enum ChatEffect {
     ///
     /// Joins the open workspace's voice channel, making one when the
     /// workspace has none, or reveals the call already running.
-    #[effect(idempotent, device_only)]
+    #[effect(idempotent, device_only, sensitive)]
     StartCall,
     /// Start a video call
     ///
@@ -172,6 +201,29 @@ pub enum ChatEffect {
 }
 
 impl ChatApp {
+    fn open_task_conversation_effect(
+        &mut self,
+        workspace: &str,
+        agent: &str,
+        task: &str,
+        run_epoch: u64,
+    ) -> Result<(), String> {
+        if workspace != self.active_ws || !self.open_agent_conversation(agent) {
+            return Err("the task's agent is not in this workspace".into());
+        }
+        if !self.agent_tasks.follow(workspace, agent, task, run_epoch) {
+            return Err("the exact task identity is invalid".into());
+        }
+        self.agent_intents.update(|intents| {
+            _ = intents.insert(
+                (workspace.to_owned(), agent.to_owned()),
+                crate::agent_tasks::AgentComposerIntent::Steer,
+            );
+        });
+        self.sync_agent_route();
+        Ok(())
+    }
+
     /// Answer `effect` for this window.
     pub(crate) fn answer_effect(&mut self, effect: ChatEffect) -> EffectAnswer {
         match effect {
@@ -195,24 +247,29 @@ impl ChatApp {
                 unit,
             } => return self.reveal_message_range(&message, start, end, &unit),
             ChatEffect::OpenPerson { user } => self.open_person(&user)?,
+            ChatEffect::OpenTaskConversation {
+                workspace,
+                agent,
+                task,
+                run_epoch,
+            } => {
+                self.open_task_conversation_effect(&workspace, &agent, &task, run_epoch)?;
+            }
+            ChatEffect::OpenAgentConversation { workspace, agent } => {
+                if workspace != self.active_ws || !self.open_agent_conversation(&agent) {
+                    return Err("agent is not admitted to this workspace".into());
+                }
+            }
+            ChatEffect::StartAgentTask => {
+                if !self.start_agent_task() {
+                    return Err(crate::i18n::t("chat-agent-start-unavailable"));
+                }
+                self.request_relayout();
+            }
             ChatEffect::ReadMessage { message } => {
                 return self.read_message(&message).map(Effected::value);
             }
-            ChatEffect::AttachFile { channel, path } => {
-                if !self.external_services {
-                    return Err("attachment import unsupported: no host asset transport".into());
-                }
-                let path = path.trim();
-                if path.is_empty() {
-                    return Err("attachment path is empty".into());
-                }
-                if !self.channels.iter().any(|item| item.id == channel) {
-                    return Err("conversation no longer exists".into());
-                }
-                if !self.begin_attachment_import_into(&channel, std::path::Path::new(path)) {
-                    return Err("attachment import was not accepted".into());
-                }
-            }
+            ChatEffect::AttachFile { channel, path } => self.attach_file_effect(&channel, &path)?,
             ChatEffect::ShareLiveContext => {
                 if !self.channels.iter().any(|channel| {
                     channel.id == self.active_channel
@@ -268,6 +325,23 @@ impl ChatApp {
             }
         }
         Ok(Effected::done())
+    }
+
+    fn attach_file_effect(&mut self, channel: &str, path: &str) -> Result<(), String> {
+        if !self.external_services {
+            return Err("attachment import unsupported: no host asset transport".into());
+        }
+        let path = path.trim();
+        if path.is_empty() {
+            return Err("attachment path is empty".into());
+        }
+        if !self.channels.iter().any(|item| item.id == channel) {
+            return Err("conversation no longer exists".into());
+        }
+        if !self.begin_attachment_import_into(channel, std::path::Path::new(path)) {
+            return Err("attachment import was not accepted".into());
+        }
+        Ok(())
     }
 
     fn native_call_status(&mut self, channel: &str) -> EffectAnswer {
@@ -370,6 +444,17 @@ impl ChatApp {
             video_call_unavailable_reason(),
         );
         let mut unavailable = vec![video];
+        if !self.direct_agent_is_available()
+            || !self
+                .direct_agent_tasks()
+                .is_some_and(super::agent_tasks::AgentTaskView::can_start)
+        {
+            unavailable.push(EffectStatus::unavailable(
+                ChatEffect::START_AGENT_TASK,
+                "task_not_ready",
+                crate::i18n::t("chat-agent-start-unavailable"),
+            ));
+        }
         if self.workspaces.is_empty() {
             unavailable.push(EffectStatus::unavailable(
                 ChatEffect::START_CALL,
@@ -607,17 +692,93 @@ impl ChatApp {
             .reports
             .iter()
             .filter_map(|(report, _)| self.report_row(report));
+        let agents = self.room_agents.iter().filter_map(|agent| {
+            let identity = agent_semantic_identity(agent)?;
+            Some(
+                LiveRow::new(
+                    agent_row_id(agent),
+                    "chat.agent",
+                    self.agent_display_name(agent),
+                )
+                .semantic_identity(identity)
+                .effect(&ChatEffect::OpenAgentConversation {
+                    workspace: self.active_ws.clone(),
+                    agent: agent.clone(),
+                })
+                .operation(
+                    ChatEffect::OpenTaskConversation {
+                        workspace: self.active_ws.clone(),
+                        agent: agent.clone(),
+                        task: String::new(),
+                        run_epoch: 0,
+                    }
+                    .bound_asking(&["task", "run_epoch"]),
+                ),
+            )
+        });
+        let tasks = self.direct_agent.as_deref().into_iter().flat_map(|agent| {
+            self.agent_tasks
+                .view(agent)
+                .into_iter()
+                .flat_map(move |view| {
+                    view.tasks.iter().filter_map(move |task| {
+                        let epoch = task.run_epoch?;
+                        let id = format!("chat.task:{}:{epoch}", task.task_id);
+                        let identity =
+                            ui::tilo_actions::ResourceSemanticIdentity::new("chat.task", &id)?;
+                        Some(
+                            LiveRow::new(id, "chat.task", &task.title)
+                                .semantic_identity(identity)
+                                .effect(&ChatEffect::OpenTaskConversation {
+                                    workspace: self.active_ws.clone(),
+                                    agent: agent.to_owned(),
+                                    task: task.task_id.clone(),
+                                    run_epoch: epoch,
+                                }),
+                        )
+                    })
+                })
+        });
         workspaces
             .chain(categories)
             .chain(channels)
             .chain(messages)
             .chain(people)
             .chain(reports)
+            .chain(agents)
+            .chain(tasks)
             .collect()
     }
 
     /// The row `id`, when [`Self::published_rows`] leaves it out.
     pub(crate) fn published_row(&self, id: &str) -> Option<LiveRow> {
+        if id.starts_with("chat.task:") {
+            return self.published_rows().into_iter().find(|row| row.id() == id);
+        }
+        if let Some(agent) = id.strip_prefix("chat.agent:") {
+            let identity = agent_semantic_identity(agent)?;
+            return self
+                .room_agents
+                .iter()
+                .any(|known| known == agent)
+                .then(|| {
+                    LiveRow::new(id, "chat.agent", self.agent_display_name(agent))
+                        .semantic_identity(identity)
+                        .effect(&ChatEffect::OpenAgentConversation {
+                            workspace: self.active_ws.clone(),
+                            agent: agent.to_owned(),
+                        })
+                        .operation(
+                            ChatEffect::OpenTaskConversation {
+                                workspace: self.active_ws.clone(),
+                                agent: agent.to_owned(),
+                                task: String::new(),
+                                run_epoch: 0,
+                            }
+                            .bound_asking(&["task", "run_epoch"]),
+                        )
+                });
+        }
         let (field, item) = tilo_resource::items::item_of_resource::<Chat>(id)?;
         let item = item.as_str();
         match field {

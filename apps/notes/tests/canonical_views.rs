@@ -270,10 +270,7 @@ fn layout(app: &mut notes::NotesApp, width: f32, height: f32) {
         let root = tree
             .new_with_children(
                 taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::length(width),
-                        height: taffy::Dimension::length(height),
-                    },
+                    size: taffy::Size::from_lengths(width, height),
                     ..Default::default()
                 },
                 &[node],

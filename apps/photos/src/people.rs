@@ -796,7 +796,7 @@ mod tests {
         );
 
         let mut library = PhotoLibrary::default();
-        let mut photo = crate::model::LibraryPhoto::from_image(crate::model::OpenImage::from_path(
+        let mut photo = crate::model::LibraryPhoto::from_image(crate::model::OpenImage::fixture(
             "one.png", 20, 10,
         ));
         photo.people = ["Sam".to_owned(), "Élodie".to_owned()]

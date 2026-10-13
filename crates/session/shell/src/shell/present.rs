@@ -282,8 +282,8 @@ impl std::fmt::Display for FrameLifecycleRecord {
                     .to_string()
             ),
             // CLOCK_MONOTONIC at retirement, so a boot or sign-in measurement can place the
-            // session's first presented frame on the system's own clock (TIL-767).
-            crate::compositor::client_input::monotonic_time_ns()
+            // session's first presented frame on the system's own clock.
+            crate::compositor::metrics::monotonic_time_ns()
                 .map_or_else(|| "none".to_owned(), |ns| (ns / 1_000).to_string()),
             phases.map_or(0, |value| value.paint.cpu_copy_swizzle_us),
             phases.map_or(0, |value| value.paint.readback_bytes),
@@ -376,7 +376,7 @@ fn report_frame(presenter: &mut dyn Presenter, serial: u64, revision: u64, timin
 /// theirs. Mesa's CPU rasteriser (lavapipe) names its rasteriser threads `llvmpipe-N` but leaves
 /// its compute-shader pool, which runs every Vello stage, unnamed. Built on the render thread,
 /// that pool was called `tilo-present` too, so the CPU a software-rendered VM spent rasterising
-/// one frame read as the present thread's (TIL-739: `tilo-present×14 1.51%` with the present
+/// one frame read as the present thread's (#4085: `tilo-present×14 1.51%` with the present
 /// thread itself at 0.07%).
 pub const DRIVER_THREAD_NAME: &std::ffi::CStr = c"tilo-gpu-driver";
 

@@ -3,7 +3,7 @@ Description=Start the firewall and network once logins are allowed
 # The greeter waits for systemd-user-sessions.service, which upstream orders
 # After=network.target. Any NetworkManager start job queued before logins are
 # allowed therefore holds the greeter for NetworkManager's whole startup: a
-# timer at OnBootSec=0 did exactly that on every boot (TIL-767). Queue the
+# timer at OnBootSec=0 did exactly that on every boot. Queue the
 # network only once logins are allowed, without waiting for it, so the greeter
 # and the network come up side by side. Shutdown ordering is unchanged:
 # sessions still stop before the network, and NetworkManager still requires

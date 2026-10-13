@@ -173,27 +173,6 @@ impl DeepLink {
             _ => None,
         }
     }
-
-    /// The [`SearchableType`] id this deep link belongs to.
-    pub fn type_id(&self) -> &'static str {
-        match self {
-            DeepLink::Track(_) => SONG_TYPE_ID,
-            DeepLink::Album(_) => ALBUM_TYPE_ID,
-            DeepLink::Artist(_) => ARTIST_TYPE_ID,
-            DeepLink::Playlist(_) => PLAYLIST_TYPE_ID,
-        }
-    }
-
-    /// The row this entity is: what search anchors it at and opening it
-    /// shows or plays ([`crate::actions::anchor_effect`]).
-    pub fn anchor(&self) -> String {
-        match self {
-            DeepLink::Track(id) => crate::actions::track_resource_id(id),
-            DeepLink::Album(id) => crate::actions::album_resource_id(id),
-            DeepLink::Artist(id) => crate::actions::artist_resource_id(id),
-            DeepLink::Playlist(id) => crate::actions::playlist_resource_id(id),
-        }
-    }
 }
 
 /// Turns a query into [`SearchHit`]s by delegating to whichever
@@ -561,10 +540,6 @@ mod tests {
     use crate::seed;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn search_descriptors_deep_links_and_subtitles_are_stable_and_safe() {
         // Phase `descriptors_are_stable_and_complete`.
         {
@@ -623,10 +598,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn library_provider_registers_real_hits_and_fabricates_nothing() {
         // Phase `offline_provider_contributes_nothing_but_never_errors`.
         {

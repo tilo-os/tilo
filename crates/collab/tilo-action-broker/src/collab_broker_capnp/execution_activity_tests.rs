@@ -74,6 +74,7 @@ fn request() -> InvokeRequest {
         confirmation: None,
         revision: None,
         wait_ms: None,
+        appearance: None,
     }
 }
 
@@ -693,6 +694,7 @@ fn an_invocation_id_two_callers_share_continues_neither() {
                 "test:block-a",
                 "update",
                 InvocationInputs {
+                    original_request: None,
                     requested: Some(shared),
                     caller: Some(&caller),
                     execution: ExecutionScope::for_call(&caller, shared),
@@ -1005,5 +1007,55 @@ async fn shortcut_step_observes_once_per_change() {
     assert!(
         observes <= MOST_OBSERVES,
         "{observes} observations for {PROGRESS_UPDATES} progress updates"
+    );
+}
+
+#[tokio::test]
+async fn retiring_a_run_clears_only_its_presence_without_cancelling_work() {
+    let (state, caller, mut app) = fixture();
+    let other = caller.clone().in_new_execution();
+    let mut events = state.subscribe_execution_activity();
+    let _ = state
+        .action_invoke(&caller, None, None, &request())
+        .poll_ready();
+    let first = app.try_recv().unwrap();
+    let buffered = events.try_recv().unwrap();
+    assert!(buffered.execution_is_live());
+    let _ = state
+        .action_invoke(&other, None, None, &request())
+        .poll_ready();
+    let second = app.try_recv().unwrap();
+    events.try_recv().unwrap();
+    state.retire_execution(&caller);
+    let ended = events.try_recv().unwrap();
+    assert_eq!(ended.status, ExecutionStatus::Ended);
+    assert_eq!(ended.execution, caller.execution_id().unwrap());
+    assert!(!caller.execution_is_live());
+    assert!(!buffered.execution_is_live());
+    assert!(other.execution_is_live());
+    assert_eq!(state.pending_invocations.lock().unwrap().len(), 2);
+    for (delivery, visible) in [(first, false), (second, true)] {
+        state
+            .apply_invocation_update(
+                7,
+                delivery.id,
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: delivery.invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(events.try_recv().is_ok(), visible);
+    }
+    state.retire_execution(&caller);
+    assert!(events.try_recv().is_err());
+    let _ = state
+        .action_invoke(&caller, None, None, &request())
+        .poll_ready();
+    assert!(
+        events.try_recv().is_err(),
+        "a retained caller cannot revive presence"
     );
 }

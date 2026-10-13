@@ -7,8 +7,6 @@
 //! answers. A failed write leaves the live owner unchanged.
 #![allow(
     clippy::missing_panics_doc,
-    clippy::unwrap_used,
-    clippy::expect_used,
     reason = "test fixture: a failed step is the test failing"
 )]
 use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};

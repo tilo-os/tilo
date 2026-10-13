@@ -192,10 +192,7 @@ impl Widget for SegChoice {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor.set(Point::new(
-                    position.x / ctx.scale_factor,
-                    position.y / ctx.scale_factor,
-                ));
+                self.last_cursor.set(ctx.logical(position));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,

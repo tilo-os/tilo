@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Input and workspace-switch latency on reference hardware, through tilo-vm.
 
-The weekly, report-only half of the latency KPIs (TIL-587;
+The weekly, report-only half of the latency KPIs (#3920;
 docs/benchmarks/reference-hardware.md names the machines). It drives a
 device slot the way a person does, through the kernel input path
 (`tilo-vm input`, uinput into libinput), and writes one record per KPI:

@@ -60,7 +60,7 @@ compile_error!("tilo-net has backends for native targets and wasm32-unknown-unkn
 
 pub use ::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 pub use bytes::Bytes;
-pub use caps::{Availability, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 #[cfg(feature = "http")]
 pub use client::{Client, ClientBuilder, Redirects, Request, RequestBuilder, Response};
 pub use error::NetError;

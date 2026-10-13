@@ -3155,7 +3155,7 @@ impl ActorState {
             HostEvent::Voice(_) => "HostVoice",
             HostEvent::Closed => "HostClosed",
         });
-        let event = self.admit_native_governance(ws, event).await;
+        let event = self.admit_native_governance(ws, peer, event).await;
         let mapped = match event {
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => {
@@ -5030,7 +5030,7 @@ mod tests {
     }
 
     /// A dial wakes the relays; what a lone desktop does on every local
-    /// change (join its own topic, publish to it) does not (TIL-740).
+    /// change (join its own topic, publish to it) does not.
     #[test]
     fn only_a_remote_party_needs_this_device_reachable() {
         let addr = EndpointAddr::new(iroh::SecretKey::generate().public());

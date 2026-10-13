@@ -324,7 +324,6 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
     assert!(ids.contains(&"reply-left") && ids.contains(&"reply-right"));
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
     let mut replica = planned_replica(5);
@@ -558,15 +557,8 @@ fn resource_ctx(
     PdfResourceCtx {
         doc_id: "fixture-document".into(),
         title: title.into(),
-        page: 1,
-        page_count,
         page_ids,
         page_sources: (1..=page_count).collect(),
-        page_imports: vec![None; page_count],
-        page_rotations: Vec::new(),
-        author: "Ada".into(),
-        signature_date: "2026-09-06".into(),
-        created_seed: 0,
         search_query: String::new(),
         search_whole_word: false,
         search_case_sensitive: false,

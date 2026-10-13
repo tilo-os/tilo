@@ -13,6 +13,8 @@
 //! driving the screen, or an ordinary desktop) shows it; an unattended one
 //! answers [`Reply::Nobody`] and the app falls back to its unattended picker.
 
+mod contents;
+
 use std::io::{BufRead, BufReader, Read as _, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -182,6 +184,10 @@ fn serve_connection(
     else {
         return;
     };
+    let selections = Arc::new(contents::ConnectionGrants::default());
+    if selections.maintain().is_err() {
+        return;
+    }
     loop {
         let request = match read_frame(&mut reader) {
             Ok(Some(frame)) => match serde_json::from_slice::<Request>(&frame) {
@@ -203,13 +209,24 @@ fn serve_connection(
         let opens = opens.clone();
         let caller = caller.clone();
         let writer = Arc::clone(&writer);
+        let selections = Arc::clone(&selections);
         let _ = std::thread::Builder::new()
             .name("tilo-chooser-req".into())
             .spawn(move || {
-                let reply = answer(&context, &opens, &caller, request);
+                let reply = if matches!(
+                    &request,
+                    Request::PickContents { .. }
+                        | Request::ReadContents { .. }
+                        | Request::ReleaseContents { .. }
+                ) {
+                    contents::answer(&context, &caller, request, &selections)
+                } else {
+                    answer(&context, &opens, &caller, request)
+                };
                 send(&writer, &reply);
             });
     }
+    selections.close();
 }
 
 /// The caller the launcher named, if its room is one of this session's.
@@ -230,6 +247,12 @@ fn answer(
     request: Request,
 ) -> Reply {
     match request {
+        Request::PickContents { id, .. }
+        | Request::ReadContents { id, .. }
+        | Request::ReleaseContents { id, .. } => Reply::Failed {
+            id,
+            reason: t("portal-chooser-file-grant-unavailable"),
+        },
         Request::Pick {
             id,
             mode,
@@ -482,6 +505,7 @@ mod tests {
                 },
             );
         }
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         let room = workspace.room.to_string();
         let (grants, _) = GrantStoreHandle::test_with_workspace(workspace);
         let pickers = FilePickerQueue::new();
@@ -735,6 +759,363 @@ mod tests {
         app.send(&pick(6, PickMode::Open));
         assert_eq!(app.reply(), Some(Reply::Nobody { id: 6 }));
         assert!(session.pickers.is_empty());
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_picker_can_review_a_new_file_without_app_filesystem_grants() {
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let stream = UnixStream::connect(&session.socket).unwrap();
+        (&stream)
+            .write_all(
+                &launcher::services::chooser_handshake("so.tilo.notes", &session.room).unwrap(),
+            )
+            .unwrap();
+        let picker = tilo_dialogs::shell::picker(stream, None).unwrap();
+        let contents = picker.pick_contents(tilo_dialogs::portal::PickRequest::open(
+            "Review package",
+            "Review",
+        ));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let request = loop {
+            assert!(
+                contents.try_recv().is_err(),
+                "a new file must reach the owner picker, not fail on empty app grants"
+            );
+            if let Some(request) = session.pickers.drain().pop() {
+                break request;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the ordinary contents chooser was not mounted"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let scope = request
+            .scope
+            .as_ref()
+            .expect("host supplies its own chooser scope");
+        assert!(scope.roots.contains(&session.elsewhere));
+        request
+            .reply
+            .send(Some(vec![session.elsewhere.join("secret.xlsx")]))
+            .unwrap();
+        let chosen = contents.recv_timeout(Duration::from_secs(10)).unwrap();
+        let tilo_dialogs::portal::ContentsOutcome::Picked(files) = chosen else {
+            panic!("owner-selected contents must be delivered: {chosen:?}");
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].bytes, b"no");
+        assert_eq!(
+            files[0].location, None,
+            "private host paths are not replayable app capabilities"
+        );
+    }
+
+    fn published_bytes(encoded: &str) -> Vec<u8> {
+        use base64::Engine as _;
+        use std::io::Read as _;
+        let packed = base64::engine::general_purpose::STANDARD
+            .decode(encoded.lines().collect::<String>())
+            .unwrap();
+        let mut bytes = Vec::new();
+        flate2::read::GzDecoder::new(packed.as_slice())
+            .take(8 * 1024 * 1024)
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_picker_delivers_published_archive_to_normal_store_review() {
+        let snapshot = registry_types::CatalogueSnapshot::from_json(&published_bytes(
+            include_str!("../../../../../apps/store/fixtures/published/snapshot379.json.gz.b64"),
+        ))
+        .unwrap();
+        let entries = app_cli::client::classify_snapshot(
+            &snapshot,
+            "55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa2abe06",
+            1_791_214_328,
+        )
+        .unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.entry.package_id == "so.tilo.store")
+            .unwrap();
+        let offered = entry
+            .entry
+            .versions
+            .iter()
+            .find(|v| v.version.starts_with("0.1.70738+") && v.target.architecture == "x86_64")
+            .unwrap();
+        let bytes = published_bytes(include_str!(
+            "../../../../../apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64"
+        ));
+        assert_eq!(tilo_content::hash_bytes(&bytes), offered.tapp_blake3_hex);
+        let mut item = store::sources::tilo_to_store_item(
+            entry,
+            "Historical independently verified fixture",
+            &[],
+        );
+        item.versions
+            .retain(|v| v.root_hash_hex.as_deref() == Some(offered.tapp_root_hash_hex.as_str()));
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let path = session.elsewhere.join("package.tapp");
+        std::fs::write(&path, &bytes).unwrap();
+        let stream = UnixStream::connect(&session.socket).unwrap();
+        (&stream)
+            .write_all(
+                &launcher::services::chooser_handshake("so.tilo.store", &session.room).unwrap(),
+            )
+            .unwrap();
+        let picker = tilo_dialogs::shell::picker(stream, None).unwrap();
+        let chosen = picker.pick_contents(tilo_dialogs::portal::PickRequest::open(
+            "Review package",
+            "Review",
+        ));
+        shown(&session).reply.send(Some(vec![path])).unwrap();
+        let tilo_dialogs::portal::ContentsOutcome::Picked(mut files) =
+            chosen.recv_timeout(Duration::from_secs(10)).unwrap()
+        else {
+            panic!("actual Store chooser must receive selected bytes")
+        };
+        assert_eq!(files.len(), 1);
+        let selected = files.remove(0);
+        assert_eq!(selected.bytes, bytes);
+        assert!(selected.location.is_none());
+        let review = store::package_import::review(selected.bytes, &[item]).unwrap();
+        assert_eq!(
+            review.expected.package_root.to_hex(),
+            offered.tapp_root_hash_hex
+        );
+        assert_eq!(review.expected.size_bytes, offered.tapp_size_bytes);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_pending_selection_keeps_the_admitted_pregranted_root() {
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let stream = UnixStream::connect(&session.socket).unwrap();
+        (&stream)
+            .write_all(&launcher::services::chooser_handshake(APP, &session.room).unwrap())
+            .unwrap();
+        let picker = tilo_dialogs::shell::picker(stream, None).unwrap();
+        let contents =
+            picker.pick_contents(tilo_dialogs::portal::PickRequest::open("Review", "Review"));
+        let request = shown(&session);
+        assert!(
+            request
+                .scope
+                .as_ref()
+                .unwrap()
+                .roots
+                .contains(&session.inbox)
+        );
+        let retained = session.inbox.with_file_name("retained");
+        let outside = session.inbox.with_file_name("private");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("x.xlsx"), b"not the admitted root").unwrap();
+        std::fs::rename(&session.inbox, &retained).unwrap();
+        std::os::unix::fs::symlink(&outside, &session.inbox).unwrap();
+        request
+            .reply
+            .send(Some(vec![session.inbox.join("x.xlsx")]))
+            .unwrap();
+        let tilo_dialogs::portal::ContentsOutcome::Picked(files) =
+            contents.recv_timeout(Duration::from_secs(10)).unwrap()
+        else {
+            panic!("admitted directory descriptor must survive a root rename")
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files.first().unwrap().bytes,
+            b"sheet",
+            "replacement root cannot substitute outside contents"
+        );
+    }
+
+    fn content_request(id: u64) -> Request {
+        Request::PickContents {
+            id,
+            multiple: false,
+            title: "Review".into(),
+            accept_label: "Review".into(),
+            filters: Vec::new(),
+        }
+    }
+
+    fn selected_grant(
+        session: &Session,
+        app: &mut App,
+        id: u64,
+        path: PathBuf,
+    ) -> tilo_dialogs::shell::FilePortalGrant {
+        app.send(&content_request(id));
+        shown(session).reply.send(Some(vec![path])).unwrap();
+        match app.reply().unwrap() {
+            Reply::ContentsGranted { grants, .. } => {
+                assert_eq!(grants.len(), 1);
+                grants.into_iter().next().unwrap()
+            }
+            other => panic!("expected owner-selected grant: {other:?}"),
+        }
+    }
+
+    fn read_grant(
+        app: &mut App,
+        grant: &tilo_dialogs::shell::FilePortalGrant,
+        offset: u64,
+        max_bytes: u32,
+    ) -> Reply {
+        app.send(&Request::ReadContents {
+            id: 99,
+            grant: grant.clone(),
+            offset,
+            max_bytes,
+        });
+        app.reply().unwrap()
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_grants_bind_connection_identity_offset_and_exact_file() {
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let mut owner = App::launch(&session, "so.tilo.notes", &session.room);
+        let grant = selected_grant(
+            &session,
+            &mut owner,
+            1,
+            session.elsewhere.join("secret.xlsx"),
+        );
+        let mut foreign = App::launch(&session, "so.tilo.notes", &session.room);
+        assert!(matches!(
+            read_grant(&mut foreign, &grant, 0, 1),
+            Reply::Failed { .. }
+        ));
+        assert!(
+            matches!(read_grant(&mut owner, &grant, 0, 1), Reply::ContentsChunk { bytes, eof: false, .. } if bytes == b"n")
+        );
+        assert!(
+            matches!(read_grant(&mut owner, &grant, 1, 1), Reply::ContentsChunk { bytes, eof: true, .. } if bytes == b"o")
+        );
+        assert!(
+            matches!(read_grant(&mut owner, &grant, 2, 1), Reply::Failed { .. }),
+            "EOF revokes the capability"
+        );
+        for field in 0..4 {
+            let grant = selected_grant(
+                &session,
+                &mut owner,
+                2,
+                session.elsewhere.join("secret.xlsx"),
+            );
+            let mut wrong = grant.clone();
+            match field {
+                0 => wrong.request = 500,
+                1 => wrong.name = "different".into(),
+                2 => wrong.size = 600,
+                _ => wrong.token = uuid::Uuid::new_v4().to_string(),
+            }
+            assert!(matches!(
+                read_grant(&mut owner, &wrong, 0, 1),
+                Reply::Failed { .. }
+            ));
+            owner.send(&Request::ReleaseContents { id: 100, grant });
+            assert!(matches!(
+                owner.reply(),
+                Some(Reply::ContentsReleased { .. })
+            ));
+        }
+        let grant = selected_grant(
+            &session,
+            &mut owner,
+            3,
+            session.elsewhere.join("secret.xlsx"),
+        );
+        assert!(
+            matches!(read_grant(&mut owner, &grant, 1, 1), Reply::Failed { .. }),
+            "non-sequential reads revoke"
+        );
+        let grant = selected_grant(
+            &session,
+            &mut owner,
+            4,
+            session.elsewhere.join("secret.xlsx"),
+        );
+        assert!(matches!(
+            read_grant(
+                &mut owner,
+                &grant,
+                0,
+                tilo_dialogs::shell::CONTENT_CHUNK_BYTES + 1
+            ),
+            Reply::Failed { .. }
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_grants_refuse_outside_symlink_oversize_and_changed_files() {
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let mut app = App::launch(&session, "so.tilo.notes", &session.room);
+        let link = session.elsewhere.join("link.xlsx");
+        std::os::unix::fs::symlink(session.inbox.join("x.xlsx"), &link).unwrap();
+        let huge = session.elsewhere.join("huge.tapp");
+        std::fs::File::create(&huge)
+            .unwrap()
+            .set_len(tilo_dialogs::shell::MAX_CONTENT_BYTES + 1)
+            .unwrap();
+        for path in [session.inbox.join("x.xlsx"), link, huge] {
+            app.send(&content_request(1));
+            shown(&session).reply.send(Some(vec![path])).unwrap();
+            assert!(matches!(app.reply(), Some(Reply::Failed { .. })));
+        }
+        let path = session.elsewhere.join("secret.xlsx");
+        let grant = selected_grant(&session, &mut app, 2, path.clone());
+        assert!(matches!(
+            read_grant(&mut app, &grant, 0, 1),
+            Reply::ContentsChunk { .. }
+        ));
+        std::fs::write(&path, b"changed").unwrap();
+        assert!(matches!(
+            read_grant(&mut app, &grant, 1, 1),
+            Reply::Failed { .. }
+        ));
+        assert!(matches!(
+            read_grant(&mut app, &grant, 1, 1),
+            Reply::Failed { .. }
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_picker_disconnect_cancels_pending_owner_request() {
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let mut app = App::launch(&session, "so.tilo.notes", &session.room);
+        app.send(&content_request(1));
+        let request = shown(&session);
+        app.writer.shutdown(std::net::Shutdown::Both).unwrap();
+        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
+        while !request.reply.is_closed() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            request.reply.is_closed(),
+            "closed caller must revoke the pending chooser"
+        );
     }
 
     #[test]

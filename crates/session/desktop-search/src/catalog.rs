@@ -143,12 +143,6 @@ pub(super) const APPS: &[CatalogApp] = &[
         platforms: &["linux", "macos", "web"],
     },
     CatalogApp {
-        id: "so.tilo.hot-reload-demo",
-        name: "Hot reload",
-        category: "Utility",
-        platforms: &["linux", "macos"],
-    },
-    CatalogApp {
         id: "so.tilo.imager",
         name: "Disk Imager",
         category: "System",

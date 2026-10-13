@@ -1998,7 +1998,7 @@ impl ui::widget::Decorator for WindowsApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         if let Some(dialog) = self.dialog.as_mut().filter(|dialog| dialog.is_open()) {
             dialog.handle_event(event, ctx);
@@ -2281,10 +2281,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
     fn portal_pickers_hand_open_descriptors_to_the_right_target() {
         // Case `installer_portal_handoff_uses_its_open_descriptor_and_display_name`.
         {
@@ -2431,10 +2427,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario: each former test is a labelled case block with its own fixture"
-    )]
     fn destructive_and_escalating_actions_require_explicit_confirmation() {
         // Case `deleting_private_data_requires_the_dialog_confirmation`.
         {

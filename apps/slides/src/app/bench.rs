@@ -7,7 +7,7 @@
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::Invoke;
 use vello::kurbo::Point;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::SlidesApp;
@@ -151,26 +151,15 @@ pub(super) fn deck_of(slides: Vec<Slide>) -> Deck {
 }
 
 pub(super) fn cursor_ev(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 pub(super) fn left_press_ev() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
+    ui::synthetic_input::mouse_press()
 }
 
 pub(super) fn release_ev() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
+    ui::synthetic_input::mouse_release()
 }
 
 /// A key event as the window delivers it: `logical` pressed or released,
@@ -178,9 +167,5 @@ pub(super) fn release_ev() -> WindowEvent {
 pub(super) fn key_event(logical: Key, text: Option<&str>, state: ElementState) -> WindowEvent {
     let event =
         ui::synthetic_input::key_event(logical, text.map(winit::keyboard::SmolStr::new), state);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }

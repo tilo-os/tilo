@@ -16,6 +16,7 @@ pub mod cpu_present;
 pub mod devices;
 mod direct_retry;
 pub mod gestures;
+mod gl_compose;
 pub mod hotplug;
 pub mod input_config;
 mod kms_flip;
@@ -24,6 +25,7 @@ pub mod outputs;
 pub mod paint;
 #[cfg(test)]
 mod phase_export_tests;
+mod retained_layers;
 pub mod runtime;
 pub mod scale;
 pub mod scanout;
@@ -1495,6 +1497,7 @@ fn apply_scanout_command(
 #[derive(Clone, Copy)]
 struct ScanoutFrame<'a> {
     scene: &'a Scene,
+    cache: Option<&'a crate::shell::frame::FrameCache>,
     damage: Option<SceneDamage<'a>>,
     hdr_layers: &'a [HdrLayer],
     /// What the scene's floating surfaces are drawn over.
@@ -1517,6 +1520,7 @@ impl<'a> ScanoutFrame<'a> {
     fn scene_only(scene: &'a Scene) -> Self {
         Self {
             scene,
+            cache: None,
             damage: None,
             hdr_layers: &[],
             backdrop: None,
@@ -1533,6 +1537,7 @@ impl<'a> From<&'a FramePaint> for ScanoutFrame<'a> {
     fn from(frame: &'a FramePaint) -> Self {
         Self {
             scene: &frame.scene,
+            cache: frame.cache.as_ref(),
             damage: (frame.revision != 0).then_some(SceneDamage {
                 revision: frame.revision,
                 previous_revision: frame.previous_revision,
@@ -1623,7 +1628,7 @@ fn ensure_bridge(paint: &mut Option<paint::VelloDrmBridge>, target_size: (u32, u
         return true;
     }
     // The driver starts its threads as the device opens: they take the driver's name, not
-    // `tilo-present`, so their CPU is not read as the present thread's (TIL-739).
+    // `tilo-present`, so their CPU is not read as the present thread's.
     match crate::shell::present::with_driver_thread_name(|| {
         paint::VelloDrmBridge::new(target_size.0, target_size.1)
     }) {
@@ -1694,7 +1699,7 @@ fn paint_scanouts(
         .is_some_and(paint::VelloDrmBridge::take_first_frame)
     {
         // A new renderer has compiled its pipelines and drawn its first frame. The driver's
-        // compile scratch is free now, but glibc would keep it (TIL-705).
+        // compile scratch is free now, but glibc would keep it.
         crate::shell::heap_trim::request();
     }
     if let Some(bridge) = paint.as_mut() {
@@ -2559,7 +2564,9 @@ fn paint_scanouts_cpu(
         previous_revision: damage.and_then(|damage| damage.previous_revision),
         regions: damage.and_then(|damage| damage.regions),
     };
-    renderer.update(cpu_frame, target_size);
+    if frame.cache.is_none() {
+        renderer.update(cpu_frame, target_size);
+    }
 
     if single
         && let Some(entry) = scanouts.first_mut()
@@ -2578,9 +2585,39 @@ fn paint_scanouts_cpu(
                 renderer.invalidate_screen();
             }
         }
+        if let Some(cache) = frame.cache
+            && entry.scanout.present_retained_layers(
+                cache,
+                pointer,
+                renderer,
+                cpu_frame.revision,
+                cpu_frame.previous_revision,
+            )
+        {
+            renderer.finish_frame();
+            return;
+        }
+        if !entry.scanout.leave_retained_layers() {
+            return;
+        }
+        if frame.cache.is_some() {
+            let wait = renderer.stats();
+            renderer.update(cpu_frame, target_size);
+            renderer.record_flip_wait(wait.flip_wait, wait.previous_flip_latency);
+        }
         entry.scanout.present_cpu(renderer, Some(pointer));
         renderer.finish_frame();
         return;
+    }
+
+    if scanouts
+        .iter_mut()
+        .any(|entry| !entry.scanout.leave_retained_layers())
+    {
+        return;
+    }
+    if frame.cache.is_some() {
+        renderer.update(cpu_frame, target_size);
     }
 
     drain_page_flip_completions(scanouts);
@@ -2723,6 +2760,7 @@ fn render_combined_readback(
         hdr_layers,
         backdrop: _,
         scanout: _,
+        cache: _,
         layers: _,
         // The CPU canvas repaints where copies land.
         copies: _,
@@ -3335,6 +3373,18 @@ impl Backend for DrmBackend {
 
     fn pixel_aligned_strip_pan(&self) -> bool {
         cpu_present::cpu_render_reason().is_some()
+    }
+
+    fn retained_layer_width(&self) -> Option<u32> {
+        (cpu_present::cpu_render_reason().is_some()
+            && !std::env::var("TILO_DRM_GL_COMPOSE").is_ok_and(|value| value == "0")
+            && self.outputs.len() == 1
+            && self.outputs.first().is_some_and(|output| {
+                output.position == (0, 0)
+                    && output.scale.to_bits() == 1.0_f32.to_bits()
+                    && output.transform == settings_store::hardware::OutputTransform::Normal
+            }))
+        .then_some(retained_layers::MAX_LAYER_WIDTH)
     }
 
     /// The GPU presenter composites a lone unmagnified output's strip pans

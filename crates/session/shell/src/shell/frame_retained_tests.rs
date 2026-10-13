@@ -100,13 +100,10 @@ fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::Sc
     let mut document = automerge::AutoCommit::new();
     let mut focus = None;
     let _ = frame.dispatch_event(
-        &winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(
-                f64::from(NATIVE_WIDTH) - 50.0,
-                f64::from(NATIVE_HEIGHT) - 50.0,
-            ),
-        },
+        &ui::synthetic_input::cursor_moved(
+            f64::from(NATIVE_WIDTH) - 50.0,
+            f64::from(NATIVE_HEIGHT) - 50.0,
+        ),
         &winit::event::Modifiers::default(),
         &mut ui::widget::Edits::lend(&mut document),
         &automerge::ROOT,
@@ -444,7 +441,7 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(fixture.viewport(), (3840.0, 2160.0));
     assert_eq!(
         fixture.host().fixture_provider_ids(),
-        vec!["actions", "records"]
+        vec!["actions", "records", "file-picker"]
     );
 
     let chrome = fixture.chrome();
@@ -1956,6 +1953,45 @@ fn assert_nothing_lost(
     let output = size.0 as usize * size.1 as usize;
     let edge_noise = lost_max <= OFFSET_STEPS && lost.len() <= output / 100;
     if !edge_noise {
+        if let Some(&(x, y, step)) = lost.first() {
+            let at = (y * size.0 as usize + x) * 4;
+            eprintln!(
+                "strip layers {label}: first differing pixel ({x}, {y}) step {step}: \
+                 retained {:?}, dense {:?}",
+                &shown[at..at + 4],
+                &unlayered[at..at + 4]
+            );
+        }
+        // Check the same two scene encodings with an independent rasterizer.
+        // A CPU difference points to the producer's composition; agreement
+        // confines the discrepancy to how the GPU rasterizes those scenes.
+        let cpu_layered = render_cpu(&painted.scene, size);
+        let cpu_dense = render_cpu(&screen, size);
+        let cpu_apart = pixels_apart(&cpu_layered, &cpu_dense, size.0);
+        eprintln!(
+            "strip layers {label}: independent CPU raster has {} different pixels, \
+             first {:?}, max channel step {}",
+            cpu_apart.len(),
+            cpu_apart.first(),
+            cpu_apart
+                .iter()
+                .map(|&(_, _, step)| step)
+                .max()
+                .unwrap_or(0)
+        );
+        // The dense draw can itself advance hosted widget presentation. A
+        // second retained draw distinguishes that state change from a stable
+        // discrepancy in the two scene compositions; this runs only after
+        // the strict pixel oracle has already found a structural mismatch.
+        let after = frame.paint_with_damage();
+        let after_pixels = render_whole(dense, &after.scene, after.revision, label);
+        eprintln!(
+            "strip layers {label}: second retained draw differs from dense \
+             at {} pixels and from first retained draw at {} pixels; cache {:?}",
+            pixels_apart(&after_pixels, &unlayered, size.0).len(),
+            pixels_apart(&after_pixels, shown, size.0).len(),
+            after.cache.as_ref().map(|cache| &cache.strips)
+        );
         eprintln!(
             "strip layers {label}: strips {:?}, wheel {:?}, pans {:?}\n{}",
             painted.cache.as_ref().map(|cache| &cache.strips),
@@ -2001,6 +2037,18 @@ fn render_strips_alone(
 /// rasterises only what it uncovered.
 #[cfg(target_os = "linux")]
 fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
+    // Notes' real save-status bubbles linger for 1.9 seconds after the
+    // fixture acknowledges startup writes. A GPU readback can cross that
+    // deadline between the retained and dense draws, comparing two distinct
+    // widget states. Pin the toolkit clock for this production-path oracle;
+    // the explicitly driven strip pans still advance on every frame.
+    ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        assert_pan_composites_like_full_renders_at_fixed_time(desktop);
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn assert_pan_composites_like_full_renders_at_fixed_time(desktop: PanDesktop) {
     let size = desktop.panel;
     let mut clock = tilo_test_env::ScopedEnv::new();
     let _ambient = DenyAmbientStarts::new();
@@ -2806,7 +2854,7 @@ fn assert_repaints_under_one_percent(damage: &[FineDamageRect], label: &str) {
         .sum();
     let share = |value: u64| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
     eprintln!(
-        "TIL-579 raster pixels ({label}): {pixels} of {output} ({:.3}%); a dense frame is {output}",
+        "#3892 raster pixels ({label}): {pixels} of {output} ({:.3}%); a dense frame is {output}",
         share(pixels) * 100.0 / share(output)
     );
     assert!(
@@ -2993,10 +3041,7 @@ fn hovering_a_tab_repaints_that_tab_not_the_output() {
     let mut document = automerge::AutoCommit::new();
     let mut focus = None;
     let _ = frame.dispatch_event(
-        &winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
-        },
+        &ui::synthetic_input::cursor_moved(pill.center().x, pill.center().y),
         &winit::event::Modifiers::default(),
         &mut ui::widget::Edits::lend(&mut document),
         &automerge::ROOT,
@@ -3016,7 +3061,7 @@ fn hovering_a_tab_repaints_that_tab_not_the_output() {
     paint_retained_and_compare(&mut retained, &mut dense, &hovered, "tab hovered");
 }
 
-// TIL-744: overlays, in-process app widgets and tooltips repaint what they
+// #4166: overlays, in-process app widgets and tooltips repaint what they
 // change, not the output or the tile.
 
 /// A theme by name.
@@ -3055,13 +3100,7 @@ fn dispatch(frame: &mut FrameBuilder, event: &WindowEvent) {
 }
 
 fn point_at(frame: &mut FrameBuilder, at: Point) {
-    dispatch(
-        frame,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-        },
-    );
+    dispatch(frame, &ui::synthetic_input::cursor_moved(at.x, at.y));
 }
 
 fn press(frame: &mut FrameBuilder, button: winit::event::MouseButton) {
@@ -3069,14 +3108,7 @@ fn press(frame: &mut FrameBuilder, button: winit::event::MouseButton) {
         winit::event::ElementState::Pressed,
         winit::event::ElementState::Released,
     ] {
-        dispatch(
-            frame,
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button,
-            },
-        );
+        dispatch(frame, &ui::synthetic_input::mouse_input(state, button));
     }
 }
 
@@ -3227,7 +3259,7 @@ fn assert_change_repaints_under(
     let output = u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT);
     let pixels = raster_pixels(&changed);
     eprintln!(
-        "TIL-744 raster pixels ({label}): {pixels} of {output} ({}); a dense frame is {output}",
+        "#4166 raster pixels ({label}): {pixels} of {output} ({}); a dense frame is {output}",
         if changed.damage_regions.is_some() {
             "sparse"
         } else {

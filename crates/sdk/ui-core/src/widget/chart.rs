@@ -16,7 +16,7 @@
 
 use crate::num::f64_of_usize;
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Brush, Color, Fill, Gradient};
@@ -914,19 +914,14 @@ impl Widget for Sparkline {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::length(self.width),
-                height: Dimension::length(self.height),
-            },
+            size: Size::from_lengths(self.width, self.height),
             flex_shrink: 0.0,
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -949,10 +944,6 @@ impl Widget for Sparkline {
 
     fn name(&self) -> &'static str {
         "Sparkline"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_layout_dirty(&self) -> bool {

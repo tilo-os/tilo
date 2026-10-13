@@ -30,7 +30,7 @@ use taffy::{Dimension, LengthPercentage, NodeId, Size, Style, TaffyTree};
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
+use vello::peniko::{Color, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -652,13 +652,7 @@ impl FileView {
         if let Some(img) = ctx.imgs.borrow().get(&key) {
             return img.clone();
         }
-        let img = PenikoImage {
-            data: Blob::new(Arc::new(rgba.rgba.clone())),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: rgba.width,
-            height: rgba.height,
-        };
+        let img = ui::raster::rgba8(rgba.rgba.clone(), rgba.width, rgba.height);
         ctx.imgs.borrow_mut().insert(key, img.clone());
         img
     }
@@ -1046,7 +1040,7 @@ impl Widget for FileView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 self.last_cursor = pt;
                 if self.mode == ViewMode::List {
                     self.list.handle_event(event, ctx);
@@ -1205,10 +1199,7 @@ impl Widget for FileView {
                     .with_description(accessible_entry_description(entry))
                     .with_position(index + 1, self.entries.len())
                     .with_bounds(self.cell_rect(index))
-                    .with_state(AccessState {
-                        selected: self.selection.is_selected(index),
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().selected(self.selection.is_selected(index)))
             })
             .collect();
         let mut node = AccessNode::new(Role::List)
@@ -1220,11 +1211,7 @@ impl Widget for FileView {
                     .map_or(self.rect, |viewport| self.rect.intersect(viewport)),
             )
             .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: true,
-                focused: self.is_focused,
-                ..Default::default()
-            })
+            .with_state(AccessState::new().focusable(true).focused(self.is_focused))
             .with_children(children);
         if let Some(i) = primary
             && i < self.entries.len()
@@ -1262,10 +1249,7 @@ impl FileView {
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
                 left: LengthPercentage::length(0.0),
                 right: LengthPercentage::length(0.0),
@@ -2681,11 +2665,10 @@ mod tests {
         }
 
         fn press(&mut self, button: MouseButton) {
-            self.send(&WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
+            self.send(&ui::synthetic_input::mouse_input(
+                ElementState::Pressed,
                 button,
-            });
+            ));
         }
 
         /// The centre of list row `index`.
@@ -2784,11 +2767,7 @@ mod tests {
         let slot = laid.view.list.clone();
         let centre = laid.view.list.rect().center();
         laid.move_to(centre);
-        laid.send(&WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -5.0),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        laid.send(&ui::synthetic_input::mouse_wheel(0.0, -5.0));
         let scrolled = slot.scroll_y();
         assert!(scrolled > 0.0, "a wheel-down scrolls the list");
         assert!(slot.max_scroll_y() >= scrolled);

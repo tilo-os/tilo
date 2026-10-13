@@ -28,10 +28,6 @@ backups-verified-files = { $count ->
     [one] Checked one file, { $size }
    *[other] Checked { $files } files, { $size }
 }
-backups-backed-up-files = { $count ->
-    [one] Backed up one file, { $size }
-   *[other] Backed up { $files } files, { $size }
-}
 backups-progress-files = { $count ->
     [one] One file copied, { $size }
    *[other] { $files } files copied, { $size }

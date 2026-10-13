@@ -19,6 +19,7 @@ struct Pending {
     open: bool,
     started: ui::time::Instant,
     reply: EffectReply,
+    source: ui::framework::Live<crate::resource::Chat>,
 }
 
 impl Navigation {
@@ -32,6 +33,7 @@ impl ChatApp {
         &mut self,
         effect: &ChatEffect,
         reply: EffectReply,
+        source: ui::framework::Live<crate::resource::Chat>,
     ) -> Result<Effected, String> {
         let (message, open) = match effect {
             ChatEffect::CopyResourceLink { message } => (message, false),
@@ -41,11 +43,13 @@ impl ChatApp {
         if self.resource_navigation.pending.is_some() {
             return Err("A resource lookup is already running".into());
         }
-        let row = self.message(message).ok_or("Message no longer exists")?;
+        let current = source.get();
+        let row = current
+            .message_row(message)
+            .ok_or("Message no longer exists")?;
         let reference = row.reference.clone().ok_or("Message has no resource")?;
         let provider = row
             .source_provider
-            .clone()
             .ok_or("This older reference has no source record provider")?;
         // Browser peers carry this through JSON numbers; keep it exactly representable.
         let correlation = uuid::Uuid::new_v4().as_u64_pair().0 & ((1_u64 << 53) - 1);
@@ -72,6 +76,7 @@ impl ChatApp {
             open,
             started: ui::time::now(),
             reply,
+            source,
         });
         Ok(Effected::Pending)
     }
@@ -115,10 +120,14 @@ impl ChatApp {
         let Some(pending) = self.resource_navigation.pending.take() else {
             return;
         };
-        let current = self.message(&pending.message).is_some_and(|row| {
-            row.reference.as_ref() == Some(&pending.reference)
-                && row.source_provider.as_deref() == Some(pending.provider.as_str())
-        });
+        let current = pending
+            .source
+            .get()
+            .message_row(&pending.message)
+            .is_some_and(|row| {
+                row.reference.as_ref() == Some(&pending.reference)
+                    && row.source_provider.as_deref() == Some(pending.provider.as_str())
+            });
         let link = if !current
             || pending.reply.is_cancelled()
             || ui::time::now().saturating_duration_since(pending.started)
@@ -189,28 +198,7 @@ fn navigation_link(
     {
         return Err("Resource browser entry requires an HTTPS page without credentials".into());
     }
-    let action = page
-        .rows
-        .iter()
-        .filter(|row| {
-            row.provider == provider
-                && row.resource.id == reference.id
-                && row.resource.kind == reference.kind
-        })
-        .filter_map(|row| row.action.as_ref())
-        .filter(|action| {
-            action.kind == tilo_actions::OperationKind::View
-                && action.address.resource == reference.id
-                && action.resource_kind == reference.kind
-        })
-        .filter(|action| {
-            action.view.as_ref().is_some_and(|view| {
-                view.open_action == action.address.action
-                    && (reference.span.is_none() || view.range.is_some())
-            })
-        })
-        .max_by_key(|action| action.view.as_ref().is_some_and(|view| view.primary))
-        .ok_or("No permitted declared resource view")?;
+    let action = declared_view(page, reference, provider)?;
     let mut resource = serde_json::Map::from_iter([
         ("kind".into(), serde_json::json!(reference.kind)),
         ("id".into(), serde_json::json!(reference.id)),
@@ -243,6 +231,53 @@ fn navigation_link(
     }
     destination.set_fragment(Some(&format!("resource={encoded}")));
     Ok(destination.into())
+}
+
+fn declared_view<'a>(
+    page: &'a CataloguePage,
+    reference: &tilo_reference::ResourceRef,
+    provider: &str,
+) -> Result<&'a tilo_actions::door::ActionDescriptor, String> {
+    let source_app = provider
+        .strip_prefix("record:")
+        .and_then(|value| value.split_once(':'))
+        .map(|(app, _)| app)
+        .ok_or("Invalid resource provider")?;
+    let mut actions: Vec<_> = page
+        .rows
+        .iter()
+        .filter(|row| {
+            row.provider == provider
+                && row.app_id == source_app
+                && row.resource.id == reference.id
+                && row.resource.kind == reference.kind
+        })
+        .filter_map(|row| row.action.as_ref())
+        .filter(|action| {
+            action.kind == tilo_actions::OperationKind::View
+                && action.address.resource == reference.id
+                && action.resource_kind == reference.kind
+        })
+        .filter(|action| {
+            action.view.as_ref().is_some_and(|view| {
+                view.open_action == action.address.action
+                    && (reference.span.is_none() || view.range.is_some())
+            })
+        })
+        .collect();
+    if actions
+        .iter()
+        .any(|action| action.view.as_ref().is_some_and(|view| view.primary))
+    {
+        actions.retain(|action| action.view.as_ref().is_some_and(|view| view.primary));
+    }
+    let action = *actions
+        .first()
+        .ok_or("No permitted declared resource view")?;
+    if actions.iter().any(|other| *other != action) {
+        return Err("Resource host supplied ambiguous declared views".into());
+    }
+    Ok(action)
 }
 
 #[cfg(test)]
@@ -469,6 +504,157 @@ mod tests {
         app.settle();
         assert_eq!(ui::clipboard_paste().as_deref(), Some("sentinel"));
         assert!(!app.surface_mut::<ChatApp>().resource_navigation.pending());
+    }
+
+    fn create_other_conversation(
+        app: &mut ui::framework::testing::TestApp<crate::resource::ChatShell>,
+    ) -> String {
+        let workspace = app
+            .state()
+            .channel_rows()
+            .into_iter()
+            .find(|channel| channel.id == "c_general")
+            .unwrap()
+            .workspace;
+        app.call_on(
+            &crate::testing::item("workspaces", &workspace),
+            "create-channel",
+            serde_json::json!({"name":"Reference other conversation"}),
+        )
+        .unwrap();
+        app.settle();
+        let other = app
+            .state()
+            .channel_rows()
+            .into_iter()
+            .find(|channel| channel.name == "Reference other conversation")
+            .unwrap()
+            .id;
+        app.effect_on(
+            &crate::testing::item("channels", "c_general"),
+            &ChatEffect::OpenChannel {
+                channel: "c_general".into(),
+            },
+        )
+        .unwrap();
+        app.settle();
+        other
+    }
+
+    #[test]
+    fn resource_lookup_retains_the_original_message_across_native_channel_navigation() {
+        use crate::resource::ChatShell;
+        use ui::framework::testing::TestApp;
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        let services = ui::host::HostServices::null()
+            .with_clipboard(std::sync::Arc::new(Clipboard::default()));
+        let _scope = ui::host::enter(&services);
+        let other = create_other_conversation(&mut app);
+        let reference = serde_json::json!({"kind":"chat.message", "id":"chat.message:message", "label":"Fixture", "span":{"start":6,"end":7,"unit":"Chars"}});
+        app.call_on(&crate::testing::item("channels", "c_general"), "share-resource", serde_json::json!({
+            "reference":reference, "source_provider":"record:so.tilo.chat:discussion", "text":"Original navigation source"
+        })).unwrap();
+        app.settle();
+        let id = app
+            .state()
+            .message_rows("c_general")
+            .into_iter()
+            .find(|message| message.text == "Original navigation source")
+            .unwrap()
+            .id;
+        let target = crate::testing::item("messages", &id);
+        let effect = ChatEffect::CopyResourceLink {
+            message: id.clone(),
+        };
+        app.start_effect_on(&target, &effect).unwrap();
+        let correlation = app
+            .surface_mut::<ChatApp>()
+            .resource_navigation
+            .pending
+            .as_ref()
+            .unwrap()
+            .correlation;
+        app.effect_on(
+            &crate::testing::item("channels", &other),
+            &ChatEffect::OpenChannel {
+                channel: other.clone(),
+            },
+        )
+        .unwrap();
+        app.settle();
+        assert_eq!(app.surface_mut::<ChatApp>().active_channel, other);
+        assert!(
+            app.surface_mut::<ChatApp>().message(&id).is_none(),
+            "the original message is outside the visible timeline"
+        );
+        assert!(
+            app.state().message_row(&id).is_some(),
+            "the canonical source still exists"
+        );
+        app.surface_mut::<ChatApp>().complete_resource_navigation(
+            &RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result: Ok(page()),
+            },
+        );
+        app.settle();
+        assert!(
+            ui::clipboard_paste()
+                .unwrap()
+                .starts_with("https://cloud.example/qos-runtime/resource.html#resource=")
+        );
+
+        // A later lookup can address the same source while it stays offscreen.
+        ui::clipboard_copy("sentinel");
+        app.start_effect_on(&target, &effect).unwrap();
+        let correlation = app
+            .surface_mut::<ChatApp>()
+            .resource_navigation
+            .pending
+            .as_ref()
+            .unwrap()
+            .correlation;
+        app.call_confirmed_on(&target, "delete-message", serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        assert!(app.state().message_row(&id).is_none());
+        app.surface_mut::<ChatApp>().complete_resource_navigation(
+            &RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result: Ok(page()),
+            },
+        );
+        app.settle();
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("sentinel"));
+        assert!(
+            app.effect_progress()
+                .iter()
+                .any(|update| matches!(update, tilo_actions::InvocationUpdate::Failed { .. }))
+        );
+    }
+
+    #[test]
+    fn resource_view_lookup_refuses_foreign_apps_and_ambiguous_primary_views() {
+        let reference =
+            tilo_reference::ResourceRef::whole("chat.message", "chat.message:message", "Fixture");
+        let mut foreign = page();
+        foreign.rows[0].app_id = "so.tilo.other".into();
+        assert!(navigation_link(&foreign, &reference, "record:so.tilo.chat:discussion").is_err());
+
+        let mut ambiguous = page();
+        let mut second = ambiguous.rows[0].clone();
+        let action = second.action.as_mut().unwrap();
+        action.address.action = "another-view".into();
+        action.view.as_mut().unwrap().open_action = "another-view".into();
+        ambiguous.rows.push(second);
+        assert!(navigation_link(&ambiguous, &reference, "record:so.tilo.chat:discussion").is_err());
+
+        let mut identical = page();
+        identical.rows.push(identical.rows[0].clone());
+        assert_eq!(
+            navigation_link(&identical, &reference, "record:so.tilo.chat:discussion").unwrap(),
+            navigation_link(&page(), &reference, "record:so.tilo.chat:discussion").unwrap()
+        );
     }
 
     #[test]

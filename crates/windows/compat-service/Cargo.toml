@@ -20,6 +20,7 @@ launcher = { path = "../../packaging/launcher" }
 wire-frame = { path = "../../system/wire-frame" }
 hex.workspace = true
 libc.workspace = true
+rustix = { workspace = true, features = ["fs", "net", "process", "std"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

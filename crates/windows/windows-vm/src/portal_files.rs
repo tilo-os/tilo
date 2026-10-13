@@ -478,10 +478,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn portal_projections_follow_their_lease_mode_and_never_replaced_links() {
         // Phase `read_only_portal_file_is_projected_under_only_its_lease_and_revoked`.
         {

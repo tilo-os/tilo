@@ -8,12 +8,7 @@
 //! allow work?".
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -70,10 +65,6 @@ fn ws_of(tree: &WorkspaceTree, id: WorkspaceId) -> &Workspace {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn only_the_owner_administers_a_room() {
     // Phase `only_the_owner_may_administer_the_room`.
     {

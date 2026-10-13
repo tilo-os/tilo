@@ -1,5 +1,4 @@
 counter = Wert: { $count }
-btn_1 = Klick Mich
 tab-modified = Nicht gespeicherte Änderungen
 
 standalone-history-title = Verlauf
@@ -310,22 +309,7 @@ permission-prompt-always = Immer erlauben
 permission-prompt-deny = Ablehnen
 permission-prompt-requested = { $capability } – angefragt von { $app }
 
-# Relative Zeitangaben in Verlaufs- und Aktivitätszeilen.
-relative-time-just-now = gerade eben
-relative-time-minutes = { $count ->
-        [one] vor { $count } Min.
-       *[other] vor { $count } Min.
-    }
-relative-time-hours = { $count ->
-        [one] vor { $count } Std.
-       *[other] vor { $count } Std.
-    }
-relative-time-days = { $count ->
-        [one] vor { $count } Tag
-       *[other] vor { $count } Tagen
-    }
-
-# Grobe relative Zeitangaben („vor 3 Tagen“) in Listen und Karten.
+# Grobe relative Zeitangaben („vor 3 Tagen“) in Verlaufszeilen, Listen und Karten.
 relative-ago-just-now = gerade eben
 relative-ago-minutes = vor { $count } Min.
 relative-ago-hours = vor { $count } Std.
@@ -352,6 +336,7 @@ history-run-step-separator = {", "}
 participant-agent = { $name } · Agent
 participant-shortcut = { $name } · Kurzbefehl
 participant-app = { $name } · App
+participant-bot = { $name } · Bot
 # Ein Agent, ein Kurzbefehl oder eine App, die für eine Person handelt.
 participant-acting-for = { $name }, für { $person }
 interaction-agent = Agent
@@ -405,8 +390,9 @@ palette-no-results = Keine Ergebnisse für „{ $query }“
 palette-no-results-hint = Weniger Wörter versuchen oder den Bereich erweitern
 
 # Kalender-Abschnitte in der Arbeitsbereich-Aktivität.
-history-day-today = Heute
-history-day-yesterday = Gestern
+day-yesterday = Gestern
+day-today = Heute
+day-tomorrow = Morgen
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
 
@@ -491,3 +477,9 @@ search-apps-group-media = Medien
 search-apps-group-system-tools = Systemwerkzeuge
 search-apps-group-more-apps = Weitere Apps
 search-apps-group-developer-tools = Entwicklerwerkzeuge
+
+author-bot-chip = BOT
+author-bot-details = { $bot } (Bot, hinzugefügt von { $installer })
+author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $installer })
+author-bot-linked = Mit { $person } auf Tilo verknüpft
+author-persona-suffix = { $name } · { $service }

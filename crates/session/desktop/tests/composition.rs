@@ -1,10 +1,5 @@
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
@@ -226,9 +221,6 @@ impl ui::widget::AppWidget for OverlayApp {
     }
     fn app_icon(&self) -> ui::widget::IconDescriptor {
         ui::widget::IconDescriptor::Named("overlay".into())
-    }
-    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-        None
     }
 }
 struct Overlays(std::collections::HashMap<u64, std::rc::Rc<std::cell::Cell<usize>>>);

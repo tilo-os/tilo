@@ -288,9 +288,7 @@ pub fn index_file(
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .ok_or_else(|| tr("photos-import-no-name"))?;
-    let open = OpenImage::from_path(&path.to_string_lossy(), decoded.w, decoded.h)
-        .with_content(content)
-        .portable();
+    let open = OpenImage::new(&path.to_string_lossy(), decoded.w, decoded.h, content);
     let mut photo = LibraryPhoto::from_image(open);
     name.clone_into(&mut photo.image.name);
     photo.captured_at = exif
@@ -491,7 +489,7 @@ mod tests {
             assert_eq!(report.discovered, 1);
             assert_eq!(report.photos.len(), 1);
             assert!(report.limit_reached);
-            assert!(report.photos[0].photo.image.content.is_some());
+            assert!(!report.photos[0].photo.image.content.is_empty());
             assert!(progress.last().is_some_and(|value| value.current.is_none()));
         }
 
@@ -582,12 +580,7 @@ mod tests {
                 (indexed.photo.image.width, indexed.photo.image.height),
                 (2, 3)
             );
-            let hash = indexed
-                .photo
-                .image
-                .content
-                .as_deref()
-                .expect("portable content address");
+            let hash = &indexed.photo.image.content;
             assert_eq!(store.read(hash).as_deref(), Some(source.as_slice()));
         }
     }
