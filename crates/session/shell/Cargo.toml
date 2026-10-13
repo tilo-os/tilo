@@ -225,6 +225,7 @@ libc.workspace = true
 base64.workspace = true
 tilo-projector = { path = "../../system/projector" }
 zbus = { workspace = true, features = ["tokio", "p2p", "blocking-api"] }
+ashpd = { workspace = true, features = ["input_capture"] }
 
 tilo-bluez = { path = "../../system/tilo-bluez" }
 # The status bar follows NetworkManager's signals instead of `nmcli monitor`.
@@ -457,7 +458,7 @@ gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 # EIS is the protocol transport required by InputCapture.  The calloop
 # feature lets its socket state live beside the compositor event loop.
-reis = { version = "0.7.1", features = ["calloop"] }
+reis = { version = "0.7.1", features = ["calloop", "tokio"] }
 # Session-lock unlock reuses the greeter's greetd/PAM conversation
 # (`greetd_client::verify_password` — verify credentials without starting a
 # session) so login and unlock share one non-leaky auth path.

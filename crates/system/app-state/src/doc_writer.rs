@@ -87,6 +87,7 @@ pub struct DocOwner {
     identity: Rc<()>,
     writer_claimed: Cell<bool>,
     primary: bool,
+    append_only: bool,
     _lease: Lease,
 }
 
@@ -114,7 +115,7 @@ impl DocOwner {
     /// failure reading the stored identity.
     pub fn acquire(store: Rc<dyn DurableStore>, key: StorageKey) -> Result<Self, StoreError> {
         let lease = store.lease(&key)?;
-        Self::with_lease(store, key, lease, true)
+        Self::with_lease(store, key, lease, true, false)
     }
 
     /// Join the key's shared writers, for documents several processes may
@@ -130,7 +131,32 @@ impl DocOwner {
         key: StorageKey,
     ) -> Result<Self, StoreError> {
         let shared = store.lease_shared(&key)?;
-        Self::with_lease(store, key, shared.lease, shared.primary)
+        Self::with_lease(store, key, shared.lease, shared.primary, false)
+    }
+
+    /// Join a committed-document cache without replacing sibling history.
+    /// Full snapshots append; loading refuses incomplete journals until an
+    /// exclusive maintenance owner can repair them.
+    ///
+    /// # Errors
+    /// Refuses an exclusive owner or unavailable storage.
+    pub fn acquire_shared_cache(
+        store: Rc<dyn DurableStore>,
+        key: StorageKey,
+    ) -> Result<Self, StoreError> {
+        let shared = store.lease_shared(&key)?;
+        Self::with_lease(store, key, shared.lease, shared.primary, true)
+    }
+
+    pub(crate) fn write_operation(&self, op: WriteOp) -> WriteOp {
+        match op {
+            WriteOp::Replace(bytes) if self.append_only => WriteOp::Append(bytes),
+            op => op,
+        }
+    }
+
+    pub(crate) fn is_append_only(&self) -> bool {
+        self.append_only
     }
 
     fn with_lease(
@@ -138,6 +164,7 @@ impl DocOwner {
         key: StorageKey,
         lease: Lease,
         primary: bool,
+        append_only: bool,
     ) -> Result<Self, StoreError> {
         let stored = if primary {
             store
@@ -163,6 +190,7 @@ impl DocOwner {
             identity: Rc::new(()),
             writer_claimed: Cell::new(false),
             primary,
+            append_only,
             _lease: lease,
         })
     }
@@ -275,7 +303,7 @@ impl DocOwner {
             .and_then(|hint| load_hint::hashes_for(&hint, &stored.bytes));
         let (doc, repair) = decode_canonical_with(
             &stored.bytes,
-            recover_partial,
+            recover_partial && !self.append_only,
             &self.label,
             known.as_deref(),
         )?;
@@ -526,7 +554,13 @@ impl DocWriter {
         if heads == self.sent {
             return Ok(());
         }
-        if self.base == 0 || self.appended >= self.base.max(MIN_COMPACT_BYTES) {
+        if self.base == 0
+            || (!self
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.is_append_only())
+                && self.appended >= self.base.max(MIN_COMPACT_BYTES))
+        {
             self.send_full(doc, heads)
         } else {
             let bytes = doc.save_after(&self.sent);
@@ -564,7 +598,8 @@ impl DocWriter {
     }
 
     /// Submit the full current document regardless of what was submitted
-    /// before — the one write that clears an outstanding failure.
+    /// before — the one write that clears an outstanding failure. An
+    /// append-only cache cannot replace or repair a failed journal.
     pub fn request_checkpoint(&mut self, doc: &mut AutoCommit) {
         self.settle();
         if self.owner.is_none() {
@@ -603,6 +638,7 @@ impl DocWriter {
         // for one file.
         if let (Some(owner), Some(hint)) = (&self.owner, hint)
             && owner.is_primary()
+            && !owner.is_append_only()
             && let Err(error) = owner.store.write_hint(&owner.key, &hint)
         {
             // Only the next open's speed depends on it.
@@ -618,6 +654,7 @@ impl DocWriter {
         let Some(owner) = &self.owner else {
             return Ok(());
         };
+        let op = owner.write_operation(op);
         let writer = !owner.actor_stored.get();
         let replace = op.is_replace();
         let revision = owner
@@ -1325,5 +1362,133 @@ mod tests {
             )
             .unwrap();
         assert_eq!(loaded_hashes(&owner), appended);
+    }
+    #[test]
+    fn shared_cache_checkpoints_preserve_queued_sibling_history_and_actor() {
+        for subject in Subject::all() {
+            let key = StorageKey::record("so.tilo.test", "room", "shared-cache");
+            let primary = Rc::new(
+                DocOwner::acquire_shared_cache(Rc::clone(&subject.store), key.clone()).unwrap(),
+            );
+            let mut first = primary.new_document().unwrap();
+            let actor = primary.actor().clone();
+            first.put(ROOT, "original", true).unwrap();
+            let mut writer = DocWriter::start_new(&primary, &mut first).unwrap();
+            subject.flush(&writer).unwrap();
+            let secondary = Rc::new(
+                DocOwner::acquire_shared_cache(Rc::clone(&subject.store), key.clone()).unwrap(),
+            );
+            assert_ne!(primary.actor(), secondary.actor());
+            let mut second = secondary
+                .accept(secondary.load_complete().unwrap().unwrap())
+                .unwrap();
+            let mut other = DocWriter::try_start(&secondary).unwrap();
+            first.put(ROOT, "from_primary", true).unwrap();
+            writer.request(&mut first);
+            second.put(ROOT, "from_secondary", true).unwrap();
+            other.request_checkpoint(&mut second);
+            subject.flush(&writer).unwrap();
+            subject.flush(&other).unwrap();
+            drop((writer, other, primary, secondary));
+            let reopened = DocOwner::acquire_shared_cache(Rc::clone(&subject.store), key).unwrap();
+            assert_eq!(reopened.actor(), &actor);
+            let read = reopened
+                .accept(reopened.load_complete().unwrap().unwrap())
+                .unwrap();
+            for field in ["original", "from_primary", "from_secondary"] {
+                let value = read.get(ROOT, field).unwrap();
+                assert!(
+                    value.is_some(),
+                    "{} lost sibling field {field}",
+                    subject.name
+                );
+                assert_eq!(
+                    value.unwrap().0.as_bool(),
+                    Some(true),
+                    "{}: {field}",
+                    subject.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shared_cache_refuses_exclusive_owner_and_full_store_saves_preserve_siblings() {
+        for subject in Subject::all() {
+            let key = StorageKey::record("so.tilo.test", "room", "shared-store");
+            let exclusive = DocOwner::acquire(Rc::clone(&subject.store), key.clone()).unwrap();
+            assert!(matches!(
+                DocOwner::acquire_shared_cache(Rc::clone(&subject.store), key.clone()),
+                Err(StoreError::WriterBusy { .. })
+            ));
+            drop(exclusive);
+            let mut first =
+                crate::DocStore::shared_cache(Rc::clone(&subject.store), key.clone()).unwrap();
+            let mut doc = first.new_document();
+            doc.put(ROOT, "original", true).unwrap();
+            first.save(&mut doc).unwrap();
+            subject.pump();
+            let mut second =
+                crate::DocStore::shared_cache(Rc::clone(&subject.store), key.clone()).unwrap();
+            let mut sibling = second.load_complete().unwrap().unwrap();
+            doc.put(ROOT, "first_store", true).unwrap();
+            first.save(&mut doc).unwrap();
+            sibling.put(ROOT, "second_store", true).unwrap();
+            second.save(&mut sibling).unwrap();
+            subject.pump();
+            subject.store.flush(Some(&key)).unwrap();
+            let read = second.load_complete().unwrap().unwrap();
+            for field in ["original", "first_store", "second_store"] {
+                let value = read.get(ROOT, field).unwrap();
+                assert!(
+                    value.is_some(),
+                    "{} lost sibling field {field}",
+                    subject.name
+                );
+                assert_eq!(
+                    value.unwrap().0.as_bool(),
+                    Some(true),
+                    "{}: {field}",
+                    subject.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shared_cache_torn_append_cannot_be_repaired_by_a_later_checkpoint() {
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Rc::new(FsStore::with_debounce(
+            directory.path(),
+            Duration::from_secs(600),
+        ));
+        let store: Rc<dyn DurableStore> = backend.clone();
+        let key = StorageKey::record("so.tilo.test", "room", "damaged-cache");
+        let owner =
+            Rc::new(DocOwner::acquire_shared_cache(Rc::clone(&store), key.clone()).unwrap());
+        let mut doc = owner.new_document().unwrap();
+        doc.put(ROOT, "original", true).unwrap();
+        let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
+        writer.try_flush().unwrap();
+        backend.faults().append_prefix = Some(9);
+        doc.put(ROOT, "later", true).unwrap();
+        writer.request(&mut doc);
+        assert!(writer.try_flush().is_err());
+        let damaged = fs_bytes(&owner);
+        assert!(owner.load().is_err());
+        assert!(owner.load_complete().is_err());
+        let mut sibling = crate::DocStore::shared_cache(Rc::clone(&store), key.clone()).unwrap();
+        assert!(sibling.load().is_err());
+        assert!(sibling.load_complete().is_err());
+        writer.request_checkpoint(&mut doc);
+        assert!(writer.try_flush().is_err());
+        assert_eq!(fs_bytes(&owner), damaged);
+        drop((writer, sibling, owner, backend));
+        let reopened = DocOwner::acquire_shared_cache(store, key).unwrap();
+        assert!(reopened.load().is_err());
+    }
+
+    fn fs_bytes(owner: &DocOwner) -> Vec<u8> {
+        std::fs::read(owner.label()).unwrap()
     }
 }

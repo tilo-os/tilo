@@ -146,6 +146,11 @@ pub struct CpuFrameStats {
     pub copy: Duration,
     pub copy_px: u64,
     pub copy_rects: usize,
+    /// GLES layer composition; zero on the dense CPU presenter.
+    pub compose_draws: usize,
+    pub upload_px: u64,
+    pub compose: Duration,
+    pub gpu_wait: Duration,
     pub flip_wait: Duration,
     /// Queue-to-vblank time of the flip the previous frame queued.
     pub previous_flip_latency: Option<Duration>,
@@ -157,7 +162,7 @@ impl CpuFrameStats {
     /// Key=value fields appended to the `FRAME-LIFECYCLE` line.
     pub fn log_fields(&self) -> String {
         format!(
-            "renderer=cpu revision={} previous_revision={} cursor={} fill={} decode_us={} raster_us={} raster_px={} raster_regions={} motion={:?} moved_px={} move_us={} copy_us={} copy_px={} copy_rects={} flip_wait_us={} prev_flip_latency_us={} presented={} cpu_total_us={}",
+            "renderer=cpu revision={} previous_revision={} cursor={} fill={} decode_us={} raster_us={} raster_px={} raster_regions={} motion={:?} moved_px={} move_us={} copy_us={} copy_px={} copy_rects={} compose_draws={} upload_px={} compose_us={} gpu_wait_us={} flip_wait_us={} prev_flip_latency_us={} presented={} cpu_total_us={}",
             self.revision,
             self.previous_revision
                 .map_or_else(|| "none".to_owned(), |revision| revision.to_string()),
@@ -177,6 +182,10 @@ impl CpuFrameStats {
             self.copy.as_micros(),
             self.copy_px,
             self.copy_rects,
+            self.compose_draws,
+            self.upload_px,
+            self.compose.as_micros(),
+            self.gpu_wait.as_micros(),
             self.flip_wait.as_micros(),
             self.previous_flip_latency.map_or_else(
                 || "none".to_owned(),
@@ -189,7 +198,7 @@ impl CpuFrameStats {
 
     /// Whether the frame changed anything worth a log line.
     pub fn did_work(&self) -> bool {
-        self.raster_px > 0 || self.moved_px > 0 || self.copy_px > 0
+        self.raster_px > 0 || self.moved_px > 0 || self.copy_px > 0 || self.compose_draws > 0
     }
 }
 
@@ -331,6 +340,16 @@ impl CpuRenderer {
         self.stats.copy_px = copy_px;
         self.stats.copy_rects = copy_rects;
         self.stats.presented = true;
+    }
+
+    /// Import the layer worker's measured CPU work. GLES submission has no
+    /// dumb-buffer copy and still uses the current publication transaction.
+    pub(super) fn record_retained_frame(&mut self, stats: CpuFrameStats) {
+        self.started = None;
+        self.stats = stats;
+        // The dense canvas and its destination history did not receive this
+        // frame. A later dense fallback must copy its complete current scene.
+        self.invalidate_screen();
     }
 
     pub fn record_cursor(&mut self, software: bool) {

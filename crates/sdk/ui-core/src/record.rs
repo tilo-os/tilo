@@ -1943,11 +1943,10 @@ impl RecordSet {
             let read = bridge
                 .record(&self.package_id, &self.home, want)
                 .map_err(RecordOpenError::Initialization)?;
-            let store = if want.id.is_package_primary() {
-                app_state::DocStore::shared(backend, key)?
-            } else {
-                app_state::DocStore::exclusive(backend, key)?
-            };
+            // The authenticated bridge supplied the exact admitted graph.
+            // Local views share its cache through an append-only journal;
+            // ordinary records and creation reservations remain exclusive.
+            let store = app_state::DocStore::shared_cache(backend, key)?;
             let creation = read.clone();
             let creation_heads = creation_capture_heads(&read)?;
             let (mut doc, autosave) = crate::persist::finish_canonical_created(

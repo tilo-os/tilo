@@ -99,4 +99,186 @@ mod tests {
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         assert!(permissions.directory_witness().is_err());
     }
+    #[test]
+    fn host_record_edits_meet_launch_participation_and_fresh_authority() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let record = TreePath::root()
+            .app("so.tilo.store")
+            .kind("host.probe")
+            .resource("fixture")
+            .action("edit");
+        let outside = TreePath::root().app("so.tilo.store").action("buy");
+        for launch_role in [Role::Owner, Role::Editor, Role::Viewer] {
+            for host_role in [Role::Owner, Role::Editor, Role::Viewer] {
+                let samples = Arc::new(AtomicUsize::new(0));
+                let counter = samples.clone();
+                let permissions = PermissionContext::member_of("room-a", "person-a", launch_role)
+                    .with_action_authority(
+                        "so.tilo.store".into(),
+                        Arc::new(move || {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                            Ok(PermissionContext::member_of(
+                                "room-a", "person-a", host_role,
+                            ))
+                        }),
+                    );
+                let expected = if launch_role == Role::Viewer || host_role == Role::Viewer {
+                    Answer::Deny
+                } else {
+                    Answer::Allow
+                };
+                assert_eq!(permissions.answer(&record, ActionKind::Undoable), expected);
+                assert_eq!(
+                    samples.load(Ordering::SeqCst),
+                    1,
+                    "even a launch refusal samples current authority"
+                );
+                if host_role == Role::Owner {
+                    assert_eq!(
+                        permissions.answer(&outside, ActionKind::Outside),
+                        Answer::Allow
+                    );
+                }
+                if launch_role == Role::Viewer {
+                    let other = TreePath::root().app("so.tilo.other").action("edit");
+                    assert_eq!(
+                        permissions.answer(&other, ActionKind::Undoable),
+                        Answer::Deny
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn record_ceiling_preserves_fresh_revocation_and_unavailable_authority_refusal() {
+        use std::sync::Mutex;
+        let record = TreePath::root().app("so.tilo.store").action("edit");
+        for launch_role in [Role::Owner, Role::Editor] {
+            let current = Arc::new(Mutex::new(Some(Role::Editor)));
+            let source = current.clone();
+            let permissions = PermissionContext::member_of("room-a", "person-a", launch_role)
+                .with_action_authority(
+                    "so.tilo.store".into(),
+                    Arc::new(move || {
+                        let role = source.lock().unwrap().ok_or("host authority unavailable")?;
+                        Ok(PermissionContext::member_of("room-a", "person-a", role))
+                    }),
+                );
+            assert_eq!(
+                permissions.answer(&record, ActionKind::Undoable),
+                Answer::Allow
+            );
+            *current.lock().unwrap() = Some(Role::Viewer);
+            assert_eq!(
+                permissions.answer(&record, ActionKind::Undoable),
+                Answer::Deny
+            );
+            *current.lock().unwrap() = Some(Role::Editor);
+            assert_eq!(
+                permissions.answer(&record, ActionKind::Undoable),
+                Answer::Allow
+            );
+            *current.lock().unwrap() = None;
+            assert_eq!(
+                permissions.answer(&record, ActionKind::Undoable),
+                Answer::Deny
+            );
+        }
+    }
+    #[test]
+    fn record_ceiling_retains_launch_asks_and_privileged_refusal() {
+        let record = TreePath::root().app("so.tilo.store").action("edit");
+        let mut launch = PermissionContext::member_of("room-a", "person-a", Role::Editor);
+        let mut standing = launch.standing().clone();
+        standing.policy.grants.push(policy::Grant::new(
+            "ask-record-edit",
+            policy::Subject::person("person-a"),
+            TreePath::room("room-a").joined(&record),
+            policy::KindSet::UNDOABLE,
+            Answer::Ask,
+            policy::Subject::person("owner"),
+        ));
+        launch = launch.with_standing(standing).with_action_authority(
+            "so.tilo.store".into(),
+            Arc::new(|| {
+                Ok(PermissionContext::member_of(
+                    "room-a",
+                    "person-a",
+                    Role::Owner,
+                ))
+            }),
+        );
+        assert_eq!(launch.answer(&record, ActionKind::Undoable), Answer::Ask);
+        assert_eq!(
+            launch
+                .verdict_for(&record, ActionKind::Undoable, true, false, |v| v.answer)
+                .unwrap(),
+            Answer::Deny
+        );
+    }
+
+    #[test]
+    fn shared_once_grant_is_spent_once_and_cannot_authorize_a_replay() {
+        use std::sync::Mutex;
+        let resource = tilo_actions::Resource::new("fixture", "host.probe", "Fixture");
+        let action = tilo_actions::ActionSpec::immediate_encoded(
+            "edit",
+            "Edit",
+            tilo_actions::ExecutionLocus::ClientLocal,
+            tilo_actions::EncodedAction::written("fixture.edit".into(), Vec::new()),
+        );
+        let node = TreePath::room("room-a")
+            .app("so.tilo.store")
+            .kind("host.probe")
+            .resource("fixture")
+            .action("edit");
+        let base = PermissionContext::member_of("room-a", "person-a", Role::Viewer);
+        let mut standing = base.standing().clone();
+        standing.policy.grants.push(
+            policy::Grant::new(
+                "edit-once",
+                policy::Subject::person("person-a"),
+                node,
+                policy::KindSet::UNDOABLE,
+                Answer::Allow,
+                policy::Subject::person("owner"),
+            )
+            .with_lifetime(policy::Lifetime::Once),
+        );
+        let launch = base.with_standing(standing);
+        let sampled = launch.clone();
+        let consumed = Arc::new(Mutex::new(Vec::new()));
+        let receipt = consumed.clone();
+        let mut permissions = launch
+            .with_action_authority(
+                "so.tilo.store".into(),
+                Arc::new(move || Ok(sampled.clone())),
+            )
+            .with_once_spender(Arc::new(move |ids| {
+                receipt.lock().unwrap().extend_from_slice(ids);
+                Ok(())
+            }));
+        assert_eq!(
+            permissions.answer(
+                &TreePath::root()
+                    .app("so.tilo.store")
+                    .kind("host.probe")
+                    .resource("fixture")
+                    .action("edit"),
+                ActionKind::Undoable
+            ),
+            Answer::Deny
+        );
+        let (answer, spent) =
+            permissions.invocation_verdict("so.tilo.store", &resource, &action, None, None);
+        assert_eq!(answer, Answer::Allow);
+        assert_eq!(spent, vec![policy::GrantId::new("edit-once")]);
+        permissions.spend_once(&spent).unwrap();
+        assert_eq!(*consumed.lock().unwrap(), spent);
+        let (answer, spent) =
+            permissions.invocation_verdict("so.tilo.store", &resource, &action, None, None);
+        assert_eq!(answer, Answer::Deny);
+        assert!(spent.is_empty());
+    }
 }
