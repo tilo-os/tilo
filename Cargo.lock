@@ -4351,7 +4351,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-copy-lint",
- "tilo-doc-codecs",
  "tilo-files",
  "tilo-fs",
  "tilo-history",
