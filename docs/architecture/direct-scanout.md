@@ -1,6 +1,16 @@
 # Direct scanout of the focused client surface
 
-Goal: a key's commit reaches the panel without the compositor re-rendering the 2944x1840 desktop. Measured today (headless harness, thin-app): key->commit 1-2 ms, GPU frame 26-31 ms, key->present ~100-130 ms. Target: client render + one vblank (~2 + 8 avg + scanout, under 20 ms at 60 Hz).
+Goal: a key's commit reaches the panel without the compositor re-rendering the 2944x1840 desktop. Target: client render + one vblank (~2 + 8 avg + scanout, under 20 ms at 60 Hz).
+
+Measured on the key-latency harness (`scripts/perf/headless_key_latency.py`: headless, real GPU, simulated 60 Hz vblank, thin-app build, keys typed through the compositor's input funnel as a physical keyboard's arrive, 300 keys per run, p50/p90/p99 ms):
+
+| Case | key->present | GPU frame |
+|---|---|---|
+| wl_shm client damaging its whole 1708x1736 window | 52-54 / 62-65 / 70-72 | 40-42 p50 (the whole output: the window is over half of it) |
+| the same client damaging one text line | 25-27 / 32-33 / 34-35 | 16 p50 (82k px rasterised) |
+| one line, before a change seen on a tick that could not paint stayed owed | 134 / 144 / 148 | |
+
+One frame per key while typing. With one-line damage the frame is damage-limited already; what remains is that frame's render (about 6 ms of CPU encoding and submission, 9 ms of GPU) and the wait for the next vblank. Direct scanout removes both from the key path.
 
 ## 1. What the display hardware offers (read live, read-only)
 
