@@ -1,6 +1,6 @@
 //! Content-addressed CRDT change-history storage + versioning for office documents.
 //!
-//! Office files use a canonical `qdoc` automerge document rather than an
+//! Office files use a canonical `tilo-doc` automerge document rather than an
 //! opaque blob on each write; the document is persisted here as change history —
 //! each change stored once as a content-addressed blob in [`ContentStore`],
 //! and a *version* a small [`VersionManifest`] of change hashes chained to

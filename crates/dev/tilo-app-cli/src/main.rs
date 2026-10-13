@@ -3740,7 +3740,7 @@ mod tests {
                 "--app-only",
                 "--",
                 "--document",
-                "sample.qdoc",
+                "sample.tilo-doc",
             ])
             .expect("dev CLI");
             let Command::Dev(dev) = cli.command else {
@@ -3751,7 +3751,10 @@ mod tests {
             assert!(dev.app_only);
             assert_eq!(
                 dev.forwarded,
-                [OsString::from("--document"), OsString::from("sample.qdoc")]
+                [
+                    OsString::from("--document"),
+                    OsString::from("sample.tilo-doc")
+                ]
             );
             assert!(Cli::try_parse_from(["tilo-app", "dev", "--debounce-ms", "0"]).is_err());
             assert_eq!(dev.profile, None);

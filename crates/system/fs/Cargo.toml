@@ -152,7 +152,7 @@ iroh-gossip = { workspace = true, optional = true }
 tilo-endpoint-reachability = { version = "0.1.0", path = "../endpoint-reachability", optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
-# Conflict members can come from peers: the qdoc merge decodes them only here.
+# Conflict members can come from peers: the tilo-doc merge decodes them only here.
 tilo-automerge-isolate = { version = "0.1.0", path = "../../doc/tilo-automerge-isolate", optional = true }
 tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc", optional = true }
 tilo-content = { version = "0.1.0", path = "../content", optional = true, features = ["device"] }

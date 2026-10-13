@@ -8,7 +8,7 @@
 name = "tilo-doc-codec-markdown-wasm"
 version = "0.1.0"
 edition = "2024"
-description = "Format-provider build of qdoc's Markdown codec, for the Tilo format-router."
+description = "Format-provider build of tilo-doc's Markdown codec, for the Tilo format-router."
 
 [lib]
 crate-type = ["cdylib"]

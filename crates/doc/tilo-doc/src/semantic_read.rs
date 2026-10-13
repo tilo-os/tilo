@@ -111,7 +111,7 @@ pub fn begin(
     source::Source::new(doc, owner_heads).begin(limits, max_items)
 }
 
-/// Inert cursor scope for the actual bound qdoc object, using canonical counter/actor identity.
+/// Inert cursor scope for the actual bound tilo-doc object, using canonical counter/actor identity.
 /// The cached actor-table index is deliberately excluded. This is not a record/caller witness.
 ///
 /// # Errors
