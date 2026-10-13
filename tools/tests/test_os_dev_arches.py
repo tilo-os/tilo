@@ -2,6 +2,9 @@
 import importlib.util
 import fnmatch
 import os
+import http.server
+import json
+import threading
 import subprocess
 import tempfile
 import textwrap
@@ -185,8 +188,34 @@ class OsDevImageSourceTests(unittest.TestCase):
             git("commit", "-qam", "other")
             divergent = git("rev-parse", "HEAD")
             git("checkout", "--detach", tip)
-            requested = {"ancestor": ancestor, "divergent": divergent, "empty": "", "malformed": "main"}[requested_kind]
+            requested = {"ancestor": ancestor, "divergent": divergent, "empty": "", "malformed": "main", "unavailable": ancestor}[requested_kind]
             output = root / "output"
+            records = {}
+            for sha in (ancestor, tip, divergent):
+                parents = git("show", "-s", "--format=%P", sha).split()
+                records[sha] = {"sha": sha, "parents": [{"sha": value} for value in parents]}
+            unavailable = requested_kind == "unavailable"
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    sha = self.path.rsplit("/", 1)[-1]
+                    if unavailable or sha not in records:
+                        self.send_error(503)
+                        return
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(json.dumps(records[sha]).encode())
+                def log_message(self, *args):
+                    pass
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+            thread.start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            policy = root / "source-policy/tools/ci"
+            policy.mkdir(parents=True)
+            (policy / "verify_main_source.py").write_bytes((ROOT / "tools/ci/verify_main_source.py").read_bytes())
+            env.update({"TOKEN": "fixture", "GITHUB_REPOSITORY": "tilo/tilo",
+                        "GITHUB_SERVER_URL": f"http://127.0.0.1:{server.server_port}"})
             env.update({"GITHUB_SHA": tip, "TILO_IMAGE_SOURCE": requested or tip,
                         "REQUESTED_SOURCE": requested, "GITHUB_EVENT_NAME": event, "DEV_ARCHES": arches,
                         "GITHUB_REF": ref, "GITHUB_OUTPUT": str(output)})
@@ -194,10 +223,10 @@ class OsDevImageSourceTests(unittest.TestCase):
                                     env=env, capture_output=True, text=True)
             return result, output.read_text() if output.exists() else "", git("rev-parse", "HEAD"), ancestor, tip
 
-    def test_exact_ancestor_is_checked_out_and_names_the_historical_image(self):
-        result, output, head, ancestor, _ = self.run_source("ancestor")
+    def test_exact_ancestor_is_verified_and_names_the_historical_image(self):
+        result, output, head, ancestor, tip = self.run_source("ancestor")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(head, ancestor)
+        self.assertEqual(head, tip)
         self.assertEqual(output, f"source-short={ancestor[:7]}\n")
 
     def test_source_rejects_divergent_refs_and_release_entry_points(self):
@@ -218,6 +247,12 @@ class OsDevImageSourceTests(unittest.TestCase):
         self.assertEqual(output, "")
         self.assertEqual(head, tip)
 
+    def test_unobservable_ancestry_fails_before_publication(self):
+        result, output, head, _, tip = self.run_source("unavailable")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+        self.assertEqual(head, tip)
+
     def test_default_source_keeps_existing_dispatch_commit(self):
         result, output, head, _, tip = self.run_source("empty", "workflow_dispatch")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -234,7 +269,12 @@ class OsDevImageSourceTests(unittest.TestCase):
         self.assertIn('main-${TILO_IMAGE_SOURCE:0:7}-ci', workflow)
         self.assertIn('git -C "$history" merge-base --is-ancestor "$current" "$TILO_IMAGE_SOURCE"', workflow)
         self.assertNotIn("GITHUB_SHA=", workflow)
-        self.assertNotIn("github.sha", workflow.split("jobs:\n", 1)[1])
+        jobs = workflow.split("jobs:\n", 1)[1]
+        policy = jobs.split("      - name: Checkout current source verification policy\n", 1)[1].split("      - name: Verify and resolve", 1)[0]
+        self.assertIn("ref: ${{ github.sha }}", policy)
+        self.assertIn("path: source-policy", policy)
+        self.assertNotIn("github.sha", jobs.replace(policy, ""))
+        self.assertNotIn("fetch-depth: 0", workflow)
 
 
 

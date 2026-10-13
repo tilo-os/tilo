@@ -101,7 +101,7 @@ class QueueReliefTests(unittest.TestCase):
         # source binding, exact native children, monotonicity and provenance.
         for contract in ('org.opencontainers.image.revision',
                          '[[ "$actual" == "$expected" ]]',
-                         'merge-base --is-ancestor "$current" "$GITHUB_SHA"',
+                         'merge-base --is-ancestor "$current" "$TILO_IMAGE_SOURCE"',
                          '--multi-arch index-only --preserve-digests',
                          "name: tilo-os-integration-index",
                          "if-no-files-found: error"):
