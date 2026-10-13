@@ -10,8 +10,9 @@ use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::Ref;
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::Arc;
 #[cfg(test)]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use super::background_index::BackgroundIndex;
 use crate::portal::desktop_services::DynamicLauncherRecord;
@@ -149,7 +150,9 @@ impl ApplicationsTestSource {
 }
 
 enum ApplicationEntry {
-    Installed(InstalledApp),
+    /// Shared with the launch callback of every row built for it, so a
+    /// keystroke does not copy the app's manifest view into each row.
+    Installed(Arc<InstalledApp>),
     Dynamic(DynamicLauncherRecord),
     Catalogue(CatalogueApp),
 }
@@ -246,7 +249,7 @@ impl ApplicationsProvider {
         let mut entries = installed
             .iter()
             .cloned()
-            .map(ApplicationEntry::Installed)
+            .map(|app| ApplicationEntry::Installed(Arc::new(app)))
             .collect::<Vec<_>>();
         entries.extend(dynamic.into_iter().map(ApplicationEntry::Dynamic));
         entries.extend(
@@ -298,7 +301,12 @@ impl ApplicationsProvider {
         open_target: OpenTarget,
     ) -> Vec<SearchResult> {
         let scores = test_scores(needle, apps.iter().map(installed_fields));
-        self.installed_rows(needle, apps, &scores, open_target)
+        self.installed_rows(
+            needle,
+            apps.into_iter().map(Arc::new).collect(),
+            &scores,
+            open_target,
+        )
     }
 
     /// Launch rows for the `apps` with a score in `scores`. `open_target`
@@ -308,7 +316,7 @@ impl ApplicationsProvider {
     fn installed_rows(
         &self,
         needle: &str,
-        apps: Vec<InstalledApp>,
+        apps: Vec<Arc<InstalledApp>>,
         scores: &[Option<i32>],
         open_target: OpenTarget,
     ) -> Vec<SearchResult> {
@@ -318,7 +326,7 @@ impl ApplicationsProvider {
             let Some(score) = *score else {
                 continue;
             };
-            let launch_app = app.clone();
+            let launch_app = Arc::clone(&app);
             // A declared category is a more useful second line than the version.
             let detail = app_detail(
                 needle,
@@ -1147,7 +1155,7 @@ impl ApplicationsProvider {
         let mut rows = match entry {
             ApplicationEntry::Installed(app) => self.installed_rows(
                 ctx.needle,
-                vec![app.clone()],
+                vec![Arc::clone(app)],
                 &score,
                 ctx.chrome.open_target,
             ),
@@ -2423,7 +2431,7 @@ mod tests {
         ));
         let entries = (0..=4_000)
             .map(|index| {
-                ApplicationEntry::Installed(app_in(
+                ApplicationEntry::Installed(Arc::new(app_in(
                     &format!("so.tilo.fixture-{index}"),
                     if index == 4_000 {
                         "unique-tail"
@@ -2431,7 +2439,7 @@ mod tests {
                         "common app"
                     },
                     None,
-                ))
+                )))
             })
             .collect::<Vec<_>>();
         let index = index_entries(&entries);

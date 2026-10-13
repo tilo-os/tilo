@@ -139,6 +139,31 @@ pub(crate) fn rank_rows(
         .collect()
 }
 
+/// [`rank_rows`] over rows a provider keeps between keystrokes: only the rows
+/// that match are copied out.
+pub(crate) fn rank_kept_rows(
+    index: &ui::search::ListIndex,
+    needle: &str,
+    rows: &[SearchResult],
+    fields: &[Vec<(String, ui::search::FieldWeight)>],
+) -> Vec<SearchResult> {
+    let ranks = index.ranks(
+        needle,
+        fields
+            .iter()
+            .map(|row| row.iter().map(|(text, weight)| (text.as_str(), *weight))),
+    );
+    rows.iter()
+        .zip(ranks)
+        .filter_map(|(row, rank)| {
+            Some(SearchResult {
+                score: provider_score(rank?),
+                ..row.clone()
+            })
+        })
+        .collect()
+}
+
 /// The chip strip's and group headers' wording for a [`ResourceKind`], in
 /// the desktop's language. [`ResourceKind::id`] stays the stable English
 /// address; `Custom` kinds surface their own string verbatim.
