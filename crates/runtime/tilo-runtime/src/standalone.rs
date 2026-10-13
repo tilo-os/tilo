@@ -131,6 +131,10 @@ impl Standalone {
             identity_socket.clone(),
             Arc::clone(&rooms) as Arc<dyn WorkspaceMembership>,
             Arc::new(channel_keys.keys.clone()),
+            Arc::new(AttachedSurfaces {
+                apps: Arc::clone(&apps),
+                dev,
+            }),
         )?;
         stage("opening the content store");
         let media = profile::MediaHost::start(&root.join("content"), &root.join(BLOB_SOCKET))?;
@@ -761,13 +765,41 @@ fn identity_service(
     socket: PathBuf,
     rooms: Arc<dyn WorkspaceMembership>,
     keys: Arc<dyn tilo_identity_host::broker::ChannelKeySource>,
+    person: Arc<AttachedSurfaces>,
 ) -> io::Result<tilo_identity_host::broker::IdentityBrokerHandle> {
-    tilo_identity_host::broker::spawn(
-        socket,
-        rooms,
-        keys,
-        Arc::new(tilo_action_broker::SurfacePersonRecords),
-    )
+    tilo_identity_host::broker::spawn(socket, rooms, keys, person)
+}
+
+/// The person-record kinds of the surfaces this runtime holds. Started with
+/// `--dev`, an app that is not installed is a build under development (as
+/// [`RecordCreation`] treats it): the surface it attaches naming, which
+/// `tilo-app dev` sets, is taken as its own, so its person records reach
+/// the person's room. An installed app runs only with its package's signed
+/// surface, and no attach replaces a surface the runtime already holds.
+struct AttachedSurfaces {
+    apps: Arc<apps::Apps>,
+    dev: bool,
+}
+
+impl tilo_identity_host::broker::PersonRecordKinds for AttachedSurfaces {
+    fn person_record_kinds(&self, app_id: &str) -> Vec<String> {
+        ui::app_surface::person_record_kinds(app_id)
+    }
+
+    fn attached(&self, app_id: &str, surface: &[u8]) {
+        if self.dev
+            && self.apps.declared_resource_kinds(app_id).is_none()
+            && ui::app_surface::bytes_of(app_id).is_none()
+        {
+            // Changes are decided against the surface their op names, read
+            // from the content store as a package's is.
+            if let Err(error) = tilo_content::ContentStore::for_app().put(surface) {
+                tracing::warn!(%error, app_id, "the development surface could not be stored");
+                return;
+            }
+            tilo_action_broker::register_package_surface(app_id, surface);
+        }
+    }
 }
 
 #[cfg(test)]

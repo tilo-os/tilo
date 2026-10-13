@@ -2481,6 +2481,28 @@ fn execute_document(
 }
 
 /// A resolved, encoded resource operation and the caller it runs for.
+/// Whether `actor` may run a device-only action here: the person at this
+/// device, or an agent acting for them that the broker admitted. The broker
+/// runs a device-only action for an agent only when that person's own
+/// device handed it the session, so a collaborator, a remote participant
+/// and an agent admitted elsewhere stay refused.
+pub(crate) fn runs_device_only(
+    actor: &str,
+    local_author: &str,
+    broker_admitted: bool,
+    ambient: Option<&tilo_actions::ActionContext>,
+) -> bool {
+    actor == local_author
+        || (broker_admitted
+            && ambient
+                .and_then(|context| context.invoker.as_ref())
+                .is_some_and(|invoker| {
+                    invoker.actor == actor
+                        && invoker.kind == tilo_actions::ActorKind::Agent
+                        && invoker.on_behalf_of.as_deref() == Some(local_author)
+                }))
+}
+
 pub(crate) struct ResourceOperation<'a> {
     pub(crate) target_route: Option<crate::collaboration::RouteSpec>,
     pub(crate) address: &'a tilo_actions::ActionAddress,
@@ -2531,7 +2553,7 @@ pub(crate) fn execute_resource_operation(
         .tags
         .iter()
         .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
-        && actor != local_author
+        && !runs_device_only(actor, local_author, broker_admitted, ambient)
     {
         return Err(tilo_actions::DoorError::Unavailable {
             code: "local_device_only".into(),

@@ -2703,7 +2703,12 @@ impl App {
             .tags
             .iter()
             .any(|tag| tag == tilo_actions::LOCAL_DEVICE_ONLY)
-            && actor != self.collaboration.local_author.0
+            && !crate::bound_dispatch::runs_device_only(
+                actor,
+                &self.collaboration.local_author.0,
+                broker_admitted,
+                ambient_context,
+            )
         {
             return Err(tilo_actions::DoorError::Unavailable {
                 code: "local_device_only".into(),
