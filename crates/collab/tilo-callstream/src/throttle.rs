@@ -140,10 +140,6 @@ mod tests {
     /// A window damaging at 60 Hz, each commit a little early or late,
     /// streams at an even 30 fps under a 30 fps cap.
     #[test]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "test phase: arithmetic on small fixed test values cannot overflow"
-    )]
     fn a_60hz_window_is_paced_evenly_at_the_cap() {
         let start = Instant::now();
         let mut throttle = StreamingThrottle::with_interval(Duration::from_micros(33_333));

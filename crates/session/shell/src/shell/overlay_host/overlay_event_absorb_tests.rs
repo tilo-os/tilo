@@ -2012,7 +2012,6 @@ fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f
 )]
 fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
     #[allow(
-        clippy::arithmetic_side_effects,
         clippy::unchecked_time_subtraction,
         reason = "the deterministic notification-age fixture subtracts known earlier test instants"
     )]
@@ -2300,10 +2299,6 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
 /// the normal event tests above.
 #[test]
 #[ignore = "visual review: needs an offscreen wgpu adapter and writes PNGs"]
-#[allow(
-    clippy::expect_used,
-    reason = "the opt-in visual harness must fail loudly for a missing GPU or output directory"
-)]
 fn render_notification_history_accessibility_matrix_at_1x() {
     use std::path::PathBuf;
     use ui::offscreen::OffscreenRenderer;
@@ -2383,10 +2378,6 @@ fn render_notification_history_accessibility_matrix_at_1x() {
 /// ground, so a row is a surface on the panel on both presets (HIG
 /// §9.5); the same holds for a notification-history row.
 #[test]
-#[allow(
-    clippy::expect_used,
-    reason = "a review fixture must fail loudly for a missing GPU or output directory"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "an end-to-end test scenario that reads top to bottom"

@@ -6968,7 +6968,6 @@ mod tests {
     }
 
     #[serial(pdfium)]
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn shot_drivers_render_every_review_and_product_state() {
         // Draw the truthful page-shaped state a collaborator sees before an
@@ -8631,7 +8630,6 @@ mod tests {
     }
 
     #[serial(pdfium)]
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn raster_open_is_gated_measured_and_budgeted_on_the_first_frame() {
         // The escape hatch is the whole reason skipping is defensible, so it
@@ -8953,7 +8951,6 @@ mod tests {
     }
 
     #[serial(pdfium)]
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn zoomed_pages_draw_from_reusable_worker_tiles_matching_full_renders() {
         // At 800 % a page is far wider than the old 4096 px whole-page cap; it
@@ -9159,7 +9156,6 @@ mod tests {
 
     #[serial(clipboard)]
     #[serial(pdfium)]
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn raster_text_layer_selects_copies_and_searches_real_glyphs() {
         // End-to-end text selection over the real pdfium glyph layer: press on a
@@ -9304,7 +9300,6 @@ mod tests {
     }
 
     #[serial(pdfium)]
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn markup_and_page_edits_persist_across_save_and_reopen() {
         eprintln!("phase save_back_writes_markup_as_real_pdf_annotations");

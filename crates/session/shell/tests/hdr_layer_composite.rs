@@ -12,9 +12,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard; fixture sizes are small constants"
 )]
@@ -347,10 +344,6 @@ fn paint_direct(
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn hdr_layers_composite_in_linear_light_on_every_output_path() {
     let mut bridge = VelloDrmBridge::new(WIDTH, HEIGHT).expect("a real wgpu adapter");
     let (scene, layers) = scene();

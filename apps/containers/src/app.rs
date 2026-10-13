@@ -1356,10 +1356,6 @@ impl ContainersApp {
         self.publish_model();
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one flat match from every control's intent to its effect"
-    )]
     fn apply_intent(&mut self, doc: &mut ui::widget::Edits<'_>, intent: Intent) {
         match intent {
             Intent::ShowSection(section) => self.show_section(section),

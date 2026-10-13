@@ -517,7 +517,6 @@ async fn answered(
 
 #[cfg(test)]
 mod confirmation_tests {
-    #![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 
     use super::*;
     use tilo_user_identity::{DeviceCapabilities, UserIdentity, sign_device_cert};

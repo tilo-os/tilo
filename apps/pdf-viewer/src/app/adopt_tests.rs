@@ -155,7 +155,6 @@ fn count(annots: &[tilo_pdf::AnnotationInfo], kind: &tilo_pdf::AnnotationKind) -
 }
 
 #[serial_test::serial(pdfium)]
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates() {
     eprintln!("phase existing_markup_is_taken_over_edited_and_exported_without_duplicates");
@@ -389,7 +388,6 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
 }
 
 #[serial_test::serial(pdfium)]
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
     eprintln!("phase free_text_is_authored_on_the_page_and_exported_with_an_appearance");

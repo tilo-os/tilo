@@ -1952,7 +1952,6 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
     eprintln!("phase a_large_library_fills_a_bounded_background_thumbnail_queue");

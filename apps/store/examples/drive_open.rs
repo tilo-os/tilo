@@ -23,10 +23,6 @@ use store::model::{
 use store::worker::Request;
 use store::{StoreApp, StoreEffect};
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "this intentionally linear headless driver documents and verifies the complete visible action-to-worker contract in one place"
-)]
 fn main() {
     let action = std::env::args().nth(1).unwrap_or_else(|| "open".into());
     let id = std::env::var("TILO_STORE_ITEM_ID").unwrap_or_else(|_| "so.tilo.hello".into());

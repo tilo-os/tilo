@@ -332,10 +332,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn seat_diagnosis_classifies_each_missing_precondition() {
         // Phase `no_session_id_is_the_no_login_session_case`.
         {

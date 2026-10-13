@@ -4025,10 +4025,6 @@ fn zoom_scales_about_the_anchor_and_keeps_clicks_on_the_same_caret() {
 /// The status band's zoom field drives zoom, accessibility exposes it with
 /// the view controls, and zooming in grows the scrollable range.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-)]
 fn the_zoom_field_drives_zoom_and_the_scroll_range() {
     // Phase: the_zoom_field_steps_the_page_scale.
     {
@@ -6423,10 +6419,6 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
 /// Pointer selection and dismissal use the overlay, a new template starts untitled without overwriting
 /// the old file, and selecting a template replaces the document content.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-)]
 fn templates_replace_the_document_only_when_chosen() {
     // Phase: template_menu_pointer_selection_and_dismissal_use_the_overlay.
     {
@@ -7948,10 +7940,6 @@ fn the_image_portal_inserts_only_resolved_picks() {
 /// A dropped image inserts at the drop point, a selected image shows resize and flip controls, and its
 /// position controls fit the narrow inspector.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
-)]
 fn dropped_and_selected_images_expose_their_controls() {
     // Phase: dropped_image_inserts_at_the_drop_point.
     // Dropping an image file onto the page inserts it at the **drop point**: the
