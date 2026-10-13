@@ -619,14 +619,7 @@ impl Widget for ProbeRoot {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(
-        &mut self,
-        tree: &taffy::TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: vello::kurbo::Point,
-    ) {
-        self.rect = tilo_ui::widget::layout_rect(tree, node, origin);
-    }
+    tilo_ui::rect_geometry!();
     fn draw(
         &mut self,
         _: &mut vello::Scene,
@@ -645,9 +638,6 @@ impl Widget for ProbeRoot {
     }
     fn name(&self) -> &'static str {
         "application-probe"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        self.rect
     }
     fn is_focusable(&self) -> bool {
         true
