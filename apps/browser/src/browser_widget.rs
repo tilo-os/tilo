@@ -3434,7 +3434,7 @@ impl Continuable for BrowserWidget {
         _root: &ObjId,
     ) -> Option<ui::collaboration::ContinuationMetadata> {
         Some(ui::collaboration::ContinuationMetadata {
-            schema_version: 1,
+            schema_version: ui::app::semantic_schema::WEB_LOCATION_V1,
             bytes: self.restorable_page()?,
         })
     }
@@ -3445,7 +3445,8 @@ impl Continuable for BrowserWidget {
         _state: &mut ui::widget::Edits<'_>,
         _root: &ObjId,
     ) -> bool {
-        metadata.schema_version == 1 && self.restore_page(&metadata.bytes)
+        metadata.schema_version == ui::app::semantic_schema::WEB_LOCATION_V1
+            && self.restore_page(&metadata.bytes)
     }
 }
 
@@ -8704,7 +8705,7 @@ mod tests {
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
             let (mut doc, root) = synced(&mut widget);
             let metadata = ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
+                schema_version: ui::app::semantic_schema::WEB_LOCATION_V1,
                 bytes: br#"{"url":"https://example.test/reading"}"#.to_vec(),
             };
             assert!(widget.restore_continuation_metadata(
@@ -9077,7 +9078,7 @@ mod tests {
                     .is_none()
             );
             let metadata = ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
+                schema_version: ui::app::semantic_schema::WEB_LOCATION_V1,
                 bytes: br#"{"url":"https://normal.test"}"#.to_vec(),
             };
             assert!(!widget.restore_continuation_metadata(

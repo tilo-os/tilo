@@ -31,16 +31,11 @@ impl ContinuitySemanticSchema {
         Self::TextPositionV1,
     ];
 
-    /// The payload number written by senders that predate wire tags. It says
-    /// "semantic" without saying which schema, so a receiver has to derive
-    /// the schema from the app; see [`Self::wire_tag`].
-    pub const LEGACY_UNTAGGED_TAG: u16 = 1;
-
     /// The number a continuation payload carries for this schema, so that a
     /// device which has not installed the app can still tell what the
-    /// payload means. Disjoint from [`Self::LEGACY_UNTAGGED_TAG`] and from
-    /// the toolkit's structural and generic envelope numbers (`u16::MAX - 1`
-    /// and `u16::MAX`).
+    /// payload means. Disjoint from the toolkit's structural and generic
+    /// envelope numbers (`u16::MAX - 1` and `u16::MAX`); apps write it
+    /// through `ui::app::semantic_schema`.
     #[must_use]
     pub const fn wire_tag(self) -> u16 {
         match self {
@@ -203,22 +198,9 @@ mod tests {
         for schema in ContinuitySemanticSchema::ALL {
             let tag = schema.wire_tag();
             assert_eq!(ContinuitySemanticSchema::from_wire_tag(tag), Some(schema));
-            assert!(
-                ![
-                    ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG,
-                    u16::MAX - 1,
-                    u16::MAX
-                ]
-                .contains(&tag)
-            );
+            assert!(![u16::MAX - 1, u16::MAX].contains(&tag));
         }
-        for reserved in [
-            0,
-            ContinuitySemanticSchema::LEGACY_UNTAGGED_TAG,
-            2,
-            u16::MAX - 1,
-            u16::MAX,
-        ] {
+        for reserved in [0, 1, 2, u16::MAX - 1, u16::MAX] {
             assert_eq!(ContinuitySemanticSchema::from_wire_tag(reserved), None);
         }
     }

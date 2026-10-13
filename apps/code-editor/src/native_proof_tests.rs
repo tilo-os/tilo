@@ -346,7 +346,7 @@ fn live_editor_views_follow_repeated_positions_without_editing_or_focus() {
                 serde_json::from_slice(&metadata.bytes).unwrap();
             position.resource_id = "99999999-2222-4333-8444-555555555555".into();
             let foreign = ui::collaboration::ContinuationMetadata {
-                schema_version: 1,
+                schema_version: ui::app::semantic_schema::TEXT_POSITION_V1,
                 bytes: serde_json::to_vec(&position).unwrap(),
             };
             assert!(
@@ -392,7 +392,7 @@ fn cold_live_continuation_opens_existing_text_and_preserves_local_focus() {
         serde_json::from_slice(&metadata.bytes).unwrap();
     position.resource_id = "99999999-2222-4333-8444-555555555555".into();
     let foreign = ui::collaboration::ContinuationMetadata {
-        schema_version: 1,
+        schema_version: ui::app::semantic_schema::TEXT_POSITION_V1,
         bytes: serde_json::to_vec(&position).unwrap(),
     };
     let mut target = CodeApp::new();
@@ -488,7 +488,7 @@ fn assert_foreign_view_refused(
         serde_json::from_slice(&metadata.bytes).unwrap();
     position.resource_id = "99999999-2222-4333-8444-555555555555".into();
     let foreign = ui::collaboration::ContinuationMetadata {
-        schema_version: 1,
+        schema_version: ui::app::semantic_schema::TEXT_POSITION_V1,
         bytes: serde_json::to_vec(&position).unwrap(),
     };
     crate::test_support::with_doc(app, move |app, doc| {
