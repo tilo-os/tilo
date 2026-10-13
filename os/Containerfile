@@ -241,7 +241,9 @@ COPY --from=windows-provider /out/usr/share/tilo/windows/provider.json /provider
 COPY os/dev/windows_provider.py os/dev/build-windows-compat-sysext.sh /tilo/
 # The native FEX binaries are checked against the hashes the provider record
 # pinned, and their dynamic-linker closure against the base plus this payload.
+# /out is made first: the shell opens the descriptor before the packer runs.
 RUN --network=none python3 /tilo/windows_provider.py host --manifest /provider.json --root /tree \
+    && mkdir -p /out \
     && /tilo/build-windows-compat-sysext.sh /tree /out/tilo-windows-compat.raw > /out/descriptor.json
 
 FROM scratch AS windows-compat-sysext
