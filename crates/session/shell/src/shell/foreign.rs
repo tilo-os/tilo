@@ -44,7 +44,6 @@
 
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
 use ui::widget::TaffyTreeExt;
 
 use std::collections::HashMap;
