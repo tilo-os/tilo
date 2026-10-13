@@ -549,7 +549,7 @@ impl UploadRing {
         let (width, height) = self.size;
         self.slots.push(UploadSlot {
             texture: device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("shm client frame"),
+                label: Some("shm-client-frame"),
                 size: wgpu::Extent3d {
                     width,
                     height,
