@@ -432,7 +432,6 @@ pub use history_mode::{
     HistoryController, HistoryError, HistoryResource, HistorySnapshot, PreviewSide, RestoreReview,
 };
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
-pub use widget::collaboration_overview::{CollaborationOverview, CollaborationOverviewAction};
 pub use widget::history::{
     AuthorRelation, EntryKind, HistoryAttribution, HistoryAuthor, HistoryClassification,
     HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
@@ -442,7 +441,6 @@ pub use widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, MAX_GROUP_DEPTH, NamedRange, OpFamily,
     group_entries,
 };
-pub use widget::history_scrubber::HistoryScrubber;
 pub use widget::name_field::{NameField, NameFieldOutcome};
 // Re-exported so an app reaches the whole history stack through `tilo_ui::`
 // without knowing the module layout.
@@ -460,6 +458,7 @@ pub use live_collaboration::{
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
+pub use gesture::{DragSelect, Granularity};
 pub use history_source::revert::{
     ChangeRun, KeptSlot, RevertError, RevertOutcome, Slot, latest_run_by, plan_revert, revert_run,
 };
@@ -469,14 +468,6 @@ pub use history_source::run_undo::{
 pub use history_source::runs::{
     AgentRun, RunStep, forget_run, read_runs, record_run, record_run_with_details, run_starting_at,
 };
-// Channel browser — see `widget/channel_browser.rs` module doc-comment for
-// the design intent. Source-agnostic; consumes `Vec<ChannelEntry>` from
-// chrome state.
-pub use widget::channel_browser::{ChannelBrowser, ChannelEntry};
-// Conflict toolkit — see `widget/merge_strategy.rs` module doc-comment for
-// the design intent and convention for declaring a merge strategy on a
-// CRDT-bound widget.
-pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use status_bubble::{SaveAction, SaveState, SaveStatusSurface, StatusBubble};
 pub use text_edit::{
@@ -499,11 +490,6 @@ pub use text_selection::{
     prev_word_boundary_chars, try_clipboard_copy, word_boundaries, word_boundaries_chars,
 };
 pub use tokens::{ReadingFace, TextRole, UiFace};
-pub use widget::conflict_banner::ConflictBanner;
-pub use widget::conflict_picker::{ConflictPicker, PickerOutcome};
-pub use widget::merge_strategy::{
-    Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy, surface_banner,
-};
 
 pub use animation::{Animated, Curve, Lerp, Spring, Transition, ease_out};
 
