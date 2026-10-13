@@ -316,3 +316,39 @@ impl Stewardship {
         Ok(messages)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn readers(devices: &[u8]) -> BTreeSet<Ed25519PublicKey> {
+        devices
+            .iter()
+            .map(|device| Ed25519PublicKey::from_bytes([*device; 32]))
+            .collect()
+    }
+
+    #[test]
+    fn only_a_removed_reader_moves_the_channels() {
+        let tmp = tempfile::tempdir().unwrap();
+        let steward = Steward::new(Stewardship::new(
+            "room",
+            tmp.path().join("room.channels"),
+            &SigningKey::from_bytes(&[9; 32]),
+        ));
+        // Nothing handed over yet: the channels' published state is unknown.
+        assert!(steward.moves_channels(&readers(&[1])));
+        steward.hand_over(1, &readers(&[1]));
+        // A join only lets a device in.
+        assert!(!steward.moves_channels(&readers(&[1, 2])));
+        steward.hand_over(2, &readers(&[1, 2]));
+        assert!(steward.moves_channels(&readers(&[2])));
+        // An admission that read the room at generation 1 takes the readers
+        // handed over since; one that read the newest keeps its own.
+        assert_eq!(steward.readers(1, readers(&[1])), readers(&[1, 2]));
+        assert_eq!(steward.readers(2, readers(&[1])), readers(&[1]));
+        // An older generation handed over late replaces nothing.
+        steward.hand_over(1, &readers(&[1]));
+        assert_eq!(steward.readers(0, BTreeSet::new()), readers(&[1, 2]));
+    }
+}
