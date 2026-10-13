@@ -38,29 +38,42 @@ fn upgrade_library(
     from: u32,
 ) -> Result<(), tilo_resource::ModelError> {
     use automerge::transaction::Transactable as _;
-    use automerge::{ObjType, ROOT, ReadDoc as _, Value};
+    use automerge::{ObjId, ObjType, ROOT, ReadDoc as _, Value};
+    fn map(
+        doc: &tilo_resource::Doc,
+        parent: &ObjId,
+        key: &str,
+    ) -> Result<Option<ObjId>, tilo_resource::ModelError> {
+        Ok(match doc.get(parent, key)? {
+            Some((Value::Object(ObjType::Map), id)) => Some(id),
+            _ => None,
+        })
+    }
     if from != 1 {
         return Err(tilo_resource::ModelError::invalid(format!(
             "no migration from {from}"
         )));
     }
-    let Some((Value::Object(ObjType::Map), photos)) = doc.get(ROOT, "photos")? else {
+    let Some(photos) = map(doc, &ROOT, "photos")? else {
         return Ok(());
     };
     let ids: Vec<String> = doc.keys(&photos).collect();
     for id in ids {
-        let image = match doc.get(&photos, id.as_str())? {
-            Some((Value::Object(ObjType::Map), photo)) => match doc.get(&photo, "image")? {
-                Some((Value::Object(ObjType::Map), image)) => Some(image),
-                _ => None,
-            },
-            _ => None,
+        // A collection keeps each item under its value key, beside its order.
+        let Some(photo) = map(doc, &photos, &id)? else {
+            continue;
         };
-        let Some(image) = image else { continue };
+        let Some(value) = map(doc, &photo, "v")? else {
+            continue;
+        };
+        let Some(image) = map(doc, &value, "image")? else {
+            continue;
+        };
         if doc.get(&image, "path")?.is_some() {
             doc.delete(&image, "path")?;
         }
-        if doc.get(&image, "content")?.is_none() {
+        let content: Option<String> = tilo_resource::read_key(doc, &image, "content")?;
+        if content.is_none_or(|hash| hash.is_empty()) {
             doc.delete(&photos, id.as_str())?;
         }
     }
