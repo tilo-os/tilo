@@ -604,6 +604,107 @@ mod tests {
     }
 
     #[test]
+    fn retained_translucent_layers_match_dense_source_over() {
+        let mut cache = cache(24);
+        cache.layers.workspace = Scene::new();
+        fill(
+            &mut cache.layers.workspace,
+            Rect::new(0.0, 0.0, 64.0, 32.0),
+            Color::from_rgba8(0, 255, 0, 128),
+        );
+        cache.layers.strips[0] = Scene::new();
+        fill(
+            &mut cache.layers.strips[0],
+            // Fractional edges exercise an antialiased translucent shadow.
+            Rect::new(80.25, 0.25, 112.75, 31.75),
+            Color::from_rgba8(255, 0, 0, 128),
+        );
+        let mut wheel = Scene::new();
+        fill(
+            &mut wheel,
+            Rect::new(0.0, 0.0, 8.0, 16.0),
+            Color::from_rgba8(255, 255, 0, 128),
+        );
+        cache.layers.wheel = Some(WheelSprite {
+            scene: wheel,
+            width: 8,
+            height: 16,
+            x: 56,
+            y: 0,
+        });
+        fill(
+            &mut cache.layers.chrome,
+            Rect::new(56.0, 0.0, 64.0, 4.0),
+            Color::from_rgba8(255, 255, 255, 128),
+        );
+
+        let dense = crate::shell::render::strip_layers::compose(&cache);
+        let mut oracle = CpuRenderer::new();
+        oracle.update(
+            CpuFrame {
+                scene: &dense,
+                revision: 0,
+                previous_revision: None,
+                regions: None,
+            },
+            (64, 32),
+        );
+        let mut canvases = Canvases::new();
+        canvases.update(&cache, (64, 32));
+        let views = canvases.views(&cache, (64, 32));
+        assert_eq!(views.len(), 5);
+        for (index, source_x) in [(1, 60), (2, 84), (3, 60), (4, 60)] {
+            let alpha = views[index].pixels[2 * views[index].stride + source_x * 4 + 3];
+            assert!(
+                alpha > 0 && alpha < 255,
+                "layer {index} must be translucent"
+            );
+        }
+        assert!(
+            views[2]
+                .pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel[3] > 0 && pixel[3] < 128),
+            "the fractional strip edge must be antialiased"
+        );
+        for (x, y) in (0..32_u32).flat_map(|y| (0..64_u32).map(move |x| (x, y))) {
+            let mut premultiplied = [0.0_f32; 4];
+            for view in &views {
+                for (dest, scroll_x) in &view.pieces {
+                    if x < dest.x
+                        || x >= dest.x.saturating_add(dest.width)
+                        || y < dest.y
+                        || y >= dest.y.saturating_add(dest.height)
+                    {
+                        continue;
+                    }
+                    let at = usize::try_from(y).unwrap() * view.stride
+                        + usize::try_from(x.saturating_add(*scroll_x)).unwrap() * 4;
+                    let pixel = &view.pixels[at..at + 4];
+                    let alpha = f32::from(pixel[3]) / 255.0;
+                    for channel in 0..3 {
+                        let source = f32::from(pixel[channel]) / 255.0;
+                        premultiplied[channel] =
+                            source * alpha + premultiplied[channel] * (1.0 - alpha);
+                    }
+                    premultiplied[3] = alpha + premultiplied[3] * (1.0 - alpha);
+                }
+            }
+            // The compositor blends premultiplied source-over, then stores
+            // straight RGBA8, as the dense fine stage does.
+            let mut actual = [0_u8; 4];
+            for channel in 0..3 {
+                actual[channel] = ui::num::u8_of_f64(f64::from(
+                    (premultiplied[channel] / premultiplied[3] * 255.0).round(),
+                ));
+            }
+            actual[3] = ui::num::u8_of_f64(f64::from((premultiplied[3] * 255.0).round()));
+            let at = (usize::try_from(y).unwrap() * 64 + usize::try_from(x).unwrap()) * 4;
+            assert_eq!(actual, oracle.screen_rgba()[at..at + 4], "pixel {x},{y}");
+        }
+    }
+
+    #[test]
     fn preserved_strip_pan_reuses_pixels_and_matches_the_dense_scene() {
         let mut canvases = Canvases::new();
         let first = cache(0);
