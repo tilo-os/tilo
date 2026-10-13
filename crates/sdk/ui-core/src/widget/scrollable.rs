@@ -2104,9 +2104,7 @@ mod tests {
             taffy.widget_leaf(style, node_map, self)
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn draw(
             &mut self,
@@ -2143,10 +2141,6 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "EventSpy"
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
         }
 
         fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {

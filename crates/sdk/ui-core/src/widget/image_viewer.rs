@@ -208,9 +208,7 @@ impl Widget for ImageViewer {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -320,10 +318,6 @@ impl Widget for ImageViewer {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         Some(AccessNode::new(Role::Image))
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

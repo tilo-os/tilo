@@ -801,13 +801,7 @@ impl Widget for OverviewPanel {
         }
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    ui::redraw_flag!();
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         (self.open && self.rows.iter().any(|(_, rect)| rect.contains(point)))

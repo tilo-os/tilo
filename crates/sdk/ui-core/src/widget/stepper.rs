@@ -609,13 +609,7 @@ impl Widget for Stepper {
         }
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
