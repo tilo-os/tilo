@@ -32,10 +32,12 @@ const snapshot = () => evaluate('tiloMount.navigation.getSnapshot()');
 const command = body => evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});return true;})()`);
 const label = s => s.entries.find(e => e.route.workspace === s.active.workspace && e.route.strip === s.active.strip && e.route.tab === s.active.tab)?.label;
 const workspace = s => s.workspaces.findIndex(w => w.id === s.activeWorkspace);
-// Waits for the desktop to settle on what an input asked for.
+// Waits for the desktop to settle on what an input asked for. Some changes
+// land on the next drawn frame, and headless Chrome may draw only about once
+// a second.
 async function settles(what, read, expected) {
   let got;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 150; i++) {
     got = read(await snapshot());
     if (JSON.stringify(got) === JSON.stringify(expected)) return;
     await sleep(100);
@@ -43,12 +45,18 @@ async function settles(what, read, expected) {
   if (process.env.SHOTS_DIR) writeFileSync(join(process.env.SHOTS_DIR, 'navigation-failed.png'), await tab.screenshot());
   assert.deepEqual(got, expected, what);
 }
-// The centre of the first semantics node with this accessible name.
-async function named(name) {
-  const bounds = await evaluate(`(()=>{const walk=n=>{if(!n||typeof n!=='object')return null;
-    if(n.name===${JSON.stringify(name)}&&n.bounds)return n.bounds;
-    for(const v of Object.values(n)){const r=walk(v);if(r)return r}return null};
-    return walk(tiloMount.state().semantics)})()`);
+// The centre of the first semantics node with this accessible name (and,
+// when given, a description starting with `described`), once the desktop
+// shows it.
+async function named(name, described = '') {
+  let bounds;
+  for (let i = 0; i < 150 && !bounds; i++) {
+    if (i) await sleep(100);
+    bounds = await evaluate(`(()=>{const walk=n=>{if(!n||typeof n!=='object')return null;
+      if(n.name===${JSON.stringify(name)}&&n.bounds&&(n.description??'').startsWith(${JSON.stringify(described)}))return n.bounds;
+      for(const v of Object.values(n)){const r=walk(v);if(r)return r}return null};
+      return walk(tiloMount.state().semantics)})()`);
+  }
   assert.ok(bounds, `the desktop shows "${name}"`);
   return [(bounds.x0 + bounds.x1) / 2, (bounds.y0 + bounds.y1) / 2];
 }
@@ -73,11 +81,12 @@ const typing = async what => assert.equal(await evaluate('document.activeElement
 const apps = (await snapshot()).applications.map(a => a.id);
 for (const app of ['so.tilo.clocks', 'so.tilo.calculator', 'so.tilo.notes']) {
   assert.ok(apps.includes(app), `${app} is in this bundle: ${apps}`);
+  const before = (await snapshot()).entries.length;
   await command({kind: 'launch', app});
-  await sleep(2000);
+  await settles(`${app} opens`, s => s.entries.length, before + 1);
+  await sleep(1000);
 }
 const order = (await snapshot()).entries.map(e => e.label);
-assert.equal(order.length, 3, `three windows: ${order}`);
 const {width, height} = await evaluate('(({width,height})=>({width,height}))(tiloMount.canvas.getBoundingClientRect())');
 const [cx, cy] = [Math.round(width / 2), Math.round(height * 0.6)];
 
@@ -111,7 +120,8 @@ console.log(JSON.stringify({step: 'workspace buttons', ok: true}));
 await command({kind: 'select', route: (await snapshot()).entries.find(e => e.label === 'Notes').route});
 await settles('Notes is active', label, 'Notes');
 await sleep(1000);
-await click(...await named('New note'));
+// The empty notebook's own button, which opens the note in its editor.
+await click(...await named('New note', 'Create the first note'));
 await sleep(1500);
 await typing('');
 await chord('PageDown');
