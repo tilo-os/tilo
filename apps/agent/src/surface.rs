@@ -188,16 +188,6 @@ impl Offer {
             .then(|| tilo_actions::PROMPTED_PARAM.to_owned())
     }
 
-    /// Whether performing it answers with content another operation takes:
-    /// its declared result is a `tilo.content` resource.
-    pub fn produces_content(&self) -> bool {
-        matches!(
-            &self.descriptor.contract.result,
-            tilo_actions::ResultSpec::Resource { resource_kind }
-                if resource_kind == tilo_actions::CONTENT_RESOURCE_KIND
-        )
-    }
-
     /// Deterministic floor for the common one-text-parameter action. Richer
     /// shapes are deliberately left to the structured planner; guessing how
     /// prose maps onto multiple or non-text fields would violate the schema.
