@@ -302,9 +302,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automation",
- "tilo-automerge-fork",
  "tilo-content",
- "tilo-doc",
  "tilo-model-gateway",
  "tilo-test-env",
  "tilo-user-identity",
@@ -4351,11 +4349,11 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-copy-lint",
- "tilo-doc-codecs",
  "tilo-files",
  "tilo-fs",
  "tilo-history",
  "tilo-paths",
+ "tilo-process",
  "tilo-test-env",
  "tilo-thumbnail",
  "tilo-user-identity",
@@ -10912,7 +10910,6 @@ name = "pdf-viewer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "blake3",
  "fnv",
  "image",
  "runtime-dylib",
@@ -14218,6 +14215,7 @@ dependencies = [
  "accesskit_unix",
  "accounts",
  "agent-provider-config",
+ "app-cli",
  "ash",
  "base64",
  "blake3",
@@ -14239,6 +14237,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "emoji",
  "file-explorer",
+ "flate2",
  "fnv",
  "fs-protocol",
  "futures-util",
@@ -14276,6 +14275,7 @@ dependencies = [
  "rand_chacha 0.10.0",
  "rand_core 0.10.0",
  "rcgen",
+ "registry-types",
  "reis",
  "resvg",
  "runtime-collab",
@@ -15847,6 +15847,7 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-session",
+ "tilo-resource",
  "tilo-rt",
  "tilo-test-env",
  "tilo-ui",
@@ -15866,6 +15867,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]
@@ -16626,6 +16628,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "uuid",
+ "web-time",
 ]
 
 [[package]]
@@ -17721,6 +17724,7 @@ name = "tilo-reference"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "proptest",
  "serde",
  "serde_json",
  "tilo-actions",

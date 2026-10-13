@@ -283,16 +283,17 @@ impl HexView {
         if has_inspector && tick {
             self.drawer.tick(theme);
         }
-        let mut content = if has_inspector {
+        let content = if has_inspector && std::mem::take(&mut self.reveal_inspector) {
+            // Resolve first so the drawer knows its layout before it opens.
+            self.drawer.resolve(outer);
+            self.drawer.open();
+            self.drawer.snap(true);
+            self.drawer.resolve(outer)
+        } else if has_inspector {
             self.drawer.resolve(outer)
         } else {
             outer
         };
-        if has_inspector && std::mem::take(&mut self.reveal_inspector) {
-            self.drawer.open();
-            self.drawer.snap(true);
-            content = self.drawer.resolve(outer);
-        }
         let panel = if has_inspector {
             self.drawer.sidebar_rect()
         } else {

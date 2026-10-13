@@ -48,7 +48,7 @@ mod windows;
 #[cfg(target_os = "linux")]
 mod xdg;
 
-pub use caps::{Availability, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 
 use portal::{
     ContentsChannel, LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome,

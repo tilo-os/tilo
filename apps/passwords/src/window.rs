@@ -96,79 +96,20 @@ impl Core {
     }
 }
 
-/// The sidebar: the shared [`NavList`], kept in step with the vault.
-struct Sidebar {
-    list: NavList,
-    core: Shared,
-    sections: Vec<NavSection>,
-    selected: String,
+/// The sidebar: the shared [`NavList`], following the vault.
+fn sidebar(core: &Shared, requests: &Requests) -> NavList {
+    let requests = Rc::clone(requests);
+    let core = Rc::clone(core);
+    NavList::new(Vec::new())
+        .with_id("passwords.sidebar")
+        .with_accessible_name("Vault")
+        .on_select(move |id| requests.borrow_mut().push(Request::Navigate(id)))
+        .follow(move || {
+            let core = core.try_borrow().ok()?;
+            Some((core.nav_sections(), Some(core.place_id())))
+        })
 }
 
-impl Sidebar {
-    fn new(core: &Shared, requests: &Requests) -> Self {
-        let (sections, selected) = {
-            let core = core.borrow();
-            (core.nav_sections(), core.place_id())
-        };
-        let requests = Rc::clone(requests);
-        let list = NavList::new(sections.clone())
-            .with_id("passwords.sidebar")
-            .with_accessible_name("Vault")
-            .selected(&selected)
-            .on_select(move |id| requests.borrow_mut().push(Request::Navigate(id)));
-        Self {
-            list,
-            core: Rc::clone(core),
-            sections,
-            selected,
-        }
-    }
-
-    fn refresh(&mut self) {
-        let (sections, selected) = {
-            let core = self.core.borrow();
-            (core.nav_sections(), core.place_id())
-        };
-        if sections != self.sections {
-            self.list.set_sections(sections.clone());
-            self.sections = sections;
-        }
-        if self.selected != selected
-            || self.list.selected_id().as_deref() != Some(selected.as_str())
-        {
-            self.list.set_selected(Some(&selected));
-            self.selected = selected;
-        }
-    }
-}
-
-impl ui::widget::Decorator for Sidebar {
-    type Inner = NavList;
-
-    fn inner(&self) -> &NavList {
-        &self.list
-    }
-
-    fn inner_mut(&mut self) -> &mut NavList {
-        &mut self.list
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.refresh();
-        Widget::sync(&mut self.list, state, path);
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.refresh();
-        Widget::update(&mut self.list, state, path)
-    }
-
-    fn name(&self) -> &'static str {
-        "PasswordsSidebar"
-    }
-}
-
-/// The application root.
 pub struct PasswordsSurface {
     core: Shared,
     requests: Requests,
@@ -198,7 +139,7 @@ impl PasswordsSurface {
         let title = core.borrow().filter.label().to_owned();
         let shell = NavShell::new()
             .with_id("passwords.shell")
-            .sidebar(Box::new(Sidebar::new(&core, &requests)))
+            .sidebar(Box::new(sidebar(&core, &requests)))
             .overview(Box::new(ListPane::new(&core, &requests)))
             .overview_header(
                 title.clone(),

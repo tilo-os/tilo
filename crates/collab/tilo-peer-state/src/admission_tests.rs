@@ -1902,9 +1902,7 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
                 .unwrap();
         }
         outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
-        if delivered {
-            assert!(outbox.is_empty());
-        } else {
+        if !delivered {
             assert_eq!(outbox.len(), 2);
             assert_eq!(postcard::to_allocvec(&outbox[0]).unwrap(), old_bytes);
             let (
@@ -1955,8 +1953,8 @@ fn expired_durable_outbox_reconciles_against_fresh_governor_without_duplicate_ch
                     .unwrap();
             }
             outbox = client.reconcile_outbox(&outbox, &b, later).unwrap();
-            assert!(outbox.is_empty());
         }
+        assert!(outbox.is_empty());
         assert_eq!(client.rows(), governor.rows());
         let final_doc = AutoCommit::load(&governor.document("test.app", "tab:1").unwrap()).unwrap();
         let (_, text) = final_doc.get(ROOT, "text").unwrap().unwrap();

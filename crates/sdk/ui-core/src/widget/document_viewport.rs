@@ -1073,8 +1073,7 @@ impl Widget for DocumentViewport {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 // An active scrollbar thumb drag owns the move.
                 if self.state.drag_scrollbar(self.last_cursor) {
                     self.dirty = true;

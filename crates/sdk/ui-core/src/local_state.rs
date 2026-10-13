@@ -117,7 +117,8 @@ impl<T> LocalState<T> {
         true
     }
 
-    pub(crate) fn revision(&self) -> u64 {
+    /// Monotonic local edit revision for correlating asynchronous receipts.
+    pub fn revision(&self) -> u64 {
         self.inner.revision.load(Ordering::Acquire)
     }
 

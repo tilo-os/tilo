@@ -1,11 +1,6 @@
 //! Storage versions, migrations, unreadable documents and the public
 //! surface.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "test assertions"
-)]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;

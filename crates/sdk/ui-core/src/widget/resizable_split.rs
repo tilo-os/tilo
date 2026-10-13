@@ -273,8 +273,7 @@ impl SplitHandle {
     ) -> bool {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 self.hover = self.divider.contains(self.cursor);
                 if let Some(offset) = self.drag {
                     *ctx.handled = true;
@@ -682,17 +681,11 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             }
         }
         let cursor_pt = match event {
-            WindowEvent::CursorMoved { position, .. } => Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            )),
+            WindowEvent::CursorMoved { position, .. } => Some(ctx.logical(position)),
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
                 Some(self.handle.cursor)
             }
-            WindowEvent::Touch(touch) => Some(Point::new(
-                touch.location.x / ctx.scale_factor,
-                touch.location.y / ctx.scale_factor,
-            )),
+            WindowEvent::Touch(touch) => Some(ctx.logical(touch.location)),
             _ => None,
         };
 
@@ -855,10 +848,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 SplitOrientation::Horizontal => taffy::FlexDirection::Row,
                 SplitOrientation::Vertical => taffy::FlexDirection::Column,
             },
-            size: taffy::Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
-            },
+            size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
             ..Default::default()
         };
         taffy.widget_node(style, &children, node_map, self)
@@ -905,8 +895,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         if let Some(&n) = children.get(1) {
             self.right.apply_layout(taffy, n, new_origin);
         }
-        let mut divider_followed_content = false;
-        if self.content_sized_first {
+        let divider_followed_content = self.content_sized_first && {
             // The divider sits where the content-sized pane ends.
             let first = self.left.get_rect();
             let (along, extent) = match self.orientation {
@@ -917,8 +906,8 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 SplitOrientation::Horizontal => self.rect.x0,
                 SplitOrientation::Vertical => self.rect.y0,
             };
-            divider_followed_content = self.handle.ratio_mut().follow(along, start, extent);
-        }
+            self.handle.ratio_mut().follow(along, start, extent)
+        };
         self.layout_dirty = divider_followed_content && self.handle.test_id.is_some();
         self.handle.set_bounds(self.rect);
     }
@@ -1140,16 +1129,10 @@ mod tests {
             self.changes
         }
 
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-        }
+        crate::rect_geometry!();
 
         fn name(&self) -> &'static str {
             "TestLeaf"
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
         }
     }
 

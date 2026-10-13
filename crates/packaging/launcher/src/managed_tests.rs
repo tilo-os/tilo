@@ -1,6 +1,8 @@
 use crate::managed::*;
+#[cfg(target_os = "linux")]
 use package_store::InstalledPackage;
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 #[test]
@@ -107,6 +109,7 @@ type = "cli"
     (root, package, trust)
 }
 
+#[cfg(target_os = "linux")]
 fn assert_normal_launch_expected_root(installed: &InstalledPackage) {
     let original = &installed.package_id_hex;
     let verify = |expected: &str| {
@@ -191,6 +194,7 @@ fn managed_package_verifies_actual_content_addressed_install() {
         .unwrap()
         .package;
     assert!(!installed.payload_root.join("manifest.toml").exists());
+    #[cfg(target_os = "linux")]
     assert_normal_launch_expected_root(&installed);
     assert!(
         package_store::integrity::record_dir(&installed)

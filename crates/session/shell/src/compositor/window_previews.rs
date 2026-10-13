@@ -22,9 +22,7 @@ use std::time::Instant;
 use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use vello::peniko::{
-    Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat, ImageQuality,
-};
+use vello::peniko::{Extend, Fill, ImageBrush, ImageQuality};
 
 use crate::compositor::foreign::store;
 use crate::compositor::frame::FrameBuilder;
@@ -99,13 +97,7 @@ impl WindowPreviewRenderer {
         else {
             return false;
         };
-        let image = ImageData {
-            data: Blob::new(Arc::new(frame.rgba)),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
-            width: frame.width,
-            height: frame.height,
-        };
+        let image = ui::raster::rgba8_premultiplied(frame.rgba, frame.width, frame.height);
         let brush = ImageBrush::new(image)
             .with_extend(Extend::Pad)
             .with_quality(ImageQuality::High);

@@ -19,11 +19,13 @@ pub enum ExecutionStatus {
     Cancelled,
     CancellationRequested,
     OutcomeUnknown,
+    Ended,
 }
 
 /// One broker-authored observation, without action arguments or result content.
 #[derive(Clone, Debug)]
 pub struct ExecutionActivity {
+    lifetime: ExecutionLease,
     /// Broker lifetime; a reconnect must not join two sequence namespaces.
     pub epoch: uuid::Uuid,
     /// Strict emission order within `epoch`; lag is reported by the receiver.
@@ -37,6 +39,14 @@ pub struct ExecutionActivity {
     pub route: CrdtRoute,
     pub address: ActionAddress,
     pub status: ExecutionStatus,
+}
+
+impl ExecutionActivity {
+    /// Whether its transport run still exists; buffered observations cannot revive it.
+    #[must_use]
+    pub fn execution_is_live(&self) -> bool {
+        self.lifetime.is_live()
+    }
 }
 
 /// Only trusted action-host admission constructs this input, not action context.
@@ -208,6 +218,21 @@ impl ActivityTarget {
         })
     }
 
+    pub(super) fn belongs_to(&self, caller: &Caller) -> bool {
+        // The host-owned lease is shared with a delegated agent. The admitted
+        // person can retire it without changing the actor of its running jobs.
+        self.scope.as_ref().is_some_and(|scope| {
+            caller.execution_lease().as_ref() == Some(&scope.lifetime)
+                && caller.room() == Some(self.route.cluster_id.as_str())
+        })
+    }
+
+    pub(super) fn retire_scope(&mut self) {
+        // Invocation-level attribution outlives the transport: work still
+        // runs in its view and must show its actual progress and outcome.
+        self.scope = None;
+    }
+
     pub(super) fn route(&self) -> &CrdtRoute {
         &self.route
     }
@@ -272,6 +297,9 @@ impl ActivityBus {
         else {
             return;
         };
+        if status != ExecutionStatus::Ended && !scope.lifetime.is_live() {
+            return;
+        }
         let Ok(mut bus) = self.0.lock() else {
             return;
         };
@@ -293,6 +321,7 @@ impl ActivityBus {
             return;
         };
         let _ = sender.send(Arc::new(ExecutionActivity {
+            lifetime: scope.lifetime.clone(),
             epoch: bus.epoch,
             sequence,
             source_time_ms,

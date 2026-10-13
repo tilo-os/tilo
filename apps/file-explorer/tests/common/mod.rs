@@ -6,11 +6,7 @@
 #![allow(dead_code)]
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -19,7 +15,7 @@ use std::path::Path;
 use file_explorer::FileExplorerWidget;
 use ui::headless::Framed;
 use vello::kurbo::Point;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
 
 pub const VIEWPORT: (f32, f32) = (1200.0, 760.0);
 
@@ -99,18 +95,10 @@ impl Harness {
         });
     }
     pub fn press(&mut self) {
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        self.dispatch(&ui::synthetic_input::mouse_press());
     }
     pub fn release(&mut self) {
-        self.dispatch(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.dispatch(&ui::synthetic_input::mouse_release());
     }
 }
 

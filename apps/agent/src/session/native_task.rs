@@ -129,6 +129,7 @@ impl Session {
             run_id: run.run_id,
             lease: self.task_lease(run),
             peer_id: following.action.peer_id,
+            provider: following.action.provider.clone(),
             resource: following.action.resource.clone(),
             action: following.action.action.clone(),
             arguments: following.arguments.clone(),

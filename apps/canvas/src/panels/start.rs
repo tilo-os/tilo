@@ -174,19 +174,14 @@ impl Widget for Swatch {
         use ui::widget::TaffyTreeExt as _;
         let side = theme.tokens.metrics.min_pointer_target;
         let style = Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(side),
-                height: taffy::Dimension::length(side),
-            },
+            size: taffy::Size::from_lengths(side, side),
             flex_shrink: 0.0,
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     #[allow(
         clippy::arithmetic_side_effects,
@@ -233,10 +228,6 @@ impl Widget for Swatch {
 
     fn name(&self) -> &'static str {
         "Swatch"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

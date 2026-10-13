@@ -508,8 +508,7 @@ impl Widget for Stepper {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 let hovered = self.station_at(self.last_cursor);
                 if hovered != self.hovered {
                     self.hovered = hovered;
@@ -610,13 +609,7 @@ impl Widget for Stepper {
         }
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    crate::redraw_flag!();
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
@@ -656,11 +649,11 @@ impl Widget for Stepper {
                     .map(|index| {
                         AccessNode::new(Role::Button)
                             .with_name(self.steps.get(index).cloned().unwrap_or_default())
-                            .with_state(AccessState {
-                                focusable: true,
-                                focused: self.focused && self.focused_station == Some(index),
-                                ..Default::default()
-                            })
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .focused(self.focused && self.focused_station == Some(index)),
+                            )
                             .with_action_target(self.station_id(index))
                     })
                     .collect(),

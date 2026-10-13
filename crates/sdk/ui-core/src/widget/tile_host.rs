@@ -1416,6 +1416,12 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        if let TileContent::App(widget) = &mut self.content {
+            widget.on_floating_surface_ime_source_changed(id);
+        }
+    }
+
     fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
         if let TileContent::App(widget) = &mut self.content {
             widget.on_floating_surface_event_source(id);
@@ -1484,6 +1490,23 @@ impl FloatingSurfaceProvider for TileHost {
     ) {
         if let TileContent::App(widget) = &mut self.content {
             widget.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> bool {
+        match &mut self.content {
+            TileContent::App(widget) => {
+                widget.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
+            }
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         }
     }
 
