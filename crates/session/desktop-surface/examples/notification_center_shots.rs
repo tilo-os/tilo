@@ -15,6 +15,8 @@ use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::Fill;
 use winit::keyboard::{Key, NamedKey};
 
+const HEIGHT: u32 = 640;
+
 #[derive(Default)]
 struct Fixture(RefCell<NotificationLog>);
 
@@ -69,21 +71,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&out)?;
     for (name, theme) in capture_themes() {
         let host = Fixture::default();
-        host.0.borrow_mut().retain(
+        // What a centre legitimately holds: things the person did not do
+        // themselves. Oldest first, as they arrived.
+        for notice in [
             Notification::new(
-                "Couldn't open Notes",
-                "The app stopped before opening. Try again.",
+                "Backup couldn't finish",
+                "The backup disk was disconnected halfway through. Reconnect it and the next backup picks up where this one stopped.",
             )
-            .with_app_name("Applications")
+            .with_app_name("Backups")
             .with_severity(NotificationSeverity::Error),
-        );
-        host.0.borrow_mut().retain(
             Notification::new(
-                "Document synchronized",
-                "All changes are available on this device.",
+                "Keep this identity?",
+                "A passkey brings you back as yourself on any browser.",
+            ),
+            Notification::new("Lena", "Pushed the new floor plan, take a look when you can")
+                .with_app_name("Chat"),
+            Notification::new(
+                "Ada mentioned you in Launch notes",
+                "“Can you check the pricing table before we send this out tomorrow morning?”",
             )
-            .with_app_name("Files"),
-        );
+            .with_app_name("Notes"),
+        ] {
+            host.0.borrow_mut().retain(notice);
+        }
         let width = if name.starts_with("narrow-") {
             352
         } else if name == "large-text" {
@@ -91,11 +101,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             400
         };
-        let panel = Rect::new(16.0, 16.0, f64::from(width) - 16.0, 544.0);
-        let layout = CenterLayout::new(
-            panel,
-            CenterLayout::metrics(&theme, &mut TextRenderer::new()),
-        );
+        let metrics = CenterLayout::metrics(&theme, &mut TextRenderer::new());
+        // As tall as the rows ask, like every host sizes it.
+        let height = NotificationCenter::new()
+            .preferred_height_for_width(&host.log(), metrics, f64::from(width) - 32.0)
+            .min(f64::from(HEIGHT) - 32.0);
+        let panel = Rect::new(16.0, 16.0, f64::from(width) - 16.0, 16.0 + height);
+        let layout = CenterLayout::new(panel, metrics);
         let mut center = NotificationCenter::new();
         for state in [
             "clear-focused",
@@ -144,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None,
             );
             let path = out.join(format!("{name}-{state}.png"));
-            OffscreenRenderer::new(width, 560).render_png(
+            OffscreenRenderer::new(width, HEIGHT).render_png(
                 &scene,
                 theme.tokens.colors.surfaces.base,
                 &path,

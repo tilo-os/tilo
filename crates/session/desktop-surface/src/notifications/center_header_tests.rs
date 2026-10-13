@@ -22,7 +22,7 @@ fn enlarged_notification_header_keeps_the_title_readable_and_actions_separate() 
             );
         }
         assert!(layout.back().x1 + qs::RELATED_GAP <= layout.clear().x0);
-        assert!(layout.position_y() >= layout.back().y1 + qs::RELATED_GAP);
+        assert!(layout.rows_top() >= layout.back().y1 + qs::RELATED_GAP);
     }
 }
 
@@ -42,7 +42,7 @@ fn wrapped_header_sizing_preserves_the_complete_row_and_pager_budget() {
         let layout = CenterLayout::new(Rect::new(0.0, 0.0, 320.0, height), metrics);
         assert_eq!(layout.visible_rows(total), rows.max(1));
         assert!(layout.title_rect().y0 >= layout.back().y1 + qs::RELATED_GAP);
-        assert!(layout.title_rect().y1 + qs::RELATED_GAP <= layout.position_y());
+        assert!(layout.title_rect().y1 + qs::RELATED_GAP <= layout.rows_top());
         if rows > 0 {
             let bottom = if total > rows {
                 layout.footer().y0 - qs::RELATED_GAP
@@ -104,7 +104,7 @@ fn narrow_header_keeps_clear_undo_and_nested_back_journeys() {
             let back = dialog
                 .children
                 .iter()
-                .find(|n| n.name.as_deref() == Some(t("drill-in-back").as_str()))
+                .find(|n| n.name.as_deref() == Some(t("notification-center-close").as_str()))
                 .unwrap();
             assert_eq!(back.bounds.unwrap().to_rect(), layout.back());
             let back_path = [dialog.children.len().saturating_sub(1)];
@@ -172,4 +172,47 @@ fn enlarged_clear_status_fits_above_undo_instead_of_wrapping_out_of_the_panel() 
     assert!(f64::from(measured.0) <= label.width());
     assert!(label.y1 + qs::RELATED_GAP <= layout.undo().y0);
     assert!(layout.cleared_band().y1 <= layout.panel().y1);
+}
+
+#[test]
+fn a_row_body_wraps_to_two_lines_and_elides_the_rest() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let style = theme.text(TextRole::Caption);
+    let line = f64::from(text.measure_style("Ag", None, &style).1);
+    let long = "The backup disk was disconnected halfway through. Reconnect it and the next backup picks up where this one stopped.";
+    let shown = super::preview_lines(&mut text, long, 200.0, &style, super::BODY_LINES);
+    assert!(shown.ends_with('…'), "{shown}");
+    let height = f64::from(text.measure_style(&shown, Some(200.0), &style).1);
+    assert!(height <= line * 2.5, "{shown} is {height}px");
+    assert!(height > line * 1.5, "two lines are used before eliding");
+    assert_eq!(
+        super::preview_lines(&mut text, "Ready", 200.0, &style, super::BODY_LINES),
+        "Ready"
+    );
+}
+
+#[test]
+fn the_leading_control_closes_a_standalone_centre_and_goes_back_in_a_drill_in() {
+    let theme = Theme::dark();
+    let metrics = CenterLayout::metrics(&theme, &mut TextRenderer::new());
+    let panel = Rect::new(0.0, 0.0, 360.0, 480.0);
+    let standalone = CenterLayout::new(panel, metrics);
+    let drill_in = CenterLayout::new(panel, metrics).drill_in();
+    assert_eq!(
+        super::leading_label(&standalone),
+        t("notification-center-close")
+    );
+    assert_eq!(super::leading_label(&drill_in), t("drill-in-back"));
+    // A close button is square; Back carries its word.
+    assert!((standalone.back().width() - standalone.back().height()).abs() < 1e-6);
+    assert!(drill_in.back().width() > drill_in.back().height());
+    let host = super::super::stack::tests::TestHost::default();
+    let dialog = NotificationCenter::new().accessibility(&host, &standalone, ui::time::now());
+    assert!(
+        dialog
+            .children
+            .iter()
+            .any(|n| n.name.as_deref() == Some(t("notification-center-close").as_str()))
+    );
 }
