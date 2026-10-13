@@ -1050,3 +1050,27 @@ fn an_image_description_is_set_and_cleared_only_on_an_image() {
         .unwrap();
     assert!(block_alts(&replica).iter().all(|(_, _, alt)| alt.is_none()));
 }
+
+/// A refused edit names the block it could not find (a placeholder a plan
+/// left in), so the caller can read the document and name a real one.
+#[test]
+fn a_refused_edit_names_the_block_the_document_lacks() {
+    let mut replica = document(1);
+    let error = replica
+        .apply_action(
+            &RichTextAction::SpliceText {
+                region: RegionKind::Body,
+                block: "{{previous}}".into(),
+                at: 0,
+                del: 0,
+                ins: "x".into(),
+            },
+            "Edit",
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("no block `{{previous}}`") && error.contains("read-text"),
+        "{error}"
+    );
+}

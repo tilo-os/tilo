@@ -173,6 +173,8 @@ struct Running {
     last: Option<ActionOutput>,
     /// Content addresses the task's steps produced, oldest first.
     produced: Vec<String>,
+    /// The app whose step made each of [`Self::produced`], in step.
+    produced_by: Vec<String>,
     /// What the task's steps answered, oldest first, at most
     /// [`MOST_OBSERVED`]: what the task is planned again with.
     observed: VecDeque<String>,
@@ -217,6 +219,43 @@ impl Running {
 }
 
 impl Running {
+    /// `step` ran and answered `output`, making `content`; `edited` when it
+    /// changed a record.
+    fn ran_step(
+        &mut self,
+        step: &Step,
+        output: Option<ActionOutput>,
+        content: Vec<String>,
+        edited: bool,
+    ) {
+        self.performed = self.performed.saturating_add(1);
+        if matches!(step.action, StepAction::Invoke { .. }) {
+            self.acted = self.acted.saturating_add(1);
+        }
+        self.changed |= edited || !content.is_empty();
+        self.ran.push(step_brief(step));
+        if let Some(output) = output {
+            self.answered(step, output);
+        }
+        self.produced_by
+            .extend(std::iter::repeat_n(step.app.clone(), content.len()));
+        self.produced.extend(content);
+    }
+
+    /// The content a placeholder in a step of `app` stands for: the latest
+    /// another app's step made (the picture an export made, to place in a
+    /// document), else the latest of all. A document's own export placed in
+    /// itself is never what a plan means.
+    fn latest_from_elsewhere(&self, app: &str) -> Option<&String> {
+        self.produced
+            .iter()
+            .zip(&self.produced_by)
+            .rev()
+            .find(|(_, by)| by.as_str() != app)
+            .map(|(content, _)| content)
+            .or_else(|| self.produced.last())
+    }
+
     /// When every step ran and they only read (a plan of reads alone, from
     /// a model that meant to plan with what they answer), plan the rest
     /// once more with what they found. Steps written out run as written.
@@ -247,6 +286,7 @@ impl Running {
             performed: 0,
             last: None,
             produced: Vec::new(),
+            produced_by: Vec::new(),
             observed: VecDeque::new(),
             repaired: false,
             news_replans: 0,
@@ -286,6 +326,40 @@ impl Running {
             self.last = Some(output);
         }
     }
+}
+
+/// Why `address` names nothing, with what the record offers instead: the
+/// resource's own actions, else the resources that have that action.
+fn unknown_action(address: &ActionAddress, offered: &[ActionDescriptor]) -> String {
+    const LISTED: usize = 12;
+    let mut own: Vec<&str> = offered
+        .iter()
+        .filter(|descriptor| descriptor.address.resource == address.resource)
+        .map(|descriptor| descriptor.address.action.as_str())
+        .collect();
+    own.dedup();
+    let elsewhere: Vec<&str> = offered
+        .iter()
+        .filter(|descriptor| descriptor.address.action == address.action)
+        .map(|descriptor| descriptor.address.resource.as_str())
+        .take(LISTED)
+        .collect();
+    let mut reason = format!(
+        "unknown_action: {} has no action `{}`",
+        address.resource, address.action
+    );
+    if !own.is_empty() {
+        own.truncate(LISTED);
+        reason = format!("{reason}; it offers {}", own.join(", "));
+    }
+    if !elsewhere.is_empty() {
+        reason = format!(
+            "{reason}; `{}` is on {}",
+            address.action,
+            elsewhere.join(", ")
+        );
+    }
+    reason
 }
 
 /// What a task whose plan was only reads is planned again with.
@@ -788,16 +862,7 @@ impl AgentParticipant {
                 let Some(running) = self.running.as_mut() else {
                     return false;
                 };
-                running.performed = running.performed.saturating_add(1);
-                if matches!(step.action, StepAction::Invoke { .. }) {
-                    running.acted = running.acted.saturating_add(1);
-                }
-                running.changed |= edited || !content.is_empty();
-                running.ran.push(step_brief(&step));
-                if let Some(output) = output {
-                    running.answered(&step, output);
-                }
-                running.produced.extend(content);
+                running.ran_step(&step, output, content, edited);
                 // The next step plans nothing unless it is a `Continue`.
                 !matches!(
                     running.steps.front().map(|step| &step.action),
@@ -1118,7 +1183,7 @@ impl AgentParticipant {
             if let Some(latest) = self
                 .running
                 .as_ref()
-                .and_then(|running| running.produced.last())
+                .and_then(|running| running.latest_from_elsewhere(&step.app))
             {
                 tilo_agent::plan::bind_latest_content(&mut arguments, latest);
             }
@@ -1721,9 +1786,16 @@ impl AgentParticipant {
                 descriptor.action_label, descriptor.resource_label
             )
         });
-        let output = app
-            .invoke(address, arguments, confirmed)
-            .map_err(Refusal::Door)?;
+        let output = match app.invoke(address, arguments, confirmed) {
+            Err(tilo_actions::DoorError::Unknown(_)) => {
+                // Say what the record does offer, so the next plan names it.
+                return Err(Refusal::Agent(unknown_action(
+                    address,
+                    &app.survey_with_effects(),
+                )));
+            }
+            outcome => outcome.map_err(Refusal::Door)?,
+        };
         if let Some(mutation) = app
             .take_mutation()
             .map_err(|error| Refusal::Agent(error.to_string()))?
@@ -2090,5 +2162,76 @@ mod tests {
         written.acted = 1;
         written.plan_again_after_reads();
         assert!(written.steps.is_empty());
+    }
+
+    /// A placeholder in a step placing content in the Word Processor is the
+    /// picture Canvas exported, not the document's own export made after it;
+    /// with only its own app's content, that is what it gets.
+    #[test]
+    fn a_placeholder_stands_for_the_latest_content_from_another_app() {
+        let mut running =
+            Running::new("t1".into(), "place the hero".into(), Vec::new(), Vec::new());
+        running.produced = vec!["tilo.content:png".into(), "tilo.content:md".into()];
+        running.produced_by = vec!["so.tilo.canvas".into(), "so.tilo.word-processor".into()];
+        assert_eq!(
+            running
+                .latest_from_elsewhere("so.tilo.word-processor")
+                .map(String::as_str),
+            Some("tilo.content:png")
+        );
+        assert_eq!(
+            running
+                .latest_from_elsewhere("so.tilo.canvas")
+                .map(String::as_str),
+            Some("tilo.content:md")
+        );
+        running.produced.truncate(0);
+        running.produced_by.truncate(0);
+        running.produced.push("tilo.content:own".into());
+        running.produced_by.push("so.tilo.slides".into());
+        assert_eq!(
+            running
+                .latest_from_elsewhere("so.tilo.slides")
+                .map(String::as_str),
+            Some("tilo.content:own")
+        );
+    }
+
+    /// An action a resource lacks is refused naming what it offers and
+    /// where the action is.
+    #[test]
+    fn an_unknown_action_names_what_is_offered() {
+        let descriptor = |resource: &str, action: &str| ActionDescriptor {
+            semantic_identity: None,
+            address: ActionAddress::new(resource, action),
+            resource_kind: "sheets.sheet".into(),
+            resource_label: "Sheet".into(),
+            action_label: action.into(),
+            description: None,
+            locus: tilo_actions::ExecutionLocus::ClientLocal,
+            kind: tilo_actions::OperationKind::Effect,
+            contract: tilo_actions::ActionContract::default(),
+            params: Vec::new(),
+            input: tilo_actions::InputSpec::None,
+            view: None,
+        };
+        let offered = vec![
+            descriptor("sheets.sheet:1", "rename"),
+            descriptor("sheets.sheet:1", "set-hidden"),
+            descriptor("sheets.workbook", "delete-sheet"),
+        ];
+        let reason = unknown_action(&ActionAddress::new("sheets.sheet:1", "delete"), &offered);
+        assert_eq!(
+            reason,
+            "unknown_action: sheets.sheet:1 has no action `delete`; it offers rename, set-hidden"
+        );
+        let reason = unknown_action(
+            &ActionAddress::new("sheets.sheet:1", "delete-sheet"),
+            &offered,
+        );
+        assert!(
+            reason.ends_with("`delete-sheet` is on sheets.workbook"),
+            "{reason}"
+        );
     }
 }

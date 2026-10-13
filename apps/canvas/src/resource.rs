@@ -425,9 +425,24 @@ fn read_args<T: serde::de::DeserializeOwned>(
     args: &ui::tilo_actions::ActionArgs,
 ) -> Result<T, String> {
     let mut fields = args.to_json();
-    fields.retain(|_, value| !value.is_null());
+    // An empty choice is no choice: `"size": ""` leaves the size to its
+    // default, as leaving it out does.
+    fields.retain(|key, value| {
+        let blank_choice = BLANK_IS_UNSET.contains(&key.as_str()) && value.as_str() == Some("");
+        !value.is_null() && !blank_choice
+    });
     serde_json::from_value(Value::Object(fields)).map_err(|error| error.to_string())
 }
+
+/// Optional choices a caller may give as `""` meaning "not set".
+const BLANK_IS_UNSET: [&str; 6] = [
+    "size",
+    "start",
+    "texture",
+    "medium",
+    "side",
+    "ground_colour",
+];
 
 /// A picture named by an absolute path, a content address or a `data:`
 /// URI, kept in the content store where the action is authored: the action
@@ -1087,5 +1102,28 @@ impl ui::tilo_resource::Effect for ViewOp {
             "find-area" => Self::FindArea(read(arguments)?),
             other => return Err(format!("there is no canvas view `{other}`")),
         })
+    }
+}
+
+#[cfg(test)]
+mod blank_choice_tests {
+    use super::*;
+
+    /// `"size": ""` (a caller filling every field) is no size: the default,
+    /// as leaving it out gives; a real size is kept.
+    #[test]
+    fn an_empty_choice_is_left_unset() {
+        let args = |value: serde_json::Value| {
+            ui::tilo_actions::ActionArgs::bind_json(
+                &params_of::<NewArtwork>(),
+                value.as_object().unwrap(),
+            )
+            .unwrap()
+        };
+        let blank: NewArtwork =
+            read_args(&args(serde_json::json!({"size": "", "texture": ""}))).unwrap();
+        assert_eq!((blank.size, blank.texture), (None, None));
+        let square: NewArtwork = read_args(&args(serde_json::json!({"size": "square"}))).unwrap();
+        assert_eq!(square.size.as_deref(), Some("square"));
     }
 }

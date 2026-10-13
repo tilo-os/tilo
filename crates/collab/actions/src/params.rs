@@ -540,6 +540,11 @@ impl ActionArgs {
                 return Err(ArgError::Unknown { name });
             };
             if matches!(value, ArgValue::Null) && !param.nullable {
+                // Null for an optional parameter that has no null value can
+                // only mean it was left out.
+                if !param.required {
+                    continue;
+                }
                 return Err(ArgError::Constraint {
                     name,
                     reason: "may not be null".into(),
@@ -834,8 +839,19 @@ fn validate_object_schema(
     {
         for (key, property_schema) in properties {
             if let Some(property) = object.get(key) {
-                validate_schema(property, property_schema)
-                    .map_err(|reason| format!("property `{key}` {reason}"))?;
+                validate_schema(property, property_schema).map_err(|reason| {
+                    // A field written one level too deep (a mark's `fill`
+                    // inside its shape): say it goes beside it.
+                    let stray = reason
+                        .rsplit_once("contains unknown property `")
+                        .and_then(|(_, rest)| rest.strip_suffix('`'));
+                    match stray {
+                        Some(stray) if properties.contains_key(stray) => format!(
+                            "property `{key}` {reason}; it belongs beside `{key}`, not inside it"
+                        ),
+                        _ => format!("property `{key}` {reason}"),
+                    }
+                })?;
             }
         }
         if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(false)) {
@@ -1445,6 +1461,47 @@ mod rich_schema_tests {
         );
         let error = validate_schema(&json!({"colour": "red"}), &schema).unwrap_err();
         assert_eq!(error, "contains unknown property `colour`");
+    }
+
+    /// A field written inside a property that the object itself declares
+    /// is refused saying it goes beside that property.
+    #[test]
+    fn a_field_one_level_too_deep_is_pointed_beside() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "fill": {"type": "string"},
+                "shape": {"type": "object", "additionalProperties": false, "properties": {"x": {"type": "number"}}},
+            },
+        });
+        let error =
+            validate_schema(&json!({"shape": {"x": 1, "fill": "#fff"}}), &schema).unwrap_err();
+        assert_eq!(
+            error,
+            "property `shape` contains unknown property `fill`; it belongs beside `shape`, not inside it"
+        );
+    }
+
+    /// Null for an optional parameter is leaving it out; a required one, or
+    /// a nullable one, keeps its meaning.
+    #[test]
+    fn null_for_an_optional_parameter_is_leaving_it_out() {
+        let params = vec![
+            ActionParam::required("slide", ParamType::Text, "slide"),
+            ActionParam::optional("fill", ParamType::Text, "fill"),
+        ];
+        let bound = ActionArgs::bind_json(
+            &params,
+            json!({"slide": "1", "fill": null}).as_object().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(bound.text("fill"), None);
+        assert!(bound.get("fill").is_none());
+        assert!(matches!(
+            ActionArgs::bind_json(&params, json!({"slide": null}).as_object().unwrap()),
+            Err(ArgError::Constraint { .. })
+        ));
     }
 
     /// A number where text is declared binds as its text (a slide's number

@@ -619,6 +619,62 @@ fn target_block(
 /// action allocates a large table/blob or asks automerge to index impossible
 /// offsets.  The caller maps `false` to an explicit [`ActionError::Refused`],
 /// preserving a useful stale-target result without leaving a partial edit.
+/// Why `action` was refused, as precisely as can be said: the blocks it
+/// names that the document does not have (a placeholder, an id from before
+/// someone deleted the paragraph), else that its arguments are outside
+/// Writer's limits.
+fn refusal_reason(action: &RichTextAction, doc: &AutoCommit, c: &Containers) -> String {
+    const BLOCK_FIELDS: [&str; 6] = ["block", "blocks", "start_block", "end_block", "id", "ids"];
+    let named = serde_json::to_value(action).unwrap_or_default();
+    let mut ids: Vec<String> = Vec::new();
+    let mut stack = vec![&named];
+    while let Some(value) = stack.pop() {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, field) in fields {
+                    if BLOCK_FIELDS.contains(&key.as_str()) {
+                        match field {
+                            serde_json::Value::String(id) => ids.push(id.clone()),
+                            serde_json::Value::Array(items) => ids.extend(
+                                items
+                                    .iter()
+                                    .filter_map(serde_json::Value::as_str)
+                                    .map(str::to_owned),
+                            ),
+                            _ => {}
+                        }
+                    }
+                    stack.push(field);
+                }
+            }
+            serde_json::Value::Array(items) => stack.extend(items),
+            _ => {}
+        }
+    }
+    let missing: Vec<String> = ids
+        .into_iter()
+        .filter(|id| {
+            [RegionKind::Body, RegionKind::Header, RegionKind::Footer]
+                .into_iter()
+                .all(|region| splice_target_len(doc, c, region, id).is_none())
+        })
+        .collect();
+    if missing.is_empty() {
+        "the action's arguments are outside Writer's limits (a style name is letters, digits, \
+         - and _; a range runs forward inside its blocks)"
+            .into()
+    } else {
+        format!(
+            "the document has no block {}: name blocks by the ids read-text shows, not a placeholder",
+            missing
+                .iter()
+                .map(|id| format!("`{id}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
 pub fn action_is_valid(action: &RichTextAction, doc: &AutoCommit, c: &Containers) -> bool {
     // An edit of a paragraph reads only the paragraphs it names; the whole
     // document is read only by the few checks that need it.
@@ -2861,9 +2917,7 @@ impl RichTextAction {
             return Err(ActionError::Refused(reason));
         }
         if !action_is_valid(self, doc, &c) {
-            return Err(ActionError::Refused(
-                "action targets are stale or its arguments are outside Writer's safe limits".into(),
-            ));
+            return Err(ActionError::Refused(refusal_reason(self, doc, &c)));
         }
         // Ids come from the action's own deterministic context (the pinned
         // actor, the heads it applies at, and its payload): byte-identical on
