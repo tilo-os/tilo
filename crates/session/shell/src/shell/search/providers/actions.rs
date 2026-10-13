@@ -3697,6 +3697,56 @@ impl ActionsProvider {
                 on_begin_invoke: None,
             });
         }
+        if let Some(scope) = ctx.chrome.replay_host.scope
+            && ctx
+                .chrome
+                .tree()
+                .active_workspace()
+                .is_some_and(|workspace| workspace.id == scope.0 && workspace.room == scope.1)
+        {
+            for descriptor in &ctx.chrome.replay_host.descriptors {
+                let Ok(spec) = descriptor.action() else {
+                    continue;
+                };
+                let Some(operation) = spec.fixed_invocation_encoding().cloned() else {
+                    continue;
+                };
+                candidates.record(&descriptor.label.to_lowercase(), "", &descriptor.id);
+                let open_operation = operation.clone();
+                let generation = ctx.chrome.replay_host.generation;
+                out.push(SearchResult {
+                    kind: ResourceKind::Action,
+                    operation_kind: spec.kind,
+                    provider_id: self.id().into(),
+                    id: descriptor.id.clone(),
+                    title: descriptor.label.clone(),
+                    subtitle: None,
+                    badge: None,
+                    score: 0,
+                    params: vec![],
+                    contract: Some(spec.contract),
+                    on_open: Rc::new(move |_, _, chrome, _| {
+                        super::super::super::replay_host::ReplayHost::enqueue(
+                            chrome,
+                            scope,
+                            open_operation.clone(),
+                            generation,
+                        )
+                        .map(|_| ())
+                    }),
+                    on_invoke: None,
+                    on_begin_invoke: Some(Rc::new(move |_, _, chrome, _| {
+                        super::super::super::replay_host::ReplayHost::enqueue(
+                            chrome,
+                            scope,
+                            operation.clone(),
+                            generation,
+                        )
+                        .map(crate::shell::search::InvocationDisposition::Pending)
+                    })),
+                });
+            }
+        }
         let morning = ctx.chrome.tree().active_workspace().map(|workspace| {
             (
                 workspace.id,

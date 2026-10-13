@@ -262,6 +262,27 @@ impl ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> Option<bool> {
+        if let Some(encoded) = target.strip_prefix("activity-replay-value:") {
+            return Some(encoded.split_once(':').is_some_and(|(generation, index)| {
+                let Some(chrome) = self.chrome.as_ref() else {
+                    return false;
+                };
+                let state = chrome.borrow();
+                let current = state
+                    .tree()
+                    .active_workspace()
+                    .map(|workspace| (workspace.id, workspace.room));
+                if generation.parse::<u64>().ok() != Some(state.replay_host.generation)
+                    || current != state.replay_host.scope
+                {
+                    return false;
+                }
+                index.parse::<usize>().is_ok_and(|index| {
+                    self.room_activity
+                        .perform_replay_accessibility_action(&[0, index], action)
+                })
+            }));
+        }
         if target == "task-direction" {
             return Some(self.room_activity.perform_task_direction_action(action));
         }

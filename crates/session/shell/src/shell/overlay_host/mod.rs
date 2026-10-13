@@ -10783,6 +10783,60 @@ impl ShellOverlayHost {
                 .refresh_observed(&tree, &records, &*local);
         }
         self.refresh_history_narrative();
+        self.publish_replay_actions();
+    }
+
+    fn publish_replay_actions(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let scope = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            tree.active_workspace()
+                .map(|workspace| (workspace.id, workspace.room))
+        };
+        let calls = std::mem::take(&mut chrome.borrow_mut().replay_host.pending);
+        for call in calls {
+            let outcome = if Some(call.scope) != scope
+                || chrome.borrow().replay_host.scope != scope
+                || chrome.borrow().replay_host.generation != call.generation
+            {
+                Err(tilo_actions::ActionError::Refused(
+                    "Replay workspace changed".into(),
+                ))
+            } else if call.operation.type_id
+                != tilo_desktop::activity::view_actions::REPLAY_OPERATION_TYPE
+            {
+                Err(tilo_actions::ActionError::UnknownType(
+                    call.operation.type_id,
+                ))
+            } else {
+                serde_json::from_slice(&call.operation.payload)
+                    .map_err(|source| tilo_actions::ActionError::Decode {
+                        type_id: call.operation.type_id,
+                        source,
+                    })
+                    .and_then(|request| {
+                        self.room_activity
+                            .apply_replay_request(request)
+                            .map_err(tilo_actions::ActionError::Refused)
+                    })
+                    .and_then(|position| {
+                        serde_json::to_value(position).map_err(tilo_actions::ActionError::Encode)
+                    })
+                    .map(crate::shell::search::ActionReceipt::completed_with)
+            };
+            *call.answer.borrow_mut() = Some(outcome.map_err(|error| {
+                crate::shell::search::action_api::ActionError::Refused(error.to_string())
+            }));
+        }
+        let mut state = chrome.borrow_mut();
+        if state.replay_host.scope != scope {
+            state.replay_host.generation = state.replay_host.generation.wrapping_add(1);
+        }
+        state.replay_host.scope = scope;
+        state.replay_host.descriptors = self.room_activity.replay_action_descriptors();
     }
 
     /// Content viewport of the active personal Activity tab. Its surrounding
@@ -19239,9 +19293,20 @@ impl Widget for ShellOverlayHost {
                 LayerId::Collaborators => root
                     .children
                     .push(self.collaborators_overlay.accessibility_snapshot()),
-                LayerId::RoomActivity => root
-                    .children
-                    .push(self.room_activity.accessibility_snapshot()),
+                LayerId::RoomActivity => {
+                    let mut node = self.room_activity.accessibility_snapshot();
+                    for (index, child) in node.children.iter_mut().enumerate() {
+                        if child.role == ui::a11y::Role::Slider {
+                            let generation = self
+                                .chrome
+                                .as_ref()
+                                .map_or(0, |chrome| chrome.borrow().replay_host.generation);
+                            child.action_target =
+                                Some(format!("activity-replay-value:{generation}:{index}"));
+                        }
+                    }
+                    root.children.push(node);
+                }
                 LayerId::NowPlaying => {
                     if let Some(card) = self.now_playing_accessibility() {
                         root.children.push(card);
@@ -19781,11 +19846,19 @@ impl Widget for ShellOverlayHost {
     }
 
     fn test_rects(&self) -> Vec<(String, Rect)> {
-        self.layers
+        let mut targets = self
+            .layers
             .dictation
             .preview_target()
             .map(|rect| vec![("dictation.live-preview".into(), rect)])
-            .unwrap_or_default()
+            .unwrap_or_default();
+        targets.extend(
+            self.room_activity
+                .replay_control_targets()
+                .into_iter()
+                .map(|(name, rect)| (name.to_string(), rect)),
+        );
+        targets
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -21334,6 +21407,7 @@ impl ShellOverlayHost {
             chrome.borrow_mut().open_room_activity(None);
         }
         self.refresh_room_activity_awareness(force_awareness);
+        self.publish_replay_actions();
         self.room_activity.observe_replay_presence(presence);
         let visible = self.activity_window_rect().is_some();
         if visible && !self.room_activity_was_open {

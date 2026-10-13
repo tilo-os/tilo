@@ -6,6 +6,8 @@ use crate::shell::state::WorkspaceTree;
 use automerge::ReadDoc as _;
 use ui::widget::TaffyTreeExt;
 
+mod replay_host_tests;
+
 #[test]
 fn people_overlay_publishes_the_live_roster_and_never_hides_screen_exposure() {
     fn people_overlay_publishes_live_roster_and_focusable_status_controls() {

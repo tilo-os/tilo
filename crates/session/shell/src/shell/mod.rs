@@ -136,6 +136,7 @@ pub mod remote_audio;
 pub mod remote_capture;
 pub mod remote_use;
 pub mod render;
+pub(crate) mod replay_host;
 pub mod room_activity;
 pub mod room_records;
 pub mod scanout_candidate;
