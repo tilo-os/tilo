@@ -78,6 +78,12 @@ impl ConfinedReplica {
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
         let (mirror, seed, fresh) = match seed {
             Seed::New => (AutoCommit::new(), None, true),
+            // No changes asks the worker for a new record under that id.
+            Seed::NewAt(record) => (
+                AutoCommit::new(),
+                Some((record.as_str().to_owned(), Vec::new())),
+                true,
+            ),
             Seed::Existing { record, changes } => {
                 let mut mirror = AutoCommit::new();
                 admit_history(&mut mirror, &changes)?;

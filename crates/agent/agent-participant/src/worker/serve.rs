@@ -206,6 +206,7 @@ impl Worker {
         let seed = match seed {
             None => Seed::New,
             Some((record, changes)) => match parse_record(&record) {
+                Some(record) if changes.is_empty() => Seed::NewAt(record),
                 Some(record) => Seed::Existing { record, changes },
                 None => return Reply::Failed("invalid record id".into()),
             },

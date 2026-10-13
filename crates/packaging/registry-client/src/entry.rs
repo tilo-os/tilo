@@ -330,37 +330,64 @@ fn entry_for_checked(
     }
     let versions = retain_versions(versions, retention);
     let display_name = package.name.clone().unwrap_or_else(|| package.id.clone());
-    let mut entry = registry_types::RegistryEntry {
+    let fresh = FreshEntry {
         package_id: package.id.clone(),
         kind: registry_types::EntryKind::App,
-        name: previous.map_or_else(|| display_name.clone().into(), |entry| entry.name.clone()),
+        description: match platform {
+            Platform::TiloOs => format!("{display_name} is a native Tilo OS application."),
+            Platform::Linux | Platform::Windows | Platform::Macos | Platform::Android => {
+                format!("{display_name} is a Tilo application.")
+            }
+        },
+        tagline: match platform {
+            Platform::TiloOs => format!("{display_name} for Tilo OS"),
+            Platform::Linux => format!("{display_name} for Linux"),
+            Platform::Windows => format!("{display_name} for Windows"),
+            Platform::Macos => format!("{display_name} for macOS"),
+            Platform::Android => format!("{display_name} for Android"),
+        },
+        name: display_name,
+        categories: package.category.clone().into_iter().collect(),
+    };
+    signed_entry(fresh, versions, previous, metadata, now, signer)
+}
+
+/// What an entry's first release presents before any publisher metadata.
+pub(crate) struct FreshEntry {
+    pub(crate) package_id: String,
+    pub(crate) kind: registry_types::EntryKind,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) tagline: String,
+    pub(crate) categories: Vec<String>,
+}
+
+/// Sign the entry carrying `versions`. Presentation and links carry over
+/// from `previous`, or start from `fresh`; explicit `metadata` overrides
+/// both, and the update time moves strictly past the previous entry's.
+pub(crate) fn signed_entry(
+    fresh: FreshEntry,
+    versions: Vec<registry_types::RegistryVersion>,
+    previous: Option<&registry_types::RegistryEntry>,
+    metadata: Option<&EntryMetadata>,
+    now: u64,
+    signer: &SigningKey,
+) -> Result<registry_types::RegistryEntry> {
+    let mut entry = registry_types::RegistryEntry {
+        package_id: fresh.package_id,
+        kind: fresh.kind,
+        name: previous.map_or_else(|| fresh.name.into(), |entry| entry.name.clone()),
         description: previous.map_or_else(
-            || match platform {
-                Platform::TiloOs => {
-                    format!("{display_name} is a native Tilo OS application.").into()
-                }
-                Platform::Linux | Platform::Windows | Platform::Macos | Platform::Android => {
-                    format!("{display_name} is a Tilo application.").into()
-                }
-            },
+            || fresh.description.into(),
             |entry| entry.description.clone(),
         ),
-        tagline: previous.map_or_else(
-            || match platform {
-                Platform::TiloOs => format!("{display_name} for Tilo OS").into(),
-                Platform::Linux => format!("{display_name} for Linux").into(),
-                Platform::Windows => format!("{display_name} for Windows").into(),
-                Platform::Macos => format!("{display_name} for macOS").into(),
-                Platform::Android => format!("{display_name} for Android").into(),
-            },
-            |entry| entry.tagline.clone(),
-        ),
+        tagline: previous.map_or_else(|| fresh.tagline.into(), |entry| entry.tagline.clone()),
         images: previous.map_or_else(Default::default, |entry| entry.images.clone()),
         supported_languages: previous.map_or_else(
             || vec!["en".into()],
             |entry| entry.supported_languages.clone(),
         ),
-        categories: package.category.clone().into_iter().collect(),
+        categories: fresh.categories,
         source_url: previous.and_then(|entry| entry.source_url.clone()),
         homepage: previous.and_then(|entry| entry.homepage.clone()),
         publisher_pubkey_hex: hex::encode(signer.verifying_key().to_bytes()),
