@@ -6,10 +6,8 @@ use ui::i18n::{ArgValue, EmbeddedCatalog};
 use ui::prelude::*;
 
 use crate::effects::{self, DiscordEffect};
+use crate::locales::CATALOG;
 use crate::record::{Guild, Ownership};
-
-pub(crate) static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", &[("en-US", include_str!("../locales/en-US.ftl"))]);
 
 fn status(guild: &Guild) -> String {
     if guild.guild_id.is_empty() {
