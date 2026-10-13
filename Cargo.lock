@@ -1915,6 +1915,7 @@ dependencies = [
  "emoji",
  "fnv",
  "image",
+ "moderation-model",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9074,6 +9075,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "moderation-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "module-lattice"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15951,6 +15961,7 @@ dependencies = [
  "themes",
  "tilo-actions",
  "tilo-app",
+ "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
@@ -17381,6 +17392,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-moderation"
+version = "0.1.0"
+dependencies = [
+ "agent-provider-config",
+ "moderation-model",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-net",
+ "tilo-resource",
+ "tilo-secrets",
+ "tokio",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-moq"
 version = "0.1.0"
 dependencies = [
@@ -17644,11 +17675,13 @@ dependencies = [
  "hex",
  "neighbour-wire",
  "postcard",
+ "registry-types",
  "serde",
  "serde_bytes",
  "serde_json",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
@@ -17764,6 +17797,7 @@ name = "tilo-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-cli",
  "app-registry",
  "base64",
  "blake3",
@@ -17808,25 +17842,31 @@ dependencies = [
  "tilo-actions",
  "tilo-agent-participant",
  "tilo-app-package",
+ "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-bot-directory",
  "tilo-browser-peer",
  "tilo-clock",
+ "tilo-connector",
  "tilo-delivery-protocol",
  "tilo-doc",
  "tilo-environment",
  "tilo-files",
  "tilo-fs",
  "tilo-identity-host",
+ "tilo-moderation",
  "tilo-moq",
  "tilo-paths",
  "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
+ "tilo-resource",
  "tilo-rt",
  "tilo-seal",
+ "tilo-secrets",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",

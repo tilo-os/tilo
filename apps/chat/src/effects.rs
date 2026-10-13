@@ -132,6 +132,20 @@ pub enum ChatEffect {
     /// Open resource in browser
     #[effect(job, device_only, returns)]
     OpenResourceLink { message: String },
+    /// Read workspace
+    ///
+    /// A workspace's categories and channels and the room's people as the
+    /// record stores them, and, when asked, one message with the message it
+    /// answers or a channel's latest messages: what a bot mirroring the
+    /// workspace elsewhere works from.
+    #[effect(kind = "read", returns, programmatic)]
+    ReadWorkspace {
+        workspace: String,
+        #[param("A message to include, with the message it answers")]
+        message: Option<String>,
+        #[param("A channel whose latest messages to include, each with the message it answers")]
+        channel: Option<String>,
+    },
     /// Attach file
     ///
     /// Shares a file from this device in a conversation: its bytes go to
@@ -293,6 +307,7 @@ impl ChatApp {
                     "videoCapture": false,
                 })));
             }
+            ChatEffect::ReadWorkspace { .. } => return Err("the record answers this read".into()),
             ChatEffect::CopyResourceLink { .. }
             | ChatEffect::OpenResourceLink { .. }
             | ChatEffect::OpenSlackChannel { .. }
@@ -651,6 +666,71 @@ impl ChatApp {
             "sourceProvider": message.source_provider,
         }))
     }
+}
+
+/// How many of a channel's latest messages [`read_workspace`] includes: a
+/// post's change names its channel, not the message it made, so a bot finds
+/// that message among the channel's newest.
+const READ_LATEST: usize = 20;
+
+/// The answer of [`ChatEffect::ReadWorkspace`]: the record's own JSON form
+/// of `workspace`'s categories and channels, every person, and `message`
+/// and the latest messages of `channel`, each with the message it answers.
+pub(crate) fn read_workspace(
+    chat: &Chat,
+    workspace: &str,
+    message: Option<&str>,
+    channel: Option<&str>,
+) -> serde_json::Value {
+    use ui::tilo_resource::Model as _;
+    let of_workspace = |entries: serde_json::Value| -> serde_json::Value {
+        let kept = entries
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|entry| {
+                entry.get("value").unwrap_or(entry)["workspace"].as_str() == Some(workspace)
+            })
+            .cloned()
+            .collect();
+        serde_json::Value::Array(kept)
+    };
+    let mut wanted: Vec<tilo_resource::Id> = message
+        .map(tilo_resource::Id::from_raw)
+        .into_iter()
+        .collect();
+    if let Some(channel) = channel {
+        let mut latest: Vec<(&tilo_resource::Id, &crate::record::Message)> = chat
+            .messages
+            .iter()
+            .filter(|(_, found)| found.channel.as_str() == channel)
+            .collect();
+        latest.sort_by_key(|(_, found)| found.ts);
+        let skip = latest.len().saturating_sub(READ_LATEST);
+        wanted.extend(latest.into_iter().skip(skip).map(|(id, _)| id.clone()));
+    }
+    // Each with the message it answers, once.
+    let answered: Vec<tilo_resource::Id> = wanted
+        .iter()
+        .filter_map(|id| chat.messages.get(id)?.parent.clone())
+        .collect();
+    wanted.extend(answered);
+    let mut messages = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for id in wanted {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if let Some(found) = chat.messages.get(&id) {
+            messages.push(serde_json::json!({ "id": id.as_str(), "value": found.to_json() }));
+        }
+    }
+    serde_json::json!({
+        "categories": of_workspace(chat.categories.to_json()),
+        "channels": of_workspace(chat.channels.to_json()),
+        "people": chat.people.to_json(),
+        "messages": messages,
+    })
 }
 
 impl ChatApp {

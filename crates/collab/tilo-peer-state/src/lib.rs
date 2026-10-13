@@ -14,19 +14,22 @@ mod receipt_tests;
 tilo_automerge_isolate::test_worker!();
 mod cached_document;
 pub mod document;
+pub mod installation;
 #[cfg(test)]
 mod join_contract_tests;
 pub mod room;
 mod state;
+pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation, InstallationId};
 mod verified_certificate;
 pub use state::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
-    GovernedAgent, GovernedMember, LocalRecoveryReservation, MemberAuthority, NativePublicationCut,
-    PeerDeliveryPolicy, PeerDeliveryPolicyError, PeerDocumentCapture, PeerDocumentRead,
-    PeerDocumentReadError, PeerLimits, PeerMediaCall, PeerMember, PeerPolicyBasis, PeerRead,
-    PeerRevocations, PeerRoomAccess, PlaintextChanges, ReceiveOutcome, Reseal, SealCheckpoint,
-    SeedDocument, SeedState, StatePeer, TransportOrigin, VerifiedSecurityMetadataOnly,
-    committed_document_revision, decide_with_surfaces, default_surfaces, peer_handle, seed_room,
+    GovernedAgent, GovernedDelegateRow, GovernedMember, InstalledBot, LocalRecoveryReservation,
+    MemberAuthority, NativePublicationCut, PeerDeliveryPolicy, PeerDeliveryPolicyError,
+    PeerDocumentCapture, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
+    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess, PlaintextChanges,
+    ReceiveOutcome, Reseal, SealCheckpoint, SeedDocument, SeedState, StatePeer, TransportOrigin,
+    VerifiedSecurityMetadataOnly, committed_document_revision, decide_with_surfaces,
+    default_surfaces, peer_handle, seed_room,
 };
 pub mod coverage;
 mod governed_routes;
