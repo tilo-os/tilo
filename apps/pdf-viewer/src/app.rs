@@ -4315,9 +4315,7 @@ impl PdfApp {
         {
             return;
         }
-        if tilo_paths::availability(tilo_paths::Feature::NativePaths)
-            == tilo_paths::Availability::Available
-        {
+        if tilo_paths::available(tilo_paths::Feature::NativePaths) {
             self.portal_rx = Some(pdf_open_request().send());
         } else {
             self.portal_contents_rx = Some(pdf_open_request().send_contents());
@@ -6093,9 +6091,7 @@ impl PdfApp {
         if let Some(path) = path {
             return self.open_here_effect(path.into(), cx);
         }
-        if tilo_paths::availability(tilo_paths::Feature::NativePaths)
-            == tilo_paths::Availability::Available
-        {
+        if tilo_paths::available(tilo_paths::Feature::NativePaths) {
             return Ok(
                 cx.choose_path(pdf_open_request(), |app, chosen, cx| match chosen {
                     Some(path) => app.open_here_effect(path, cx),

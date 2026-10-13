@@ -561,7 +561,7 @@ pub fn shared_gpu() -> Result<SharedGpu, OffscreenError> {
     // Acquiring the device waits on it, which a browser page cannot do: the
     // caller gets the same answer as a machine without an adapter and falls
     // back, instead of the page panicking.
-    if tilo_rt::availability(tilo_rt::Feature::BlockOn) != tilo_rt::Availability::Available {
+    if !tilo_rt::available(tilo_rt::Feature::BlockOn) {
         return Err(OffscreenError::NoAdapter);
     }
     let context = shared_render_context();
