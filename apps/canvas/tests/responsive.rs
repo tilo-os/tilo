@@ -1,16 +1,8 @@
 //! Controls must fit the logical window, including a small display at 2× scale.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "assertions over real editor controls"
-)]
+#![allow(clippy::unwrap_used, reason = "assertions over real editor controls")]
 mod support;
 use canvas::App;
 use ui::prelude::TestApp;
-use ui::winit::{
-    dpi::PhysicalPosition,
-    event::{DeviceId, WindowEvent},
-};
 
 #[test]
 fn short_scaled_windows_keep_project_choices_and_brush_controls_reachable() {
@@ -62,13 +54,10 @@ fn short_scaled_windows_keep_project_choices_and_brush_controls_reachable() {
                 reachable = true;
                 break;
             }
-            app.harness().send(&WindowEvent::CursorMoved {
-                device_id: DeviceId::dummy(),
-                position: PhysicalPosition::new(
-                    (f64::from(width) - 130.0) * scale,
-                    (dock.y0 - 30.0) * scale,
-                ),
-            });
+            app.harness().send(&ui::synthetic_input::cursor_moved(
+                (f64::from(width) - 130.0) * scale,
+                (dock.y0 - 30.0) * scale,
+            ));
             app.harness().scroll(0.0, -2.0);
         }
         assert!(
@@ -131,10 +120,8 @@ fn the_layer_footer_can_be_scrolled_into_a_short_window_and_edited() {
             reached = true;
             break;
         }
-        app.harness().send(&WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(670.0, 520.0),
-        });
+        app.harness()
+            .send(&ui::synthetic_input::cursor_moved(670.0, 520.0));
         app.harness().scroll(0.0, -1.0);
     }
     assert!(reached, "the selected layer's folder field can be revealed");

@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::Rect;
 
@@ -394,10 +393,7 @@ impl Widget for Router {
         self.theme = theme.clone();
         let child = self.child.build_layout(taffy, theme, node_map);
         let style = Style {
-            size: taffy::Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
-            },
+            size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
             ..Default::default()
         };
         taffy.widget_node(style, &[child], node_map, self)

@@ -278,8 +278,6 @@ impl PhotoLocation {
 
 /// The most labels of one kind a photograph carries.
 pub const MAX_LABELS: usize = 32;
-/// The longest label, folder or capture value, in characters.
-pub const MAX_LABEL_CHARS: usize = 128;
 /// The longest album name, in characters.
 pub const MAX_NAME_CHARS: usize = 256;
 /// The most photographs one album holds.

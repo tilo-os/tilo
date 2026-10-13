@@ -301,6 +301,33 @@ impl App {
         Some(wake_line(&entry))
     }
 
+    pub(super) fn vm_network_wake(
+        &mut self,
+        name: Option<&str>,
+        profile: &str,
+        enabled: Option<bool>,
+    ) -> Result<Outcome, CliError> {
+        let vm = self.resolve_vm(name)?;
+        let status = self.connect(&vm)?.call(tilo_vm_protocol::NetworkWake {
+            profile: profile.into(),
+            enabled,
+        })?;
+        let text = format!(
+            "{}: magic-packet wake saved={}, driver applied={:?}, supported={:?}. Physical wake remains unverified.{}",
+            vm.name,
+            status.configured,
+            status.applied,
+            status.supported,
+            status
+                .problem
+                .as_ref()
+                .map_or(String::new(), |problem| format!(" {problem}")),
+        );
+        let mut outcome = Outcome::new(text, json!({ "vm": vm.name, "network_wake": status }));
+        outcome.failed = status.problem.is_some();
+        Ok(outcome)
+    }
+
     pub(super) fn vm_awake(
         &mut self,
         name: Option<&str>,

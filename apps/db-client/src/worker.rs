@@ -45,8 +45,6 @@ pub enum DbRequest {
         limit: usize,
         offset: usize,
     },
-    /// Drop the open engine.
-    Disconnect,
     /// Ask the thread to exit (used on drop).
     Shutdown,
 }
@@ -82,8 +80,6 @@ pub enum DbReply {
         offset: usize,
         result: Result<QueryResult, String>,
     },
-    /// The engine was dropped.
-    Disconnected,
 }
 
 /// Handle to the background worker thread. Owns the request/reply channels and
@@ -295,10 +291,6 @@ fn worker_loop(
                     offset,
                     result,
                 }
-            }
-            DbRequest::Disconnect => {
-                engine = None;
-                DbReply::Disconnected
             }
         };
         if tx.send(reply).is_err() {

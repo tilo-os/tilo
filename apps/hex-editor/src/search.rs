@@ -14,23 +14,6 @@ pub enum SearchKind {
 /// unbounded allocation and make the result counter misleadingly expensive.
 pub const MAX_RETAINED_MATCHES: usize = 10_000;
 
-impl SearchKind {
-    #[must_use]
-    pub fn toggle(self) -> Self {
-        match self {
-            SearchKind::Hex => SearchKind::Text,
-            SearchKind::Text => SearchKind::Hex,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            SearchKind::Hex => "hex",
-            SearchKind::Text => "text",
-        }
-    }
-}
-
 /// Parse a hex query like "de ad", "deadbeef", or "DE-AD" into raw bytes.
 /// Whitespace and the separators `-`, `:`, `,` are ignored. Returns None
 /// if any remaining char isn't a hex digit or the digit count is odd.
@@ -63,36 +46,6 @@ pub fn needle(query: &str, kind: SearchKind) -> Option<Vec<u8>> {
             }
         }
     }
-}
-
-/// Find every match offset of `needle` in `haystack` (overlapping). Used
-/// for the "N matches" indicator and to drive next/prev navigation.
-pub fn find_all(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
-    find_all_bounded(haystack, needle, usize::MAX).0
-}
-
-/// Find overlapping matches while retaining at most `limit` offsets.
-///
-/// The boolean is true when more hits exist. Callers can show an honest
-/// `10,000+` result count without allocating an offset for every matching byte
-/// in a large file.
-pub fn find_all_bounded(haystack: &[u8], needle: &[u8], limit: usize) -> (Vec<usize>, bool) {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return (Vec::new(), false);
-    }
-    let mut hits = Vec::new();
-    let mut truncated = false;
-    for (offset, window) in haystack.windows(needle.len()).enumerate() {
-        if window != needle {
-            continue;
-        }
-        if hits.len() == limit {
-            truncated = true;
-            break;
-        }
-        hits.push(offset);
-    }
-    (hits, truncated)
 }
 
 /// How a text query matches the bytes: letter case and word boundaries. A
@@ -155,39 +108,6 @@ pub fn find_matches(
     (hits, truncated)
 }
 
-/// The first match at or after `from`, wrapping to the start of the
-/// buffer if none is found in the tail.
-pub fn find_next(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-    let last = haystack.len() - needle.len();
-    let from = from.min(last.saturating_add(1));
-    (from..=last)
-        .find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
-        .or_else(|| {
-            (0..from).find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
-        })
-}
-
-/// The last match strictly before `from`, wrapping to the end of the
-/// buffer if none precedes it.
-pub fn find_prev(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
-    }
-    let last = haystack.len() - needle.len();
-    let before = from.min(last.saturating_add(1));
-    (0..before)
-        .rev()
-        .find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
-        .or_else(|| {
-            (before..=last)
-                .rev()
-                .find(|&offset| haystack.get(offset..offset + needle.len()) == Some(needle))
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,41 +125,6 @@ mod tests {
         for (query, want) in cases {
             assert_eq!(&parse_hex_query(query), want, "case {query:?}");
         }
-    }
-
-    #[test]
-    fn find_helpers_overlap_bound_and_wrap() {
-        // find_all reports overlapping matches.
-        let hay = b"aaaa";
-        assert_eq!(find_all(hay, b"aa"), vec![0, 1, 2]);
-
-        // Bounded find reports more hits without retaining them.
-        let (hits, truncated) = find_all_bounded(b"aaaa", b"a", 2);
-        assert_eq!(hits, vec![0, 1]);
-        assert!(truncated);
-
-        // find_next wraps.
-        let hay = b"\x00\xFF\x00\xFF";
-        let needle = b"\xFF";
-        assert_eq!(find_next(hay, needle, 0), Some(1));
-        assert_eq!(find_next(hay, needle, 2), Some(3));
-        // Past the last match wraps to the first.
-        assert_eq!(find_next(hay, needle, 4), Some(1));
-
-        // find_prev wraps.
-        assert_eq!(find_prev(hay, needle, 3), Some(1));
-        assert_eq!(find_prev(hay, needle, 1), Some(3)); // wraps to end
-
-        // Navigation does not depend on retaining all hits.
-        let hay = vec![0_u8; MAX_RETAINED_MATCHES + 12];
-        assert_eq!(
-            find_next(&hay, &[0], MAX_RETAINED_MATCHES + 5),
-            Some(MAX_RETAINED_MATCHES + 5)
-        );
-        assert_eq!(
-            find_prev(&hay, &[0], MAX_RETAINED_MATCHES + 5),
-            Some(MAX_RETAINED_MATCHES + 4)
-        );
     }
 
     #[test]
@@ -270,8 +155,9 @@ mod tests {
             Some(vec![0x50, 0x4E, 0x47])
         );
         // The PNG magic bytes.
-        let hay = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        let n = needle("50 4e 47", SearchKind::Hex).unwrap();
-        assert_eq!(find_next(&hay, &n, 0), Some(1));
+        assert_eq!(
+            needle("50 4e 47", SearchKind::Hex),
+            Some(vec![0x50, 0x4E, 0x47])
+        );
     }
 }

@@ -2,10 +2,9 @@
 //!
 //! A document or workbook lives as a versioned `qdoc` resource; a `.docx`, `.odt`, `.md`,
 //! `.html`, `.rtf`, `.xlsx`, `.ods` or `.epub` file is only a way into or out of it. This crate
-//! holds those projections and the [`FormatProvider`] registry, which is also the extension
-//! point third-party (wasm) providers plug into. Each format sits behind a cargo feature of the
-//! same name, so an app compiles only the formats it imports or exports; an app that only edits
-//! resources depends on `qdoc` alone.
+//! holds those projections and [`provider_for_ext`], which picks one by file extension. Each
+//! format sits behind a cargo feature of the same name, so an app compiles only the formats it
+//! imports or exports; an app that only edits resources depends on `qdoc` alone.
 //!
 //! Office packages keep what they do not model: every part other than the one mapped onto the
 //! model is carried through export unchanged (see the `docx` and `odt` modules).
@@ -75,7 +74,7 @@ mod bulk_equivalence;
 
 #[cfg(feature = "docx")]
 pub use docx::DocxCodec;
-pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
+pub use format::{CodecError, FormatProvider};
 #[cfg(feature = "html")]
 pub use html::HtmlCodec;
 #[cfg(feature = "markdown")]
@@ -166,6 +165,7 @@ pub const DOCUMENT_EXTENSIONS: &[&str] = &["md", "markdown", "odt", "docx", "rtf
 
 /// The extension and media type an office package stores picture `bytes`
 /// under: PNG, JPEG and GIF as themselves, anything else as a binary part.
+#[cfg(any(feature = "docx", feature = "odt"))]
 pub(crate) fn office_image_part(bytes: &[u8]) -> (&'static str, &'static str) {
     tilo_content::image_format(bytes)
         .filter(|format| matches!(format.extension, "png" | "jpg" | "gif"))
@@ -174,43 +174,23 @@ pub(crate) fn office_image_part(bytes: &[u8]) -> (&'static str, &'static str) {
         })
 }
 
-/// A registry preloaded with the built-in providers this build enables. Third-party providers
-/// register on top.
-pub fn builtin_registry() -> Registry {
-    #[allow(
-        unused_mut,
-        reason = "a build with no format features registers nothing"
-    )]
-    let mut r = Registry::new();
-    #[cfg(feature = "markdown")]
-    {
-        r.register("md", ProviderTier::Builtin, Box::new(MarkdownCodec));
-        r.register("markdown", ProviderTier::Builtin, Box::new(MarkdownCodec));
+/// The provider this build compiles for `ext` (case-insensitive), if any.
+pub fn provider_for_ext(ext: &str) -> Option<&'static dyn FormatProvider> {
+    match ext.to_ascii_lowercase().as_str() {
+        #[cfg(feature = "markdown")]
+        "md" | "markdown" => Some(&MarkdownCodec),
+        #[cfg(feature = "odt")]
+        "odt" => Some(&OdtCodec),
+        #[cfg(feature = "docx")]
+        "docx" => Some(&DocxCodec),
+        // RTF and HTML import through these codecs; their `export` returns Unsupported (writing
+        // is `export_rtf`/`export_html`, over a snapshot), but they make the files openable.
+        #[cfg(feature = "rtf")]
+        "rtf" => Some(&RtfCodec),
+        #[cfg(feature = "html")]
+        "html" | "htm" => Some(&HtmlCodec),
+        _ => None,
     }
-    #[cfg(feature = "odt")]
-    r.register("odt", ProviderTier::Builtin, Box::new(OdtCodec));
-    #[cfg(feature = "docx")]
-    r.register("docx", ProviderTier::Builtin, Box::new(DocxCodec));
-    // RTF is import-only via this codec (`export` returns Unsupported; writing is
-    // `export_rtf`, over a snapshot) — registering it still makes `.rtf` openable.
-    #[cfg(feature = "rtf")]
-    r.register("rtf", ProviderTier::Builtin, Box::new(RtfCodec));
-    // HTML is import-only via this codec (`export` returns Unsupported; writing is
-    // `export_html`, over a snapshot) — this makes `.html`/`.htm` openable.
-    #[cfg(feature = "html")]
-    {
-        r.register("html", ProviderTier::Builtin, Box::new(HtmlCodec));
-        r.register("htm", ProviderTier::Builtin, Box::new(HtmlCodec));
-    }
-    r
-}
-
-/// Extensions of [`DOCUMENT_EXTENSIONS`], owned.
-pub fn supported_extensions() -> Vec<String> {
-    DOCUMENT_EXTENSIONS
-        .iter()
-        .map(|e| (*e).to_string())
-        .collect()
 }
 
 /// Whether `ext` (case-insensitive) is one of [`DOCUMENT_EXTENSIONS`].
@@ -255,88 +235,17 @@ mod tests {
     }
 
     #[test]
-    fn builtin_codec_registry_covers_every_supported_extension() {
-        // Phase `registry_resolves_builtin_codecs`.
-        {
-            let r = builtin_registry();
-            assert_eq!(
-                r.provider_for_ext("odt").unwrap().schema_id(),
-                tilo_doc::schema::SCHEMA_ID
-            );
-            assert_eq!(
-                r.provider_for_ext("docx").unwrap().schema_id(),
-                tilo_doc::schema::SCHEMA_ID
-            );
-            assert!(r.provider_for_ext("md").is_some());
+    fn every_supported_extension_has_a_provider() {
+        for ext in DOCUMENT_EXTENSIONS {
+            assert!(provider_for_ext(ext).is_some(), "{ext} has no provider");
             assert!(
-                r.provider_for_ext("MD").is_some(),
+                provider_for_ext(&ext.to_ascii_uppercase()).is_some(),
                 "extension lookup is case-insensitive"
             );
-            assert!(r.provider_for_ext("markdown").is_some());
-            assert!(
-                r.provider_for_ext("DOCX").is_some(),
-                "extension lookup is case-insensitive"
-            );
-            assert!(
-                r.provider_for_ext("rtf").is_some(),
-                "RTF import is now a built-in codec"
-            );
-            assert!(
-                r.provider_for_ext("RTF").is_some(),
-                "extension lookup is case-insensitive"
-            );
-            assert!(
-                r.provider_for_ext("html").is_some(),
-                "HTML import is now a built-in codec"
-            );
-            assert!(
-                r.provider_for_ext("htm").is_some(),
-                "the .htm alias is registered too"
-            );
-            assert!(
-                r.provider_for_ext("HTML").is_some(),
-                "extension lookup is case-insensitive"
-            );
-            assert!(
-                r.provider_for_ext("xyz").is_none(),
-                "unregistered type resolves to None"
-            );
+            assert!(is_supported_ext(&ext.to_ascii_uppercase()));
         }
-        // Phase `supported_extensions_match_the_full_registry`.
-        {
-            let exts = supported_extensions();
-            let mut registered = builtin_registry().extensions();
-            registered.sort();
-            let mut declared = exts.clone();
-            declared.sort();
-            assert_eq!(
-                registered, declared,
-                "with every format enabled, the registry is exactly DOCUMENT_EXTENSIONS"
-            );
-            for want in ["md", "markdown", "odt", "docx", "rtf", "html", "htm"] {
-                assert!(
-                    exts.iter().any(|e| e == want),
-                    "{want} should be a supported document format"
-                );
-            }
-            assert!(is_supported_ext("ODT"), "case-insensitive");
-            assert!(
-                is_supported_ext("RTF"),
-                "RTF import is now supported (case-insensitive)"
-            );
-            assert!(
-                is_supported_ext("HTML"),
-                "HTML import is now supported (case-insensitive)"
-            );
-            assert!(
-                is_supported_ext("HTM"),
-                "the .htm alias is supported (case-insensitive)"
-            );
-            assert!(
-                !is_supported_ext("xyz"),
-                "an unregistered extension is not supported"
-            );
-        }
+        assert!(provider_for_ext("xyz").is_none());
+        assert!(!is_supported_ext("xyz"));
     }
 
     use proptest::prelude::*;

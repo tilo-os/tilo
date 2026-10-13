@@ -237,13 +237,6 @@ impl Sampler {
             .and_then(|p| p.kill_with(kind.signal()))
             .unwrap_or(false)
     }
-
-    /// Send SIGKILL only if `pid` still has the expected generation. Returns
-    /// whether the signal was dispatched. Thin alias over
-    /// [`Self::signal_if_current`] for the hard-stop path.
-    pub fn kill_if_current(&mut self, pid: u32, started_at: u64) -> bool {
-        self.signal_if_current(pid, started_at, StopKind::Kill)
-    }
 }
 
 fn process_snapshot_status(
@@ -307,10 +300,6 @@ mod tests {
             assert!(
                 !s.signal_if_current(u32::MAX, 0, StopKind::Kill),
                 "no such process to SIGKILL"
-            );
-            assert!(
-                !s.kill_if_current(u32::MAX, 0),
-                "no such process to hard-kill"
             );
         }
     }

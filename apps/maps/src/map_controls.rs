@@ -326,10 +326,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn map_controls_own_hit_testing_hover_gaps_and_traffic_state() {
         // Phase `every_drawn_control_hit_tests_to_one_semantic_action`.
         {

@@ -9,7 +9,7 @@ use crate::resolved::Resolved;
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_content::ContentSource;
 use tilo_doc::document::MarkSpan;
-use tilo_doc::export::InlinePlan;
+use tilo_doc::export::{CellGrid, ExportBlock, InlinePlan};
 use tilo_doc::model::DocRef;
 use tilo_doc::schema::{
     STYLE_ALIGN, STYLE_BOLD, STYLE_COLOR, STYLE_FONT, STYLE_INDENT, STYLE_ITALIC, STYLE_NAME,
@@ -528,20 +528,6 @@ fn para_props(b: &BlockView) -> Option<(String, String)> {
     }
 }
 
-fn image_anchor(b: &BlockView) -> &str {
-    match b.attrs.get("anchor") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "inline",
-    }
-}
-
-fn image_wrap(b: &BlockView) -> &str {
-    match b.attrs.get("wrap") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "none",
-    }
-}
-
 /// Build the `draw:frame` XML for an `image` block, or `None` if its blob is absent; the
 /// `xlink:href` matches the `Pictures/<hash>.<ext>` part `export()` writes for the same blob.
 fn image_frame_xml(
@@ -554,8 +540,8 @@ fn image_frame_xml(
     };
     let bytes = snap.image(hash)?;
     let href = picture_href(hash, bytes);
-    let anchor = image_anchor(b);
-    let wrap = image_wrap(b);
+    let anchor = ExportBlock::new(b).image_anchor();
+    let wrap = ExportBlock::new(b).image_wrap();
     let mut frame = String::from("<draw:frame");
     let _ = write!(frame, r#" draw:name="{}""#, escape_attr(&b.id));
     let anchor_type = match anchor {
@@ -596,35 +582,6 @@ fn image_frame_xml(
     }
     frame.push_str("</draw:frame>");
     Some(frame)
-}
-
-fn snap_list_level(b: &BlockView) -> i64 {
-    match b.attrs.get("level") {
-        Some(AttrVal::Int(n)) if *n >= 0 => *n,
-        _ => 0,
-    }
-}
-
-fn snap_list_ordered(b: &BlockView) -> bool {
-    matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)))
-}
-
-fn snap_num_format(b: &BlockView) -> &str {
-    match b.attrs.get("num_format") {
-        Some(AttrVal::Str(s)) => s.as_str(),
-        _ => "decimal",
-    }
-}
-
-fn snap_num_start(b: &BlockView) -> i64 {
-    match b.attrs.get("num_start") {
-        Some(AttrVal::Int(n)) => *n,
-        _ => 1,
-    }
-}
-
-fn snap_num_restart(b: &BlockView) -> bool {
-    matches!(b.attrs.get("num_restart"), Some(AttrVal::Bool(true)))
 }
 
 /// Map the model's canonical numbering format onto an ODF `style:num-format` value (inverse of `styles::map_num_format`).
@@ -677,15 +634,16 @@ struct ListKey {
 
 impl ListKey {
     fn of(li: &BlockView) -> Self {
-        let ordered = snap_list_ordered(li);
+        let item = ExportBlock::new(li);
+        let ordered = item.ordered();
         Self {
             ordered,
             format: if ordered {
-                snap_num_format(li).to_string()
+                item.num_format().to_string()
             } else {
                 String::new()
             },
-            start: if ordered { snap_num_start(li) } else { 1 },
+            start: if ordered { item.num_start() } else { 1 },
         }
     }
 }
@@ -718,7 +676,7 @@ fn open_list_tag(li: &BlockView, head: &ContentHead, list_styles: &mut Vec<ListS
         name
     };
     let mut tag = format!(r#"<text:list text:style-name="{name}""#);
-    if start != 1 && snap_num_restart(li) {
+    if start != 1 && ExportBlock::new(li).num_restart() {
         let _ = write!(tag, r#" text:start-value="{start}""#);
     } else if start != 1 {
         // A non-default start that continues: mark it continuing so the importer doesn't treat it as a fresh restart.
@@ -726,21 +684,6 @@ fn open_list_tag(li: &BlockView, head: &ContentHead, list_styles: &mut Vec<ListS
     }
     tag.push('>');
     tag
-}
-
-fn snap_cell_table(b: &BlockView) -> Option<String> {
-    match b.attrs.get("table") {
-        Some(AttrVal::Str(s)) => Some(s.clone()),
-        _ => None,
-    }
-}
-
-fn snap_cell_rc(b: &BlockView) -> (usize, usize) {
-    let g = |k: &str| match b.attrs.get(k) {
-        Some(AttrVal::Int(n)) if *n >= 0 => usize::try_from(*n).unwrap_or(0),
-        _ => 0,
-    };
-    (g("row"), g("col"))
 }
 
 /// A resolved paragraph automatic style: `(parent style name, paragraph-properties XML,
@@ -1176,10 +1119,7 @@ fn render_heading(
     style_attr: &mut impl FnMut(&BlockView) -> String,
     inline: &mut InlineCtx<'_>,
 ) {
-    let level = match b.attrs.get("level") {
-        Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
-        _ => 1,
-    };
+    let level = ExportBlock::new(b).heading_level();
     let sa = style_attr(b);
     let _ = write!(
         body,
@@ -1220,7 +1160,7 @@ fn render_list_run(
     let mut item_open = false; // a <text:list-item> awaiting its close
     let mut top: Option<ListKey> = None; // what the outermost open list encodes
     while let Some(li) = snap.blocks.get(*i).filter(|b| b.kind == "list_item") {
-        let target = snap_list_level(li).saturating_add(1); // lists that should be open
+        let target = ExportBlock::new(li).list_level().saturating_add(1); // lists that should be open
         let key = ListKey::of(li);
         // A top-level item of another kind (numbered after bulleted, another format) starts a new list.
         if target == 1 && depth > 0 && top.as_ref() != Some(&key) {
@@ -1288,44 +1228,21 @@ fn render_table_run(
     style_attr: &mut impl FnMut(&BlockView) -> String,
     inline: &mut InlineCtx<'_>,
 ) {
-    let Some(first) = snap.blocks.get(*i) else {
-        return;
-    };
-    let tid = snap_cell_table(first).unwrap_or_default();
-    let start = *i;
-    while snap
-        .blocks
-        .get(*i)
-        .is_some_and(|b| snap_cell_table(b).as_deref() == Some(tid.as_str()))
-    {
-        *i = i.saturating_add(1);
-    }
-    let Some(cells) = snap.blocks.get(start..*i) else {
-        return;
-    };
-    let nrows = cells
-        .iter()
-        .map(|c| snap_cell_rc(c).0)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    let ncols = cells
-        .iter()
-        .map(|c| snap_cell_rc(c).1)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    let grid = CellGrid::new(cells);
-    let ncols = grid.cols.max(ncols);
-    push_table_open(body, &tid, cells.first(), ncols);
+    let grid = CellGrid::run(&snap.blocks, *i);
+    let cells = grid.cells();
+    *i = i.saturating_add(cells.len().max(1));
+    let ncols = grid.cols();
+    push_table_open(body, grid.table(), cells.first(), ncols);
     // A row's style rides on its first cell.
     let mut row_styles: BTreeMap<usize, &str> = BTreeMap::new();
     for cell in cells {
         if let Some(AttrVal::Str(s)) = cell.attrs.get(super::content::ODT_ROW_STYLE) {
-            row_styles.entry(snap_cell_rc(cell).0).or_insert(s.as_str());
+            row_styles
+                .entry(ExportBlock::new(cell).cell_position().0)
+                .or_insert(s.as_str());
         }
     }
-    for r in 0..grid.rows.max(nrows) {
+    for r in 0..grid.rows() {
         match row_styles.get(&r) {
             Some(s) => {
                 let _ = write!(
@@ -1337,11 +1254,11 @@ fn render_table_run(
             None => body.push_str("<table:table-row>"),
         }
         for c in 0..ncols {
-            if grid.covered.contains(&(r, c)) {
+            if grid.covering(r, c).is_some() {
                 body.push_str("<table:covered-table-cell/>");
                 continue;
             }
-            let cell = grid.at.get(&(r, c)).copied();
+            let cell = grid.origin(r, c);
             let (sa, inner, mut spans) = match cell {
                 Some(cl) => (
                     style_attr(cl),
@@ -1369,10 +1286,7 @@ fn render_table_run(
 /// import on its `first` cell (the columns only while they still number `ncols`), else one
 /// run of plain columns.
 fn push_table_open(body: &mut String, tid: &str, first: Option<&BlockView>, ncols: usize) {
-    let kept = |key: &str| match first.and_then(|c| c.attrs.get(key)) {
-        Some(AttrVal::Str(s)) => Some(s.as_str()),
-        _ => None,
-    };
+    let kept = |key: &str| first.and_then(|c| c.str_attr(key));
     let _ = write!(body, r#"<table:table table:name="{}""#, escape_attr(tid));
     if let Some(style) = kept(super::content::ODT_TABLE_STYLE) {
         let _ = write!(body, r#" table:style-name="{}""#, escape_attr(style));
@@ -1409,18 +1323,13 @@ fn column_count(columns: &str) -> usize {
     n
 }
 
-/// A cell's `colspan`/`rowspan` (1 when absent).
-fn snap_cell_span(b: &BlockView, key: &str) -> usize {
-    match b.attrs.get(key) {
-        Some(AttrVal::Int(n)) if *n > 1 => usize::try_from(*n).unwrap_or(1).min(1024),
-        _ => 1,
-    }
-}
-
 /// The spanning attributes of a merged cell.
 fn cell_spans_xml(b: &BlockView) -> String {
     let mut out = String::new();
-    let (cols, rows) = (snap_cell_span(b, "colspan"), snap_cell_span(b, "rowspan"));
+    let (cols, rows) = (
+        ExportBlock::new(b).col_span(),
+        ExportBlock::new(b).row_span(),
+    );
     if cols > 1 {
         let _ = write!(out, r#" table:number-columns-spanned="{cols}""#);
     }
@@ -1428,45 +1337,6 @@ fn cell_spans_xml(b: &BlockView) -> String {
         let _ = write!(out, r#" table:number-rows-spanned="{rows}""#);
     }
     out
-}
-
-/// The cells of one table by grid position, the positions merged cells cover, and the grid
-/// size including every span.
-struct CellGrid<'a> {
-    at: BTreeMap<(usize, usize), &'a BlockView>,
-    covered: BTreeSet<(usize, usize)>,
-    rows: usize,
-    cols: usize,
-}
-
-impl<'a> CellGrid<'a> {
-    fn new(cells: &'a [BlockView]) -> Self {
-        let mut grid = Self {
-            at: BTreeMap::new(),
-            covered: BTreeSet::new(),
-            rows: 0,
-            cols: 0,
-        };
-        for cell in cells {
-            let (r, c) = snap_cell_rc(cell);
-            let (cols, rows) = (
-                snap_cell_span(cell, "colspan"),
-                snap_cell_span(cell, "rowspan"),
-            );
-            grid.at.entry((r, c)).or_insert(cell);
-            for dr in 0..rows {
-                for dc in 0..cols {
-                    if dr > 0 || dc > 0 {
-                        grid.covered
-                            .insert((r.saturating_add(dr), c.saturating_add(dc)));
-                    }
-                }
-            }
-            grid.rows = grid.rows.max(r.saturating_add(rows));
-            grid.cols = grid.cols.max(c.saturating_add(cols));
-        }
-        grid
-    }
 }
 
 /// Builds the `office:automatic-styles` body: run marks used inline, common named styles
@@ -2634,10 +2504,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn headers_and_footers_roundtrip_through_odt() {
         // Phase `header_footer_with_page_number_roundtrip_through_odt`.
         {

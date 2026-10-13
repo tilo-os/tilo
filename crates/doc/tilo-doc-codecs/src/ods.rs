@@ -4,7 +4,7 @@
 //! serializes a complete valid package back. Untrusted bytes enter only through
 //! the bounded/hardened `SheetPackage` reader (zip-bomb + XXE defence).
 
-use crate::format::{CodecError, Confidence};
+use crate::format::CodecError;
 use crate::sheet_common::{
     ParsedSheet, ParsedWorkbook, SheetPackage, SheetProvider, attr_local, end_local_name,
     local_name,
@@ -36,18 +36,6 @@ const MAX_ROW: u32 = 1_048_576;
 pub struct OdsCodec;
 
 impl SheetProvider for OdsCodec {
-    fn schema_id(&self) -> &str {
-        tilo_doc::sheet::schema::SHEET_SCHEMA_ID
-    }
-
-    fn detect(&self, head: &[u8]) -> Confidence {
-        if head.starts_with(b"PK") {
-            Confidence::Low
-        } else {
-            Confidence::None
-        }
-    }
-
     fn import(&self, bytes: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
         Self::parse(bytes)?.apply(wb, "ods");
         Ok(())

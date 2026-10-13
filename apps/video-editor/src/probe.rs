@@ -969,12 +969,13 @@ fn parse_mp3_frame_header(d: &[u8]) -> Option<Mp3Header> {
 
 fn parse_mp3(d: &[u8]) -> Option<ProbedMedia> {
     // Skip an ID3v2 tag if present.
-    let mut off = 0usize;
-    if d.starts_with(b"ID3")
+    let off = if d.starts_with(b"ID3")
         && let Some(size) = d.get(6..10).and_then(|s| <[u8; 4]>::try_from(s).ok())
     {
-        off = 10 + syncsafe(size);
-    }
+        10 + syncsafe(size)
+    } else {
+        0
+    };
     // Find the first valid frame sync.
     let mut header = None;
     let mut scan = off;

@@ -78,10 +78,7 @@ fn pan(theme: &Theme, scale: f64, (step, frames): (f64, usize)) -> Run {
     let mut scene = Scene::new();
     app.surface_input(
         &window,
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(200.0 * scale, 200.0 * scale),
-        },
+        crate::synthetic_input::cursor_moved(200.0 * scale, 200.0 * scale),
         false,
     );
     for _ in 0..5 {

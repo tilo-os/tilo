@@ -27,10 +27,6 @@ fn invitation(events: &str) -> String {
 const EVENT: &str = "BEGIN:VEVENT\r\nUID:a@tilo\r\nSUMMARY:Review\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\nEND:VEVENT\r\n";
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn calendar_invitation_acceptance_is_structural_and_honours_overrides() {
     // Phase `calendar_invitation_accepts_a_request_and_its_overrides`.
     {
@@ -530,10 +526,6 @@ fn a_fetch_adopts_server_changes_and_keeps_changes_on_their_way() {
 /// of them or none, a stale or unknown id changes nothing, two readers'
 /// flags on one message merge.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn batch_verbs_fail_closed_and_converge() {
     // Phase `purge_refuses_mixed_or_stale_ids_without_deleting_a_valid_subset`.
     {

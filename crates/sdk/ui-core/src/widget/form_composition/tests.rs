@@ -65,10 +65,7 @@ fn form_page_reveals_at_focus_and_preserves_manual_scroll() {
 
         // A real wheel event may move the focused field off screen. Re-layout
         // must not undo that deliberate scroll while focus stays unchanged.
-        harness.send(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(180.0, 210.0),
-        });
+        harness.send(&crate::synthetic_input::cursor_moved(180.0, 210.0));
         harness.scroll(0.0, 3.0);
         let manual_offset = offset.get().1;
         assert!(manual_offset < revealed_offset);

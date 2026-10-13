@@ -62,10 +62,6 @@ impl ui::AppWidget for SdkObserver {
         ui::IconDescriptor::Glyph("N")
     }
 
-    fn permission_hint(&self) -> Option<ui::AppKind> {
-        None
-    }
-
     fn device_shell_operation(
         &mut self,
         operation: &ui::floating_surface::DeviceShellOperation,

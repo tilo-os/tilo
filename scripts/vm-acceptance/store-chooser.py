@@ -144,6 +144,37 @@ def review(door, fixture, filename, directories, out, initial_up=0):
     return value
 
 
+def opened_subject(state, window):
+    candidates = [tab for tab in app.windows(state, window["package_id"])
+                  if tab[0] == window["room"] and tab[2] == str(window["surface_id"])]
+    require(len(candidates) <= 1, "adopted application surface has ambiguous current tabs")
+    if not candidates:
+        return None
+    tab = candidates[0]
+    record = app.mapped_record(state, tab, window["package_id"])
+    if record is None:
+        return None
+    proof = state.get("chrome", {}).get("native_window_provenance")
+    require(isinstance(proof, dict) and proof.get("method") == "authenticated-wayland-peer"
+            and proof.get("omitted") == 0 and isinstance(proof.get("windows"), list),
+            "current device-owner native worker provenance unavailable")
+    matches = [row for row in proof["windows"] if row.get("room") == tab[0]
+               and str(row.get("tab_id")) == tab[1] and str(row.get("surface_id")) == tab[2]]
+    require(len(matches) <= 1, "ambiguous authenticated native worker")
+    if not matches:
+        return None
+    worker = matches[0]
+    require(isinstance(window.get("adoption_id"), str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", window["adoption_id"])
+            and window["adoption_id"] != "00000000-0000-0000-0000-000000000000"
+            and worker.get("adoption_id") == window["adoption_id"],
+            "opened surface resource lifetime changed or is unobservable")
+    require(worker.get("package_id") == window["package_id"]
+            and type(worker.get("record_instance")) is int
+            and record == worker.get("certified_checkout", {}).get("record"),
+            "current native worker has a foreign record association")
+    return tab, record, worker
+
+
 def install_open(door, fixture, installed_before, out):
     vm = door.vm
     package, offer = fixture["package_id"], fixture["offer"]
@@ -157,30 +188,25 @@ def install_open(door, fixture, installed_before, out):
     require(verified.get("uid") == vm.slot_uid() and verified.get("files"),
             "canonical installed official runtime audit unavailable")
     (out / "official-runtime.json").write_text(json.dumps(verified, indent=2))
-    door.call("open", {"app": package})
+    opened = door.call("open-app", {"app": package})
+    launch = opened.get("launch") if isinstance(opened, dict) else None
+    window = launch.get("adopted_window") if isinstance(launch, dict) else None
+    require(isinstance(window, dict) and window.get("package_id") == package
+            and window.get("room") == door.bound[1]
+            and type(window.get("surface_id")) is int and window["surface_id"] > 0,
+            "Open did not return an authenticated adopted application window")
     def subject():
-        state = vm.state()
-        current = app.windows(state, package)
-        candidates = [tab for tab in current if tab[0] == door.bound[1]]
-        require(len(candidates) <= 1, "official app has ambiguous same-room windows; none closed")
-        if candidates:
-            tab = candidates[0]
-            record = app.mapped_record(state, tab, package)
-            if record is not None:
-                return tab, record
-        return None
+        return opened_subject(vm.state(), window)
     selected = wait_until(subject, 60)
     require(selected, "installed app has no observable public tab/record association")
-    # Conservatively require every existing Calculator worker to carry the exact
-    # official bundle. No PID/surface guess may excuse an old resident worker.
+    require(selected[0] not in before, "Open reused a pre-existing window instead of its observed launch")
+    require(subject() == selected, "opened worker association changed before mapped-backing audit")
     app.mapped(vm, "calculator", verified["files"], vm.slot_uid(), out,
-               executable=verified["executable_sha256"])
-    state = vm.state()
-    require(selected[0] in app.windows(state, package)
-            and app.mapped_record(state, selected[0], package) == selected[1],
+               executable=verified["executable_sha256"], selected=selected[2])
+    require(subject() == selected,
             "official app public association changed during mapped-backing audit")
     return {"installation": "update/reuse" if installed_before else "first-install",
-            "window": "reuse" if selected[0] in before else "new", "tab": selected[0],
+            "window": "new", "tab": selected[0],
             "record": selected[1], "root": offer["tapp_root_hash_hex"], "version": offer["version"],
             "runtime": verified["runtime"], "mapped_backing": "calculator-mapped-sdk.json"}
 

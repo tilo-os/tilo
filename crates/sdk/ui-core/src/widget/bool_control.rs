@@ -6,7 +6,7 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::{ActionEmitter, AppModel, ControlBindingMetadata, ModelPath};
-use vello::kurbo::{Point, Rect};
+use vello::kurbo::Rect;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 pub(super) type BoolChangeCallback = Box<dyn FnMut(bool)>;
@@ -139,8 +139,7 @@ impl BoolControl {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let logical_pos = ctx.logical(position);
                 // A hover change is a repaint, not consumed input: a parent
                 // that stops at the first handled child must still deliver
                 // this move to the control the pointer went to, or a control

@@ -125,10 +125,6 @@ fn after(now: Instant, delay: Duration) -> Instant {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "the assertions add fixed durations to a paused clock"
-)]
 mod tests {
     use tilo_relay_protocol::agents::{AgentDelegation, AgentScope};
     use tilo_user_identity::UserIdentity;

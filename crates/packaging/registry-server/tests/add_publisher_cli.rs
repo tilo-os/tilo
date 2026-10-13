@@ -1,12 +1,7 @@
 //! `add-publisher` as the operator runs it: a namespace is required, and Tilo's
 //! own namespace is granted only with an explicit `--first-party`.
 
-#![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::unwrap_used,
-    reason = "integration-test setup and assertions"
-)]
+#![allow(clippy::unwrap_used, reason = "integration-test setup and assertions")]
 
 use std::path::Path;
 use std::process::{Command, Output};

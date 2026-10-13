@@ -133,9 +133,6 @@ impl AppWidget for Note {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("N")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 impl Widget for Note {
     fn name(&self) -> &'static str {

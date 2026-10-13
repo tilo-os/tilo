@@ -3,16 +3,6 @@
 //! chosen block, Esc closes. Regression guard for the case where the
 //! sidebar retained focus (after a row click) and swallowed the arrows.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use crate::framework_support::{add_note, notes, open, send as dispatch, surface};
 use ui::widget::BlockKind;
 use winit::event::{ElementState, WindowEvent};
