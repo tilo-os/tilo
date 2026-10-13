@@ -147,10 +147,9 @@ fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
     }
 }
 
-/// Find bar and download status alignment.
+/// The find bar's controls share the find field's centre line.
 #[test]
-fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
-    // Phase `the_find_bar_controls_share_the_find_fields_centre_line`.
+fn find_bar_controls_share_the_find_fields_centre_line() {
     {
         let mut widget = BrowserWidget::new_headless();
         widget.debug_set_viewport_width(1200);
@@ -201,10 +200,12 @@ fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
             assert!(rect.x1 <= window.x1, "{id} stays inside the window");
         }
     }
+}
 
-    // Phase `the_download_status_shares_the_toolbar_rows_centre_line`.
-    // A download in progress adds its status to the row without breaking the
-    // row's centre line, and without starving the address field.
+/// A download in progress adds its status to the row without breaking the
+/// row's centre line, and without starving the address field.
+#[test]
+fn download_status_shares_the_toolbar_rows_centre_line() {
     {
         use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 
