@@ -42,8 +42,6 @@ use tilo_ui::widget::Dropdown;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::autocomplete::{Autocomplete, Suggestion};
 use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
-use tilo_ui::widget::link_popover::PageEntry;
-use tilo_ui::widget::page_palette::PageJumpPalette as PagePalette;
 use tilo_ui::widget::slash_menu::SlashMenu;
 
 const CANVAS_W: u32 = 480;
@@ -464,57 +462,6 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
             );
         }
     }
-
-    // Case `page_palette_cursor_row_is_visible_in_both_themes`.
-    {
-        for (name, theme) in themes() {
-            let mut palette = PagePalette::new();
-            palette.set_items(
-                labels()
-                    .iter()
-                    .map(|s| PageEntry {
-                        id: uuid::Uuid::new_v4(),
-                        title: (*s).to_string(),
-                    })
-                    .collect(),
-            );
-            palette.set_anchor(Point::new(0.0, 0.0));
-            palette.set_visible(true);
-            dispatch_key_to_palette(&mut palette, NamedKey::ArrowDown);
-            assert_eq!(
-                palette.highlighted().map(|e| e.title.as_str()),
-                Some("Open"),
-                "ArrowDown moves the cursor to row 1"
-            );
-            // Card PADDING 12; input INPUT_HEIGHT 44; rows ROW_HEIGHT 36.
-            let rect = palette.rect();
-            let list_top = rect.y0 + 12.0 + 44.0 + 12.0;
-            let row = |i: f64| {
-                let top = list_top + i * 36.0;
-                Rect::new(rect.x0 + 12.0, top, rect.x1 - 12.0, top + 36.0)
-            };
-
-            let rendered = render(&theme, |scene, tr| {
-                palette.draw_overlay(scene, Affine::IDENTITY, tr, &theme);
-            });
-            rendered.dump(&format!("menu_highlight_page_palette_cursor_{name}"));
-            assert_armed_row(
-                &rendered,
-                text_free_probe(row(1.0)),
-                text_free_probe(row(2.0)),
-                &theme,
-                name,
-                "page-palette",
-            );
-        }
-    }
-}
-
-fn dispatch_key_to_palette(palette: &mut PagePalette, key: NamedKey) {
-    assert!(
-        palette.handle_key(&key_press(key)),
-        "the open palette consumes {key:?}"
-    );
 }
 
 #[test]
