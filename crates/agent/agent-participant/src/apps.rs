@@ -113,6 +113,10 @@ impl AppCatalogue {
 pub enum Seed {
     /// A new record, its resource's genesis.
     New,
+    /// A new record under the id a room route names (the room's default
+    /// record a host seeds before any member opens it): its genesis names
+    /// that id, as the record every member's first window opens.
+    NewAt(RecordId),
     /// An existing record, from the durable changes the host replayed.
     Existing {
         /// The record's id.
@@ -237,6 +241,16 @@ impl Replica {
                 } else {
                     RecordCheckout::new(RecordId::minted(), definition.record_kind.clone())
                 };
+                let bytes = genesis(definition, room, &checkout, kind, participant)?;
+                (checkout, bytes, true)
+            }
+            Seed::NewAt(record) => {
+                if definition.keeps_room_record() != record.is_package_primary() {
+                    return Err(AppError::Merge(
+                        "record route does not match the app's room scope".into(),
+                    ));
+                }
+                let checkout = RecordCheckout::new(record, definition.record_kind.clone());
                 let bytes = genesis(definition, room, &checkout, kind, participant)?;
                 (checkout, bytes, true)
             }
