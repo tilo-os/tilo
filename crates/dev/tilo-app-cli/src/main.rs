@@ -2623,6 +2623,12 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
         // The agent is the headless consumer being used to drive apps; its
         // broker protocol is certified by the structural contract and tests.
         .filter(|dir| dir.file_name().is_none_or(|name| name != "agent"))
+        // An `apps/<name>-model` crate is an app's shared data library, not
+        // an application.
+        .filter(|dir| {
+            dir.file_name()
+                .is_none_or(|name| !name.to_string_lossy().ends_with("-model"))
+        })
         .collect::<Vec<_>>();
     app_dirs.sort();
     let mut packages = Vec::with_capacity(app_dirs.len());

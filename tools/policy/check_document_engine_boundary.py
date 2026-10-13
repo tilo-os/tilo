@@ -30,6 +30,9 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import is_test_file, production_source  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("document_engine_baseline.toml")
@@ -60,8 +63,6 @@ RULES = {
         r"|PRESERVED_[A-Z_]+|BLOB_(?:MIME|LEN|W|H))\b[^}]*\}"
     ),
 }
-TEST_MODULE_MARKERS = ("\n#[cfg(test)]", "\n#[cfg(all(test")
-LINE_COMMENT = re.compile(r"^\s*//.*$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -71,24 +72,6 @@ class Violation:
 
     def __str__(self) -> str:
         return f"{self.path}: {self.reason}"
-
-
-def is_test_file(relative: Path) -> bool:
-    name = relative.name
-    return (
-        "tests" in relative.parts
-        or "benches" in relative.parts
-        or name == "tests.rs"
-        or name.endswith("_tests.rs")
-    )
-
-
-def production_source(text: str) -> str:
-    """The source up to its conventional trailing test module, without line comments."""
-    ends = [text.find(marker) for marker in TEST_MODULE_MARKERS if marker in text]
-    if ends:
-        text = text[: min(ends)]
-    return LINE_COMMENT.sub("", text)
 
 
 def count_uses(root: Path) -> dict[str, dict[str, int]]:

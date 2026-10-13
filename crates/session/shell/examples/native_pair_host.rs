@@ -74,7 +74,7 @@ async fn invitations(
         )
         .await?;
     rooms
-        .prepare_application(&room.room, host, &chat_catalogue(), "so.tilo.chat")
+        .prepare_application(&room.room, host, &chat_catalogue(), "so.tilo.chat", "")
         .await?;
     let expires = tilo_clock::unix_now_ns()
         .checked_add(600_000_000_000)
@@ -191,6 +191,9 @@ async fn serve(root: &Path, same_person: bool) -> Result<(), Box<dyn std::error:
             },
             allowed_origins: Vec::new(),
             plain_listen: None,
+            public_origin: None,
+            live_origin: None,
+            limits: tilo_relay::web::WebLimits::default(),
         })
         .await?;
     let bootstrap = invitations(&relay, &identities, &cert).await?;

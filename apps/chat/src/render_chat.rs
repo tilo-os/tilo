@@ -16,6 +16,7 @@ use vello::peniko::Color;
 use ui::TextKind;
 use ui::Widget;
 use ui::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
+use ui::author::Author;
 use ui::chrome::{
     self, NavCount, NavRowFace, NavSectionFace, SelectionState, nav_item_height,
     nav_rail_item_height, nav_row_height, nav_row_layout, nav_section_height, nav_section_layout,
@@ -364,6 +365,65 @@ impl ChatApp {
         AvatarFace::new(&name, id)
             .presence(self.identity_colour(id))
             .paint(ctx, rect);
+    }
+
+    /// Paint `m`'s author through the shared author helper: the avatar (an
+    /// agent's mark, a bot's tile) into `mark`, the name from `name_at`, and
+    /// for a bot its `BOT` chip, which is never elided. Nothing goes past
+    /// `max_x`. Returns where the line ends and the name line's height.
+    fn paint_author(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        m: &Message,
+        mark: Rect,
+        name_at: Point,
+        max_x: f64,
+    ) -> (f64, f64) {
+        let name = self.user_name(&m.author);
+        let color = self.identity_colour(&m.author);
+        // The avatar the bot showed, once the content store has it.
+        let shown = self.shown_avatar(m);
+        let author = if m.author.starts_with("bot:") {
+            Author::Bot {
+                bot_name: &name,
+                // The roster does not name a bot's installer yet; the chip's
+                // details are not shown in Chat so far.
+                installed_by: "",
+                appearance: m.appearance.as_ref(),
+                linked: None,
+                image: shown.as_ref(),
+            }
+        } else if self.agent_authors.contains_key(&m.author) {
+            Author::Agent {
+                name: &name,
+                for_person: None,
+                color,
+            }
+        } else {
+            Author::Person {
+                name: &name,
+                identity: &m.author,
+                avatar: None,
+                color: Some(color),
+            }
+        };
+        let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
+        let theme = ctx.theme;
+        let style = theme.text(TextRole::Body).strong();
+        let line_h = line_of(ctx.text, &style);
+        // The helper lays its own small mark before the name; start it so
+        // the name lands on `name_at`, then put the mark where Chat's avatar
+        // column is.
+        let lead = ChipFace::height(theme) + f64::from(theme.tokens.spacing.s2);
+        let origin = Point::new(name_at.x - lead, name_at.y);
+        let mut line = author.layout(&members, origin, max_x - origin.x, ctx.text, theme);
+        line.mark = mark;
+        line.name = line.name.with_size((line.name.width(), line_h));
+        if let Some(chip) = line.chip.as_mut() {
+            *chip = chip.with_origin((chip.x0, name_at.y + (line_h - chip.height()) / 2.0));
+        }
+        author.paint(&line, ctx);
+        (line.chip.map_or(line.name.x1, |chip| chip.x1), line_h)
     }
 
     /// The colour `id` chose (or was given) as theirs: what their avatar,
@@ -1903,10 +1963,11 @@ impl ChatApp {
             );
             *y += rm.work_h;
         }
-        // Right-click your own message (header + body) opens its menu.
+        // Right-click a message (header + body) opens its menu: editing
+        // your own, reporting anyone else's, removing it as a moderator.
         // Recorded before the reaction / thread hits so those still win in
         // their own sub-regions.
-        if !rm.editing && self.is_me(&m.author) {
+        if !rm.editing {
             ChatApp::push_hit(
                 hits,
                 Rect::new(area.x0, content_top, area.x1, *y),
@@ -1987,17 +2048,13 @@ impl ChatApp {
             area.x0 + self.chrome.gutter + side,
             *y + side,
         );
-        self.paint_avatar(&mut PaintCtx::new(scene, tf, tr, theme), avatar, &m.author);
-        let name = self.user_name(&m.author);
-        let name_style = theme.text(TextRole::Body).strong();
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        let (nw, nh) = text(
+        let (end_x, nh) = self.paint_author(
             &mut ctx,
-            &name,
-            &name_style,
-            theme.text_primary,
+            m,
+            avatar,
             Point::new(text_x, *y),
-            None,
+            area.x1 - self.chrome.gutter,
         );
         // The time's line box is bottom-aligned to the name's, which keeps
         // their baselines together at any text scale.
@@ -2009,10 +2066,7 @@ impl ChatApp {
             &clock,
             &time_style,
             theme.text_dim,
-            Point::new(
-                text_x + f64::from(nw) + f64::from(theme.tokens.spacing.s2),
-                *y + f64::from(nh) - th,
-            ),
+            Point::new(end_x + f64::from(theme.tokens.spacing.s2), *y + nh - th),
             None,
         );
         *y += header_row_h(tr, theme);
@@ -3313,19 +3367,12 @@ impl ChatApp {
         let tx = column.x0 + side + f64::from(sp.s2);
         let tw = (column.x1 - tx).max(f64::from(theme.tokens.spacing.s16)) as f32;
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        self.paint_avatar(
+        let (end_x, nh) = self.paint_author(
             &mut ctx,
+            m,
             Rect::new(column.x0, y, column.x0 + side, y + side),
-            &m.author,
-        );
-        let name_style = theme.text(TextRole::Label).strong();
-        let (nw, nh) = text(
-            &mut ctx,
-            &self.user_name(&m.author),
-            &name_style,
-            theme.text_primary,
             Point::new(tx, y),
-            None,
+            column.x1,
         );
         let time_style = theme.text(TextRole::Caption).numeric();
         let th = line_of(ctx.text, &time_style);
@@ -3334,13 +3381,10 @@ impl ChatApp {
             &clock_label(m.ts),
             &time_style,
             theme.text_dim,
-            Point::new(
-                tx + f64::from(nw) + f64::from(sp.s2),
-                y + f64::from(nh) - th,
-            ),
+            Point::new(end_x + f64::from(sp.s2), y + nh - th),
             None,
         );
-        let mut yy = y + f64::from(nh).max(side) + f64::from(sp.s1);
+        let mut yy = y + nh.max(side) + f64::from(sp.s1);
         if !m.text.is_empty() {
             let body_h = self.layout_body(m, Point::new(tx, yy), tw, theme, tr);
             self.draw_body(m, &mut PaintCtx::new(scene, tf, tr, theme));

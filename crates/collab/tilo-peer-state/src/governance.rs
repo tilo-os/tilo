@@ -222,7 +222,7 @@ pub fn admit_invited_member(
     }
     // An agent identity stays bound to its delegation whatever else it
     // redeems: the delegation's window and withdrawal still apply.
-    let (revocations, mut admission, mut admissions, workspace_delegations, agent) = prior
+    let (revocations, mut admission, mut admissions, workspace_delegations, delegate) = prior
         .map_or_else(
             || (Vec::new(), None, Vec::new(), Vec::new(), None),
             |identity| {
@@ -231,7 +231,7 @@ pub fn admit_invited_member(
                     identity.admission,
                     identity.admissions,
                     identity.workspace_delegations,
-                    identity.agent,
+                    identity.delegate,
                 )
             },
         );
@@ -247,7 +247,7 @@ pub fn admit_invited_member(
         admission,
         admissions,
         workspace_delegations,
-        agent,
+        delegate,
     };
     candidate
         .put(
