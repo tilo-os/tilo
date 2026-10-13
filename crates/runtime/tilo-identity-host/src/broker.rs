@@ -63,6 +63,11 @@ pub trait ChannelKeySource: Send + Sync + 'static {
 pub trait PersonRecordKinds: Send + Sync + 'static {
     /// The person-record kinds `app_id` declares; empty for none.
     fn person_record_kinds(&self, app_id: &str) -> Vec<String>;
+
+    /// `app_id` attached naming `surface`, the surface file it was started
+    /// with. A host that runs no package of the app may take it as the
+    /// app's surface; by default it is ignored and only a package's counts.
+    fn attached(&self, _app_id: &str, _surface: &[u8]) {}
 }
 
 /// A host that knows no app's person records: nothing is signed in the
@@ -229,6 +234,9 @@ fn serve(
     let Ok(handshake) = read_frame::<Handshake>(&mut stream) else {
         return;
     };
+    if let Some(surface) = &handshake.surface {
+        person.attached(&handshake.app_id, surface.as_bytes());
+    }
     let Some(room) = RoomId::parse(&handshake.workspace_id) else {
         let _ = write_action_frame(
             &mut stream,
@@ -1289,6 +1297,7 @@ params = []
             &Handshake {
                 workspace_id: room.to_string(),
                 app_id: "so.tilo.notes".into(),
+                surface: None,
             },
         )
         .expect("handshake");
@@ -1449,6 +1458,7 @@ params = []
             &Handshake {
                 workspace_id: RoomId::new().to_string(),
                 app_id: "so.tilo.file-explorer".into(),
+                surface: None,
             },
         )
         .unwrap();
