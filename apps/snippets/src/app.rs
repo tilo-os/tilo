@@ -1234,8 +1234,7 @@ impl ui::widget::Decorator for SnippetsApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.core.borrow_mut().pointer =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.core.borrow_mut().pointer = ctx.logical(position);
         }
         let consumed = {
             let mut core = self.core.borrow_mut();
@@ -1342,10 +1341,7 @@ impl ui::widget::Decorator for SnippetsApp {
                         .with_name(action.accessible_label(&core))
                         .with_action_target(format!("snippets.menu:{index}"))
                         .with_bounds(open.menu.item_rect(index).unwrap_or(Rect::ZERO))
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
+                        .with_state(AccessState::new().focusable(true))
                 })
                 .collect();
             children.push(

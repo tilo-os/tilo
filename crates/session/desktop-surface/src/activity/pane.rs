@@ -2308,6 +2308,11 @@ impl RoomActivityPane {
         }
         self.last_heads = heads;
         seed_roster_colours(self.source.authors_mut(), tree);
+        // A change an agent's own key signed reads as the agent's, for its
+        // person, once the host verified its delegation for that device.
+        for agent in tree.roster_agents() {
+            self.source.authors_mut().register_roster_agent(&agent);
+        }
         let local = self.local_user();
         if !local.is_empty() {
             // The reader's own changes read as theirs.
@@ -3443,8 +3448,8 @@ impl RoomActivityPane {
                 .clone()
                 .with_weight(ui::text_render::TextWeight::Medium),
         );
+        let width = text_width(bounds.width() - 24.0);
         if let Some(detail) = self.selection_detail() {
-            let width = text_width(bounds.width() - 24.0);
             if let Some(indexed) = self.selected_agent_run().cloned() {
                 self.draw_agent_task_detail(scene, transform, tr, theme, bounds, width, &indexed);
                 return;
@@ -3498,7 +3503,6 @@ impl RoomActivityPane {
                 actions_bottom + 14.0,
             );
         } else {
-            let width = text_width(bounds.width() - 24.0);
             tr.draw_style(
                 scene,
                 &t("activity-select-prompt"),

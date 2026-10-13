@@ -12,9 +12,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard; fixture sizes are small constants"
 )]
@@ -39,9 +36,7 @@ use shell::shell::render::OutputId;
 use ui::dmabuf_import::ImportedRenderTarget;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
-use vello::peniko::{
-    BlendMode, Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
-};
+use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 use vello::wgpu;
 
 const WIDTH: u32 = 96;
@@ -71,13 +66,7 @@ fn surface(
     let plane = HdrPlane::from_signal_rgb(width, height, std::iter::repeat_n(rgb, count), signal)
         .expect("plane");
     let [r, g, b] = tonemap_rgb_signal_to_srgb8(rgb, colorimetry, HdrTonemapConfig::default());
-    let image = ImageData {
-        data: Blob::new(Arc::new([r, g, b, 255].repeat(count))),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width,
-        height,
-    };
+    let image = ui::raster::rgba8_premultiplied([r, g, b, 255].repeat(count), width, height);
     (Arc::new(plane), image)
 }
 
@@ -355,10 +344,6 @@ fn paint_direct(
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn hdr_layers_composite_in_linear_light_on_every_output_path() {
     let mut bridge = VelloDrmBridge::new(WIDTH, HEIGHT).expect("a real wgpu adapter");
     let (scene, layers) = scene();

@@ -628,10 +628,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn toast_queue_pushes_caps_dismisses_and_expires() {
         fn push_appends_to_chrome_queue() {
             let chrome = new_chrome();
@@ -718,10 +714,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn toast_stack_layout_motion_and_accessibility() {
         /// Review fixtures: the ux-bench cannot raise a notification on macOS,
         /// so the stack is photographed from its paint path — a live column
@@ -953,10 +945,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn remote_projections_are_attributed_redacted_and_never_outlive_expiry() {
         fn remote_projection_becomes_attributed_non_dbus_toast() {
             let notification =

@@ -67,10 +67,12 @@ pub struct NativeWhatsappAccount {
     supervisor: Arc<AccountSupervisor>,
     activation: AtomicU8,
 }
+#[cfg(target_os = "linux")]
 struct Egress {
     account: Arc<GrantedWhatsappAuthority>,
     consent: Arc<super::network::Consent>,
 }
+#[cfg(target_os = "linux")]
 impl AccountAuthority for Egress {
     fn check(&self) -> Result<(), SendError> {
         self.account.check()?;
@@ -110,6 +112,7 @@ impl NativeWhatsappAccount {
                 &self.gate.0.identity.owner.account,
             ))
     }
+    #[cfg(target_os = "linux")]
     pub(super) fn linking(
         &self,
     ) -> Result<Arc<tilo_messaging_protocol::supervisor::whatsapp::WhatsappLinking>, SendError>
@@ -117,6 +120,7 @@ impl NativeWhatsappAccount {
         self.gate.check()?;
         self.supervisor.whatsapp_linking()
     }
+    #[cfg(target_os = "linux")]
     pub(super) fn resume_default(
         &self,
         root: std::path::PathBuf,
@@ -134,6 +138,7 @@ impl NativeWhatsappAccount {
     }
     /// Called only on the original native enrollment worker after profile review.
     /// Protected temporary egress review precedes constructing any network source.
+    #[cfg(target_os = "linux")]
     pub(super) fn activate_default(
         &self,
         root: std::path::PathBuf,

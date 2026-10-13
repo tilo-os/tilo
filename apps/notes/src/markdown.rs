@@ -154,31 +154,9 @@ impl BlockSpec {
     pub fn paragraph(s: impl Into<String>) -> Self {
         BlockSpec::Paragraph(InlineText::plain(s))
     }
-    pub fn quote(s: impl Into<String>) -> Self {
-        BlockSpec::Quote(InlineText::plain(s))
-    }
-    pub fn heading(level: u8, s: impl Into<String>) -> Self {
-        BlockSpec::Heading {
-            level: level.clamp(1, 3),
-            text: InlineText::plain(s),
-        }
-    }
-    pub fn bullet(indent: u8, s: impl Into<String>) -> Self {
-        BlockSpec::Bullet {
-            indent: indent.min(MAX_LIST_INDENT),
-            text: InlineText::plain(s),
-        }
-    }
     pub fn numbered(indent: u8, s: impl Into<String>) -> Self {
         BlockSpec::Numbered {
             indent: indent.min(MAX_LIST_INDENT),
-            text: InlineText::plain(s),
-        }
-    }
-    pub fn checklist(indent: u8, done: bool, s: impl Into<String>) -> Self {
-        BlockSpec::Checklist {
-            indent: indent.min(MAX_LIST_INDENT),
-            done,
             text: InlineText::plain(s),
         }
     }

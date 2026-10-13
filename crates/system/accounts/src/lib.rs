@@ -56,6 +56,7 @@ pub mod cloud_types {
 
 pub mod email;
 pub mod handoff;
+pub mod thunderbird;
 pub use handoff::{
     CommandRefresher, CredentialRefresher, HandoffCredential, HandoffCredentialSource,
     HandoffStore, RefreshError,

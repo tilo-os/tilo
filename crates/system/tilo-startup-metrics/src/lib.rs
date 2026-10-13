@@ -323,12 +323,58 @@ struct Metrics {
     launcher: Vec<HandoffEvent>,
     events: Mutex<Vec<Event>>,
     output_path: std::path::PathBuf,
-    /// Serialises writes of the file and holds how many events it has, so an
-    /// older snapshot never replaces a newer one. Events are only appended.
-    file: Mutex<Option<usize>>,
+    /// Serialises writes and remembers both event count and observation, so a
+    /// changed observation checkpoints even when no new event was appended.
+    file: Mutex<Option<(usize, Option<NativeAdmissionSnapshot>)>>,
+    native_admission: Mutex<Option<NativeAdmissionSnapshot>>,
     /// The background writer, once [`start_writer`] ran; `None` when its thread
     /// could not start.
     writer: OnceLock<Option<&'static Writer>>,
+}
+
+/// Content-free native admission, reported before application actions exist.
+/// RPC counters cover this transport lifetime, not a claim about every route.
+/// The launcher-issued metrics path and independently pinned worker lifetime
+/// remain necessary to associate this report with a desktop record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct NativeAdmissionSnapshot {
+    pub process_id: u32,
+    pub continuity_instance: Option<u64>,
+    #[serde(flatten)]
+    pub connection: NativeAdmissionConnection,
+    pub live_document_owners: usize,
+    pub installed_document_owners: usize,
+    #[serde(flatten)]
+    pub history: NativeAdmissionHistory,
+    #[serde(flatten)]
+    pub directory: NativeAdmissionDirectory,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct NativeAdmissionConnection {
+    pub manager_connected: bool,
+    pub custody_reconciled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct NativeAdmissionHistory {
+    pub primary_history_ready: bool,
+    pub all_owner_histories_ready: bool,
+    pub action_history_ready: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct NativeAdmissionDirectory {
+    pub directory_enqueued: bool,
+    pub transport_directory_rpc_successes: Option<u64>,
+    pub transport_directory_rpc_failures: Option<u64>,
+}
+
+/// Replace the latest content-free observation, without appending startup events.
+pub fn checkpoint_native_admission(snapshot: NativeAdmissionSnapshot) {
+    if let Some(Some(metrics)) = METRICS.get() {
+        metrics.checkpoint_admission(snapshot);
+    }
 }
 
 /// Wakes the background writer: set when events arrived that it has not
@@ -357,6 +403,7 @@ impl Metrics {
             events: Mutex::new(Vec::with_capacity(16)),
             output_path,
             file: Mutex::new(None),
+            native_admission: Mutex::new(None),
             writer: OnceLock::new(),
         }
     }
@@ -370,17 +417,42 @@ impl Metrics {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        if on_disk.is_some_and(|written| written >= events.len()) {
+        let admission = self
+            .native_admission
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let revision = (events.len(), admission.clone());
+        if on_disk.as_ref() == Some(&revision) {
             return;
         }
-        let payload = self.payload(&events);
+        let mut payload = self.payload(&events);
+        if let (Some(admission), Some(object)) = (admission, payload.as_object_mut()) {
+            object.insert("native_admission".into(), serde_json::json!(admission));
+        }
         if tilo_files::native::atomic::write_regenerable(
             &self.output_path,
             &serde_json::to_vec_pretty(&payload).unwrap_or_default(),
         )
         .is_ok()
         {
-            *on_disk = Some(events.len());
+            *on_disk = Some(revision);
+        }
+    }
+
+    fn checkpoint_admission(&self, snapshot: NativeAdmissionSnapshot) {
+        {
+            let mut admission = self
+                .native_admission
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if admission.as_ref() == Some(&snapshot) {
+                return;
+            }
+            *admission = Some(snapshot);
+        }
+        if !self.wake_writer() {
+            self.write_snapshot();
         }
     }
 
@@ -769,6 +841,102 @@ mod tests {
         }
         drop(events);
         assert!(launch_table().is_empty());
+    }
+
+    #[test]
+    fn native_admission_checkpoint_preserves_startup_and_stays_quiet() {
+        admission_checkpoints(false);
+    }
+
+    #[test]
+    fn native_admission_checkpoints_through_async_writer() {
+        admission_checkpoints(true);
+    }
+
+    fn admission_checkpoints(background: bool) {
+        let nonce = tilo_clock::unix_now_ns();
+        let directory =
+            std::env::temp_dir().join(format!("tilo-admission-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("startup.json");
+        let metrics: &'static Metrics = Box::leak(Box::new(Metrics::start(
+            path.clone(),
+            Some("sandbox-exec@123"),
+        )));
+        metrics.record("main-start");
+        if background {
+            metrics.start_writer();
+            assert!(metrics.writer.get().is_some_and(Option::is_some));
+        }
+        let checkpoint = |snapshot: &NativeAdmissionSnapshot| {
+            metrics.checkpoint_admission(snapshot.clone());
+            let started = std::time::Instant::now();
+            loop {
+                let written = metrics.file.lock().unwrap();
+                if written
+                    .as_ref()
+                    .is_some_and(|(_, admission)| admission.as_ref() == Some(snapshot))
+                {
+                    break;
+                }
+                drop(written);
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(10),
+                    "snapshot did not reach the file"
+                );
+                std::thread::yield_now();
+            }
+        };
+        let mut admission = NativeAdmissionSnapshot {
+            process_id: std::process::id(),
+            continuity_instance: Some(42),
+            connection: NativeAdmissionConnection {
+                manager_connected: false,
+                custody_reconciled: false,
+            },
+            live_document_owners: 1,
+            installed_document_owners: 0,
+            history: NativeAdmissionHistory {
+                primary_history_ready: false,
+                all_owner_histories_ready: false,
+                action_history_ready: false,
+            },
+            directory: NativeAdmissionDirectory {
+                directory_enqueued: false,
+                transport_directory_rpc_successes: Some(0),
+                transport_directory_rpc_failures: Some(0),
+            },
+        };
+        checkpoint(&admission);
+        let first: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(first["events"][0]["name"], "main-start");
+        assert_eq!(first["launcher"][0]["epoch_us"], 123);
+        assert!(first["origin_epoch_us"].as_u64().unwrap() > 0);
+        assert_eq!(first["native_admission"]["continuity_instance"], 42);
+        assert_eq!(first["native_admission"]["action_history_ready"], false);
+        // An unchanged idle observation must not touch the output path at all.
+        std::fs::remove_file(&path).unwrap();
+        checkpoint(&admission);
+        metrics.write_snapshot();
+        assert!(!path.exists());
+        admission.connection.manager_connected = true;
+        admission.history.primary_history_ready = true;
+        admission.history.all_owner_histories_ready = true;
+        admission.history.action_history_ready = true;
+        admission.directory.directory_enqueued = true;
+        admission.directory.transport_directory_rpc_successes = Some(1);
+        admission.directory.transport_directory_rpc_failures = Some(2);
+        checkpoint(&admission);
+        let bytes = std::fs::read(&path).unwrap();
+        let current: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(current["events"], first["events"]);
+        assert_eq!(current["native_admission"], serde_json::json!(admission));
+        assert_eq!(current["native_admission"].as_object().unwrap().len(), 12);
+        // A later ordinary startup checkpoint retains the observation.
+        metrics.write_snapshot();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

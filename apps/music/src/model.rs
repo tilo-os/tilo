@@ -194,13 +194,6 @@ impl RepeatMode {
             RepeatMode::One => "one",
         }
     }
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "all" => RepeatMode::All,
-            "one" => RepeatMode::One,
-            _ => RepeatMode::Off,
-        }
-    }
 }
 
 /// Live playback state for this device. Audio output, queue, shuffle/repeat
@@ -238,11 +231,6 @@ impl Default for Playback {
         }
     }
 }
-
-/// Stable id of the synthetic "Liked Songs" playlist surfaced in the UI. It
-/// is not a stored [`Playlist`] — it is a virtual projection of [`Library::liked`]
-/// so it always reflects the like set without a second source of truth.
-pub const LIKED_PLAYLIST_ID: &str = "pl_liked";
 
 /// The music library: the catalog the person brought in, their playlists,
 /// likes, saved albums, followed artists and recommendation feedback.
@@ -535,10 +523,6 @@ mod tests {
     use crate::seed;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn sample_library_orders_albums_searches_and_cycles_repeat() {
         // Phase `sample_library_is_populated`.
         {

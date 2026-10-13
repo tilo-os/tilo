@@ -1,6 +1,5 @@
 use super::*;
 use crate::synthetic_input::{key_event, keyboard_input};
-use winit::event::DeviceId;
 use winit::keyboard::Key;
 
 fn send(region: &mut ScrollRegion, event: &WindowEvent) -> bool {
@@ -27,18 +26,11 @@ fn send(region: &mut ScrollRegion, event: &WindowEvent) -> bool {
 }
 
 fn moved(point: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-    }
+    crate::synthetic_input::cursor_moved(point.x, point.y)
 }
 
 fn button(state: ElementState) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: DeviceId::dummy(),
-        state,
-        button: MouseButton::Left,
-    }
+    crate::synthetic_input::mouse_input(state, MouseButton::Left)
 }
 
 fn cancellation_journey(cancel: WindowEvent) {

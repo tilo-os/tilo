@@ -36,12 +36,21 @@ pub enum FloatingServiceEvent {
     Message {
         connection: u64,
         app_id: String,
+        launch: Option<AuthenticatedLaunch>,
         message: FloatingSurfaceClientMessage,
     },
     Disconnected {
         connection: u64,
         app_id: String,
     },
+}
+
+/// Opaque authenticated launch custody for event observation.
+/// External callers cannot construct it or access its custody fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthenticatedLaunch {
+    pub(crate) workspace_id: String,
+    pub(crate) custody: crate::shell::launcher::VerifiedLaunchCustody,
 }
 
 #[derive(Deserialize)]
@@ -234,6 +243,8 @@ fn serve_connection(
     writers: Arc<Mutex<HashMap<u64, ConnectionWriter>>>,
     stop: Arc<std::sync::atomic::AtomicBool>,
 ) {
+    let peer_pid = super::native::wayland_peer_credentials(&stream)
+        .and_then(|credentials| u32::try_from(credentials.pid).ok());
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
@@ -285,6 +296,7 @@ fn serve_connection(
             }
         });
     let app_id = handshake.app_id;
+    let launch = authenticated_launch(peer_pid, &app_id);
     let _ = events.send(FloatingServiceEvent::Connected {
         network_status_allowed: handshake.network_status_allowed,
         connection,
@@ -311,6 +323,7 @@ fn serve_connection(
             .send(FloatingServiceEvent::Message {
                 connection,
                 app_id: app_id.clone(),
+                launch: launch.clone(),
                 message,
             })
             .is_err()
@@ -322,6 +335,20 @@ fn serve_connection(
         open.remove(&connection);
     }
     let _ = events.send(FloatingServiceEvent::Disconnected { connection, app_id });
+}
+
+fn authenticated_launch(peer_pid: Option<u32>, app_id: &str) -> Option<AuthenticatedLaunch> {
+    peer_pid
+        .and_then(crate::shell::launcher::verified_launch_custody_for_descendant)
+        .and_then(|(identity, custody)| {
+            (identity.confined && identity.package_id == app_id)
+                .then_some(identity.workspace_id)
+                .flatten()
+                .map(|workspace_id| AuthenticatedLaunch {
+                    workspace_id,
+                    custody,
+                })
+        })
 }
 
 /// What each authenticated app was last told about where, and for whom,

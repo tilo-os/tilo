@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! An effect that edits its record answers its caller once the edits it
 //! submitted landed: they go through the door like any other submission,
 //! checked again, and the effect replies from what the door answered.

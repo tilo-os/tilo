@@ -30,7 +30,7 @@ mod macos;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web;
 
-pub use caps::{Availability, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 
 /// The result of a location request, delivered back to the UI thread over a
 /// channel.

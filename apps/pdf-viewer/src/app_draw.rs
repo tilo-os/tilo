@@ -674,24 +674,20 @@ impl PdfApp {
         )
     }
 
-    /// Rasterise every page (and thumbnail) currently on screen exactly once,
-    /// returning bitmaps keyed by 1-based page number. Cache hits inside the
-    /// rasteriser make scrolling and panning allocation-free; only a zoom
-    /// change or a page scrolling into view triggers real work. Empty in text
-    /// mode.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the draw-time request budget and synchronous compatibility cache share the same visibility pass"
-    )]
+    /// The bitmaps for every page (and thumbnail) currently on screen, keyed
+    /// by 1-based page number, from what the PDF worker has delivered; the
+    /// missing ones are asked for. Cached results make scrolling and panning
+    /// allocation-free; only a zoom change or a page scrolling into view
+    /// triggers real work. Empty when no PDF is open.
     fn rasterize_visible(&mut self) -> RasterFrame {
         let mut page_imgs = std::collections::HashMap::new();
         let mut thumb_imgs = std::collections::HashMap::new();
         let mut page_tiles: std::collections::HashMap<usize, render::PageTiles> =
             std::collections::HashMap::new();
         self.pending_visuals = false;
-        if !self.raster_active() {
+        let Some(document_id) = self.raster_document.as_ref().map(|document| document.id) else {
             return (page_imgs, thumb_imgs, page_tiles);
-        }
+        };
 
         let canvas = self.canvas_rect;
         let pageh = self.ph() * self.zoom();
@@ -709,11 +705,11 @@ impl PdfApp {
             }
             match self.tile_placement(i, *o) {
                 Some(placement) => tiled.push(placement),
-                None => want_pages.push(i),
+                None => want_pages.push((i, page_bucket)),
             }
         }
         let placeholder_bucket =
-            crate::source::Rasterizer::bucket_for(crate::tiles::PLACEHOLDER_PAGE_PX);
+            crate::source::RasterBackend::bucket_for(crate::tiles::PLACEHOLDER_PAGE_PX);
         let wanted_tiles =
             crate::tiles::wanted_tiles(&tiled, (canvas.x0, canvas.y0, canvas.x1, canvas.y1));
         for placement in &tiled {
@@ -745,182 +741,69 @@ impl PdfApp {
         // single top page and lets the rest — a page's bottom sliver peeking in,
         // pages scrolling into view — fill in over the following frames. Cached
         // pages always draw (a cache hit is ~free).
-        let mut new_budget = MAX_NEW_PAGE_RASTERS_PER_FRAME;
-        #[cfg(test)]
-        let mut skipped_renderable = false;
-        #[cfg(test)]
-        let mut rendered_new = false;
-        if let Some(document) = self.raster_document.as_ref() {
-            self.pending_visuals = want_pages.iter().any(|i| {
-                !self
-                    .raster_images
-                    .contains_key(&(*i, crate::source::Rasterizer::bucket_for(page_bucket)))
-            }) || want_thumbs.iter().any(|(i, width)| {
-                !self
-                    .raster_images
-                    .contains_key(&(*i, crate::source::Rasterizer::bucket_for(*width)))
-            });
-            // Worker mode: never ask PDFium to rasterise from the draw pass.
-            // A cache miss becomes bounded owner work and this frame simply
-            // paints the existing placeholder; the result wakes a later frame.
-            for i in want_pages {
-                let key = (i, crate::source::Rasterizer::bucket_for(page_bucket));
-                if let Some(image) = self.raster_images.get(&key) {
-                    page_imgs.insert(i + 1, image.clone());
-                } else if new_budget > 0 && self.raster_render_pending.insert(key) {
-                    new_budget -= 1;
-                    if self.raster_handle.as_ref().is_some_and(|handle| {
-                        handle
-                            .request_render(crate::source::RenderRequest {
-                                document_id: document.id,
-                                page: i,
-                                target_width: page_bucket,
-                            })
-                            .is_ok()
-                    }) {
-                        // The next event turn will retry/paint it.
-                    } else {
-                        self.raster_render_pending.remove(&key);
-                        self.status_note = Some("PDF render worker is unavailable".to_string());
-                    }
+        self.pending_visuals = want_pages.iter().chain(&want_thumbs).any(|(i, width)| {
+            !self
+                .raster_images
+                .contains_key(&(*i, crate::source::RasterBackend::bucket_for(*width)))
+        });
+        // Never ask PDFium to rasterise from the draw pass. A cache miss
+        // becomes bounded owner work and this frame simply paints the
+        // existing placeholder; the result wakes a later frame.
+        self.request_page_images(
+            document_id,
+            want_pages,
+            MAX_NEW_PAGE_RASTERS_PER_FRAME,
+            &mut page_imgs,
+        );
+        self.request_page_images(
+            document_id,
+            want_thumbs,
+            MAX_NEW_THUMB_RASTERS_PER_FRAME,
+            &mut thumb_imgs,
+        );
+        self.request_tiled_pages(
+            document_id,
+            &tiled,
+            &wanted_tiles,
+            placeholder_bucket,
+            &mut page_imgs,
+            &mut page_tiles,
+        );
+        // The worker completion itself marks the widget dirty, so no frame
+        // spins while it is parsing/rasterising: that would waste a core on a
+        // static loading surface and make a hostile page feel worse.
+        (page_imgs, thumb_imgs, page_tiles)
+    }
+
+    /// Collect the worker bitmaps already here for `wanted` (0-based page,
+    /// target width) into `out`, keyed by 1-based page, and ask the worker
+    /// for at most `budget` of the missing ones.
+    fn request_page_images(
+        &mut self,
+        document_id: u64,
+        wanted: Vec<(usize, u32)>,
+        mut budget: usize,
+        out: &mut std::collections::HashMap<usize, PenikoImage>,
+    ) {
+        for (i, width) in wanted {
+            let key = (i, crate::source::RasterBackend::bucket_for(width));
+            if let Some(image) = self.raster_images.get(&key) {
+                out.insert(i + 1, image.clone());
+            } else if budget > 0 && self.raster_render_pending.insert(key) {
+                budget -= 1;
+                if !self.raster_handle.as_ref().is_some_and(|handle| {
+                    handle
+                        .request_render(crate::source::RenderRequest {
+                            document_id,
+                            page: i,
+                            target_width: width,
+                        })
+                        .is_ok()
+                }) {
+                    self.raster_render_pending.remove(&key);
+                    self.status_note = Some("PDF render worker is unavailable".to_string());
                 }
             }
-            let mut thumb_budget = MAX_NEW_THUMB_RASTERS_PER_FRAME;
-            for (i, tw) in want_thumbs {
-                let key = (i, crate::source::Rasterizer::bucket_for(tw));
-                if let Some(image) = self.raster_images.get(&key) {
-                    thumb_imgs.insert(i + 1, image.clone());
-                } else if thumb_budget > 0 && self.raster_render_pending.insert(key) {
-                    thumb_budget -= 1;
-                    if !self.raster_handle.as_ref().is_some_and(|handle| {
-                        handle
-                            .request_render(crate::source::RenderRequest {
-                                document_id: document.id,
-                                page: i,
-                                target_width: tw,
-                            })
-                            .is_ok()
-                    }) {
-                        self.raster_render_pending.remove(&key);
-                        self.status_note = Some("PDF render worker is unavailable".to_string());
-                    }
-                }
-            }
-            let document_id = document.id;
-            self.request_tiled_pages(
-                document_id,
-                &tiled,
-                &wanted_tiles,
-                placeholder_bucket,
-                &mut page_imgs,
-                &mut page_tiles,
-            );
-            // The worker completion itself marks the widget dirty.  Do not
-            // spin an animation frame while it is parsing/rasterising: that
-            // wastes a core on a static loading surface and makes a hostile
-            // page feel worse rather than more responsive.
-            self.pending_raster = false;
-            return (page_imgs, thumb_imgs, page_tiles);
-        }
-        #[cfg(test)]
-        if let Some(rz) = self.raster.as_mut() {
-            for i in want_pages {
-                if !rz.is_page_cached(i, page_bucket) {
-                    if new_budget == 0 {
-                        skipped_renderable = true;
-                        continue;
-                    }
-                    new_budget -= 1;
-                    if rz
-                        .render(i, page_bucket)
-                        .map(|img| page_imgs.insert(i + 1, img))
-                        .is_some()
-                    {
-                        rendered_new = true;
-                    }
-                } else if let Some(img) = rz.render(i, page_bucket) {
-                    page_imgs.insert(i + 1, img);
-                }
-            }
-            // Rail thumbnails are also real page rasters — for a scanned PDF a
-            // single 192px thumbnail can cost 15-30ms, so a rail-full on the
-            // open frame added ~90ms. Budget them the same way: a couple of new
-            // ones per frame, the rest deferred to follow-up frames.
-            let mut thumb_budget = MAX_NEW_THUMB_RASTERS_PER_FRAME;
-            for (i, tw) in want_thumbs {
-                if !rz.is_page_cached(i, tw) {
-                    if thumb_budget == 0 {
-                        skipped_renderable = true;
-                        continue;
-                    }
-                    thumb_budget -= 1;
-                    if rz
-                        .render(i, tw)
-                        .map(|img| thumb_imgs.insert(i + 1, img))
-                        .is_some()
-                    {
-                        rendered_new = true;
-                    }
-                } else if let Some(img) = rz.render(i, tw) {
-                    thumb_imgs.insert(i + 1, img);
-                }
-            }
-            // Zoomed pages: the placeholder, then a budget of new tiles in
-            // priority order (visible nearest the centre first).
-            for placement in &tiled {
-                let i = placement.page;
-                if rz.is_page_cached(i, placeholder_bucket) || new_budget > 0 {
-                    if !rz.is_page_cached(i, placeholder_bucket) {
-                        new_budget -= 1;
-                        rendered_new = true;
-                    }
-                    if let Some(img) = rz.render(i, placeholder_bucket) {
-                        page_imgs.insert(i + 1, img);
-                    }
-                } else {
-                    skipped_renderable = true;
-                    self.pending_visuals = true;
-                }
-            }
-            let mut tile_budget = MAX_NEW_TILE_RASTERS_PER_FRAME;
-            for tile in wanted_tiles.iter().filter(|t| t.visible) {
-                let cached = rz.is_tile_cached(tile.page, tile.level, tile.col, tile.row);
-                if !cached {
-                    if tile_budget == 0 {
-                        skipped_renderable = true;
-                        self.pending_visuals = true;
-                        continue;
-                    }
-                    tile_budget -= 1;
-                }
-                if let Some(img) = rz.render_tile(tile.page, tile.level, tile.col, tile.row) {
-                    rendered_new |= !cached;
-                    if let Some(entry) = page_tiles.get_mut(&(tile.page + 1)) {
-                        entry.tiles.push((tile.region, img));
-                    }
-                }
-            }
-            rz.prune(page_bucket);
-        }
-        #[cfg(not(test))]
-        #[allow(
-            clippy::needless_return,
-            reason = "the test-only fallback is cfg-elided in production"
-        )]
-        {
-            let _ = (&tiled, &wanted_tiles, placeholder_bucket);
-            self.pending_raster = false;
-            return (page_imgs, thumb_imgs, page_tiles);
-        }
-        #[cfg(test)]
-        // Schedule a follow-up frame to render the pages we skipped this one —
-        // but only when *this* frame made forward progress (rendered a new page).
-        // A page that persistently fails to render therefore can't wedge the
-        // frame pump into a permanent ~60 Hz spin.
-        #[cfg(test)]
-        {
-            self.pending_raster = skipped_renderable && rendered_new;
-            (page_imgs, thumb_imgs, page_tiles)
         }
     }
 
@@ -949,10 +832,6 @@ impl PdfApp {
 
     /// Displayed size (points, recorded rotation applied) of 0-based page `i`.
     fn display_page_size(&self, i: usize) -> Option<(f64, f64)> {
-        #[cfg(test)]
-        if let Some(rz) = self.raster.as_ref() {
-            return (i < rz.page_count()).then(|| rz.page_size(i));
-        }
         self.raster_document.as_ref()?.page_sizes.get(i).copied()
     }
 
@@ -1064,77 +943,44 @@ impl PdfApp {
         }
     }
 
-    /// Populate `self.raster_text` with the engine text layer of the pages
-    /// currently in view (raster backend only). The engine's own text-page cache
-    /// makes repeated frames cheap; only a page scrolling into view does work.
+    /// Ask the PDF worker for the engine text layer of the pages currently in
+    /// view; the layers land in `self.raster_text` as they arrive.
     fn refresh_raster_text(&mut self) {
-        if !self.raster_active() {
-            return;
-        }
         // The engine text layer only feeds the selection + search-hit overlays
         // and is expensive to extract (hundreds of ms per page). On an idle or
         // scroll frame — no selection, no search hits — skip it entirely so
         // opening a document and scrolling stay smooth. A selection that starts
-        // on a page whose layer isn't built yet extracts it on demand inside
-        // `begin_selection`; a search extracts every page up front in
-        // `recompute_matches`, so the visible ones are cache hits here.
+        // on a page whose layer isn't here yet asks for it inside
+        // `begin_selection`; a search asks for every page in
+        // `recompute_matches`, so the visible ones are usually here already.
         let need = self.selection.is_some() || !self.raster_matches.is_empty();
         if !need {
             self.raster_text.clear();
             return;
         }
-        #[cfg(test)]
-        let pageh = self.ph() * self.zoom();
-        #[cfg(test)]
-        let canvas = self.canvas_rect;
-        #[cfg(test)]
-        let origins = self.page_origins();
-        if self.worker_raster_active() {
-            let Some(document) = self.raster_document.as_ref() else {
-                return;
-            };
-            let pageh = self.ph() * self.zoom();
-            let canvas = self.canvas_rect;
-            let origins = self.page_origins();
-            for (i, o) in origins.iter().enumerate() {
-                if o.y > canvas.y1 || o.y + pageh < canvas.y0 {
-                    continue;
-                }
-                if !self.raster_text.contains_key(&(i + 1))
-                    && self.raster_text_pending.insert(i)
-                    && !self.raster_handle.as_ref().is_some_and(|handle| {
-                        handle
-                            .request_text(crate::source::TextRequest {
-                                document_id: document.id,
-                                page: i,
-                            })
-                            .is_ok()
-                    })
-                {
-                    self.raster_text_pending.remove(&i);
-                    self.status_note = Some("PDF text worker is unavailable".to_string());
-                }
-            }
+        let Some(document) = self.raster_document.as_ref() else {
             return;
-        }
-        #[cfg(not(test))]
-        return;
-        #[cfg(test)]
-        {
-            self.raster_text.clear();
-            let mut want = Vec::new();
-            for (i, o) in origins.iter().enumerate() {
-                if o.y > canvas.y1 || o.y + pageh < canvas.y0 {
-                    continue;
-                }
-                want.push(i);
+        };
+        let pageh = self.ph() * self.zoom();
+        let canvas = self.canvas_rect;
+        let origins = self.page_origins();
+        for (i, o) in origins.iter().enumerate() {
+            if o.y > canvas.y1 || o.y + pageh < canvas.y0 {
+                continue;
             }
-            for i in want {
-                if let Some(rz) = self.raster.as_mut() {
-                    let pt = rz.page_text(i);
-                    let pt = self.text_for_card(i + 1, pt);
-                    self.raster_text.insert(i + 1, pt);
-                }
+            if !self.raster_text.contains_key(&(i + 1))
+                && self.raster_text_pending.insert(i)
+                && !self.raster_handle.as_ref().is_some_and(|handle| {
+                    handle
+                        .request_text(crate::source::TextRequest {
+                            document_id: document.id,
+                            page: i,
+                        })
+                        .is_ok()
+                })
+            {
+                self.raster_text_pending.remove(&i);
+                self.status_note = Some("PDF text worker is unavailable".to_string());
             }
         }
     }
@@ -1291,7 +1137,6 @@ impl PdfApp {
                 },
             );
 
-            self.draw_import_placeholder(scene, base, tr, theme, *origin, i);
             self.draw_form_fields(scene, base, tr, theme, page_num, *origin);
 
             // Raster backend: draw search-hit + selection bands over the page
@@ -1465,67 +1310,6 @@ impl PdfApp {
         {
             draw_inline_editor(input, scene, base, tr, theme, r);
         }
-    }
-
-    /// Cover a page-shaped imported occurrence whose verified blob has not
-    /// arrived yet. Keeping this separate from ordinary page rendering makes
-    /// the unavailable state impossible to mistake for nearby source content.
-    #[cfg(test)]
-    fn draw_import_placeholder(
-        &self,
-        scene: &mut Scene,
-        base: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        origin: Point,
-        page_index: usize,
-    ) {
-        let Some(state) = self
-            .raster
-            .as_ref()
-            .and_then(|raster| raster.page_blob_state(page_index))
-        else {
-            return;
-        };
-        let label = match state {
-            tilo_content::ContentState::Pending => "Imported page is loading…",
-            tilo_content::ContentState::Unavailable | tilo_content::ContentState::Resolved => {
-                "Imported page is unavailable"
-            }
-        };
-        let page_rect = Rect::new(
-            origin.x,
-            origin.y,
-            origin.x + self.pw() * self.zoom(),
-            origin.y + self.ph() * self.zoom(),
-        );
-        EmptyState::paint(
-            &mut PaintCtx::new(scene, base, tr, theme),
-            page_rect,
-            &EmptyStateContent {
-                icon: Some(Icon::Image),
-                ..EmptyStateContent::new(label)
-            },
-            Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
-        );
-    }
-
-    #[cfg(not(test))]
-    #[allow(
-        clippy::unused_self,
-        reason = "the cfg-matched test renderer reads local fixture state"
-    )]
-    fn draw_import_placeholder(
-        &self,
-        _scene: &mut Scene,
-        _base: Affine,
-        _tr: &mut TextRenderer,
-        _theme: &Theme,
-        _origin: Point,
-        _page_index: usize,
-    ) {
-        // Worker reconciliation deliberately leaves an honest page-shaped
-        // placeholder until the imported source is materialised on its owner.
     }
 
     /// Draw the raster text-layer overlays for one page: every find match

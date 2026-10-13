@@ -7,6 +7,10 @@
 slides-present = Present
 slides-show-slides = Show slides
 slides-show-properties = Show properties
+slides-tip-toggle-slides = Slides
+slides-tip-toggle-properties = Properties
+slides-tip-overview = Show all slides
+slides-tip-more-tools = More insert tools
 
 ## Slide sidebar
 slides-slides = Slides

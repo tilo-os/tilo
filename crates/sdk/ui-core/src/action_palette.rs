@@ -3826,11 +3826,7 @@ mod tests {
     }
 
     fn enter() -> WindowEvent {
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: enter_key(),
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(enter_key())
     }
 
     #[test]

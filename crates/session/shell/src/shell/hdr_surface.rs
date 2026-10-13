@@ -712,7 +712,6 @@ mod tests {
     use super::*;
     use crate::collab::colorimetry::{ColorRange, MatrixCoefficients};
     use crate::shell::color_pipeline::pq_inverse_eotf;
-    use vello::peniko::{Blob, ImageAlphaType, ImageFormat};
 
     fn pq_signal() -> SurfaceSignal {
         SurfaceSignal::for_colorimetry(Colorimetry::hdr10(), HdrTonemapConfig::default())
@@ -720,18 +719,16 @@ mod tests {
     }
 
     fn image(width: u32, height: u32) -> ImageData {
-        ImageData {
-            data: Blob::new(Arc::new(vec![
+        ui::raster::rgba8_premultiplied(
+            vec![
                 0_u8;
                 (width as usize)
                     .saturating_mul(height as usize)
                     .saturating_mul(4)
-            ])),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            ],
             width,
             height,
-        }
+        )
     }
 
     fn close(a: [f32; 3], b: [f32; 3], relative: f32) -> bool {

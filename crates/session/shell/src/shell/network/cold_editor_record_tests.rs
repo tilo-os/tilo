@@ -326,7 +326,7 @@ impl ColdPair {
         assert!(
             editor.restore_live_continuation_metadata(
                 &ui::collaboration::ContinuationMetadata {
-                    schema_version: 1,
+                    schema_version: ui::collaboration::semantic_schema::TEXT_POSITION_V1,
                     bytes: serde_json::to_vec(&position).unwrap(),
                 },
                 &document,

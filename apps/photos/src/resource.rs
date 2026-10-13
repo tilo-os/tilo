@@ -28,11 +28,7 @@ use crate::model::{
     ImageAnalysis, LibraryPhoto, MAX_LABELS, OpenImage, PhotoLibrary, PhotoLocation, Rect01,
 };
 
-/// Photos' Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-pub(crate) static CATALOG: EmbeddedCatalog =
-    EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
 /// The most photographs one verb changes at once.
 pub(crate) const MAX_BATCH_PHOTOS: usize = 256;

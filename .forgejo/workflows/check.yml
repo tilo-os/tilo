@@ -199,7 +199,9 @@ jobs:
   # Hermetic test suites outside Cargo (tools/ci/suites.toml), selected by the
   # paths they read. They need no builder image and run beside the Rust jobs.
   suites:
-    if: needs.select.outputs.suites_required == 'true'
+    # Keep admission tied to the completed selector, even when unrelated
+    # native jobs are intentionally skipped for non-compiling inputs.
+    if: ${{ !cancelled() && needs.select.result == 'success' && needs.select.outputs.suites_required == 'true' }}
     needs: [select]
     runs-on: runner-quality
     timeout-minutes: 20
@@ -807,8 +809,8 @@ jobs:
   # The tapps of the apps a pull request affects, against their size budgets
   # (tools/perf/tapp-size-budget/; docs/measurements/app-package-size.md).
   # Release / apps holds every main commit to the same budgets, but only after
-  # the merge, where an app over its budget stops every app from publishing
-  # (TIL-765). The select job picks at most a few affected apps, those closest
+  # the merge, where an app over its budget stops every app from publishing.
+  # The select job picks at most a few affected apps, those closest
   # to a budget, so a toolkit change does not package the whole collection.
   # Each architecture packages them exactly as Release / apps does, with its
   # profile and compiler-cache namespace, so an unchanged runtime is a cache hit.

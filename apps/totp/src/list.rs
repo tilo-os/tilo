@@ -263,11 +263,6 @@ impl AccountList {
         std::mem::take(&mut self.events)
     }
 
-    /// The account at visible index `i`, if any.
-    pub fn account_at(&self, i: usize) -> Option<&Account> {
-        self.accounts.get(i)
-    }
-
     pub fn len(&self) -> usize {
         self.accounts.len()
     }
@@ -688,8 +683,7 @@ impl AccountList {
         self.scroller.handle_event(event, ctx, &self.theme);
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_mouse = ctx.logical(position);
                 if self.scroller.is_dragging() {
                     return;
                 }

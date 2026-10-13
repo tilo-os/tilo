@@ -142,9 +142,6 @@ impl AppWidget for Page {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Named("notes".into())
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 
 impl Widget for Page {

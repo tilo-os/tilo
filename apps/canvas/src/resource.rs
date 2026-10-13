@@ -1011,7 +1011,6 @@ impl Artwork {
 impl Artwork {
     /// Apply `invoke` to `doc` through the door, as a replica of it does.
     #[cfg(test)]
-    #[allow(clippy::expect_used, reason = "a test fixture refuses loudly")]
     pub(crate) fn apply_to(doc: &mut Doc, invoke: impl Into<Invoke<Self>>) {
         let mut replica = tilo_resource::Replica::<Self>::from_doc(std::mem::take(doc));
         replica.apply(invoke).expect("the change applies");

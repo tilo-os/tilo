@@ -846,8 +846,6 @@ fn contains(outer: FineDamageRect, inner: FineDamageRect) -> bool {
 
 #[cfg(test)]
 #[allow(
-    clippy::unwrap_used,
-    clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     reason = "fixtures index small, fixed buffers"
 )]

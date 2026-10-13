@@ -9,7 +9,7 @@ use crate::shell::state::WorkspaceTree;
 use std::cell::RefCell;
 use std::collections::HashMap as StdHashMap;
 use std::rc::Rc;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use tilo_desktop::i18n::t as desktop_text;
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
@@ -48,18 +48,13 @@ impl Widget for RecordingContent {
         node_map: &mut StdHashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut ui::widget::EventCtx<'_>) {
         let label = match event {
@@ -80,10 +75,6 @@ impl Widget for RecordingContent {
 
     fn name(&self) -> &'static str {
         "RecordingContent"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 
@@ -229,10 +220,7 @@ pub(super) fn lay_out_host_with_theme(
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(ui::num::f32_of_f64(vw)),
-                    height: Dimension::length(ui::num::f32_of_f64(vh)),
-                },
+                size: Size::from_lengths(ui::num::f32_of_f64(vw), ui::num::f32_of_f64(vh)),
                 ..Default::default()
             },
             &[child],
@@ -399,10 +387,7 @@ fn directory_action_rows_paint_label_and_subtitle_at_normal_and_narrow_sizes() {
 }
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowEvent {
@@ -670,20 +655,12 @@ use ui::synthetic_input::mouse_press;
 
 fn key_pressed(key: Key) -> WindowEvent {
     let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }
 
 fn key_released(key: Key) -> WindowEvent {
     let event = ui::synthetic_input::key_event(key, None, ElementState::Released);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(event)
 }
 
 /// One production paint, so the chip / scope rects a click router
@@ -2018,7 +1995,6 @@ fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f
 )]
 fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
     #[allow(
-        clippy::arithmetic_side_effects,
         clippy::unchecked_time_subtraction,
         reason = "the deterministic notification-age fixture subtracts known earlier test instants"
     )]
@@ -2052,11 +2028,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
             );
 
             assert!(pump(&mut h, &cursor_moved_at(panel.center())));
-            let wheel = WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -2.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let wheel = ui::synthetic_input::mouse_wheel(0.0, -2.0);
             assert!(pump(&mut h, &wheel), "notification wheel must be consumed");
             assert_eq!(
                 h.host.notification_center.first_visible_row(),
@@ -2306,10 +2278,6 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
 /// the normal event tests above.
 #[test]
 #[ignore = "visual review: needs an offscreen wgpu adapter and writes PNGs"]
-#[allow(
-    clippy::expect_used,
-    reason = "the opt-in visual harness must fail loudly for a missing GPU or output directory"
-)]
 fn render_notification_history_accessibility_matrix_at_1x() {
     use std::path::PathBuf;
     use ui::offscreen::OffscreenRenderer;
@@ -2389,10 +2357,6 @@ fn render_notification_history_accessibility_matrix_at_1x() {
 /// ground, so a row is a surface on the panel on both presets (HIG
 /// §9.5); the same holds for a notification-history row.
 #[test]
-#[allow(
-    clippy::expect_used,
-    reason = "a review fixture must fail loudly for a missing GPU or output directory"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "an end-to-end test scenario that reads top to bottom"
@@ -2797,10 +2761,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
         .1;
     assert!(pump(
         &mut h,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(read.center().x, read.center().y),
-        }
+        &ui::synthetic_input::cursor_moved(read.center().x, read.center().y)
     ));
     assert!(pump(&mut h, &mouse_press()));
     assert!(h.host.notification_center.is_reading());
@@ -2808,10 +2769,7 @@ fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
     let back = h.host.qs_notification_back_rect();
     assert!(pump(
         &mut h,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(back.center().x, back.center().y),
-        }
+        &ui::synthetic_input::cursor_moved(back.center().x, back.center().y)
     ));
     assert!(pump(&mut h, &mouse_press()));
     assert!(!h.host.notification_center.is_reading());
@@ -2922,6 +2880,178 @@ mod launcher_recovery_tests;
 
 #[path = "launcher_ranking_tests.rs"]
 mod launcher_ranking_tests;
+
+struct HoverRefreshProvider {
+    revision: Rc<std::cell::Cell<u64>>,
+    activated: Rc<RefCell<Vec<String>>>,
+}
+
+impl crate::shell::search::SearchProvider for HoverRefreshProvider {
+    fn id(&self) -> &'static str {
+        "refreshing-panes"
+    }
+    fn name(&self) -> &'static str {
+        "Pane refresh fixture"
+    }
+    fn resource_kinds(&self) -> &[crate::shell::search::ResourceKind] {
+        &[crate::shell::search::ResourceKind::Application]
+    }
+    fn search_revision(&self, _: &crate::shell::search::SearchContext<'_>) -> String {
+        self.revision.get().to_string()
+    }
+    fn query(
+        &self,
+        _: crate::shell::search::SearchContext<'_>,
+    ) -> Vec<crate::shell::search::SearchResult> {
+        let ids = if self.revision.get() == 0 {
+            vec!["Appearance", "Network"]
+        } else {
+            vec!["Bluetooth", "Appearance", "Network"]
+        };
+        ids.into_iter()
+            .enumerate()
+            .map(|(index, id)| {
+                let activated = Rc::clone(&self.activated);
+                crate::shell::search::SearchResult::nullary(
+                    crate::shell::search::ResourceKind::Application,
+                    self.id(),
+                    id,
+                    id,
+                    None,
+                    100_i32
+                        .checked_sub(i32::try_from(index).unwrap())
+                        .expect("three fixture rows fit the score range"),
+                    move |_, _, _| activated.borrow_mut().push(id.to_owned()),
+                )
+            })
+            .collect()
+    }
+}
+
+struct HoverRefreshFixture {
+    h: AbsorbHarness,
+    revision: Rc<std::cell::Cell<u64>>,
+    activated: Rc<RefCell<Vec<String>>>,
+}
+
+fn hover_refresh_fixture(width: f64, height: f64) -> HoverRefreshFixture {
+    let revision = Rc::new(std::cell::Cell::new(0));
+    let activated = Rc::new(RefCell::new(Vec::new()));
+    let mut h = build_harness_sized(width, height);
+    h.host
+        .search_registry
+        .register(Rc::new(HoverRefreshProvider {
+            revision: Rc::clone(&revision),
+            activated: Rc::clone(&activated),
+        }));
+    h.host.active_kind_filter = vec![crate::shell::search::ResourceKind::Application];
+    h.host.set_palette_visible(true);
+    h.host.set_palette_focus(true);
+    h.host.force_palette_settled();
+    h.host.palette.set_query("fixture");
+    h.host
+        .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
+    settle(&mut h, width, height);
+    h.log.borrow_mut().clear();
+    HoverRefreshFixture {
+        h,
+        revision,
+        activated,
+    }
+}
+
+#[test]
+fn palette_background_refresh_preserves_hovered_action_identity() {
+    let HoverRefreshFixture {
+        mut h,
+        revision,
+        activated,
+    } = hover_refresh_fixture(1600.0, 900.0);
+    let network = h
+        .host
+        .search_results
+        .iter()
+        .position(|row| row.id == "Network")
+        .expect("Network is initially published");
+    let target = h
+        .host
+        .palette
+        .row_rect(network)
+        .expect("the row is painted")
+        .center();
+    assert!(pump(&mut h, &cursor_moved_at(target)));
+    assert_eq!(
+        h.host.palette.selected_id(),
+        Some(format!("result:{network}").as_str())
+    );
+    assert!(
+        h.log.borrow().is_empty(),
+        "hover must not reach app content"
+    );
+    assert!(pump(&mut h, &left_button_released()));
+    assert!(
+        h.log.borrow().is_empty(),
+        "release must not reach app content"
+    );
+    assert!(
+        activated.borrow().is_empty(),
+        "hover and release do not invoke actions"
+    );
+    revision.set(1);
+    h.host
+        .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
+    let selected = h
+        .host
+        .palette
+        .selected_id()
+        .expect("selection survives refresh");
+    let index: usize = selected.strip_prefix("result:").unwrap().parse().unwrap();
+    assert_eq!(
+        h.host.search_results[index].id, "Network",
+        "background catalogue arrival must not replace the hovered action"
+    );
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
+    assert_eq!(&*activated.borrow(), &["Network"]);
+}
+
+#[test]
+fn covering_workspace_settings_keeps_pointer_priority_over_palette_rows() {
+    let HoverRefreshFixture {
+        mut h, activated, ..
+    } = hover_refresh_fixture(900.0, 600.0);
+    let network = h
+        .host
+        .search_results
+        .iter()
+        .position(|row| row.id == "Network")
+        .unwrap();
+    let row = h
+        .host
+        .palette
+        .row_rect(network)
+        .expect("published row is painted");
+    let overlap = row.intersect(h.host.ws_settings_rect());
+    assert!(
+        overlap.area() > 0.0,
+        "the modal must cover the actual palette row"
+    );
+    let before = h.host.palette.selected_id().unwrap().to_owned();
+    h.chrome.borrow_mut().overlays.ws_settings = true;
+    assert!(pump(&mut h, &cursor_moved_at(overlap.center())));
+    assert_eq!(h.host.palette.selected_id(), Some(before.as_str()));
+    assert!(
+        h.log.borrow().is_empty(),
+        "covered input must not reach app content"
+    );
+    assert!(activated.borrow().is_empty());
+    h.chrome.borrow_mut().overlays.ws_settings = false;
+    assert!(pump(&mut h, &cursor_moved_at(row.center())));
+    assert_eq!(
+        h.host.palette.selected_id(),
+        Some(format!("result:{network}").as_str())
+    );
+    assert!(h.log.borrow().is_empty());
+}
 
 // Deterministic owned-room fixture: no policy override and no ambient identity.
 fn workspace_name_owner_harness(width: f64, height: f64) -> (AbsorbHarness, tempfile::TempDir) {
