@@ -18,6 +18,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import line_number  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 # Audited ceilings, one file per app (`<app>.toml`, `[ratchets.<rule>]` tables
@@ -514,10 +517,6 @@ def audit_ratchets(
                     f"{reason} ({len(matches)} found, audited ceiling {limit} in {baseline_file(relative)})",
                 )
             )
-
-
-def line_number(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1
 
 
 CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
