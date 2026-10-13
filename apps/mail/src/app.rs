@@ -8,7 +8,7 @@
 //! ```
 //!
 //! The shell owns the header row, the sidebar toggle, the widths, the drawer
-//! and the push stack. The sidebar is a [`MailSidebar`], the list a
+//! and the push stack. The sidebar is a followed [`NavList`](ui::widget::NavList), the list a
 //! [`MessageList`] and the message a [`MessageReader`]; they share one
 //! [`MailState`] and raise [`Intent`]s and [`Command`]s for effects that
 //! reach past their own column.
@@ -69,7 +69,7 @@ use crate::model::{
 use crate::reader::MessageReader;
 use crate::resource::{Mail, mailbox, read_mail};
 use crate::shortcuts_overlay::MailShortcutsOverlay;
-use crate::sidebar::MailSidebar;
+use crate::sidebar;
 use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, Shared};
 use crate::util::format_absolute;
 
@@ -805,7 +805,7 @@ impl MailApp {
         };
         NavShell::new()
             .with_id("mail-shell")
-            .sidebar(Box::new(MailSidebar::new(shared.clone())))
+            .sidebar(Box::new(sidebar::sidebar(shared)))
             .overview(Box::new(MessageList::new(shared.clone())))
             .content(Box::new(MessageReader::new(shared.clone())))
             .sidebar_header("", vec![Box::new(add_account)])

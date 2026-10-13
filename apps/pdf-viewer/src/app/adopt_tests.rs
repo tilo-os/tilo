@@ -124,10 +124,9 @@ fn annotated_fixture(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 /// Open `path` in a reader with its markup record checked out, synced and
 /// laid out.
 fn open(path: &std::path::Path) -> Option<(PdfApp, ui::State)> {
-    let mut app = PdfApp::open(path);
-    app.raster.as_ref()?;
+    let mut app = tests::open_settled(path)?;
     let mut state = ui::State::new();
-    app.sync_settled(&mut state.doc, &state.root);
+    tests::settle_record(&mut app, &mut state);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.recompute_regions();
     app.sync_viewport_frame();
@@ -218,7 +217,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             "a markup annotation's text became its comment"
         );
         assert!(
-            !app.raster.as_ref().unwrap().reader_markup(),
+            app.reader_markup_hidden,
             "page images leave the taken-over markup to the records"
         );
         // A second open of the same record imports nothing again.
@@ -243,7 +242,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         app.reload(doc);
 
         let out = dir.path().join("exported.pdf");
-        assert!(app.save_annotated_to(&out), "{:?}", app.status_note);
+        assert!(tests::save_settled(&mut app, &out), "{:?}", app.status_note);
         let bytes = std::fs::read(&out).unwrap();
         let engine = tilo_pdf::Engine::shared().expect("engine");
         let reloaded = engine.open_bytes(&bytes).expect("reopen in pdfium");
@@ -326,7 +325,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         );
         app.reload(doc);
         let out = dir.path().join("filled.pdf");
-        assert!(app.save_annotated_to(&out), "{:?}", app.status_note);
+        assert!(tests::save_settled(&mut app, &out), "{:?}", app.status_note);
         let engine = tilo_pdf::Engine::shared().expect("engine");
         let reloaded = engine.open_bytes(&std::fs::read(&out).unwrap()).unwrap();
         let fields = reloaded.form_fields().unwrap();
@@ -439,7 +438,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         app.resize_free_text(&mut Edits::lend(doc), &id, 4.0);
 
         let out = dir.path().join("with-text.pdf");
-        assert!(app.save_annotated_to(&out), "{:?}", app.status_note);
+        assert!(tests::save_settled(&mut app, &out), "{:?}", app.status_note);
         let bytes = std::fs::read(&out).unwrap();
         let engine = tilo_pdf::Engine::shared().expect("engine");
         let reloaded = engine.open_bytes(&bytes).unwrap();
@@ -503,7 +502,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         );
         app.reload(doc);
         let out = dir.path().join("signed.pdf");
-        assert!(app.save_annotated_to(&out), "{:?}", app.status_note);
+        assert!(tests::save_settled(&mut app, &out), "{:?}", app.status_note);
         let bytes = std::fs::read(&out).unwrap();
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("/FontFile2") || text.contains("/FontFile3"));

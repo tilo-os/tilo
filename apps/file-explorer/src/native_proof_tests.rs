@@ -264,7 +264,6 @@ fn control_presence_files_collaboration_panel_matches_inventory() {
             summary: "Summary".into(),
             lines: vec![],
             action: None,
-            history: None,
         });
         let expected = ui::widget::controls::control_action_bindings(&h.w)
             .iter()

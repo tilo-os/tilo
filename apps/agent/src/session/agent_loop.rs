@@ -2892,12 +2892,8 @@ mod tests {
                 cluster: Uuid::from_u128(1),
                 record: None,
                 name: "agent-1".into(),
-                pace: Duration::ZERO,
-                once: false,
                 model: true,
                 model_timeout: Duration::from_secs(5),
-                await_document: Duration::ZERO,
-                settle: Duration::ZERO,
                 permissions: ui::permissions::PermissionContext::agent_granted_at(
                     "agent-1",
                     &[],
