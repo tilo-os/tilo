@@ -162,7 +162,7 @@ class OsDevImageSourceTests(unittest.TestCase):
         block = workflow.split("      - name: Verify and resolve the exact image source\n", 1)[1]
         return textwrap.dedent(block.split("        run: |\n", 1)[1].split("\n      # Both lanes", 1)[0])
 
-    def run_source(self, requested_kind, event="workflow_call", ref="refs/heads/main"):
+    def run_source(self, requested_kind, event="workflow_call", ref="refs/heads/main", arches='["x86_64"]'):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             env = {**os.environ, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "commit.gpgsign",
@@ -188,7 +188,7 @@ class OsDevImageSourceTests(unittest.TestCase):
             requested = {"ancestor": ancestor, "divergent": divergent, "empty": "", "malformed": "main"}[requested_kind]
             output = root / "output"
             env.update({"GITHUB_SHA": tip, "TILO_IMAGE_SOURCE": requested or tip,
-                        "REQUESTED_SOURCE": requested, "GITHUB_EVENT_NAME": event,
+                        "REQUESTED_SOURCE": requested, "GITHUB_EVENT_NAME": event, "DEV_ARCHES": arches,
                         "GITHUB_REF": ref, "GITHUB_OUTPUT": str(output)})
             result = subprocess.run(["bash", "-c", self.source_script()], cwd=root,
                                     env=env, capture_output=True, text=True)
@@ -211,6 +211,12 @@ class OsDevImageSourceTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(output, "")
                 self.assertEqual(head, tip)
+
+    def test_historical_source_cannot_enter_arm_or_board_publication(self):
+        result, output, head, _, tip = self.run_source("ancestor", arches='["x86_64","aarch64"]')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(output, "")
+        self.assertEqual(head, tip)
 
     def test_default_source_keeps_existing_dispatch_commit(self):
         result, output, head, _, tip = self.run_source("empty", "workflow_dispatch")

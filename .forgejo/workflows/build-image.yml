@@ -239,12 +239,16 @@ jobs:
         id: source
         env:
           REQUESTED_SOURCE: ${{ inputs.source_revision || '' }}
+          DEV_ARCHES: ${{ inputs.arches || '["x86_64","aarch64"]' }}
         run: |
           set -euo pipefail
           if [[ -n $REQUESTED_SOURCE ]]; then
             [[ $GITHUB_EVENT_NAME == workflow_call && $GITHUB_REF == refs/heads/main \
                && $REQUESTED_SOURCE =~ ^[0-9a-f]{40}$ ]] || {
               echo '::error::source_revision is only allowed for a main dev call'; exit 1;
+            }
+            jq -e '. == ["x86_64"]' <<< "$DEV_ARCHES" >/dev/null || {
+              echo '::error::source_revision requires the x86-only dev matrix'; exit 1;
             }
             git merge-base --is-ancestor "$REQUESTED_SOURCE" "$GITHUB_SHA" || {
               echo '::error::source_revision is not an ancestor of the dispatched main commit'; exit 1;
