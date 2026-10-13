@@ -129,9 +129,7 @@ impl Widget for StepIndicator {
         taffy.widget_leaf(crate::full_width_row(HEIGHT), node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -247,10 +245,6 @@ impl Widget for StepIndicator {
 
     fn test_id(&self) -> Option<&str> {
         Some("step_indicator")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {

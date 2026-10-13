@@ -739,9 +739,7 @@ impl Widget for Slider {
         self.rect == Rect::ZERO
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -855,10 +853,6 @@ impl Widget for Slider {
 
     fn test_id(&self) -> Option<&str> {
         Some(self.id_override.as_deref().unwrap_or("slider"))
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_focusable(&self) -> bool {

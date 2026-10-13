@@ -204,7 +204,7 @@ impl Settle {
 /// Whether painting can be handed to another thread here: a browser page
 /// has one thread, and waiting there for a job would wait forever.
 fn threads() -> bool {
-    ui::rt::availability(ui::rt::Feature::Threads) == ui::rt::Availability::Available
+    ui::rt::available(ui::rt::Feature::Threads)
 }
 
 /// Paint `ask` with `painter`: the layer's picture when it is not the one
