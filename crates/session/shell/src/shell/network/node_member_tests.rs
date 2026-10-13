@@ -8,14 +8,6 @@
 //! record its app writes reaches the browser the same way. The relay keeps
 //! ciphertext only.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::too_many_lines,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 

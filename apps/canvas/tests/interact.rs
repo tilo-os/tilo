@@ -4,7 +4,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::float_cmp,
-    clippy::too_many_lines,
     reason = "test assertions over exact, hand-written fixtures"
 )]
 

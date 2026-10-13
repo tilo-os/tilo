@@ -1356,10 +1356,6 @@ impl ContainersApp {
         self.publish_model();
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one flat match from every control's intent to its effect"
-    )]
     fn apply_intent(&mut self, doc: &mut ui::widget::Edits<'_>, intent: Intent) {
         match intent {
             Intent::ShowSection(section) => self.show_section(section),
@@ -1665,10 +1661,7 @@ impl Widget for ContainersApp {
         }
         let style = Style {
             display: Display::Flex,
-            size: Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
-            },
+            size: Size::from_percent(1.0_f32, 1.0_f32),
             ..Default::default()
         };
         taffy.widget_node(style, &children, node_map, self)

@@ -812,10 +812,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn threads_follow_rfc_links_and_stay_stable() {
         // Phase `normalize_strips_reply_prefixes`.
         {
@@ -879,10 +875,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn folder_flags_track_unread_star_and_trash() {
         // Phase `unread_count_and_mark_read`.
         {
@@ -920,10 +912,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn mailbox_search_is_bounded_and_case_insensitive() {
         // Phase `search_page_enforces_work_and_result_bounds_without_losing_newest_order`.
         {

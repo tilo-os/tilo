@@ -9046,10 +9046,7 @@ mod tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let style = Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
+                size: taffy::Size::from_percent(1.0, 1.0),
                 ..Style::default()
             };
             taffy.widget_leaf(style, node_map, self)
@@ -10269,10 +10266,7 @@ mod tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let style = Style {
-                size: Size {
-                    width: Dimension::length(120.0),
-                    height: Dimension::length(40.0),
-                },
+                size: Size::from_lengths(120.0, 40.0),
                 ..Default::default()
             };
             taffy.widget_leaf(style, node_map, self)
@@ -12317,10 +12311,7 @@ mod undo_driver_tests {
         ) -> NodeId {
             let node = taffy
                 .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(40.0),
-                        height: Dimension::length(20.0),
-                    },
+                    size: Size::from_lengths(40.0, 20.0),
                     ..Default::default()
                 })
                 .unwrap();
@@ -12575,10 +12566,7 @@ mod dispatched_action_driver_tests {
         ) -> NodeId {
             let node = taffy
                 .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(60.0),
-                        height: Dimension::length(20.0),
-                    },
+                    size: Size::from_lengths(60.0, 20.0),
                     ..Default::default()
                 })
                 .unwrap();
@@ -13025,10 +13013,7 @@ mod prepared_driver_tests {
         ) -> NodeId {
             let node = tree
                 .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::length(80.0),
-                        height: Dimension::length(30.0),
-                    },
+                    size: Size::from_lengths(80.0, 30.0),
                     ..Default::default()
                 })
                 .unwrap();
@@ -13662,10 +13647,7 @@ mod framed_tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let style = Style {
-                size: Size {
-                    width: Dimension::length(self.width),
-                    height: Dimension::length(40.0),
-                },
+                size: Size::from_lengths(self.width, 40.0),
                 ..Default::default()
             };
             taffy.widget_leaf(style, node_map, self)

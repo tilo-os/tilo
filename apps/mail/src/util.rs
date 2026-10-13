@@ -79,10 +79,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn date_helpers_compute_weekdays_relative_and_absolute_labels() {
         // Phase `weekday_of_known_dates`.
         {

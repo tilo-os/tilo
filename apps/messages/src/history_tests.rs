@@ -1,8 +1,3 @@
-#![allow(
-    clippy::expect_used,
-    reason = "headless host fixtures must construct before assertions"
-)]
-
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};

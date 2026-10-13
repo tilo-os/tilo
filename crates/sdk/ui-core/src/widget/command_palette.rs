@@ -9,7 +9,7 @@ use crate::widget::ModelPath;
 use automerge::ObjId;
 use std::collections::HashSet;
 use std::sync::Arc;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_search::FieldWeight;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -2089,10 +2089,7 @@ impl Widget for CommandPalette {
         // palette (`set_rect`) and a taffy-laid one agree.
         let (width, height) = self.desired_size();
         let style = Style {
-            size: Size {
-                width: Dimension::length(f32_of_f64(width)),
-                height: Dimension::length(f32_of_f64(height)),
-            },
+            size: Size::from_lengths(f32_of_f64(width), f32_of_f64(height)),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -2421,11 +2418,7 @@ impl Widget for CommandPalette {
             .with_value(query.1.clone())
             .with_text_selection(anchor, caret)
             .with_bounds(self.input_row_rect())
-            .with_state(AccessState {
-                focusable: true,
-                focused: self.is_focused,
-                ..Default::default()
-            });
+            .with_state(AccessState::new().focusable(true).focused(self.is_focused));
 
         let total = self.visible.len();
         let mut result_children: Vec<AccessNode> = (0..total)
@@ -2440,12 +2433,12 @@ impl Widget for CommandPalette {
                     .with_name(entry.label.clone())
                     .with_position(visible_index.saturating_add(1), total)
                     .with_bounds(rect)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.is_focused && visible_index == self.cursor,
-                        selected: visible_index == self.cursor,
-                        ..Default::default()
-                    });
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.is_focused && visible_index == self.cursor)
+                            .selected(visible_index == self.cursor),
+                    );
                 if let Some(description) = &entry.description {
                     item = item.with_description(description.clone());
                 }

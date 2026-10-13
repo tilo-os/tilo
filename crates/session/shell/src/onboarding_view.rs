@@ -3723,10 +3723,7 @@ impl Widget for OnboardingView {
             flex_direction: taffy::FlexDirection::Column,
             justify_content: Some(taffy::JustifyContent::Center),
             align_items: Some(taffy::AlignItems::Center),
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             padding: taffy::Rect {
                 left: taffy::LengthPercentage::length(VIEWPORT_GUTTER),
                 right: taffy::LengthPercentage::length(VIEWPORT_GUTTER),

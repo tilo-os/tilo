@@ -1,8 +1,3 @@
-#![allow(
-    clippy::expect_used,
-    reason = "headless test fixtures must construct successfully before assertions"
-)]
-
 use crate::{MessagesEffect, MessagesShell};
 use tilo_contact_directory::ContactDirectory;
 use ui::framework::testing::TestApp;

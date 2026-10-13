@@ -55,10 +55,6 @@ pub fn https_server_config(
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 mod tests {
     use super::*;
 

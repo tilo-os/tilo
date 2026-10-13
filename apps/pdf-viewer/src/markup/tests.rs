@@ -324,7 +324,6 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
     assert!(ids.contains(&"reply-left") && ids.contains(&"reply-right"));
 }
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
     let mut replica = planned_replica(5);

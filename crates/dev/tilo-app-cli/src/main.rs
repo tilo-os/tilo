@@ -1373,10 +1373,6 @@ fn run_locale(args: LocaleArgs) -> Result<Value> {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one dispatch over every artifact the command adds"
-)]
 fn run_add(args: AddArgs, interactive: bool) -> Result<Value> {
     let Some(command) = args.command else {
         anyhow::ensure!(

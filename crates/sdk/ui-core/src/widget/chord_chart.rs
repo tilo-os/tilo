@@ -38,10 +38,6 @@ fn append_arc(path: &mut BezPath, center: Point, radius: f64, start: f64, sweep:
         .to_cubic_beziers(0.1, |a, b, c| path.curve_to(a, b, c));
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent chord presentation switches are composable"
-)]
 #[derive(Clone, Debug)]
 pub struct ChordStyle {
     pub start_angle: f64,
@@ -592,10 +588,7 @@ impl Widget for ChordChart {
                     .with_action_target(format!("node:{}", n.id))
                     .with_name(&n.label)
                     .with_description(&n.detail)
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    })
+                    .with_state(AccessState::new().focusable(true))
             })
             .chain(
                 self.links
@@ -610,10 +603,7 @@ impl Widget for ChordChart {
                             } else {
                                 l.detail.clone()
                             })
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
+                            .with_state(AccessState::new().focusable(true))
                     }),
             )
             .collect();

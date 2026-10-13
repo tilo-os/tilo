@@ -9,7 +9,6 @@
 //! exists it refuses as a device does for a machine without the grant.
 #![allow(
     clippy::unwrap_used,
-    clippy::panic,
     clippy::too_many_lines,
     reason = "one end-to-end scenario; helpers fail the test on setup errors"
 )]

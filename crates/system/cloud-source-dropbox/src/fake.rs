@@ -116,7 +116,6 @@ struct Session {
     closed: bool,
 }
 
-#[allow(clippy::struct_excessive_bools, reason = "independent server switches")]
 struct State {
     nodes: BTreeMap<String, Node>,
     /// Every version of every file id, oldest first; survives deletion.

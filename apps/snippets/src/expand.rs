@@ -486,10 +486,7 @@ impl ExpandModal {
                     .with_name(label)
                     .with_action_target(target)
                     .with_bounds(bounds)
-                    .with_state(AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    }),
+                    .with_state(AccessState::new().focusable(true)),
             );
         }
         Some(

@@ -8,11 +8,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::float_cmp,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -929,7 +925,6 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
     clippy::cast_precision_loss,
     reason = "label.chars().count() is a handful of glyphs in a toolbar tooltip, nowhere near f32's precision limit"
 )]
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
     // Every toolbar control must be reachable at every window size the app can

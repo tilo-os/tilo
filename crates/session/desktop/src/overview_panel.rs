@@ -10,7 +10,6 @@
 use std::collections::HashMap;
 use ui::num::f64_of_usize;
 
-use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::{TabId, WorkspaceId};
 use ui::TextRole;
@@ -729,10 +728,7 @@ impl Widget for OverviewPanel {
             self.dirty = true;
         }
         let style = Style {
-            size: taffy::Size {
-                width: percent(1.0_f32),
-                height: percent(1.0_f32),
-            },
+            size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
             ..Default::default()
         };
         taffy.widget_leaf(style, map, self)
@@ -850,11 +846,11 @@ impl Widget for OverviewPanel {
                             AccessNode::new(Role::Button)
                                 .with_name(name(target))
                                 .with_bounds(*rect)
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    focused: self.selected == Some(index),
-                                    ..Default::default()
-                                })
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .focused(self.selected == Some(index)),
+                                )
                         })
                         .collect(),
                 ),

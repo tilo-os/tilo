@@ -5,8 +5,6 @@
     reason = "categorical projection is bounded floating-point geometry"
 )]
 
-use std::collections::HashSet;
-
 use crate::widget::ModelPath;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -168,9 +166,7 @@ pub struct CategoryChart {
     activated: Option<(String, String)>,
     keyboard_inspection: bool,
     touch: ChartTouchTracker,
-    hidden_series: HashSet<String>,
-    legend_hits: Vec<(String, Rect)>,
-    visibility_changed: Option<(String, bool)>,
+    toggles: chart_legend::SeriesToggles,
 }
 
 impl CategoryChart {
@@ -187,9 +183,7 @@ impl CategoryChart {
             activated: None,
             keyboard_inspection: false,
             touch: ChartTouchTracker::default(),
-            hidden_series: HashSet::new(),
-            legend_hits: Vec::new(),
-            visibility_changed: None,
+            toggles: chart_legend::SeriesToggles::default(),
         }
     }
     #[must_use]
@@ -215,22 +209,18 @@ impl CategoryChart {
     pub fn set_data(&mut self, categories: Vec<Category>, series: Vec<CategorySeries>) {
         self.categories = categories;
         self.series = series;
-        self.hidden_series
-            .retain(|id| self.series.iter().any(|series| series.id == *id));
+        self.toggles
+            .retain(|id| self.series.iter().any(|series| series.id == id));
         self.hovered = None;
     }
     pub fn is_series_visible(&self, id: &str) -> bool {
-        self.series.iter().any(|series| series.id == id) && !self.hidden_series.contains(id)
+        self.series.iter().any(|series| series.id == id) && !self.toggles.is_hidden(id)
     }
     pub fn set_series_visible(&mut self, id: &str, visible: bool) -> bool {
         if !self.series.iter().any(|series| series.id == id) {
             return false;
         }
-        let changed = if visible {
-            self.hidden_series.remove(id)
-        } else {
-            self.hidden_series.insert(id.to_owned())
-        };
+        let changed = self.toggles.set(id, visible);
         if changed {
             if self
                 .hovered
@@ -239,7 +229,6 @@ impl CategoryChart {
             {
                 self.hovered = None;
             }
-            self.visibility_changed = Some((id.to_owned(), visible));
         }
         changed
     }
@@ -247,14 +236,14 @@ impl CategoryChart {
         self.set_series_visible(id, !self.is_series_visible(id))
     }
     pub fn take_visibility_changed(&mut self) -> Option<(String, bool)> {
-        self.visibility_changed.take()
+        self.toggles.take_changed()
     }
     pub fn take_activated(&mut self) -> Option<(String, String)> {
         self.activated.take()
     }
     pub fn inspect(&mut self, series_id: &str, category_id: &str) -> bool {
         self.hovered = self.series.iter().enumerate().find_map(|(series, values)| {
-            (!self.hidden_series.contains(&values.id) && values.id == series_id)
+            (!self.toggles.is_hidden(&values.id) && values.id == series_id)
                 .then(|| {
                     self.categories
                         .iter()
@@ -305,7 +294,7 @@ impl CategoryChart {
 
     fn value(&self, series: usize, category: usize) -> Option<&CategoryValue> {
         let series = self.series.get(series)?;
-        if self.hidden_series.contains(&series.id) {
+        if self.toggles.is_hidden(&series.id) {
             return None;
         }
         series
@@ -320,7 +309,7 @@ impl CategoryChart {
                 let (min, max) = self
                     .series
                     .iter()
-                    .filter(|series| !self.hidden_series.contains(&series.id))
+                    .filter(|series| !self.toggles.is_hidden(&series.id))
                     .flat_map(|series| &series.values)
                     .map(|value| value.value)
                     .filter(|value| value.is_finite())
@@ -398,7 +387,7 @@ impl CategoryChart {
                     .series
                     .iter()
                     .enumerate()
-                    .filter(|(_, series)| !self.hidden_series.contains(&series.id))
+                    .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
                     .map(|(index, _)| index)
                     .collect::<Vec<_>>();
                 if visible.is_empty() {
@@ -442,7 +431,7 @@ impl CategoryChart {
                             self.series
                                 .iter()
                                 .enumerate()
-                                .filter(|(_, series)| !self.hidden_series.contains(&series.id))
+                                .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
                                 .filter_map(|(series, _)| self.value(series, category))
                                 .fold((0.0_f64, 0.0_f64), |(positive, negative), value| {
                                     if value.value >= 0.0 {
@@ -614,12 +603,7 @@ impl InteractiveChart for CategoryChart {
         if !self.style.interactive_legend {
             return false;
         }
-        let Some(id) = self
-            .legend_hits
-            .iter()
-            .find(|(_, rect)| rect.contains(point))
-            .map(|(id, _)| id.clone())
-        else {
+        let Some(id) = self.toggles.hit(point) else {
             return false;
         };
         // A legend entry claims the click even when its series is already gone.
@@ -758,7 +742,7 @@ impl Widget for CategoryChart {
             );
         }
         if self.style.show_legend && self.style.layout != CategoryLayout::Waterfall {
-            self.legend_hits.clear();
+            self.toggles.clear_hits();
             let y = self.rect.y0 + if self.title.is_empty() { 10.0 } else { 38.0 };
             let items = chart_legend::layout(
                 self.series.iter().map(|series| series.name.as_str()),
@@ -769,7 +753,7 @@ impl Widget for CategoryChart {
             for (series, item) in self.series.iter().zip(items) {
                 let x = item.x0;
                 let y = item.y0;
-                let visible = !self.hidden_series.contains(&series.id);
+                let visible = !self.toggles.is_hidden(&series.id);
                 let color = if visible {
                     series.color
                 } else {
@@ -799,10 +783,10 @@ impl Widget for CategoryChart {
                     Some(crate::num::f32_of_f64((item.width() - 20.0).max(1.0))),
                     &theme.text(TextRole::Caption),
                 );
-                self.legend_hits.push((series.id.clone(), item));
+                self.toggles.push_hit(series.id.clone(), item);
             }
         } else {
-            self.legend_hits.clear();
+            self.toggles.clear_hits();
         }
         if let Some((category_index, series_index)) = self.hovered.filter(|_| self.style.tooltip)
             && let (Some(category), Some(series), Some(value)) = (
@@ -841,7 +825,7 @@ impl Widget for CategoryChart {
             self.series
                 .iter()
                 .enumerate()
-                .filter(|(_, series)| !self.hidden_series.contains(&series.id))
+                .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
                 .flat_map(|(series_index, series)| {
                     self.categories.iter().enumerate().filter_map(
                         move |(category_index, category)| {
@@ -854,10 +838,7 @@ impl Widget for CategoryChart {
                                     } else {
                                         value.detail.clone()
                                     })
-                                    .with_state(AccessState {
-                                        focusable: true,
-                                        ..Default::default()
-                                    })
+                                    .with_state(AccessState::new().focusable(true))
                             })
                         },
                     )
@@ -870,20 +851,7 @@ impl Widget for CategoryChart {
                                 && self.style.layout != CategoryLayout::Waterfall
                                 && self.style.interactive_legend
                         })
-                        .map(|series| {
-                            AccessNode::new(Role::Button)
-                                .with_action_target(format!("legend:{}", series.id))
-                                .with_name(format!("{} series", series.name))
-                                .with_description(if self.hidden_series.contains(&series.id) {
-                                    "Hidden; activate to show".to_owned()
-                                } else {
-                                    "Visible; activate to hide".to_owned()
-                                })
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
-                        }),
+                        .map(|series| self.toggles.access_node(&series.id, &series.name)),
                 )
                 .collect();
         Some(
@@ -909,16 +877,15 @@ impl Widget for CategoryChart {
         if self.style.show_legend
             && self.style.layout != CategoryLayout::Waterfall
             && self.style.interactive_legend
+            && let Some(id) = chart_legend::SeriesToggles::activated(
+                self.series.iter().map(|series| series.id.as_str()),
+                key,
+            )
         {
-            for series in &self.series {
-                let target = format!("legend:{}", series.id);
-                if crate::a11y::hash_key(&target) == key {
-                    return self.toggle_series(&series.id.clone());
-                }
-            }
+            return self.toggle_series(&id);
         }
         for series in &self.series {
-            if self.hidden_series.contains(&series.id) {
+            if self.toggles.is_hidden(&series.id) {
                 continue;
             }
             for category in &self.categories {
