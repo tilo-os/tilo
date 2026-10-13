@@ -242,6 +242,15 @@ pub enum StoreEffect {
         #[param("App identity")]
         app: String,
     },
+    /// Add a directory bot to a room.
+    ///
+    /// Bots run in rooms, not on this device; this stays unavailable until a
+    /// room offers its install-bot action to you.
+    #[effect(job)]
+    AddBot {
+        #[param("Bot identity")]
+        app: String,
+    },
     /// Refresh remotes.
     #[effect(job)]
     RefreshRemotes,
@@ -327,6 +336,7 @@ impl StoreEffect {
             ActionKind::FlatpakOpen => Self::FlatpakOpen { app },
             ActionKind::FlatpakRemove => Self::FlatpakRemove { app },
             ActionKind::NeedsFlatpakHost => Self::FlatpakSetup { app },
+            ActionKind::AddBot => Self::AddBot { app },
         }
     }
 
@@ -345,6 +355,7 @@ impl StoreEffect {
             Self::FlatpakOpen { app } => (app, ActionKind::FlatpakOpen),
             Self::FlatpakRemove { app } => (app, ActionKind::FlatpakRemove),
             Self::FlatpakSetup { app } => (app, ActionKind::NeedsFlatpakHost),
+            Self::AddBot { app } => (app, ActionKind::AddBot),
             _ => return None,
         };
         Some((app.as_str(), action))

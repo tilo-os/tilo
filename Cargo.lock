@@ -6188,16 +6188,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hot-reload-demo"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "tilo-app",
- "tilo-history",
- "workspace-hack",
-]
-
-[[package]]
 name = "hpke-rs"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12469,6 +12459,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app-package",
+ "tilo-automation",
  "tilo-clock",
  "tilo-net",
  "tilo-secrets",
@@ -12515,8 +12506,11 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tilo-action-policy",
  "tilo-advisory-lock",
  "tilo-app-package",
+ "tilo-automation",
+ "tilo-bot-directory",
  "tilo-clock",
  "tilo-files",
  "tilo-net",
@@ -15889,7 +15883,9 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-content",
  "tilo-test-env",
+ "unicode-normalization",
  "uuid",
 ]
 
@@ -16094,6 +16090,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app-package",
+ "tilo-automation",
+ "tilo-clock",
  "tilo-rt",
  "tokio",
  "workspace-hack",
@@ -16147,6 +16145,7 @@ dependencies = [
 name = "tilo-automation"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -16214,6 +16213,19 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-bot-directory"
+version = "0.1.0"
+dependencies = [
+ "app-cli",
+ "registry-types",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-action-policy",
+ "tilo-automation",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -16435,6 +16447,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-connector"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "blake3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-secrets",
+ "tokio",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-contact-directory"
 version = "0.1.0"
 dependencies = [
@@ -16457,7 +16485,6 @@ dependencies = [
  "tilo-files",
  "tilo-paths",
  "tracing",
- "workspace-hack",
 ]
 
 [[package]]
@@ -18463,6 +18490,7 @@ dependencies = [
  "two-face",
  "unic-langid",
  "unicode-linebreak",
+ "unicode-normalization",
  "unicode-properties",
  "unicode-script",
  "url",
@@ -22335,7 +22363,6 @@ dependencies = [
  "unic-langid",
  "unic-langid-impl",
  "unicode-bidi",
- "unicode-normalization",
  "unicode-properties",
  "url",
  "usvg",

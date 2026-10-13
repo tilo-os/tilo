@@ -261,6 +261,7 @@ fn run_shortcut(host: &AgentHost, shortcut: &Shortcut, inputs: Map<String, Value
             mode: RunMode::Unattended,
             trigger: RunTrigger::Manual,
             inputs,
+            caused_by: None,
         },
     ))
 }

@@ -32,13 +32,20 @@ pub fn reconcile(
         .iter()
         .find(|old| old.package_id == entry.package_id);
     let offered = |version: &RegistryVersion| {
+        let Some(target) = version.target() else {
+            return false;
+        };
         catalogue.iter().any(|provider| {
             registry_types::is_runtime_package_id(&provider.package_id)
-                && provider.versions.iter().any(|provided| {
-                    provided.target.platform == version.target.platform
-                        && provided.target.architecture == version.target.architecture
-                        && provided.target.runtime == version.target.runtime
-                })
+                && provider
+                    .versions
+                    .iter()
+                    .filter_map(RegistryVersion::target)
+                    .any(|provided| {
+                        provided.platform == target.platform
+                            && provided.architecture == target.architecture
+                            && provided.runtime == target.runtime
+                    })
         })
     };
     // A publisher folds architectures one at a time. The other architecture
@@ -46,10 +53,16 @@ pub fn reconcile(
     let current_release = entry
         .versions
         .iter()
-        .find(|version| version.tapp_url == current_url)
+        .find(|version| {
+            version
+                .tapp()
+                .is_some_and(|tapp| tapp.tapp_url == current_url)
+        })
         .map(|version| version.version.clone());
     let protected = |version: &RegistryVersion| {
-        version.target.native_runtime().is_none()
+        version
+            .target()
+            .is_none_or(|target| target.native_runtime().is_none())
             || current_release
                 .as_ref()
                 .is_some_and(|current| *current == version.version)
@@ -75,8 +88,13 @@ pub fn reconcile(
                 "{}@{} ({}) needs exact runtime {}; fewer than four newer offered releases remain; restore the runtime instead",
                 entry.package_id,
                 version.version,
-                version.target.architecture,
-                version.target.runtime.as_deref().unwrap_or_default(),
+                version
+                    .target()
+                    .map_or("", |target| target.architecture.as_str()),
+                version
+                    .target()
+                    .and_then(|target| target.runtime.as_deref())
+                    .unwrap_or_default(),
             );
         }
     }

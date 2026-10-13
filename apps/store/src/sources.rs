@@ -5,10 +5,12 @@
 //! `name` as a Flathub app wins.** Duplicates on the Flathub side
 //! are dropped. Case-insensitive matching, whitespace-trimmed.
 
-use registry_types::{RegistryImageKind, RegistryVersion};
+use registry_types::{RegistryImageKind, RegistryVersion, TappArtifact};
 
 use crate::flathub_client::{AppStreamRecord, PopularEntry};
-use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
+use crate::model::{
+    BotListing, InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
+};
 use crate::registry_client::VerifiedEntry;
 use package_store::InstalledPackage;
 
@@ -44,11 +46,14 @@ pub fn tilo_to_store_item_on_channel(
     installed_index: &[InstalledPackage],
     channel: app_cli::ReleaseChannel,
 ) -> StoreItem {
+    if let Some(bot) = app_cli::bots::bot_offer(verified, registry_name) {
+        return tilo_bot_to_store_item(&bot);
+    }
     let entry = &verified.entry;
     // A build that needs system interfaces this OS does not serve is never
     // offered: it could not run here.
     let mut versions: Vec<StoreItemVersion> = app_cli::installable_versions(entry, channel)
-        .map(tilo_version_to_store)
+        .filter_map(|v| v.tapp().map(|tapp| tilo_version_to_store(v, tapp)))
         .collect();
     versions.sort_by(|left, right| app_cli::compare_versions(&right.version, &left.version));
     let latest = versions
@@ -67,6 +72,7 @@ pub fn tilo_to_store_item_on_channel(
     let locale = preferred_locale();
     let localized_images = entry.images.resolve(&locale);
     StoreItem {
+        bot: None,
         id: entry.package_id.clone(),
         name: entry
             .name
@@ -112,6 +118,41 @@ pub fn tilo_to_store_item_on_channel(
     }
 }
 
+/// A directory bot's card: what it does and needs, never an app version to
+/// download, because a bot runs in a room rather than on this device.
+pub fn tilo_bot_to_store_item(bot: &app_cli::bots::CatalogueBot) -> StoreItem {
+    let requires = &bot.artifact.requires;
+    StoreItem {
+        id: bot.package_id.clone(),
+        name: bot.name.clone(),
+        description: bot.description.clone(),
+        tagline: bot.tagline.clone(),
+        supported_languages: Vec::new(),
+        categories: vec!["Bots".into()],
+        icon_url: bot.icon_url.clone(),
+        screenshot_urls: Vec::new(),
+        homepage_url: None,
+        source_url: None,
+        install_ref_path: None,
+        source: StoreSource::Tilo {
+            registry_name: bot.registry_name.clone(),
+        },
+        // `bot_offer` lists only publisher-signed entries.
+        trust: StoreTrust::PublisherSigned,
+        versions: Vec::new(),
+        publisher_pubkey_hex: Some(bot.publisher_pubkey_hex.clone()),
+        installed: InstalledState::Not,
+        bot: Some(BotListing {
+            version: bot.version.clone(),
+            triggers: requires.triggers.clone(),
+            apps: requires.apps.clone(),
+            connectors: requires.connectors.clone(),
+            appearance: requires.appearance,
+            artifact: bot.artifact.clone(),
+        }),
+    }
+}
+
 fn preferred_locale() -> String {
     ["LC_ALL", "LC_MESSAGES", "LANG"]
         .into_iter()
@@ -133,6 +174,7 @@ fn preferred_locale() -> String {
 /// so the UI cannot offer an update based on stale or invented metadata.
 pub fn installed_tilo_to_store_item(entry: &InstalledPackage) -> StoreItem {
     StoreItem {
+        bot: None,
         id: entry.id.clone(),
         // Package ids are the only durable local display metadata available
         // from app-host's list endpoint. Do not manufacture a publisher name
@@ -176,14 +218,14 @@ pub fn installed_tilo_to_store_item(entry: &InstalledPackage) -> StoreItem {
     }
 }
 
-fn tilo_version_to_store(v: &RegistryVersion) -> StoreItemVersion {
+fn tilo_version_to_store(v: &RegistryVersion, tapp: &TappArtifact) -> StoreItemVersion {
     StoreItemVersion {
         version: v.version.clone(),
         released_at_unix: v.released_at_unix,
-        download_url: Some(v.tapp_url.clone()),
-        root_hash_hex: Some(v.tapp_root_hash_hex.clone()),
-        size_bytes: v.tapp_size_bytes,
-        runtime: v.target.runtime.clone(),
+        download_url: Some(tapp.tapp_url.clone()),
+        root_hash_hex: Some(tapp.tapp_root_hash_hex.clone()),
+        size_bytes: tapp.tapp_size_bytes,
+        runtime: tapp.target.runtime.clone(),
     }
 }
 
@@ -207,6 +249,7 @@ pub fn flathub_placeholder_to_item(
             user_managed: true,
         });
     StoreItem {
+        bot: None,
         id: p.app_id.clone(),
         name: p.name.clone().unwrap_or_else(|| p.app_id.clone()),
         description: String::new(),
@@ -239,6 +282,7 @@ pub fn flathub_placeholder_to_item(
 /// than being guessed from an unrelated network response.
 pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
     StoreItem {
+        bot: None,
         id: app_id.to_string(),
         name: app_id.to_string(),
         description: "Installed Flatpak. Catalogue details are unavailable.".into(),
@@ -375,6 +419,7 @@ pub fn flathub_record_to_item(
         .clone()
         .or_else(|| r.urls.as_ref().and_then(|u| u.homepage.clone()));
     StoreItem {
+        bot: None,
         id: r.app_id.clone(),
         name: if r.name.is_empty() {
             r.app_id.clone()
@@ -541,11 +586,27 @@ mod tests {
     }
 
     #[test]
+    fn tapp_versions_keep_their_runtime_pin_and_runtime_packages_offer_install() {
+        let mut entry = tilo_entry("so.tilo.runtime.chromium", "Chromium", "1.0.0", [1; 32]);
+        let runtime = "tilo-runtime/2026.10.10-chromium";
+        let version = &mut entry.versions[0];
+        version.tapp_mut().unwrap().target.runtime = Some(runtime.into());
+        let stored = tilo_version_to_store(version, version.tapp().unwrap());
+        assert_eq!(stored.runtime.as_deref(), Some(runtime));
+        let item = tilo_to_store_item(&verified(entry), "Tilo main", &[]);
+        assert!(item.bot.is_none());
+        assert_eq!(
+            item.action_kind(true),
+            crate::model::ActionKind::RuntimeInstall
+        );
+    }
+
+    #[test]
     fn native_catalogue_matches_cli_target_channel_and_version_selection() {
         let mut entry = tilo_entry("so.tilo.notes", "Notes", "1.0.0", [1; 32]);
         let mut foreign = entry.versions[0].clone();
         foreign.version = "9.0.0".into();
-        foreign.target.architecture = "different-device".into();
+        foreign.tapp_mut().unwrap().target.architecture = "different-device".into();
         let mut newest = entry.versions[0].clone();
         newest.version = "2.0.0".into();
         let mut prerelease = entry.versions[0].clone();
@@ -566,6 +627,7 @@ mod tests {
     fn tilo_entry(id: &str, name: &str, version: &str, publisher: [u8; 32]) -> RegistryEntry {
         let mut e = RegistryEntry {
             package_id: id.into(),
+            kind: registry_types::EntryKind::App,
             name: name.into(),
             description: format!("Description of {name}").into(),
             tagline: format!("{name} for Tilo OS").into(),
@@ -577,18 +639,20 @@ mod tests {
             publisher_pubkey_hex: hex::encode(publisher),
             versions: vec![RegistryVersion {
                 version: version.into(),
-                tapp_url: format!("https://apps.tilo.so/{id}/{version}.tapp"),
-                tapp_root_hash_hex: "cd".repeat(32),
-                tapp_size_bytes: 100,
                 released_at_unix: 200,
-                tapp_blake3_hex: "ef".repeat(32),
-                target: registry_types::RegistryTarget {
-                    platform: registry_types::TILO_OS_PLATFORM.into(),
-                    architecture: std::env::consts::ARCH.into(),
-                    isa: std::env::consts::ARCH.into(),
-                    runtime: None,
-                    interfaces: Vec::new(),
-                },
+                artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                    tapp_url: format!("https://apps.tilo.so/{id}/{version}.tapp"),
+                    tapp_root_hash_hex: "cd".repeat(32),
+                    tapp_size_bytes: 100,
+                    tapp_blake3_hex: "ef".repeat(32),
+                    target: registry_types::RegistryTarget {
+                        platform: registry_types::TILO_OS_PLATFORM.into(),
+                        architecture: std::env::consts::ARCH.into(),
+                        isa: std::env::consts::ARCH.into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 300,
             signature_hex: String::new(),
@@ -625,6 +689,47 @@ mod tests {
             payload_bytes: 0,
             system: !user_managed,
         }
+    }
+
+    #[test]
+    fn a_bot_entry_becomes_a_bot_card_and_never_an_app() {
+        let bot = app_cli::bots::CatalogueBot {
+            package_id: "so.tilo.bots.bridge".into(),
+            name: "Discord bridge".into(),
+            tagline: "Mirror a Discord server".into(),
+            description: "Bridges channels".into(),
+            icon_url: None,
+            publisher_pubkey_hex: "aa".repeat(32),
+            registry_name: "Tilo".into(),
+            version: "1.0.0".into(),
+            artifact: registry_types::BotArtifact {
+                program_url: format!("https://apps.tilo.so/blobs/{}", "ab".repeat(32)),
+                program_blake3_hex: "ab".repeat(32),
+                program_size_bytes: 10,
+                requires: registry_types::BotRequirements {
+                    connectors: vec![registry_types::PackageRequirement {
+                        package_id: "so.tilo.discord".into(),
+                        min_version: "0.1.0".into(),
+                    }],
+                    apps: vec!["so.tilo.chat".into()],
+                    appearance: true,
+                    triggers: vec!["connector".into(), "record_changed".into()],
+                },
+            },
+        };
+        let item = tilo_bot_to_store_item(&bot);
+        let listing = item.bot.as_ref().unwrap();
+        assert!(listing.appearance);
+        assert_eq!(listing.connectors[0].package_id, "so.tilo.discord");
+        assert!(
+            item.versions.is_empty(),
+            "a bot has no downloadable app version"
+        );
+        assert_eq!(item.action_kind(true), crate::model::ActionKind::AddBot);
+        assert!(
+            item.unavailable_action(crate::model::ActionKind::AddBot)
+                .is_some()
+        );
     }
 
     fn verified(entry: RegistryEntry) -> VerifiedEntry {

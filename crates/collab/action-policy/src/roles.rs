@@ -14,6 +14,11 @@ pub const ROOM_KIND: &str = "tilo.room";
 /// what a commenter may do.
 pub const COMMENTS_FIELD: &str = "comments";
 
+/// The field node every app's moderation actions sit under (acting on other
+/// people's content: removing their message, locking a channel). One rule on
+/// it covers every app's moderation, so presets need no list of verbs.
+pub const MODERATION_FIELD: &str = "moderation";
+
 /// The room's governance actions.
 pub mod governance {
     /// Invite someone, carrying at most the inviter's role.
@@ -30,22 +35,68 @@ pub mod governance {
     pub const REVOKE: &str = "revoke";
     /// Change the room's settings.
     pub const SETTINGS: &str = "settings";
+    /// Remove a member and keep them out until unbanned: a removal plus the
+    /// `block:<person>` Deny.
+    pub const BAN: &str = "ban";
+    /// Lift a ban: revoke the person's `block:<person>` Deny.
+    pub const UNBAN: &str = "unban";
+    /// Stop a member changing anything until a time: the expiring
+    /// `restrict:<person>` Deny. They keep reading the room.
+    pub const RESTRICT: &str = "restrict";
+    /// Lift a restriction before it lapses.
+    pub const UNRESTRICT: &str = "unrestrict";
     /// Replace the room's history with a checkpoint.
     pub const COMPACT: &str = "compact";
     /// Remove an earlier change from the room's history.
     pub const REDACT: &str = "redact";
 
-    pub const ALL: [&str; 9] = [
+    /// Install a bot, or update an installed bot's program: its row, its
+    /// grants and its device in one governed change.
+    pub const INSTALL_BOT: &str = "install-bot";
+    /// Withdraw a bot and revoke its grants; its row stays so its history
+    /// stays attributed.
+    pub const UNINSTALL_BOT: &str = "uninstall-bot";
+    /// Change whether a bot may post under other names.
+    pub const SET_BOT_APPEARANCE: &str = "set-bot-appearance";
+    /// Stop a bot from starting runs.
+    pub const PAUSE_BOT: &str = "pause-bot";
+    /// Let a paused bot start runs again.
+    pub const RESUME_BOT: &str = "resume-bot";
+    /// Become a bot's installer, after reviewing its grant.
+    pub const ADOPT_BOT: &str = "adopt-bot";
+
+    pub const ALL: [&str; 19] = [
         INVITE,
         ADD_MEMBER,
         REMOVE_MEMBER,
+        BAN,
+        UNBAN,
+        RESTRICT,
+        UNRESTRICT,
         SET_ROLE,
         GRANT,
         REVOKE,
         SETTINGS,
         COMPACT,
         REDACT,
+        INSTALL_BOT,
+        UNINSTALL_BOT,
+        SET_BOT_APPEARANCE,
+        PAUSE_BOT,
+        RESUME_BOT,
+        ADOPT_BOT,
     ];
+
+    /// Actions that exercise authority over the room or others in it. The
+    /// person's own grants must allow them: an Ask there is no authority the
+    /// person's confirmation could supply. Pausing is not among them, so a
+    /// moderator can stop a misbehaving bot without being able to widen it.
+    pub const PRIVILEGED: [&str; 4] = [INSTALL_BOT, UNINSTALL_BOT, SET_BOT_APPEARANCE, ADOPT_BOT];
+
+    #[must_use]
+    pub fn is_privileged(action: &str) -> bool {
+        PRIVILEGED.contains(&action)
+    }
 }
 
 /// The kind of every governance action. Changing who may do what reaches
@@ -73,6 +124,72 @@ pub fn comments(room: &str) -> TreePath {
         .rest()
         .push(Level::Field, COMMENTS_FIELD)
 }
+
+/// Where moderation lives in a room, at any depth.
+#[must_use]
+pub fn moderation(room: &str) -> TreePath {
+    TreePath::room(room)
+        .rest()
+        .push(Level::Field, MODERATION_FIELD)
+}
+
+/// The id of the grant that bans `person` from a room.
+#[must_use]
+pub fn block_grant_id(person: &str) -> GrantId {
+    GrantId(format!("block:{person}"))
+}
+
+/// The grant that keeps `person` out of `room`: every kind denied on the
+/// whole room, given by `granted_by`.
+#[must_use]
+pub fn block_grant(room: &str, person: &str, granted_by: Subject) -> Grant {
+    Grant {
+        id: block_grant_id(person),
+        subject: Subject::Person(person.to_owned()),
+        node: TreePath::room(room),
+        kinds: KindSet::ALL,
+        answer: Answer::Deny,
+        lifetime: Lifetime::UntilRevoked,
+        granted_by,
+    }
+}
+
+/// The id of the grant that restricts `person` in a room.
+#[must_use]
+pub fn restriction_grant_id(person: &str) -> GrantId {
+    GrantId(format!("restrict:{person}"))
+}
+
+/// The grant that stops `person` changing anything in `room` until
+/// `until_ms` (Unix milliseconds, exclusive): undoable changes and outside
+/// effects denied on the whole room, reading left alone. It lapses by itself,
+/// so a temporary restriction needs nobody to come back and lift it.
+#[must_use]
+pub fn restriction_grant(room: &str, person: &str, until_ms: u64, granted_by: Subject) -> Grant {
+    Grant {
+        id: restriction_grant_id(person),
+        subject: Subject::Person(person.to_owned()),
+        node: TreePath::room(room),
+        kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+        answer: Answer::Deny,
+        lifetime: Lifetime::Until(until_ms),
+        granted_by,
+    }
+}
+
+/// The governance a Moderator may exercise: the membership actions and
+/// restrictions, on members ranked below Moderator, and stopping or
+/// restarting a bot, so a misbehaving bot can be halted without the
+/// authority to widen it.
+pub const MODERATOR_GOVERNANCE: [&str; 7] = [
+    governance::REMOVE_MEMBER,
+    governance::BAN,
+    governance::UNBAN,
+    governance::RESTRICT,
+    governance::UNRESTRICT,
+    governance::PAUSE_BOT,
+    governance::RESUME_BOT,
+];
 
 /// One rule of a preset: a grant without its subject.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -196,8 +313,13 @@ impl Preset {
 /// |---|---|
 /// | Viewer | Read: Allow |
 /// | Commenter | Read: Allow; comments: Allow (Undoable) |
-/// | Editor | Read, Undoable: Allow; Outside: Ask; governance: Deny |
+/// | Editor | Read, Undoable: Allow; Outside: Ask; governance, moderation: Deny |
+/// | Moderator | as Editor; moderation: Allow; `remove-member`, `ban`, `unban`, `pause-bot`, `resume-bot`: Allow |
 /// | Owner | everything: Allow |
+///
+/// A Moderator's membership actions reach only members ranked below
+/// Moderator; [`crate::RoomPolicy`] enforces that, since it depends on the
+/// target and not on the tree.
 #[must_use]
 pub fn role_rules(role: Role, room: &str) -> Vec<Rule> {
     let room_node = TreePath::room(room);
@@ -207,17 +329,39 @@ pub fn role_rules(role: Role, room: &str) -> Vec<Rule> {
             Rule::new(room_node, KindSet::READ, Answer::Allow),
             Rule::new(comments(room), KindSet::UNDOABLE, Answer::Allow),
         ],
-        Role::Editor => vec![
-            Rule::new(room_node.clone(), KindSet::READ_UNDOABLE, Answer::Allow),
-            Rule::new(room_node, KindSet::OUTSIDE, Answer::Ask),
-            Rule::new(
-                room_resource(room),
-                KindSet::UNDOABLE.union(KindSet::OUTSIDE),
-                Answer::Deny,
-            ),
-        ],
+        Role::Editor => editor_rules(room, Answer::Deny),
+        Role::Moderator => {
+            let mut rules = editor_rules(room, Answer::Allow);
+            rules.extend(MODERATOR_GOVERNANCE.into_iter().map(|action| {
+                Rule::new(
+                    governance_action(room, action),
+                    KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+                    Answer::Allow,
+                )
+            }));
+            rules
+        }
         Role::Owner => vec![Rule::new(room_node, KindSet::ALL, Answer::Allow)],
     }
+}
+
+/// An Editor's rules, with `moderation` answering for the moderation node.
+fn editor_rules(room: &str, moderation_answer: Answer) -> Vec<Rule> {
+    let room_node = TreePath::room(room);
+    vec![
+        Rule::new(room_node.clone(), KindSet::READ_UNDOABLE, Answer::Allow),
+        Rule::new(room_node, KindSet::OUTSIDE, Answer::Ask),
+        Rule::new(
+            room_resource(room),
+            KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+            Answer::Deny,
+        ),
+        Rule::new(
+            moderation(room),
+            KindSet::UNDOABLE.union(KindSet::OUTSIDE),
+            moderation_answer,
+        ),
+    ]
 }
 
 /// The preset a role stands for in `room`.
@@ -227,7 +371,10 @@ pub fn role_preset(role: Role, room: &str) -> Preset {
         Role::Viewer => "Can read everything in the room.",
         Role::Commenter => "Can read everything and comment.",
         Role::Editor => {
-            "Can read and make undoable changes; outside effects ask first; cannot govern the room."
+            "Can read and make undoable changes; outside effects ask first; cannot moderate or govern the room."
+        }
+        Role::Moderator => {
+            "Can do what an Editor can, moderate other people's content, and remove or ban members ranked below Moderator."
         }
         Role::Owner => "Can do everything, including governing the room.",
     };
