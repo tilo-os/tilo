@@ -2022,7 +2022,25 @@ impl PdfApp {
                 },
                 |pending| pending != &plan,
             );
-            if needs_reconcile {
+            // Imported bytes that have not arrived cannot be materialised:
+            // asking the owner anyway only answers with a refusal that reads
+            // like a broken plan. Say what is missing and ask again once
+            // their availability changes.
+            let missing = blobs
+                .iter()
+                .find(|state| **state != ContentState::Resolved)
+                .copied();
+            if needs_reconcile && let Some(missing) = missing {
+                self.status_note = Some(
+                    if missing == ContentState::Pending {
+                        "Imported page content is arriving from collaborators"
+                    } else {
+                        "Imported page content is unavailable on this device"
+                    }
+                    .into(),
+                );
+                self.worker_plan_blobs = blobs;
+            } else if needs_reconcile {
                 let request = ReconcileRequest {
                     document_id: document.id,
                     plan: plan.clone(),
@@ -6357,6 +6375,46 @@ mod tests {
             );
             assert!(app.resource_page_ids.iter().any(|id| id == "imported-copy"));
         }
+    }
+
+    #[serial(pdfium)]
+    #[test]
+    fn worker_reader_says_when_imported_page_bytes_are_missing() {
+        let Some(mut app) = open_raster_sample() else {
+            return;
+        };
+        let mut state = ui::State::new();
+        settle_record(&mut app, &mut state);
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            crate::actions::import_pages_action(
+                Some("source-1"),
+                vec![crate::markup::PagePlanEntry {
+                    id: "missing-import".into(),
+                    source_page: 1,
+                    imported: Some(crate::markup::ImportedPage {
+                        hash: "d".repeat(64),
+                        kind: "image".into(),
+                        page: 1,
+                        width_milli: 612_000,
+                        height_milli: 408_000,
+                    }),
+                    rotation: 0,
+                }],
+            ),
+        );
+        app.sync_settled(&mut state.doc, &state.root);
+        assert!(
+            app.status_note
+                .as_deref()
+                .is_some_and(|note| note.starts_with("Imported page content is")),
+            "{:?}",
+            app.status_note
+        );
+        assert!(
+            app.pending_worker_plan.is_none(),
+            "a plan whose bytes are missing is not sent to the owner"
+        );
     }
 
     #[serial(pdfium)]
