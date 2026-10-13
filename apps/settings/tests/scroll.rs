@@ -10,10 +10,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -23,7 +19,7 @@ use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::event::{Modifiers, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
 
 struct Harness {
     app: Framed<SettingsApp>,
@@ -55,11 +51,7 @@ impl Harness {
     }
 
     fn wheel(&mut self, notches_down: f32) {
-        let ev = WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(0.0, -notches_down),
-            phase: TouchPhase::Moved,
-        };
+        let ev = ui::synthetic_input::mouse_wheel(0.0, -notches_down);
         self.dispatch(&ev);
     }
 }
@@ -112,10 +104,7 @@ fn content_pane_scrolls_with_the_mouse_wheel() {
 
     // Wheel down: the content pane's Scrollable shifts its child up.
     let content_point = Point::new(800.0, 170.0);
-    let cursor = WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(content_point.x, content_point.y),
-    };
+    let cursor = ui::synthetic_input::cursor_moved(content_point.x, content_point.y);
     h.dispatch(&cursor);
     h.wheel(3.0);
     h.relayout();
@@ -149,10 +138,10 @@ fn content_pane_scrolls_with_the_mouse_wheel() {
 fn a_rebuilt_pane_keeps_its_scroll_position() {
     let mut h = Harness::new(Category::Power, 1100.0, 340.0);
     let content_point = Point::new(800.0, 170.0);
-    h.dispatch(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(content_point.x, content_point.y),
-    });
+    h.dispatch(&ui::synthetic_input::cursor_moved(
+        content_point.x,
+        content_point.y,
+    ));
     h.wheel(3.0);
     h.relayout();
     let (scrolled, _, _) = content_scroll(&h.app);

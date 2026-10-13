@@ -120,6 +120,112 @@ impl StatePeer {
         Ok(true)
     }
 
+    /// Authenticate a historical reader against exact current certificate evidence.
+    ///
+    /// # Errors
+    /// Revoked, stale or substituted certificate, or current route read refusal.
+    pub fn check_checkpoint_reader(
+        &self,
+        caller: &tilo_user_identity::DeviceCert,
+        app: &str,
+        record: &str,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        if self.certificate(&caller.device_public_key, now)? != caller {
+            return Err("checkpoint caller is not exact current admitted evidence".into());
+        }
+        self.check_document_read(caller.device_public_key, app, record, now)
+    }
+
+    /// Require current room undoable-write permission for checkpoint capture and naming.
+    /// # Errors
+    /// Refuses substituted certificates or revoked/missing current undoable-write permission.
+    pub fn check_checkpoint_namer(
+        &self,
+        caller: &tilo_user_identity::DeviceCert,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        if self.certificate(&caller.device_public_key, now)? != caller {
+            return Err("checkpoint caller is not exact current admitted evidence".into());
+        }
+        if !self.permissions(caller.device_public_key, now)?.allows(
+            &tilo_action_policy::TreePath::room(&self.core.room),
+            tilo_action_policy::ActionKind::Undoable,
+            now,
+        ) {
+            return Err(
+                "checkpoint capture and naming require current room undoable-write permission"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Check current native checkpoint governor signing custody, including retries.
+    ///
+    /// # Errors
+    /// Stale certificate, revoked writer or mismatching governor key.
+    pub fn check_checkpoint_writer(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
+        self.require_governance_writer(key, now)
+    }
+
+    /// Read the native checkpoint content anchor, never treating corruption as absence.
+    ///
+    /// # Errors
+    /// Missing room or malformed anchor.
+    pub fn workspace_checkpoint_root(&self) -> Result<Option<[u8; 32]>, String> {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        let doc = self
+            .core
+            .room_doc
+            .as_deref()
+            .ok_or("checkpoint room is absent")?;
+        let values = doc
+            .get_all(ROOT, "native_checkpoint_root_v1")
+            .map_err(|e| e.to_string())?;
+        match values.as_slice() {
+            [] => Ok(None),
+            [(Value::Scalar(value), _)] => match value.as_ref() {
+                ScalarValue::Bytes(bytes) => bytes
+                    .as_slice()
+                    .try_into()
+                    .map(Some)
+                    .map_err(|_| "malformed native checkpoint root".into()),
+                _ => Err("malformed native checkpoint root".into()),
+            },
+            _ => Err("conflicting native checkpoint roots".into()),
+        }
+    }
+
+    /// Anchor retained checkpoint content under current governor signing custody.
+    ///
+    /// # Errors
+    /// Invalid custody or failed document write.
+    pub fn set_workspace_checkpoint_root(
+        &mut self,
+        root: [u8; 32],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        use automerge::{ROOT, ScalarValue, transaction::Transactable};
+        self.require_governance_writer(key, now)?;
+        let mut candidate = self
+            .core
+            .room_doc
+            .as_deref()
+            .ok_or("checkpoint room is absent")?
+            .clone();
+        candidate
+            .put(
+                ROOT,
+                "native_checkpoint_root_v1",
+                ScalarValue::Bytes(root.to_vec()),
+            )
+            .map_err(|e| e.to_string())?;
+        self.core.room_doc = Some(candidate.into());
+        Ok(())
+    }
+
     /// Read the cold-history anchor from actual admitted governance state.
     ///
     /// # Errors

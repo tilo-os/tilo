@@ -306,7 +306,6 @@ fn reconcile_alarms(
 
 #[cfg(test)]
 #[allow(
-    clippy::unwrap_used,
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]

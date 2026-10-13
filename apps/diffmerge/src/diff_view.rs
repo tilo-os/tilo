@@ -495,10 +495,7 @@ impl Widget for DiffView {
         let node = leaf_node(
             taffy,
             Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 flex_grow: 1.0,
                 ..Default::default()
             },
@@ -610,8 +607,7 @@ impl Widget for DiffView {
                 *ctx.handled = true;
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 let mut moved = false;
                 if self.across.pointer(event, self.cursor, &mut moved) {
                     self.dirty |= moved;
@@ -717,13 +713,7 @@ impl Widget for DiffView {
         )
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    ui::redraw_flag!();
 }
 
 impl DiffView {

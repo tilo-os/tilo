@@ -1197,15 +1197,13 @@ fn preparation_receipts_follow_real_history_and_revoke_on_failure() {
                 }
                 assert!(provider.complete);
                 let journal = dir.path().join("journal");
+                let path = journal.join("record-3");
+                let mut bytes = fs::read(&path).unwrap();
                 if corrupt_prefix {
-                    let path = journal.join("record-3");
-                    let mut bytes = fs::read(&path).unwrap();
                     bytes[layout::DIGEST] ^= 1;
                     rewrite_checksum(&mut bytes);
                     fs::write(path, bytes).unwrap();
                 } else {
-                    let path = journal.join("record-3");
-                    let mut bytes = fs::read(&path).unwrap();
                     bytes[layout::GENERATION..layout::EPOCH].copy_from_slice(&4u64.to_le_bytes());
                     rewrite_checksum(&mut bytes);
                     fs::remove_file(path).unwrap();

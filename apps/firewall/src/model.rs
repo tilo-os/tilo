@@ -842,12 +842,6 @@ impl ServiceCatalog {
             _ => "TCP",
         }
     }
-
-    /// The list of catalog ids — used to seed the service dropdown in the
-    /// add-rule form.
-    pub fn ids() -> Vec<String> {
-        Self::ALL.iter().map(|s| s.id.to_string()).collect()
-    }
 }
 
 #[cfg(test)]

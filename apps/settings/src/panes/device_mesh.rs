@@ -435,10 +435,6 @@ impl DeviceMeshArea {
 }
 
 /// Editor for the daemon's real device-mesh configuration.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "these booleans are independent asynchronous process and widget lifecycle states, not one mutually exclusive state machine"
-)]
 pub struct DeviceMeshModel {
     config_path: PathBuf,
     config: RelayConfig,

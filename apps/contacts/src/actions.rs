@@ -86,17 +86,6 @@ pub enum DuplicateReason {
     Name,
 }
 
-impl DuplicateReason {
-    #[must_use]
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Email => "matching email",
-            Self::Phone => "matching phone",
-            Self::Name => "matching name",
-        }
-    }
-}
-
 /// A bounded, deterministic potential duplicate.  The lower UUID is always
 /// the default survivor, which makes the review URL and resource identity
 /// stable across peers; the person may still choose every conflicting scalar

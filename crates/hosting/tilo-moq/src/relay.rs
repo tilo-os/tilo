@@ -501,10 +501,6 @@ impl Relay {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one select loop owns the session's authority, revocation and driver"
-    )]
     async fn run_session(&self, accepted: carrier::Accepted, scopes: RelayScopes) {
         let carrier::Accepted {
             session,
@@ -522,7 +518,7 @@ impl Relay {
             mut offered,
         } = scopes;
         // Voice redundancy toward this session follows the loss its own
-        // connection measures (TIL-624).
+        // connection measures.
         downlink.attach((*transport).clone());
         // Scopes were observed Current during admission; the loop below
         // re-observes them on the authority driver's schedule.

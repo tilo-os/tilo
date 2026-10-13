@@ -76,6 +76,7 @@ pub mod op;
 pub mod ownership_transfer;
 pub mod peer;
 pub mod person_room;
+pub mod realtime;
 pub mod receipt;
 pub mod redaction;
 pub mod role;

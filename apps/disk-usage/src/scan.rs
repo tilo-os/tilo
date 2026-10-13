@@ -29,7 +29,6 @@ pub struct Entry {
     pub name: String,
     pub bytes: u64,
     pub files: u64,
-    pub unreadable: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -68,7 +67,6 @@ impl ScanResult {
             name: name.into(),
             bytes,
             files,
-            unreadable: 0,
         })
         .collect();
         let total = entries.iter().map(|entry| entry.bytes).sum();
@@ -113,10 +111,6 @@ fn measure(path: &Path, cancellation: &ScanCancellation) -> (u64, u64, u64) {
                 acc.2.saturating_add(measured.2),
             )
         })
-}
-
-pub fn scan(path: PathBuf) -> ScanResult {
-    scan_with_cancellation(path, &ScanCancellation::default())
 }
 
 pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) -> ScanResult {
@@ -170,7 +164,6 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
                             path: child_path.clone(),
                             bytes,
                             files,
-                            unreadable: denied,
                         });
                     } else {
                         result.1 = result.1.saturating_add(bytes);
@@ -189,7 +182,6 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
             name: "Files in this folder".into(),
             bytes: own_bytes,
             files: own_files,
-            unreadable: 0,
         });
     }
     entries.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.name.cmp(&b.name)));

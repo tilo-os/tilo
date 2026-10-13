@@ -21,7 +21,7 @@ use tilo_doc::{CellInput, CellType, CellView, SheetView, WorkbookSnapshot};
 use tilo_doc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs};
 use tilo_doc_codecs::{ParsedSheet, XlsxCodec};
 
-use crate::model::{CellFormat, CellValue, format_number_general, format_value};
+use crate::model::{CellFormat, CellValue, format_number_general};
 use tilo_locale::DateStyle;
 
 /// The most grid slots (rows plus the cells of every row, up to its last
@@ -498,13 +498,6 @@ fn excel_number_format(fmt: CellFormat) -> Option<&'static str> {
         CellFormat::Time(_) => "hh:mm",
         _ => return None,
     })
-}
-
-/// Render a cell value through a format — used by callers building a
-/// `SheetTable` from already-computed values where they want the display
-/// string rather than the numeric raw (e.g. the CSV path).
-pub fn display(value: &CellValue, fmt: CellFormat) -> String {
-    format_value(value, fmt)
 }
 
 #[cfg(test)]

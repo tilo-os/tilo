@@ -119,6 +119,32 @@ def extract_events(log):
 
 def resource_metric(message):
     """Accept only named, bounded numbers; never retain arbitrary log values."""
+    match = re.fullmatch(r"\s*compiler_cache=(.{1,2048})\s*", message)
+    if match:
+        try:
+            payload = json.loads(match.group(1))
+            if type(payload.get("observed")) is not bool:
+                return None
+            if not payload["observed"]:
+                reason = payload.get("reason")
+                if reason not in ("disabled", "unavailable", "counter_reset"):
+                    return None
+                return "compiler_cache", {"observed": False, "reason": reason}
+            counters = {}
+            for key in ("cache_hits", "cache_misses", "cache_writes", "cache_read_errors",
+                        "cache_write_errors", "cache_timeouts", "compile_requests", "requests_executed"):
+                value = payload.get(key)
+                if type(value) is int and 0 <= value < 2**63:
+                    counters[key] = value
+            if not all(key in counters for key in ("cache_hits", "cache_misses")):
+                return None
+            for key in ("cache_read_hit_seconds", "cache_read_miss_seconds", "cache_write_seconds"):
+                value = payload.get(key)
+                if type(value) in (int, float) and 0 <= value < 10**12:
+                    counters[key] = value
+            return "compiler_cache", {"observed": True, **counters}
+        except (ValueError, TypeError, AttributeError):
+            return None
     match = SCALAR_METRICS.fullmatch(message)
     if match:
         key, value = match.groups()

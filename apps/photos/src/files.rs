@@ -5,15 +5,6 @@ use std::path::Path;
 
 use tilo_files::{Dir, Kind, VPath, blocking};
 
-/// Whether chosen files have native paths here; without them (a browser
-/// page) Photos imports by contents.
-pub(crate) fn native_paths() -> bool {
-    matches!(
-        tilo_files::availability(tilo_files::Feature::NativePaths),
-        tilo_files::Availability::Available
-    )
-}
-
 /// One of Photos' state files: in the shared state location
 /// (`$XDG_STATE_HOME/tilo` natively, the page's storage on the web), or at
 /// an explicit native path.

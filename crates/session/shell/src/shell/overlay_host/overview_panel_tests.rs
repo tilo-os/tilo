@@ -196,14 +196,7 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
         assert!(h.shortcut_help_button_is_suppressed());
         h.last_cursor = Some(h.shortcut_help_button_rect().center());
         let mut handled = false;
-        h.handle_shell_mouse_click_event(
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            },
-            &mut handled,
-        );
+        h.handle_shell_mouse_click_event(&ui::synthetic_input::mouse_press(), &mut handled);
         assert!(!chrome.borrow().overlays.shortcut_help);
     }
 
@@ -356,11 +349,7 @@ fn overview_panel_bounds_hit_rooms_fit_the_viewport_and_scroll_when_long() {
         let mut h = host_with(WorkspaceTree::bootstrap_default());
         h.add_workspace_rect = h.overview_add_workspace_rect_for(1);
         h.last_cursor = Some(h.add_workspace_rect.center());
-        let event = WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        };
+        let event = ui::synthetic_input::mouse_press();
         let mut handled = false;
         h.handle_shell_overview_pointer_event(&event, 1.0, &mut handled);
         let chrome = h.chrome.as_ref().unwrap().borrow();

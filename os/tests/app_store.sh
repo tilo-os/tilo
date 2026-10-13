@@ -159,7 +159,7 @@ else
 fi
 
 # The dependencies are the collector's closure: DT_NEEDED and the libraries the
-# runtime loads on first use (GLib, GStreamer; TIL-713).
+# runtime loads on first use (GLib, GStreamer; #4020).
 if grep -q -- '--include /out/libruntime_dylib.so' "$CONTAINERFILE" \
    && grep -q 'tilo-collect-runtime-dependencies.py' "$CONTAINERFILE" \
    && grep -q -- '--library-dir /out /out/libruntime_dylib.so' "$CONTAINERFILE"; then
@@ -234,7 +234,7 @@ else
   fi
   # The runtime reaches the rootfs through runtime-image-payload, which copies
   # the builder's tree to /image$sysroot (beside the font catalog's hard links,
-  # TIL-609); the rootfs copies that /image/usr/ to /usr/ whole.
+  # #4003); the rootfs copies that /image/usr/ to /usr/ whole.
   if containerfile_has_copy "$CONTAINERFILE" "/image/usr/" "/usr/" runtime-image-payload \
      && grep -q -- "--mount=type=bind,from=builder,source=$sysroot,target=/tilo-runtime,ro" "$CONTAINERFILE" \
      && grep -q -- "cp -a /tilo-runtime /image$sysroot " "$CONTAINERFILE"; then

@@ -1427,10 +1427,7 @@ impl Widget for Button {
             // with room shows it whole, and only a parent without room
             // (capped by `max_size`) makes the painter elide it.
             flex_shrink: 0.0,
-            min_size: Size {
-                width: Dimension::length(height),
-                height: Dimension::length(height),
-            },
+            min_size: Size::from_lengths(height, height),
             max_size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
@@ -1623,8 +1620,7 @@ impl Widget for Button {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let logical_pos = ctx.logical(position);
                 let hover = self.hit_rect().contains(logical_pos);
                 // A hover change is a repaint (`needs_redraw` compares the
                 // state), not consumed input: a parent that stops at the

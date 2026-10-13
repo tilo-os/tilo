@@ -293,7 +293,7 @@ impl App {
             tracing::warn!(%error, "legacy control availability refused");
         }
         // A first page's control availability took 246 ms in Settings; the
-        // startup file names the stage (TIL-691). Startup-only: this runs on
+        // startup file names the stage. Startup-only: this runs on
         // every rebuild.
         tilo_startup_metrics::startup_mark("actions-legacy-done");
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
@@ -1112,8 +1112,8 @@ impl App {
                 let mut inspected = 0usize;
                 let mut exhausted = false;
                 let mut projected_offset = state.browse_offset;
-                let mut projected_done = true;
-                if let Some(snapshot) = &self.actions.action_directory_snapshot {
+                let projected_done = if let Some(snapshot) = &self.actions.action_directory_snapshot
+                {
                     while let Some(row) = snapshot.roots.get(projected_offset) {
                         if rows.len() >= max_results || inspected >= max_work {
                             break;
@@ -1128,8 +1128,10 @@ impl App {
                         projected_offset = projected_offset.saturating_add(1);
                         inspected = inspected.saturating_add(1);
                     }
-                    projected_done = projected_offset >= snapshot.roots.len();
-                }
+                    projected_offset >= snapshot.roots.len()
+                } else {
+                    true
+                };
                 while projected_done && rows.len() < max_results && inspected < max_work {
                     let Some(page) = crate::widget::action_directory_page_at(
                         self.root_widget.as_ref(),
@@ -2329,7 +2331,7 @@ impl App {
         // The door resolves the action once and asks here, before anything
         // runs, whether it goes through the broker instead. Resolving it a
         // second time for that question built the whole published tree twice
-        // per keystroke into a bound field (TIL-751).
+        // per keystroke into a bound field.
         let has_delivery = broker_delivery.is_some();
         let connected = self.collaboration.manager.is_connected();
         let resolved = std::cell::Cell::new(None);
@@ -4384,11 +4386,7 @@ impl App {
             None,
             Key::Named(NamedKey::Enter),
         );
-        self.action_palette_handle_key(&winit::event::WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        });
+        self.action_palette_handle_key(&crate::synthetic_input::keyboard_input(event));
         self.dispatch_control_invocations();
         Some(address)
     }

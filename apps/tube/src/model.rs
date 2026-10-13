@@ -559,10 +559,6 @@ impl Route {
 }
 
 /// The complete application state.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent piece of application state, not a state machine"
-)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TubeModel {
     pub videos: Vec<Video>,

@@ -2,7 +2,7 @@
 use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::{BlockEditor, CursorPlacement, Widget};
-use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::event::{ElementState, Modifiers};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 struct Editor {
@@ -137,11 +137,7 @@ impl Editor {
         // winit keeps platform fields private; this matches the existing
         // headless keyboard fixtures used throughout the integration suite.
         let event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
-        let event = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        };
+        let event = ui::synthetic_input::keyboard_input(event);
         let modifiers = Modifiers::from(if shift {
             ModifiersState::SHIFT
         } else {

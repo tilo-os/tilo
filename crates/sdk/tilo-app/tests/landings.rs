@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 
 //! Where a participant's action leaves them is the framework's: the surface
 //! is told, and reads it back, instead of keeping its own copy. An effect

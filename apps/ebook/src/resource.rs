@@ -35,10 +35,7 @@ use crate::model::{
     Progress, Settings, annotation_key, default_fonts, default_schemes,
 };
 
-/// Books' Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
 /// How many books the published library carries as places; the rest are
 /// resolved one by one when addressed.
@@ -905,7 +902,7 @@ impl ResourceApp for EbookShell {
 /// Whether the host has no native files, so the one book there is to read is
 /// the one compiled into the app: the browser.
 pub(crate) fn bundled_library() -> bool {
-    !crate::content::native_paths()
+    !tilo_files::available(tilo_files::Feature::NativePaths)
 }
 
 /// What a new library starts with: the bundled book where the library is

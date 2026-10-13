@@ -22,7 +22,7 @@ use os_actions::{
 };
 use tracing::warn;
 use ui::LocalState;
-use ui::collaboration::{WifiContinuityCommand, WifiContinuityReply};
+use ui::collaboration::{NetworkWakeStatus, WifiContinuityCommand, WifiContinuityReply};
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_resource::{self, ActionRef, Effect};
 use ui::widget::{Button, Dropdown, QrWidget, Row, Spacer, Text, TextInput, Toggle, Widget};
@@ -41,30 +41,18 @@ use crate::widgets::{
 
 // Ask the authenticated host: this app intentionally has an isolated network
 // namespace and cannot inspect the host's nl80211 interface by spawning iw.
-fn host_network_wake(
-    profile: &str,
-    enabled: Option<bool>,
-) -> Result<os_actions::network_wake::NetworkWakeStatus, String> {
+fn host_network_wake(profile: &str, enabled: Option<bool>) -> Result<NetworkWakeStatus, String> {
     match ui::collaboration::wifi_continuity_command(WifiContinuityCommand::NetworkWake {
         profile_uuid: profile.into(),
         enabled,
     })? {
-        WifiContinuityReply::NetworkWake { status } => {
-            Ok(os_actions::network_wake::NetworkWakeStatus {
-                profile: status.profile,
-                interface: status.interface,
-                configured: status.configured,
-                supported: status.supported,
-                applied: status.applied,
-                problem: status.problem,
-            })
-        }
+        WifiContinuityReply::NetworkWake { status } => Ok(status),
         WifiContinuityReply::Rejected { reason } => Err(reason),
         _ => Err("the host returned an invalid network wake reply".into()),
     }
 }
 
-fn wake_description(status: &os_actions::network_wake::NetworkWakeStatus) -> &'static str {
+fn wake_description(status: &NetworkWakeStatus) -> &'static str {
     if status.problem.is_some() {
         if status.configured {
             "net-wake-pending"
@@ -486,7 +474,7 @@ pub(crate) struct NetworkSnapshot {
     connectivity: Part<ConnectivityState>,
     profiles: Part<Vec<SavedNetworkProfile>>,
     profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
-    wake_settings: HashMap<String, Result<os_actions::network_wake::NetworkWakeStatus, String>>,
+    wake_settings: HashMap<String, Result<NetworkWakeStatus, String>>,
     hotspot_clients: Part<Vec<os_actions::HotspotClient>>,
     vpns: Part<Vec<VpnInfo>>,
 }
@@ -1153,7 +1141,7 @@ pub struct NetworkModel {
     connectivity: ConnectivityState,
     profiles: Vec<SavedNetworkProfile>,
     profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
-    wake_settings: HashMap<String, Result<os_actions::network_wake::NetworkWakeStatus, String>>,
+    wake_settings: HashMap<String, Result<NetworkWakeStatus, String>>,
     sims: Vec<os_actions::SimInfo>,
     hotspot_clients: Vec<os_actions::HotspotClient>,
     vpns: Vec<VpnInfo>,
@@ -3635,7 +3623,7 @@ mod tests {
                 }
                 WifiContinuityCommand::NetworkWake { profile_uuid, .. } => {
                     WifiContinuityReply::NetworkWake {
-                        status: ui::collaboration::NetworkWakeStatus {
+                        status: NetworkWakeStatus {
                             profile: profile_uuid,
                             interface: None,
                             configured: false,
@@ -4211,7 +4199,7 @@ mod tests {
         let mut model = model(&fake);
         model.wake_settings.insert(
             uuid.into(),
-            Ok(os_actions::network_wake::NetworkWakeStatus {
+            Ok(NetworkWakeStatus {
                 profile: uuid.into(),
                 interface: Some("wlan0".into()),
                 configured: false,
