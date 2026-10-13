@@ -461,21 +461,24 @@ async fn a_seeded_room_default_record_names_the_default_id() {
     let rooms = relay.rooms().unwrap();
     let created = rooms.create("Seeded default record").await.unwrap();
     let catalogue = tilo_agent_participant::AppCatalogue::native();
-    let record = crate::room_bots::room_record(&catalogue, "so.tilo.notes");
+    // An app that keeps a record per window: one that keeps a room record
+    // seeds its package primary, not the default route.
+    let app = "so.tilo.scratchpad";
+    let record = crate::room_bots::room_record(&catalogue, app);
     assert_eq!(record, ui::record::RecordId::room_default().as_str());
     assert!(
         rooms
-            .prepare_application(&created.room, &cert, &catalogue, "so.tilo.notes", &record)
+            .prepare_application(&created.room, &cert, &catalogue, app, &record)
             .await
             .unwrap()
     );
     let bytes = rooms
-        .record_document(&created.room, "so.tilo.notes", &record)
+        .record_document(&created.room, app, &record)
         .await
         .unwrap()
         .expect("the room holds its default record");
     let doc = automerge::AutoCommit::load(&bytes).unwrap();
-    let kind = catalogue.get("so.tilo.notes").unwrap().record_kind.clone();
+    let kind = catalogue.get(app).unwrap().record_kind.clone();
     assert_eq!(
         ui::record::identity(&doc),
         Some(ui::record::RecordCheckout::new(
