@@ -19,7 +19,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{AppModel, ModelPath, TaffyTreeExt as _, Widget};
+use ui::widget::{TaffyTreeExt as _, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -740,10 +740,6 @@ impl Widget for OverviewPanel {
             self.rect = rect;
             self.dirty = true;
         }
-    }
-
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        false
     }
 
     fn draw(
