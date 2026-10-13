@@ -68,7 +68,7 @@ const TTL: Duration = Duration::from_secs(10);
 // says it acts on, and the earliest retry deadline. This backstop only bounds
 // how long something none of those announce could go unrepaired; it compares
 // cheap change tokens and walks the namespace only when one of them moved.
-// It used to be the repair path itself, at 5 s (TIL-750).
+// It used to be the repair path itself, at 5 s.
 const PINNED_HYDRATION_BACKSTOP: Duration = Duration::from_secs(300);
 // A namespace change wakes the worker after this long, so a burst of remote
 // applies is one pass rather than one per change.
@@ -619,12 +619,16 @@ mod write_stage;
 use write_stage::{MissingRanges, SharedStage, StagedRead};
 pub use write_stage::{Stage, WriteStage};
 
+/// The codec key for `name`'s extension if it's a recognized document.
+pub fn document_codec_for(name: &str) -> Option<String> {
+    let ext = name.rsplit('.').next().filter(|e| *e != name)?;
+    tilo_doc_codecs::provider_for_ext(ext).map(|_| ext.to_lowercase())
+}
+
 pub struct QuickFS {
     pub namespace: Arc<Mutex<Namespace>>,
     pub hydrator: Arc<Hydrator>,
     pub heuristics: Arc<Heuristics>,
-    /// Codecs for recognized rich-text formats (odt/docx/md).
-    registry: Arc<tilo_doc_codecs::Registry>,
     /// Binary content (images, binary package parts) that documents projected as files refer to.
     document_content: tilo_content::ContentStore,
     /// Broadcasts local CRDT deltas to peers (None when running standalone).
@@ -728,25 +732,10 @@ impl QuickFS {
         hydrator: Arc<Hydrator>,
         heuristics: Arc<Heuristics>,
     ) -> Self {
-        Self::with_registry(
-            namespace,
-            hydrator,
-            heuristics,
-            Arc::new(tilo_doc_codecs::builtin_registry()),
-        )
-    }
-
-    pub fn with_registry(
-        namespace: Arc<Mutex<Namespace>>,
-        hydrator: Arc<Hydrator>,
-        heuristics: Arc<Heuristics>,
-        registry: Arc<tilo_doc_codecs::Registry>,
-    ) -> Self {
         Self {
             namespace,
             hydrator,
             heuristics,
-            registry,
             document_content: tilo_content::ContentStore::memory(),
             sync: None,
             write_buffers: Arc::new(Mutex::new(HashMap::new())),
@@ -1808,14 +1797,6 @@ impl QuickFS {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The codec key for `name`'s extension if it's a recognized document.
-    fn document_codec_for(&self, name: &str) -> Option<String> {
-        let ext = name.rsplit('.').next().filter(|e| *e != name)?;
-        self.registry
-            .provider_for_ext(ext)
-            .map(|_| ext.to_lowercase())
-    }
-
     /// Whether `ino` is a CRDT-backed document (vs. opaque content).
     fn is_document(&self, ino: u64) -> bool {
         let namespace = self.ns();
@@ -1941,7 +1922,7 @@ impl QuickFS {
         // leaves the previous content intact and returns false.
         let delta = {
             let mut ns = self.ns();
-            if ns.import_document(ino, &self.registry, data, now_ms(), &self.document_content) {
+            if ns.import_document(ino, data, now_ms(), &self.document_content) {
                 ns.save_incremental()
             } else {
                 Vec::new()
@@ -2042,9 +2023,7 @@ impl QuickFS {
             }
             return Some(bytes);
         }
-        let bytes: Arc<[u8]> = ns
-            .export_document(ino, &self.registry, &self.document_content)?
-            .into();
+        let bytes: Arc<[u8]> = ns.export_document(ino, &self.document_content)?.into();
         let heads = ns.heads();
         drop(ns);
         self.doc_export_cache()
@@ -6464,7 +6443,7 @@ impl Filesystem for QuickFS {
         }
         let signed = self.record_publisher.is_some() && self.history.is_some();
         let codec = (!signed)
-            .then(|| name.to_str().and_then(|name| self.document_codec_for(name)))
+            .then(|| name.to_str().and_then(document_codec_for))
             .flatten();
         let created =
             if let (false, Some(name), Some(codec)) = (signed, name.to_str(), codec.as_deref()) {

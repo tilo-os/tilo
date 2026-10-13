@@ -4,13 +4,15 @@
 //! Search opens from the same chords as the native shell's (Super+K and
 //! Super+Space; Ctrl+K where the platform's command key is Ctrl), from a
 //! `global-search`/`commands` navigation command, or from
-//! [`DesktopHandle::toggle_search`]. While open it takes every input event.
+//! [`DesktopHandle::toggle_search`]. A window's new-tab control opens it
+//! over the applications only, and the one chosen opens as a tab of that
+//! window, as the native shell's does. While open it takes every input event.
 //! Choosing an application launches it, a window focuses it, and an
 //! application's action or content runs through the palette's control
 //! invocation, which the frame host resolves against the live resource
 //! tree like any bound control.
 
-use tilo_desktop_model::{DesktopTree, TileContent};
+use tilo_desktop_model::{DesktopTree, GroupId, StripId, TileContent};
 use tilo_desktop_search::providers::{CommandSpec, WindowEntry};
 use tilo_desktop_search::{SearchData, Target};
 use ui::automerge::AutoCommit;
@@ -28,13 +30,60 @@ use crate::navigation::{self, Admitted};
 pub(super) enum SearchRequest {
     Open(Option<String>),
     Toggle,
+    /// Window `GroupId`'s new-tab control: which application to open there.
+    NewTab(StripId, GroupId),
 }
 
 const CLOSE_WINDOW: &str = "desktop.close-window";
 const MAXIMIZE_WINDOW: &str = "desktop.maximize-window";
 const WORKSPACE_PREFIX: &str = "desktop.workspace:";
+/// Search command ids and banner action keys of the host's own actions.
+const HOST_PREFIX: &str = "host:";
+
+/// An action only the host that embeds the desktop can perform (in a
+/// browser: keeping the person's identity with a passkey). The desktop
+/// offers it in search beside its own commands and on banners the host
+/// posts, and hands the id back when the person chooses it
+/// ([`DesktopHandle::take_host_choices`]).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct HostAction {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub subtitle: Option<String>,
+}
+
+impl HostAction {
+    /// A banner that offers this action: choosing it performs the action.
+    #[must_use]
+    pub fn notice(
+        &self,
+        title: impl Into<String>,
+        body: impl Into<String>,
+    ) -> crate::notifications::Notification {
+        let mut notice = crate::notifications::Notification::new(title, body);
+        notice.actions = vec![(format!("{HOST_PREFIX}{}", self.id), self.title.clone())];
+        notice.dismiss_after = crate::notifications::PERSISTENT_DISMISS;
+        notice
+    }
+}
+
+/// The host action a banner action key or search command id names.
+pub(super) fn host_choice(key: &str) -> Option<&str> {
+    key.strip_prefix(HOST_PREFIX)
+}
 
 impl DesktopHandle {
+    /// Offer these host actions from now on, in place of earlier ones.
+    pub fn set_host_actions(&self, actions: Vec<HostAction>) {
+        self.shared.borrow_mut().host_actions = actions;
+    }
+
+    /// The host actions the person chose since the last call, by id.
+    pub fn take_host_choices(&self) -> Vec<String> {
+        std::mem::take(&mut self.shared.borrow_mut().host_choices)
+    }
+
     /// Open search, or close it when it is open. The host schedules a frame.
     pub fn toggle_search(&self) {
         self.shared.borrow_mut().search_request = Some(SearchRequest::Toggle);
@@ -109,8 +158,15 @@ fn windows(tree: &DesktopTree) -> Vec<WindowEntry> {
     out
 }
 
-fn commands(tree: &DesktopTree) -> Vec<CommandSpec> {
-    let mut out = Vec::new();
+fn commands(tree: &DesktopTree, host: &[HostAction]) -> Vec<CommandSpec> {
+    let mut out: Vec<CommandSpec> = host
+        .iter()
+        .map(|action| CommandSpec {
+            id: format!("{HOST_PREFIX}{}", action.id),
+            title: action.title.clone(),
+            subtitle: action.subtitle.clone(),
+        })
+        .collect();
     if let Some(ids) = navigation::active_route(tree)
         && let Some(group) = navigation::locate(tree, ids)
     {
@@ -151,7 +207,10 @@ impl DesktopSurface {
     pub(super) fn open_search(&mut self, doc: &AutoCommit, query: Option<String>) {
         let (windows, commands) = {
             let shared = self.shared.borrow();
-            (windows(&shared.tree), commands(&shared.tree))
+            (
+                windows(&shared.tree),
+                commands(&shared.tree, &shared.host_actions),
+            )
         };
         let mut data = SearchData {
             applications: self.tiles.search_applications(),
@@ -169,6 +228,7 @@ impl DesktopSurface {
         self.search
             .palette_mut()
             .set_platform_conventions(self.platform);
+        self.new_tab_into = None;
         if let Some(query) = query {
             self.search.set_query(&query);
         }
@@ -180,6 +240,23 @@ impl DesktopSurface {
         self.structure_dirty = true;
     }
 
+    /// Open search over the applications only, with nothing typed, aimed at
+    /// window `group`: what is chosen opens as its tab. Opens even while
+    /// search is already open, as another press of the control re-aims it.
+    fn open_new_tab_search(&mut self, strip: StripId, group: GroupId) {
+        let data = SearchData {
+            applications: self.tiles.search_applications(),
+            ..SearchData::default()
+        };
+        self.search.open(data);
+        self.search
+            .palette_mut()
+            .set_platform_conventions(self.platform);
+        self.search.set_query("");
+        self.new_tab_into = Some((strip, group));
+        self.structure_dirty = true;
+    }
+
     /// Take a host's search request, follow the palette, and perform what
     /// was chosen. Runs every update pass, before queued commands apply.
     pub(super) fn step_search(&mut self, doc: &AutoCommit) {
@@ -188,6 +265,7 @@ impl DesktopSurface {
             Some(SearchRequest::Toggle) if self.search.is_open() => self.close_search(),
             Some(SearchRequest::Toggle) => self.open_search(doc, None),
             Some(SearchRequest::Open(query)) => self.open_search(doc, query),
+            Some(SearchRequest::NewTab(strip, group)) => self.open_new_tab_search(strip, group),
             None => {}
         }
         self.follow_search();
@@ -201,10 +279,19 @@ impl DesktopSurface {
             let refreshed = self.search.refresh();
             self.structure_dirty |= closed || refreshed;
         }
-        if let Some(target) = self.search.take_choice() {
-            self.perform(target);
+        match (self.search.take_choice(), self.new_tab_into.take()) {
+            (Some(Target::Launch { app }), Some((strip, group))) => {
+                self.open_tab_in_group(strip, group, &app);
+            }
+            (Some(target), _) => self.perform(target),
+            (None, into) => self.new_tab_into = into,
         }
         let open = self.search.is_open();
+        if !open {
+            // The aim is for one choice; search opened otherwise opens
+            // applications as their own windows again.
+            self.new_tab_into = None;
+        }
         self.shared.borrow_mut().search_open = open;
     }
 
@@ -216,7 +303,11 @@ impl DesktopSurface {
             Target::Window { tab } => route_of(&shared.tree, tab).map(Admitted::Select),
             Target::Command { id } => {
                 let active = navigation::active_route(&shared.tree);
-                if id == CLOSE_WINDOW {
+                if let Some(choice) = host_choice(&id) {
+                    let choice = choice.to_owned();
+                    shared.host_choices.push(choice);
+                    None
+                } else if id == CLOSE_WINDOW {
                     active.map(Admitted::Close)
                 } else if id == MAXIMIZE_WINDOW {
                     active.and_then(|ids| {
@@ -346,7 +437,7 @@ impl DesktopSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::winit::event::{DeviceId, KeyEvent, Modifiers, RawKeyEvent};
+    use ui::winit::event::{KeyEvent, Modifiers, RawKeyEvent};
     use ui::winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
 
     fn press(key: Key) -> WindowEvent {
@@ -362,11 +453,7 @@ mod tests {
             None,
             key,
         );
-        WindowEvent::KeyboardInput {
-            device_id: DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(event)
     }
 
     fn mods(state: ModifiersState) -> Modifiers {

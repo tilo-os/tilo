@@ -40,6 +40,7 @@ pub mod device_rotation;
 pub(crate) mod diagnostic_actions;
 #[cfg(target_os = "linux")]
 pub mod dictation;
+pub mod dictation_status;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
 pub mod floating_service;
@@ -48,6 +49,7 @@ pub mod frame;
 pub mod frame_stall;
 #[cfg(target_os = "linux")]
 pub mod gpu_health;
+#[cfg(target_os = "linux")]
 pub mod gpu_import;
 #[cfg(target_os = "linux")]
 pub mod hosted;
@@ -120,12 +122,15 @@ pub mod tablet;
 pub mod tablet_pad;
 #[cfg(target_os = "linux")]
 pub mod test_control;
+#[cfg(target_os = "linux")]
 pub mod text_commit;
 #[cfg(target_os = "linux")]
 pub mod toplevel_icon;
 pub mod touch_pointer;
 #[cfg(target_os = "linux")]
 pub mod window_previews;
+#[cfg(target_os = "linux")]
+mod window_provenance;
 #[cfg(target_os = "linux")]
 pub(crate) mod xwayland;
 #[cfg(target_os = "linux")]

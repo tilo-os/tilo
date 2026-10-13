@@ -42,6 +42,17 @@ use crate::document::{ContentCipher, DocumentRoute};
 /// First and longest wait before a waiting member asks again.
 const REQUEST_FIRST_MS: u64 = 2_000;
 const REQUEST_LONGEST_MS: u64 = 120_000;
+/// The wait from which a member asks with a fresh key package: the host
+/// keeps only a channel's newest change, so an admission replaced before it
+/// reached this page is gone, and the steward answers the same request
+/// once.
+const REQUEST_FRESH_MS: u64 = 16_000;
+/// How long a member holds back acknowledging the changes it applied after
+/// joining. Acknowledgements are cumulative and only spare the steward
+/// redelivery, while every member of a busy channel acknowledging every
+/// change is a host write per member per change: a public room of 300
+/// acknowledging every 20 s spent a third of its host's disk writes on it.
+const ACK_DELAY_MS: u64 = 60_000;
 /// Frames kept for a channel no route of this page has opened yet.
 const MAX_UNOPENED_FRAMES: usize = 256;
 /// Channels whose frames are kept before a route opens them.
@@ -127,6 +138,8 @@ struct Route {
     next_request_ms: u64,
     request_delay_ms: u64,
     installed_epoch: Option<u64>,
+    /// When the acknowledgement held back for changes applied is due.
+    ack_due_ms: Option<u64>,
 }
 
 /// A member's state as [`Channels::export`] hands it to the durable store.
@@ -467,6 +480,7 @@ impl Channels {
                 next_request_ms: now_ms,
                 request_delay_ms: REQUEST_FIRST_MS,
                 installed_epoch: None,
+                ack_due_ms: None,
             },
         );
         self.settle(channel, now_ms, &mut changes);
@@ -559,8 +573,32 @@ impl Channels {
         let channels: Vec<ChannelId> = self.routes.keys().copied().collect();
         for channel in channels {
             self.request_if_due(channel, now_ms, &mut changes);
+            self.ack_if_due(channel, now_ms, &mut changes);
         }
         changes
+    }
+
+    fn ack_if_due(&mut self, channel: ChannelId, now_ms: u64, changes: &mut Changes) {
+        let Some(route) = self.routes.get_mut(&channel) else {
+            return;
+        };
+        if route.ack_due_ms.is_none_or(|due| due > now_ms) {
+            return;
+        }
+        route.ack_due_ms = None;
+        if let Some(member) = route.member.as_ref()
+            && !member.journal().frames().is_empty()
+        {
+            changes.outgoing.push(Outgoing::Ack {
+                workspace_id: route.workspace_id,
+                room: route.document.cluster_id.clone(),
+                ack: MlsGovernanceAckV1::unsigned(
+                    channel,
+                    self.device,
+                    member.journal().head_digest(),
+                ),
+            });
+        }
     }
 
     /// Take part in `channel` under its room's governor, once known, then
@@ -637,7 +675,19 @@ impl Channels {
         if moved {
             self.dirty = true;
         }
-        if moved && !member.journal().frames().is_empty() {
+        // Joining is acknowledged at once; later changes in a while.
+        let joined = events
+            .iter()
+            .any(|event| matches!(event, MemberEvent::Joined { .. }));
+        if moved && !joined {
+            route.ack_due_ms = Some(
+                route
+                    .ack_due_ms
+                    .unwrap_or_else(|| now_ms.saturating_add(ACK_DELAY_MS)),
+            );
+        }
+        if joined && !member.journal().frames().is_empty() {
+            route.ack_due_ms = None;
             changes.outgoing.push(Outgoing::Ack {
                 workspace_id: route.workspace_id,
                 room: route.document.cluster_id.clone(),
@@ -675,6 +725,9 @@ impl Channels {
         if matches!(member.access(), Access::Ready { .. }) || now_ms < route.next_request_ms {
             return;
         }
+        if route.request_delay_ms >= REQUEST_FRESH_MS {
+            route.request = None;
+        }
         if route.request.is_none() {
             route.request = member
                 .unsigned_access_request(now_ms / 1000, &self.vault)
@@ -706,12 +759,6 @@ impl Changes {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 mod tests {
     use super::*;
     use channel_crypto::ChannelSteward;

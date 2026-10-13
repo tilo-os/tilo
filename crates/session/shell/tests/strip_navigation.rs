@@ -14,9 +14,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
@@ -35,12 +32,11 @@ use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 const W: f32 = 1280.0;
@@ -214,10 +210,7 @@ impl Harness {
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
+                    size: Size::from_lengths(W, H),
                     ..Default::default()
                 },
                 &[child],
@@ -277,47 +270,25 @@ impl Harness {
     }
 
     fn click(&mut self, p: Point) {
-        self.event(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(p.x, p.y),
-        });
-        self.event(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        self.event(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.event(&ui::synthetic_input::cursor_moved(p.x, p.y));
+        self.event(&ui::synthetic_input::mouse_press());
+        self.event(&ui::synthetic_input::mouse_release());
     }
 
     fn key(&mut self, logical: Key, mods: ModifiersState) {
         let ev = ui::synthetic_input::key_event(logical, None, ElementState::Pressed);
-        let event = WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        };
+        let event = ui::synthetic_input::keyboard_input(ev);
         ui::testing::Dispatch::new()
             .modifiers(mods)
             .layout(&self.taffy, self.child)
             .send(&mut self.host, &event);
     }
 
-    /// A horizontally-dominant wheel event over the strip, the way a
-    /// two-finger sideways swipe arrives.
-    fn scroll_horizontally(&mut self, dx: f32) {
-        self.event(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(600.0, 500.0),
-        });
-        self.event(&WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: MouseScrollDelta::LineDelta(dx, 0.0),
-            phase: winit::event::TouchPhase::Moved,
-        });
+    /// A horizontally-dominant wheel event over the strip, `rightward`
+    /// lines to the right. winit reports a rightward wheel with negative x.
+    fn scroll_horizontally(&mut self, rightward: f32) {
+        self.event(&ui::synthetic_input::cursor_moved(600.0, 500.0));
+        self.event(&ui::synthetic_input::mouse_wheel(-rightward, 0.0));
     }
 
     fn scroll_x(&self) -> f64 {
@@ -566,10 +537,6 @@ fn window_actions_run_the_operations_their_chords_run() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn the_plus_chip_opens_an_apps_picker_without_moving_the_wide_strip() {
     // Phase `the_fixture_strip_is_wider_than_its_viewport`.
     // The strip must actually overflow, or nothing below is testing panning.
@@ -884,7 +851,7 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
         let by_swipe = {
             let mut h = Harness::new();
             for _ in 0..3 {
-                // Positive dx steps forward, matching the chord's direction.
+                // A rightward wheel steps forward, matching the chord's direction.
                 h.scroll_horizontally(4.0);
                 h.tick();
             }
@@ -1412,6 +1379,18 @@ fn magnifier_shortcuts_step_the_zoom_show_it_and_save_it() {
         Some(OsdKind::Magnifier { zoom: 2 }),
         "the toggle comes back at the zoom it left"
     );
+}
+
+#[test]
+fn a_rightward_wheel_steps_forward_like_super_right() {
+    let mut h = Harness::new();
+    let start = h.active_window();
+    // Winit reports a wheel turned rightward with a negative x, as the
+    // libinput backend maps a tilt to the right.
+    assert!(h.event(&ui::synthetic_input::mouse_wheel(-1.0, 0.0)));
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
+    assert!(h.event(&ui::synthetic_input::mouse_wheel(1.0, 0.0)));
+    assert_eq!(h.active_window(), start, "and leftward steps back");
 }
 
 #[test]

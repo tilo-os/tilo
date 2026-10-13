@@ -4,9 +4,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -419,7 +417,7 @@ async fn a_caret_passes_a_held_pointer_and_a_departure_follows_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn warm_exact_target_input_stays_below_the_interactive_p95_budget() {
     const SURFACE: u64 = 77;
-    const SAMPLES: usize = 24;
+    const SAMPLES: usize = 100;
 
     let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
@@ -532,7 +530,7 @@ fn room_push_tree(room: RoomId, salt: u16) -> WorkspaceTree {
 async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget() {
     const SALT_A: u16 = 0xA0A0;
     const SALT_B: u16 = 0xB0B0;
-    const SAMPLES: usize = 24;
+    const SAMPLES: usize = 100;
 
     let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
@@ -634,7 +632,7 @@ async fn a_pushed_tab_change_reaches_the_other_device_within_the_interactive_bud
 /// timed from publication to arrival on the other device.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_document_edit_reaches_the_other_device_within_the_interactive_budget() {
-    const SAMPLES: usize = 24;
+    const SAMPLES: usize = 100;
     let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
     connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;

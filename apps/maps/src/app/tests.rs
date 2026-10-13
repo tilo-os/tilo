@@ -138,10 +138,6 @@ fn tap_control(a: &mut MapsApp, action: MapControlAction) {
 /// Panning and zooming: model clamps, pointer drag/wheel over the map (not the
 /// panel), and the zoom/arrow keys.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn pan_and_zoom_follow_pointer_wheel_and_keys() {
     // Phase `pan_changes_center`.
     {
@@ -172,14 +168,7 @@ fn pan_and_zoom_follow_pointer_wheel_and_keys() {
         let before = a.model.zoom;
         // Cursor over the right-hand map area, clear of the docked panel.
         move_to(&mut a, 1100.0, 360.0);
-        let handled = feed(
-            &mut a,
-            &WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, 1.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
-        );
+        let handled = feed(&mut a, &ui::synthetic_input::mouse_wheel(0.0, 1.0));
         assert!(handled, "wheel over the map must be handled");
         assert!(a.model.zoom > before, "scroll up should zoom in");
     }
@@ -229,14 +218,7 @@ fn pan_and_zoom_follow_pointer_wheel_and_keys() {
         let scroll_before = a.scroll;
         let pr = a.panel_rect();
         move_to(&mut a, pr.center().x, pr.y0 + 120.0);
-        let handled = feed(
-            &mut a,
-            &WindowEvent::MouseWheel {
-                device_id: winit::event::DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
-        );
+        let handled = feed(&mut a, &ui::synthetic_input::mouse_wheel(0.0, -1.0));
         assert!(handled, "wheel over the panel must be handled");
         assert!(a.scroll > scroll_before, "panel content should scroll");
         assert_eq!(
@@ -344,10 +326,6 @@ fn zoom_scroll_and_search_typing_stay_under_frame_budget() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn local_view_state_never_fabricates_or_overwrites_shared_state() {
     // Phase `a_peer_bookmark_arrives_without_moving_the_camera`.
     {
@@ -587,10 +565,6 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn traffic_overlay_populates_honestly_and_draws_its_legend_only_when_on() {
     // Phase `traffic_toggle_populates_from_sample_cartography`.
     {
@@ -799,8 +773,98 @@ fn place_search_matches_ranks_and_labels_results() {
 
 // --- Platform search ---------------------------------------------------
 
+/// The platform search reaches a running window: its query asks the
+/// geocoder, the places that come back are found beside the map's own, and
+/// picking a hit opens it through the row it names.
+#[test]
+fn the_platform_search_finds_and_opens_places_in_a_window() {
+    use ui::search::SearchQuery;
+
+    let mut app = ui::framework::testing::TestApp::<crate::MapsShell>::new().unwrap();
+    // Hermetic: the geocoder is out of reach, its answer is handed in below.
+    app.with_surface(|maps: &mut MapsApp| maps.online = false)
+        .unwrap();
+    let mut cafe = crate::model::Place::new(
+        "cafe-glueck",
+        "Café Glück",
+        Category::Cafe,
+        "Munich",
+        LatLon::new(48.137, 11.575),
+    );
+    cafe.saved = true;
+    app.invoke(crate::workspace::Workspace::ACCEPT_PLACES.with(vec![cafe]))
+        .unwrap();
+    app.settle();
+    let providers = ui::search::capability::search_providers(app.harness().root_widget());
+    assert_eq!(providers.len(), 1, "the platform owns Maps search");
+    let search = &providers[0];
+    let hits = |query: &str| {
+        search
+            .search_page(&SearchQuery::new(query), None, 50, 50)
+            .results
+    };
+
+    // A saved café is found by a word for what it is, and opens.
+    let cafe = hits("coffee")
+        .into_iter()
+        .find(|hit| hit.title == "Café Glück")
+        .expect("a keyword finds the saved café");
+    assert_eq!(cafe.kind, "Saved places");
+    assert!(
+        search
+            .search_scopes()
+            .iter()
+            .any(|scope| scope.anchor == crate::place_search::SAVED_SCOPE),
+        "the search narrows to the saved places"
+    );
+    let saved = SearchQuery::new("coffee").within(crate::place_search::SAVED_SCOPE);
+    assert_eq!(search.search_page(&saved, None, 50, 50).results.len(), 1);
+    let address = cafe.action_address().expect("the hit opens its row");
+    app.call_on(&address.resource, &address.action, serde_json::json!({}))
+        .unwrap();
+    app.settle();
+    assert_eq!(
+        app.with_surface(|maps: &mut MapsApp| maps.model.selected.clone()),
+        Some(Some("cafe-glueck".to_owned()))
+    );
+
+    // The window hands the query on; the geocoder's answer is found by it.
+    search.search_page(&SearchQuery::new("Theatiner"), None, 50, 50);
+    app.settle();
+    app.with_surface(|maps: &mut MapsApp| {
+        maps.place_search.answer(
+            "Theatiner",
+            vec![crate::model::Place::new(
+                "osm-w-1",
+                "Theatinerstraße 18",
+                Category::Shop,
+                "18, Theatinerstraße, München",
+                LatLon::new(48.141, 11.577),
+            )],
+        );
+    })
+    .unwrap();
+    app.settle();
+    let providers = ui::search::capability::search_providers(app.harness().root_widget());
+    let found = providers[0]
+        .search_page(&SearchQuery::new("Theatiner"), None, 50, 50)
+        .results
+        .into_iter()
+        .find(|hit| hit.kind == "Addresses and places")
+        .expect("the geocoded place is found by its query");
+    assert_eq!(found.title, "Theatinerstraße 18");
+    let address = found.action_address().expect("the hit opens its row");
+    app.call_on(&address.resource, &address.action, serde_json::json!({}))
+        .unwrap();
+    app.settle();
+    assert!(
+        app.state().places.iter().any(|place| place.id == "osm-w-1"),
+        "opening a found place takes it into the map"
+    );
+}
+
 /// Maps draws no search field: its search buttons open the platform search,
-/// its provider answers from what the map holds, a hit opens the place, and
+/// its entries answer from what the map holds, a hit opens the place, and
 /// the recent searches dispatch canonical actions.
 #[test]
 #[allow(
@@ -863,55 +927,54 @@ fn platform_search_opens_finds_and_activates_places() {
         assert!(matches!(topmost, Some(Hit::OpenSearch)));
     }
 
-    // Phase `the_provider_finds_saved_places_pois_and_recents`.
+    // Phase `the_window_search_finds_saved_places_pois_and_recents`.
     {
-        use ui::search::SearchProvider as _;
-        use ui::search::SearchQuery;
+        use ui::search::{SearchProvider as _, SearchQuery};
 
         let mut a = app_at(1280.0, 720.0);
         a.pois = vec![crate::model::Poi {
             category: Category::Bar,
             ..demo_poi("bar1", a.model.center.lat, a.model.center.lon)
         }];
-        let provider = a.place_search.provider(a.local_places());
-        let recents = provider.search_page(&SearchQuery::new(""), None, 10, 10);
-        assert!(
-            recents
+        let source = ui::framework::testing::search_source::<crate::workspace::Workspace>(
+            a.place_search_entries(),
+        );
+        let hits = |query: &str| {
+            source
+                .search_page(&SearchQuery::new(query), None, 50, 50)
                 .results
+        };
+        assert!(
+            hits("Marienplatz")
                 .iter()
                 .any(|hit| hit.title == "Marienplatz" && hit.kind == "Recent searches"),
-            "an empty query lists the recent searches"
+            "the recent searches are found"
         );
-        let coffee = provider.search_page(&SearchQuery::new("coffee"), None, 10, 10);
+        let coffee = hits("coffee");
+        let cafe = coffee
+            .iter()
+            .find(|hit| hit.title == "Café Glück" && hit.kind == "Saved places")
+            .expect("a keyword finds a saved café");
+        assert!(hits("beer").iter().any(|hit| hit.kind == "Nearby"));
+        a.queue_place_search(&SearchQuery::new("coffee"));
         assert!(
-            coffee
-                .results
-                .iter()
-                .any(|hit| hit.title == "Café Glück" && hit.kind == "Saved places"),
-            "a keyword finds a saved café"
-        );
-        assert!(coffee.pending.is_none(), "an offline map asks no geocoder");
-        let beer = provider.search_page(&SearchQuery::new("beer"), None, 10, 10);
-        assert!(beer.results.iter().any(|hit| hit.kind == "Nearby"));
-        assert!(
-            provider
-                .search_scopes()
-                .iter()
-                .any(|scope| scope.label == "Saved places")
+            a.place_search.take_query().is_none(),
+            "an offline map asks no geocoder"
         );
 
-        // A hit opens the place exactly as a click in the panel: the
-        // window's opener runs the effect for its anchor.
-        let anchor = coffee
-            .results
-            .iter()
-            .find(|hit| hit.title == "Café Glück")
-            .expect("café hit")
-            .action_id
-            .clone();
-        assert_eq!(anchor, "maps.place:cafe-glueck");
+        // A hit opens the place exactly as a click in the panel: it runs
+        // the effect its row offers.
+        let address = cafe.action_address().expect("the hit opens its row");
         assert_eq!(
-            crate::place_search::PlaceHit::opened(&anchor),
+            (address.resource.as_str(), address.action.as_str()),
+            ("maps.place:cafe-glueck", "open-place")
+        );
+        assert!(
+            ui::search::scope_contains(crate::place_search::SAVED_SCOPE, &cafe.anchor()),
+            "a saved place lies in the saved places"
+        );
+        assert_eq!(
+            crate::place_search::PlaceHit::opened("maps.place:cafe-glueck"),
             Some(crate::resource::MapsEffect::OpenPlace {
                 place: "cafe-glueck".into()
             })
@@ -956,14 +1019,9 @@ fn platform_search_opens_finds_and_activates_places() {
             use winit::keyboard::ModifiersState;
             winit::event::Modifiers::from(ModifiersState::CONTROL)
         };
-        ui::testing::Dispatch::new().modifiers(ctrl).send(
-            &mut a,
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            },
-        );
+        ui::testing::Dispatch::new()
+            .modifiers(ctrl)
+            .send(&mut a, &ui::synthetic_input::keyboard_input(ev));
 
         assert_eq!(
             a.model.origin_query, sentinel,
@@ -1207,10 +1265,6 @@ fn demo_poi(id: &str, lat: f64, lon: f64) -> crate::model::Poi {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn poi_fetch_debounces_caches_versions_and_clears() {
     // Phase `poi_fetch_debounces_caches_and_versions`.
     // A pan arms the POI refetch; it fires exactly once after the debounce,
@@ -2368,35 +2422,15 @@ fn feed(a: &mut MapsApp, ev: &WindowEvent) -> bool {
 }
 
 fn move_to(a: &mut MapsApp, x: f64, y: f64) -> bool {
-    feed(
-        a,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        },
-    )
+    feed(a, &ui::synthetic_input::cursor_moved(x, y))
 }
 
 fn press_left(a: &mut MapsApp) -> bool {
-    feed(
-        a,
-        &WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-    )
+    feed(a, &ui::synthetic_input::mouse_press())
 }
 
 fn release_left(a: &mut MapsApp) -> bool {
-    feed(
-        a,
-        &WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-    )
+    feed(a, &ui::synthetic_input::mouse_release())
 }
 
 #[test]
@@ -2639,14 +2673,7 @@ fn feed_key(a: &mut MapsApp, logical: Key) -> bool {
         _ => None,
     };
     let ev = ui::synthetic_input::key_event(logical, text, ElementState::Pressed);
-    feed(
-        a,
-        &WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: ev,
-            is_synthetic: false,
-        },
-    )
+    feed(a, &ui::synthetic_input::keyboard_input(ev))
 }
 
 fn key_char(a: &mut MapsApp, ch: &str) -> bool {
@@ -2819,10 +2846,6 @@ fn region_test_cache(tag: &str) -> std::path::PathBuf {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn semantic_controls_are_stable_modal_and_operable() {
     // Phase `map_controls_are_operable_semantic_children_with_matching_geometry`.
     {
@@ -2933,10 +2956,6 @@ fn semantic_controls_are_stable_modal_and_operable() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn authored_geometry_keeps_gaps_and_scales_with_text() {
     // Phase `navigation_card_holds_its_stack_and_grows_with_the_text`.
     // The navigation card is the list-panel width and exactly as tall as

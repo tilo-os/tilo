@@ -14,6 +14,7 @@
 //! [`describe`] renders a grant set as sentences people and agents can talk
 //! through.
 
+pub mod bot;
 mod decide;
 pub mod describe;
 pub mod edits;

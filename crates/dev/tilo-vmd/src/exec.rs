@@ -42,6 +42,7 @@ impl Ended {
 /// would keep the daemon's (root's `XDG_RUNTIME_DIR=/run/user/0`, no bus).
 pub const SESSION_ENV: &[&str] = &[
     "XDG_RUNTIME_DIR",
+    "XDG_DATA_HOME",
     "DBUS_SESSION_BUS_ADDRESS",
     "WAYLAND_DISPLAY",
     "DISPLAY",
@@ -49,6 +50,7 @@ pub const SESSION_ENV: &[&str] = &[
     "XDG_SESSION_ID",
     "XDG_SESSION_TYPE",
     "TILO_TEST_CONTROL",
+    "TILO_IDENTITY_ROOT",
 ];
 
 /// The [`SESSION_ENV`] entries of a `/proc/PID/environ` image.
@@ -306,13 +308,17 @@ mod tests {
         {
             let env = session_env(
                 b"HOME=/home/tds-a\0XDG_RUNTIME_DIR=/run/user/1001\0SECRET=x\0\
-                  WAYLAND_DISPLAY=wayland-1\0",
+                  WAYLAND_DISPLAY=wayland-1\0TILO_IDENTITY_ROOT=/home/tds-a/.local/share/tilo/test-identity\0",
             );
             assert_eq!(
                 env,
                 [
                     ("XDG_RUNTIME_DIR".to_owned(), "/run/user/1001".to_owned()),
                     ("WAYLAND_DISPLAY".to_owned(), "wayland-1".to_owned()),
+                    (
+                        "TILO_IDENTITY_ROOT".to_owned(),
+                        "/home/tds-a/.local/share/tilo/test-identity".to_owned()
+                    ),
                 ]
             );
             let command = in_session(
@@ -345,6 +351,7 @@ mod tests {
                     "--".to_owned(),
                     "XDG_RUNTIME_DIR=/run/user/1001".to_owned(),
                     "WAYLAND_DISPLAY=wayland-1".to_owned(),
+                    "TILO_IDENTITY_ROOT=/home/tds-a/.local/share/tilo/test-identity".to_owned(),
                     "sha256sum".to_owned(),
                     "/usr/bin/shell".to_owned(),
                 ])

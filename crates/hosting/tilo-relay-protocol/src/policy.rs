@@ -56,12 +56,17 @@ impl TrustPolicy {
     pub fn admits(&self, cert: &DeviceCert, own_user_pubkey: &[u8; 32]) -> bool {
         match self {
             Self::AllowMatchingUser => &cert.user_public_key == own_user_pubkey,
-            Self::AllowList { users } => users.iter().any(|hex_pk| match hex::decode(hex_pk) {
-                Ok(bytes) if bytes.len() == 32 => {
-                    bytes.as_slice() == cert.user_public_key.as_slice()
-                }
-                _ => false,
-            }),
+            // Every session checks this on every envelope, and a public
+            // room lists each of its guests: encode the one key once and
+            // compare text, rather than decode (and allocate) every entry.
+            Self::AllowList { users } => {
+                let mut own = [0u8; 64];
+                hex::encode_to_slice(cert.user_public_key, &mut own).is_ok_and(|()| {
+                    users
+                        .iter()
+                        .any(|hex_pk| hex_pk.as_bytes().eq_ignore_ascii_case(&own))
+                })
+            }
             Self::AllowAny => true,
         }
     }

@@ -70,11 +70,6 @@ pub fn data_dir() -> Option<PathBuf> {
         .cloned()
         .or_else(|| tilo_paths::data_dir().map(|p| p.join("tilo-browser")))
 }
-pub fn config_dir() -> Option<PathBuf> {
-    ROOT.get()
-        .cloned()
-        .or_else(|| tilo_paths::config_dir().map(|p| p.join("tilo-browser")))
-}
 pub fn cache_dir() -> Option<PathBuf> {
     ROOT.get()
         .map(|p| p.join("cache"))

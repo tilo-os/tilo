@@ -1,23 +1,15 @@
-//! Shared helpers for the spreadsheet codecs (`.xlsx`/`.ods`): the bounded OPC/ODF
-//! ZIP container (reusing the hardened [`crate::safety`] reader) and
-//! prefix-insensitive XML name/attribute access. Every byte of untrusted
-//! spreadsheet input enters through `SheetPackage::read`, so the same zip-bomb /
-//! entry-count / DTD-XXE guards the document codecs enforce apply verbatim to
-//! spreadsheets.
+//! Shared helpers for the spreadsheet codecs (`.xlsx`/`.ods`): the provider
+//! contract and prefix-insensitive XML name/attribute access. Their packages
+//! are [`crate::package::ZipPackage`]s, read under the same zip-bomb /
+//! entry-count / DTD-XXE guards as the document codecs.
 
-use crate::format::{CodecError, Confidence};
-use crate::safety::{ZipLimits, read_zip_parts};
+use crate::format::CodecError;
 use std::collections::BTreeMap;
-use std::io::{Cursor, Write};
 use tilo_doc::sheet::{CellInput, Workbook};
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
 
 /// A spreadsheet format provider — the workbook analogue of [`crate::format::FormatProvider`].
-/// Import is bounded/hardened via `SheetPackage::read`; the contract is identical either side of a sandbox.
+/// Import is bounded/hardened via `ZipPackage::read`; the contract is identical either side of a sandbox.
 pub trait SheetProvider: Send + Sync {
-    fn schema_id(&self) -> &str;
-    fn detect(&self, head: &[u8]) -> Confidence;
     /// # Errors
     /// Returns [`CodecError`] if `bytes` are malformed, exceed the package's
     /// resource bounds, or use a construct the codec refuses to import.
@@ -67,72 +59,6 @@ impl ParsedWorkbook {
         for (name, bytes) in &self.preserved {
             wb.set_preserved(&format!("{format}/part/{name}"), bytes);
         }
-    }
-}
-
-/// A spreadsheet package's parts in original zip order, read bounded + XXE-hardened
-/// via [`read_zip_parts`]; backs both `.xlsx` (OPC) and `.ods` (ODF) alike.
-pub(crate) struct SheetPackage {
-    pub parts: Vec<(String, Vec<u8>)>,
-}
-
-impl SheetPackage {
-    /// Reads an untrusted spreadsheet package under the default [`ZipLimits`].
-    pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
-        Ok(Self {
-            parts: read_zip_parts(bytes, &ZipLimits::default())?,
-        })
-    }
-
-    pub fn get(&self, name: &str) -> Option<&[u8]> {
-        self.parts
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, b)| b.as_slice())
-    }
-
-    pub fn set(&mut self, name: &str, bytes: Vec<u8>) {
-        if let Some(p) = self.parts.iter_mut().find(|(n, _)| n == name) {
-            p.1 = bytes;
-        } else {
-            self.parts.push((name.to_string(), bytes));
-        }
-    }
-
-    #[cfg(feature = "xlsx")]
-    /// Write an OPC (`.xlsx`) package — every part deflated (no special first entry).
-    pub fn write_opc(&self) -> Result<Vec<u8>, CodecError> {
-        let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
-        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-        let werr = |e: zip::result::ZipError| CodecError::Export(format!("zip write: {e}"));
-        let ierr = |e: std::io::Error| CodecError::Export(format!("zip io: {e}"));
-        for (name, bytes) in &self.parts {
-            zw.start_file(name.clone(), deflated).map_err(werr)?;
-            zw.write_all(bytes).map_err(ierr)?;
-        }
-        Ok(zw.finish().map_err(werr)?.into_inner())
-    }
-
-    #[cfg(feature = "ods")]
-    /// Write an ODF (`.ods`) package — `mimetype` first + stored, the rest deflated.
-    pub fn write_odf(&self) -> Result<Vec<u8>, CodecError> {
-        let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
-        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-        let werr = |e: zip::result::ZipError| CodecError::Export(format!("zip write: {e}"));
-        let ierr = |e: std::io::Error| CodecError::Export(format!("zip io: {e}"));
-        if let Some(mt) = self.get("mimetype") {
-            zw.start_file("mimetype", stored).map_err(werr)?;
-            zw.write_all(mt).map_err(ierr)?;
-        }
-        for (name, bytes) in &self.parts {
-            if name == "mimetype" {
-                continue;
-            }
-            zw.start_file(name.clone(), deflated).map_err(werr)?;
-            zw.write_all(bytes).map_err(ierr)?;
-        }
-        Ok(zw.finish().map_err(werr)?.into_inner())
     }
 }
 

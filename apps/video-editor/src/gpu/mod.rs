@@ -17,10 +17,9 @@
 //!
 //!   * `--shots` / hermetic CI — [`NoSources`], so no decoder is needed
 //!     and the frame is reproducible.
-//!   * The live preview — [`CpuFrames`] wrapping the frames
-//!     [`crate::preview::PreviewDecoder`] already pulls.
-//!   * Export — [`CpuFrames`] wrapping a sequential decode of the real
-//!     media (see [`crate::export`]).
+//!   * The live preview and export — `MediaFrameSource`, decoding the real
+//!     media through the media engine.
+//!   * Tests — [`CpuFrames`] wrapping a closure that hands over CPU pixels.
 //!   * A future zero-copy path — a `FrameSource` handing back an imported
 //!     dmabuf texture, with nothing else in this module changing.
 
@@ -37,10 +36,9 @@ use vello::wgpu;
 
 use crate::model::MediaId;
 
-pub use compositor::{MAX_SHADER_EFFECTS, VideoCompositor, Viewport, upload_rgba};
+pub use compositor::{VideoCompositor, upload_rgba};
 #[cfg(feature = "decode")]
 pub use media_source::{Fetch, MediaFrameSource};
-pub use title::TitleRaster;
 
 /// A picture the compositor can sample, plus the size it was decoded at
 /// (which drives the aspect fit into the project frame).
@@ -120,12 +118,6 @@ where
             produce,
             cache: HashMap::new(),
         }
-    }
-
-    /// Drop cached uploads. Worth calling when the playhead jumps far, so
-    /// a long scrub does not pin every frame it passed.
-    pub fn clear(&mut self) {
-        self.cache.clear();
     }
 }
 

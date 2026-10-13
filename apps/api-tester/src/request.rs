@@ -24,8 +24,8 @@ use crate::commands::{AuthField, Cmd, FormMode, FormTarget, Sink, Table};
 use crate::kv::{self, KvQueue};
 use crate::model::{Auth, BodyMode, HttpMethod, KeyValue, Request, RequestTab};
 use crate::resource::Workspace;
-use crate::swap::{Swap, SwapHandle};
 use crate::vars;
+use ui::widget::{Slot, SlotHandle};
 
 /// Ids of the blank row each table ends with.
 #[derive(Clone, Debug)]
@@ -68,7 +68,7 @@ impl BlankRows {
 pub(crate) struct Panel {
     pub(crate) element: Element,
     /// The slot inside the panel that its own mode switch replaces.
-    pub(crate) inner: Option<SwapHandle>,
+    pub(crate) inner: Option<SlotHandle>,
     /// The key/value table showing, and the queue its rows change through.
     pub(crate) table: Option<(Table, KvQueue)>,
 }
@@ -77,9 +77,9 @@ pub(crate) struct Panel {
 pub(crate) struct Built {
     pub(crate) element: Element,
     /// The slot the tab's panel sits in.
-    pub(crate) slot: SwapHandle,
+    pub(crate) slot: SlotHandle,
     /// The slot inside the first panel, and its table.
-    pub(crate) inner: Option<SwapHandle>,
+    pub(crate) inner: Option<SlotHandle>,
     pub(crate) table: Option<(Table, KvQueue)>,
 }
 
@@ -216,7 +216,7 @@ pub(crate) fn section(
         tab_sink.borrow_mut().push(Cmd::SetTab(i));
     });
     let first = panel(request, tab, blanks, sink);
-    let (slot, handle) = Swap::new(first.element);
+    let (slot, handle) = Slot::new(first.element);
     let column = Column::new()
         .with_no_padding()
         .with_rhythm(ui::tokens::Rhythm::Related)
@@ -364,7 +364,7 @@ fn auth_panel(request: &Request, sink: &Sink) -> Panel {
     .on_view("api.auth-kind", move |i| {
         kind_sink.borrow_mut().push(Cmd::SetAuthKind(i));
     });
-    let (slot, handle) = Swap::new(auth_fields(&request.auth, sink));
+    let (slot, handle) = Slot::new(auth_fields(&request.auth, sink));
     let column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -431,7 +431,7 @@ fn body_panel(request: &Request, blanks: &BlankRows, sink: &Sink) -> Panel {
         mode_sink.borrow_mut().push(Cmd::SetBodyMode(i));
     });
     let (inner, table) = body_inner(request, blanks, sink);
-    let (slot, handle) = Swap::new(inner);
+    let (slot, handle) = Slot::new(inner);
     let column = Column::new()
         .with_no_padding()
         .push(Box::new(modes))

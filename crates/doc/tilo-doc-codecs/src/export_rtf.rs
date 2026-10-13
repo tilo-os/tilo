@@ -191,17 +191,9 @@ fn render_code(out: &mut String, block: &BlockView) {
     out.push_str("\\par}\n");
 }
 
-/// List `level` (0-based nesting depth) → indent step count.
-fn list_level(block: &BlockView) -> i64 {
-    match block.attrs.get("level") {
-        Some(AttrVal::Int(n)) => (*n).max(0),
-        _ => 0,
-    }
-}
-
 fn render_list_item(out: &mut String, block: &BlockView, colors: &ColorTable) {
-    let level = list_level(block);
-    let ordered = matches!(block.attrs.get("ordered"), Some(AttrVal::Bool(true)));
+    let level = ExportBlock::new(block).list_level();
+    let ordered = ExportBlock::new(block).ordered();
     out.push_str("{\\pard");
     // Hanging indent: left margin one step past the bullet at this nesting level.
     push_indent(out, level.saturating_add(1));
@@ -231,10 +223,7 @@ fn render_image(out: &mut String, block: &BlockView, indent_level: i64) {
     // Pixel embedding is out of scope; fall back to alt text so the
     // block isn't lost, or skip if there's no alt text.
     let alt = if block.text.is_empty() {
-        match block.attrs.get("alt") {
-            Some(AttrVal::Str(s)) => s.clone(),
-            _ => String::new(),
-        }
+        block.str_attr("alt").unwrap_or_default().to_owned()
     } else {
         block.text.clone()
     };
@@ -377,8 +366,7 @@ fn push_run_group(out: &mut String, segment: &str, active: &[&MarkSpan], colors:
     let has = |name: &str| active.iter().any(|m| m.name == name);
 
     out.push('{');
-    let mut wrote_cw = false;
-
+    let words_start = out.len();
     // Font family (`\fN`).
     if let Some(f) = active
         .iter()
@@ -386,7 +374,6 @@ fn push_run_group(out: &mut String, segment: &str, active: &[&MarkSpan], colors:
         .and_then(|m| mark_str(m))
     {
         let _ = write!(out, "\\f{}", font_index(&f));
-        wrote_cw = true;
     }
     // Font size (`\fsN`, half-points → 2 × pt).
     if let Some(pt) = active
@@ -395,7 +382,6 @@ fn push_run_group(out: &mut String, segment: &str, active: &[&MarkSpan], colors:
         .and_then(|m| m.value.as_int())
     {
         let _ = write!(out, "\\fs{}", pt.saturating_mul(2));
-        wrote_cw = true;
     }
     // Color (`\cfN`).
     if let Some(idx) = active
@@ -407,29 +393,24 @@ fn push_run_group(out: &mut String, segment: &str, active: &[&MarkSpan], colors:
         .and_then(|rgb| colors.index_of(rgb))
     {
         let _ = write!(out, "\\cf{idx}");
-        wrote_cw = true;
     }
     // Boolean toggles.
     if has("strong") || has("bold") {
         out.push_str("\\b");
-        wrote_cw = true;
     }
     if has("em") || has("italic") {
         out.push_str("\\i");
-        wrote_cw = true;
     }
     if has("underline") {
         out.push_str("\\ul");
-        wrote_cw = true;
     }
     if has("strike") || has("strikethrough") {
         out.push_str("\\strike");
-        wrote_cw = true;
     }
 
     // A control word must be delimited from following text by a space (the space
     // is consumed by the control word, not printed).
-    if wrote_cw {
+    if out.len() > words_start {
         out.push(' ');
     }
     push_escaped(out, segment);

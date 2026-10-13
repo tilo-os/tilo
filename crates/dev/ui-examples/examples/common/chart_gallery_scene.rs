@@ -103,7 +103,7 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
             .labelled("Target 40")
             .with_detail("Forecast performance objective"),
     ])
-    .styled(CartesianStyle {
+    .with_style(CartesianStyle {
         rendering: CartesianRenderingStyle {
             show_markers_on_lines: true,
             ..Default::default()
@@ -135,7 +135,7 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
         .marker_radius(5.0)
         .sorted_by_x(),
     ])
-    .styled(CartesianStyle {
+    .with_style(CartesianStyle {
         x_axis: PlotAxis::default()
             .logarithmic()
             .formatted(AxisLabelFormat::Compact)
@@ -372,7 +372,7 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
         })
         .collect(),
     )
-    .styled(PolarAreaStyle {
+    .with_style(PolarAreaStyle {
         inner_radius: 0.3,
         ..Default::default()
     })

@@ -17,6 +17,7 @@ bounded-command = { path = "../../system/bounded-command" }
 # The grant grammar and the policy over it, shared with the launcher's gate.
 collab-types = { path = "../../collab/collab-types" }
 libc.workspace = true
+rustix = { workspace = true, features = ["net", "std"] }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 thiserror.workspace = true
 tracing.workspace = true

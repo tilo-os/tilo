@@ -8,11 +8,7 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::float_cmp,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -30,6 +26,14 @@ use photos::model::{Album, Edits, PhotoLibrary, Rect01};
 use photos::pixels::{self, Rgba};
 use photos::{PhotosApp, shots_pattern};
 use ui::tilo_resource::{Fields as _, Resource as _};
+
+/// A new library's document, started the way a new record is: the
+/// resource's initial state at its current storage version.
+fn new_state() -> ui::State {
+    let mut doc = AutoCommit::new();
+    PhotoLibrary::initialize(&mut doc).expect("a new library initializes");
+    ui::State::from_doc(doc)
+}
 
 /// The library `doc` holds.
 fn library(doc: &AutoCommit) -> PhotoLibrary {
@@ -66,7 +70,7 @@ impl Harness {
         Self {
             unmounted: Some((
                 PhotosApp::new().with_dispatcher(dispatch.clone()),
-                ui::State::new(),
+                new_state(),
             )),
             dispatch,
             mounted: None,
@@ -169,7 +173,7 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
     {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 1200, 800);
-        let mut state = ui::State::new();
+        let mut state = new_state();
         let dispatch = ui::framework::testing::dispatcher("so.tilo.photos");
         let mut app = PhotosApp::new().with_dispatcher(dispatch.clone());
         app.open_path(&path);
@@ -735,9 +739,14 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
     // The default destination must not be the file that was opened.
     eprintln!("phase save_does_not_default_to_overwriting_the_original");
     {
-        let open = photos::OpenImage::from_path("/var/tmp/tilo/home/user/harbour.png", 10, 10);
+        let open = photos::OpenImage::new(
+            "/var/tmp/tilo/home/user/harbour.png",
+            10,
+            10,
+            "a".repeat(64),
+        );
         let suggested = PhotosApp::suggested_save_path(&open);
-        assert_ne!(suggested, open.path);
+        assert_ne!(suggested, open.name);
         assert!(suggested.ends_with("harbour-edited.png"), "got {suggested}");
     }
 }
@@ -929,7 +938,6 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
     clippy::cast_precision_loss,
     reason = "label.chars().count() is a handful of glyphs in a toolbar tooltip, nowhere near f32's precision limit"
 )]
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
     // Every toolbar control must be reachable at every window size the app can

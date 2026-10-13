@@ -189,6 +189,13 @@ agent's colour, and keeps who acted and for whom as data
 file versions the same way from the identity projection, which marks a
 device governance admitted as an agent (after verifying its person's
 delegation) and keeps agent devices out of the devices sharing encrypts to.
+The workspace's Activity and every app's own history name the same agents
+by the same check (`WorkspaceTree::verified_agents`): the compositor reads
+them into Activity, and the broker tells each app's context stream its
+room's verified agents when it subscribes and whenever they change
+(`ChannelContext.historyAgents`). A device whose delegation does not verify
+for exactly that device stays an unknown participant. These lists are
+presentation only; nothing is admitted by them.
 
 ### Load hints beside local records
 
@@ -395,6 +402,30 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 
 - iroh's FUSE traffic (`fs`) is QUIC + TLS 1.3.
 - At-rest encryption for cloud-backed `/var/workspace` is a follow-up.
+
+## Private file contents from the session chooser
+
+The launcher-authenticated chooser connection also supports owner-confirmed Open
+selections for apps with no filesystem grants. The OS picker uses its normal
+user scope; a selection does not grant that directory to the application or
+publish the choice into collaborative state. Legacy path-returning requests still
+require existing workspace filesystem grants.
+
+A contents selection opens a regular file read-only beneath the approved picker
+roots using directory descriptors pinned when the request is admitted and the
+existing beneath/no-symlink resolver. Replacing a root while the chooser waits
+cannot substitute another directory. Its opaque capability is
+bound to the asking connection, room, app, request and exact file metadata. The
+host checks current local owner authority and returns sequential chunks of at
+most 8 KiB, with at most 16 files and 64 MiB per selection. Capabilities expire
+in 60 seconds, disappear after EOF/release or disconnect, and refuse changed
+files. Pending choosers cancel on disconnect and have a bounded deadline. The
+application receives bytes and a display name, never a replayable host path.
+
+This additive chooser protocol requires matching Shell and SDK delivery. It
+changes neither Landlock access nor package publisher trust: Store still reviews
+and installs selected archive bytes through its canonical trust and install
+contracts.
 
 ## Security matrix
 

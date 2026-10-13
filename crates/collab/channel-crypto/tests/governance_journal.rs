@@ -256,10 +256,12 @@ fn admission_with_key_history_targets_the_joiner_and_stale_content_is_refused() 
         [0; 32],
         addition.epoch,
         MlsGovernanceAction::AddWithKeyHistory {
-            recipient: bob,
-            welcome: addition.welcome.clone(),
+            recipients: vec![bob],
             existing_member_commit: None,
-            key_history: addition.key_history.clone(),
+            joining: collab_types::Joining::Material(collab_types::JoinMaterial {
+                welcome: addition.welcome.clone(),
+                key_history: addition.key_history.clone(),
+            }),
         },
         &alice_sk,
     )
@@ -281,8 +283,14 @@ fn admission_with_key_history_targets_the_joiner_and_stale_content_is_refused() 
     let pending = journal.pending_for(bob);
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].kind, DeliveryKind::Welcome);
-    let (_, _, _, history) = journal.frame(digest).unwrap().action.admission().unwrap();
+    let stored = journal.frame(digest).unwrap();
+    let history = stored.action.admission().unwrap().key_history;
     assert_eq!(history, Some(addition.key_history.as_slice()));
+    // Withholding the material keeps the frame's signature and link.
+    let withheld = stored.withheld().unwrap().unwrap();
+    assert_eq!(withheld.digest().unwrap(), digest);
+    withheld.verify_signature().unwrap();
+    assert_eq!(withheld.action.admission().unwrap().welcome, None);
 
     // New content sealed under a content key older than the latest
     // membership change is refused; current traffic passes.

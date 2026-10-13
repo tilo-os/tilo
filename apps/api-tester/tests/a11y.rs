@@ -11,9 +11,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -472,10 +470,7 @@ fn click_tab(d: &mut FrameHarness, index: u32) {
 }
 
 fn move_pointer(d: &mut FrameHarness, x: f64, y: f64) {
-    d.send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    });
+    d.send(&ui::synthetic_input::cursor_moved(x, y));
 }
 
 /// Settle the drawer's animation through real redraw ticks.
@@ -542,17 +537,9 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
     let d = app.harness();
     let divider = d.targets()["api.request-divider"];
     move_pointer(d, divider.center().x, divider.center().y);
-    d.send(&winit::event::WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: winit::event::ElementState::Pressed,
-        button: winit::event::MouseButton::Left,
-    });
+    d.send(&ui::synthetic_input::mouse_press());
     move_pointer(d, divider.center().x, divider.center().y + 200.0);
-    d.send(&winit::event::WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: winit::event::ElementState::Released,
-        button: winit::event::MouseButton::Left,
-    });
+    d.send(&ui::synthetic_input::mouse_release());
     let manual = d.targets()["api.request-divider"];
     assert_eq!(manual.y0, divider.y0 + 200.0);
     act_named(d, "Create user", &ui::a11y::Action::Activate);

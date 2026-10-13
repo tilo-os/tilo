@@ -1,76 +1,10 @@
-//! OOXML (`.docx`) container: an ordinary ZIP (Open Packaging Conventions) whose parts
-//! include `word/document.xml`, `word/styles.xml`, `[Content_Types].xml`, `_rels/.rels`,
-//! etc. Unlike ODF there is no special first/stored entry, so every part is deflated.
-//! This reads every part preserving entry order and re-writes byte-faithfully — the
-//! lossless backbone for parts the codec doesn't model, carried verbatim as preservation.
+//! Minimal `.docx` packages for the codec's own tests: `[Content_Types].xml`,
+//! the relationships, `word/document.xml`, `word/styles.xml` and optionally
+//! `word/numbering.xml`.
 
-use crate::format::CodecError;
-use crate::safety::{ZipLimits, read_zip_parts};
-use std::io::{Cursor, Write};
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
-
-pub struct DocxContainer {
-    /// Parts in original zip order: `(name, bytes)`.
-    pub parts: Vec<(String, Vec<u8>)>,
-}
-
-impl DocxContainer {
-    /// Read an untrusted `.docx` package, bounded against zip bombs and rejecting
-    /// DTD-bearing XML parts (XXE) via [`read_zip_parts`].
-    ///
-    /// # Errors
-    /// Returns [`CodecError`] if `bytes` are not a readable zip archive, if the
-    /// archive exceeds [`ZipLimits`], or if an XML part declares a DTD.
-    pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
-        let parts = read_zip_parts(bytes, &ZipLimits::default())?;
-        Ok(Self { parts })
-    }
-
-    pub fn get(&self, name: &str) -> Option<&[u8]> {
-        self.parts
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, b)| b.as_slice())
-    }
-
-    /// Replace an existing part (preserving its position) or append a new one.
-    pub fn set(&mut self, name: &str, bytes: Vec<u8>) {
-        if let Some(p) = self.parts.iter_mut().find(|(n, _)| n == name) {
-            p.1 = bytes;
-        } else {
-            self.parts.push((name.to_string(), bytes));
-        }
-    }
-
-    /// Remove a part, if present.
-    pub fn remove(&mut self, name: &str) {
-        self.parts.retain(|(n, _)| n != name);
-    }
-
-    /// Serialise the parts back into a package.
-    ///
-    /// # Errors
-    /// Returns [`CodecError`] if the zip writer rejects a part name or fails to
-    /// write its bytes.
-    pub fn write(&self) -> Result<Vec<u8>, CodecError> {
-        let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
-        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-
-        let werr = |e: zip::result::ZipError| CodecError::Export(format!("zip write: {e}"));
-        let ierr = |e: std::io::Error| CodecError::Export(format!("zip io: {e}"));
-
-        for (name, bytes) in &self.parts {
-            zw.start_file(name.clone(), deflated).map_err(werr)?;
-            zw.write_all(bytes).map_err(ierr)?;
-        }
-        let cur = zw.finish().map_err(werr)?;
-        Ok(cur.into_inner())
-    }
-}
+use crate::package::ZipPackage;
 
 /// Wrap a `w:body` inner XML into a complete `word/document.xml`.
-#[cfg(test)]
 pub(crate) fn document_xml(body_inner: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -79,19 +13,16 @@ pub(crate) fn document_xml(body_inner: &str) -> String {
 }
 
 /// Build a minimal valid `.docx` with the given `w:body` inner XML.
-#[cfg(test)]
 pub(crate) fn minimal_docx(body_inner: &str) -> Vec<u8> {
     build_docx("", "", body_inner)
 }
 
 /// As [`minimal_docx`], with explicit `word/styles.xml` inner content.
-#[cfg(test)]
 pub(crate) fn minimal_docx_styled(styles_inner: &str, body_inner: &str) -> Vec<u8> {
     build_docx(styles_inner, "", body_inner)
 }
 
 /// As [`minimal_docx_styled`], plus `word/numbering.xml` inner content.
-#[cfg(test)]
 pub(crate) fn minimal_docx_numbered(
     styles_inner: &str,
     numbering_inner: &str,
@@ -100,7 +31,6 @@ pub(crate) fn minimal_docx_numbered(
     build_docx(styles_inner, numbering_inner, body_inner)
 }
 
-#[cfg(test)]
 fn build_docx(styles_inner: &str, numbering_inner: &str, body_inner: &str) -> Vec<u8> {
     let has_num = !numbering_inner.is_empty();
     let content_types = {
@@ -132,7 +62,7 @@ fn build_docx(styles_inner: &str, numbering_inner: &str, body_inner: &str) -> Ve
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{styles_inner}</w:styles>"#
     );
 
-    let mut c = DocxContainer { parts: vec![] };
+    let mut c = ZipPackage { parts: vec![] };
     c.set("[Content_Types].xml", content_types.into_bytes());
     c.set("_rels/.rels", root_rels.as_bytes().to_vec());
     c.set("word/_rels/document.xml.rels", doc_rels.into_bytes());
@@ -145,7 +75,7 @@ fn build_docx(styles_inner: &str, numbering_inner: &str, body_inner: &str) -> Ve
         );
         c.set("word/numbering.xml", numbering.into_bytes());
     }
-    c.write().unwrap()
+    c.write_opc().unwrap()
 }
 
 #[cfg(test)]
@@ -157,7 +87,7 @@ mod tests {
         // Phase `container_roundtrips_parts`.
         {
             let docx = minimal_docx("<w:p><w:r><w:t>hi</w:t></w:r></w:p>");
-            let c = DocxContainer::read(&docx).unwrap();
+            let c = ZipPackage::read(&docx).unwrap();
             assert_eq!(
                 c.parts[0].0, "[Content_Types].xml",
                 "content-types is the first entry"
@@ -166,8 +96,8 @@ mod tests {
             assert!(c.get("_rels/.rels").is_some());
 
             // Re-write and re-read → identical part names + content.
-            let out = c.write().unwrap();
-            let c2 = DocxContainer::read(&out).unwrap();
+            let out = c.write_opc().unwrap();
+            let c2 = ZipPackage::read(&out).unwrap();
             let names1: Vec<_> = c.parts.iter().map(|(n, _)| n.clone()).collect();
             let names2: Vec<_> = c2.parts.iter().map(|(n, _)| n.clone()).collect();
             assert_eq!(names1, names2, "part set + order preserved");
@@ -179,7 +109,7 @@ mod tests {
         }
         // Phase `set_replaces_in_place_and_appends`.
         {
-            let mut c = DocxContainer { parts: vec![] };
+            let mut c = ZipPackage { parts: vec![] };
             c.set("a", b"1".to_vec());
             c.set("b", b"2".to_vec());
             c.set("a", b"3".to_vec()); // replace in place

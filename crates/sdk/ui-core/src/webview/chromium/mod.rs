@@ -1753,25 +1753,11 @@ struct CommandQueue {
 }
 impl CommandQueue {
     fn push(&self, value: Value) -> Result<(), &'static str> {
-        // Count encoded bytes without allocating a second command buffer.
-        struct Counter(usize);
-        impl std::io::Write for Counter {
-            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-                self.0 = self
-                    .0
-                    .checked_add(data.len())
-                    .ok_or_else(|| std::io::Error::other("command byte count overflow"))?;
-                Ok(data.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let mut count = Counter(0);
-        serde_json::to_writer(&mut count, &value).map_err(|_| "encoding failed")?;
-        if count.0 >= protocol::MAX_PACKET as usize {
-            return Err("command too large");
-        }
+        let encoded = match runtime_collab::wire_json_len(&value) {
+            usize::MAX => return Err("encoding failed"),
+            bytes if bytes >= protocol::MAX_PACKET as usize => return Err("command too large"),
+            bytes => bytes,
+        };
         let mut state = self.state.lock().map_err(|_| {
             self.ready.notify_all();
             "command channel poisoned"
@@ -1803,16 +1789,16 @@ impl CommandQueue {
         } else {
             (4160, 96 * 1024 * 1024)
         };
-        if state.0.len() >= items || state.1.saturating_add(count.0) > bytes {
+        if state.0.len() >= items || state.1.saturating_add(encoded) > bytes {
             // Input saturation is not a navigation failure. The caller logs the
             // rejected operation; protocol/lifecycle errors have their own path.
             return Err("command queue capacity reached");
         }
         state.1 = state
             .1
-            .checked_add(count.0)
+            .checked_add(encoded)
             .ok_or("command byte count overflow")?;
-        state.0.push_back((value, count.0));
+        state.0.push_back((value, encoded));
         drop(state);
         self.ready.notify_one();
         Ok(())

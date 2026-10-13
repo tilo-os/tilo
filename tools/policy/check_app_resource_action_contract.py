@@ -18,6 +18,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rust_source import line_number  # noqa: E402
+
 
 ROOT = Path(__file__).resolve().parents[2]
 # Audited ceilings, one file per app (`<app>.toml`, `[ratchets.<rule>]` tables
@@ -30,15 +33,6 @@ BASELINE = Path("tools/policy/app_resource_action_baseline")
 RESOURCE_PROVIDER = re.compile(r"\bfn\s+resources\s*\(")
 RESOURCE_VALUE = re.compile(r"\bResource\s*::\s*new\s*\(")
 ACTION_SPEC = re.compile(r"\bActionSpec\s*::\s*(?:immediate|prompted|typed|operation)")
-RESOURCE_CONSUMER = re.compile(r"\bActionDescriptor\b")
-# The agent reaches published actions through the remote-action vocabulary,
-# the same messages peers and local SDK callers use.
-# What the agent's placeholder session answers in place of its removed
-# direct-session path.
-AGENT_STUB = "not implemented yet: the agent will act through"
-BROKER_CATALOGUE_CONSUMER = re.compile(r"\bRemoteActionMessage\s*::\s*CatalogueRequest\b")
-BROKER_ACTION_INVOKER = re.compile(r"\bRemoteActionMessage\s*::\s*Invoke\b")
-BROKER_ACTION_STATUS = re.compile(r"\bRemoteActionMessage\s*::\s*(?:Observe|Update)\b")
 OPERATION_KIND = re.compile(r"\bOperationKind\s*::\s*(?:Effect|View)\b")
 OPERATION_HANDLER = re.compile(r"\bfn\s+start_operation\s*\(")
 OPERATION_HANDLER_REGISTRY = re.compile(
@@ -525,10 +519,6 @@ def audit_ratchets(
             )
 
 
-def line_number(text: str, offset: int) -> int:
-    return text.count("\n", 0, offset) + 1
-
-
 CHAR_LITERAL = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F]{1,6}\}|x[0-9a-fA-F]{2}|.)|[^\\'\n])'")
 RUST_CODE_RUN = re.compile(r"[^/'\"]+")
 
@@ -993,37 +983,11 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     )
                 )
         app_name = manifest_path.parent.name
-        # The agent's direct-session path is removed until it acts through the
-        # apps' published surfaces via the broker; while its stub stands, the
-        # three checks of that path wait. They run again once it is gone.
-        agent_stub = AGENT_STUB in combined_raw
-        if app_name == "agent":
-            if not agent_stub:
-                if not RESOURCE_PROVIDER.search(combined) or not RESOURCE_CONSUMER.search(combined):
-                    violations.append(
-                        Violation(
-                            manifest_path,
-                            1,
-                            "headless agent must survey resources and invoke ActionDescriptor entries",
-                        )
-                    )
-                if not BROKER_CATALOGUE_CONSUMER.search(combined):
-                    violations.append(
-                        Violation(
-                            manifest_path,
-                            1,
-                            "headless agent must consume the generic action catalogue through remote-action messages",
-                        )
-                    )
-                if not BROKER_ACTION_INVOKER.search(combined) or not BROKER_ACTION_STATUS.search(combined):
-                    violations.append(
-                        Violation(
-                            manifest_path,
-                            1,
-                            "headless agent must invoke and observe actions through remote-action messages",
-                        )
-                    )
-        else:
+        # The headless agent publishes nothing of its own: it acts only
+        # through the broker's task-bound action surfaces. An `apps/*-model`
+        # crate is a record shape apps embed (the portability rules let apps
+        # depend on it), not an app: the apps embedding it publish its actions.
+        if app_name != "agent" and not app_name.endswith("-model"):
             framework_host = (
                 FRAMEWORK_APP.search(combined) is not None
                 and FRAMEWORK_RESOURCE.search(combined) is not None

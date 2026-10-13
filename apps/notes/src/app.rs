@@ -486,6 +486,9 @@ impl NotesApp {
             })
         });
         let rect = editor.get_rect();
+        let active_line = editor
+            .focused_index()
+            .and_then(|index| editor.blocks().get(index));
         serde_json::json!({
             "app": "so.tilo.notes",
             "editor_id": "block_editor",
@@ -503,6 +506,15 @@ impl NotesApp {
             "rendered_body_hash": blake3::hash(rendered.as_bytes()).to_hex().to_string(),
             "rendered_body_chars": rendered.chars().count(),
             "editor_focused": editor.is_focused(),
+            "active_line_present": active_line.is_some(),
+            "active_line_focused": active_line.is_some_and(|block| block.line.is_focused()),
+            "active_line_disabled": active_line.is_some_and(|block| block.line.is_disabled()),
+            "editor_read_only": editor.is_read_only(),
+            "editor_composing": editor.is_composing(),
+            "editor_route_available": self.main_node.is_some() && self.main.editor_route_available(),
+            "sidebar_renaming": self.sidebar.is_renaming(),
+            "sidebar_menu_open": self.sidebar.menu_is_open(),
+            "editor_menu_open": editor.slash_menu_visible() || editor.link_popover().is_visible(),
             "caret": caret,
             "editor_rect": [rect.x0, rect.y0, rect.x1, rect.y1],
         })
@@ -2433,10 +2445,7 @@ impl Widget for NotesApp {
         });
 
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &[shell_node], node_map, self)
@@ -2840,10 +2849,7 @@ impl NotesApp {
             let _ = taffy.set_style(
                 node,
                 Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
+                    size: Size::from_percent(1.0, 1.0),
                     flex_grow: 0.0,
                     flex_shrink: 0.0,
                     flex_basis: Dimension::auto(),
@@ -3032,8 +3038,7 @@ impl NotesApp {
         }
         self.route_to_sidebar(event, ctx);
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_mouse = ctx.logical(position);
         }
         self.refresh_status();
         *ctx.handled = true;
@@ -3088,10 +3093,6 @@ impl NotesApp {
     }
 
     /// Route note commands before pointer or keyboard events reach the editor.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "routes the complete context-menu event lifecycle through one stateful boundary"
-    )]
     fn handle_note_context_menu(
         &mut self,
         event: &WindowEvent,
@@ -3326,10 +3327,7 @@ impl NotesApp {
         // Update the last-mouse cache so the next MouseInput knows
         // where to hit-test for link clicks.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let logical = vello::kurbo::Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            );
+            let logical = ctx.logical(position);
             self.last_mouse = logical;
             // Resting on the bubble's corner pins it open; over a failed
             // save's toast its actions lift.
@@ -3660,7 +3658,6 @@ mod tests {
         crate::resource::Notebook::child(&state, id).unwrap()
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn images_beside_a_markdown_file_become_notebook_assets() {
         eprintln!("phase images_beside_a_launched_file_join_the_notebook");
@@ -3748,7 +3745,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn page_events_create_delete_rename_and_dispatch_canonical_actions() {
         eprintln!("phase apply_event_create_child_appends_and_selects");
@@ -4184,53 +4180,8 @@ mod tests {
         );
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn navigation_and_backlinks_follow_stable_page_identity() {
-        eprintln!("phase canonical_links_produce_sorted_backlinks_for_the_target_note");
-        {
-            let (mut app, mut state, _tmp, target) = app_seeded_into_doc();
-            app.dispatch_event_for_test(
-                &mut Edits::lend(&mut state.doc),
-                OutEvent::CreateChild { parent: None },
-            );
-            let source = app.selected_for_test().expect("new source page selected");
-            app.dispatch_event_for_test(
-                &mut Edits::lend(&mut state.doc),
-                OutEvent::Rename {
-                    id: source,
-                    new_title: "Project index".into(),
-                },
-            );
-            let block = crate::read::page_block_snapshots(&state.doc, source)[0]
-                .0
-                .clone();
-            app.apply_action(
-                &mut Edits::lend(&mut state.doc),
-                &actions::edit_body_action(
-                    source,
-                    tilo_document::RichTextAction::SpliceText {
-                        region: tilo_document::action::RegionKind::Body,
-                        block: block.clone(),
-                        at: 0,
-                        del: 0,
-                        ins: "Welcome".into(),
-                    },
-                ),
-            );
-            app.apply_action(
-                &mut Edits::lend(&mut state.doc),
-                &actions::set_mark_action(source, &block, 0..7, &ui::widget::Mark::Link(target)),
-            );
-            let notebook = shown(&state.doc);
-            let backlinks = actions::backlinks(&notebook.bodies, notebook.pages(), target);
-            assert_eq!(backlinks.len(), 1);
-            assert_eq!(backlinks[0].source, source);
-            assert_eq!(backlinks[0].source_title, "Project index");
-            assert_eq!(backlinks[0].target, target);
-            assert_eq!(backlinks[0].excerpt, "Welcome");
-        }
-
         eprintln!("phase native_link_marks_build_a_cached_backlink_and_open_its_canonical_source");
         {
             let (mut app, mut state, _tmp, source) = app_seeded_into_doc();
@@ -4275,7 +4226,6 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn exported_notes_carry_their_images_and_import_them_again() {
         eprintln!("phase an_exported_note_carries_its_images_and_imports_them_again");

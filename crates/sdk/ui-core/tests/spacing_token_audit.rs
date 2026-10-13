@@ -22,16 +22,6 @@
 //! A new hit is a request to read the value from `theme.tokens.spacing` /
 //! `theme.tokens.metrics` or to let the composition own the space.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use regex::Captures;
 
 use crate::support::ratchet::{Pattern, Ratchet};

@@ -229,10 +229,10 @@ mod macos_tests {
                 let before = find_semantic(&driver.inspection().root, "Document-000.txt")
                     .and_then(|node| node.bounds)
                     .expect("first row bounds before scrolling");
-                driver.send(&WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(100.0 * scale, 400.0 * scale),
-                });
+                driver.send(&ui::synthetic_input::cursor_moved(
+                    100.0 * scale,
+                    400.0 * scale,
+                ));
                 driver.send(&WindowEvent::MouseWheel {
                     device_id: winit::event::DeviceId::dummy(),
                     delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
@@ -245,10 +245,10 @@ mod macos_tests {
                     .and_then(|node| node.bounds)
                     .expect("first row bounds after wheel outside Files");
                 assert_eq!(outside.y0, before.y0, "scale {scale} outside Files");
-                driver.send(&WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(600.0 * scale, 400.0 * scale),
-                });
+                driver.send(&ui::synthetic_input::cursor_moved(
+                    600.0 * scale,
+                    400.0 * scale,
+                ));
                 driver.send(&WindowEvent::MouseWheel {
                     device_id: winit::event::DeviceId::dummy(),
                     delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(

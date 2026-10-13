@@ -45,9 +45,7 @@ impl Widget for Transcript {
         crate::widget::TaffyTreeExt::fill_leaf(taffy, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -103,10 +101,6 @@ impl Widget for Transcript {
 
     fn name(&self) -> &'static str {
         "Transcript"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn needs_redraw(&self) -> bool {
@@ -179,10 +173,7 @@ fn scroll(theme: &Theme, scale: f64, edge_fade: bool, runs: &[(f64, usize)]) -> 
     let mut scene = Scene::new();
     app.surface_input(
         &window,
-        WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(200.0 * scale, 200.0 * scale),
-        },
+        crate::synthetic_input::cursor_moved(200.0 * scale, 200.0 * scale),
         false,
     );
     for _ in 0..5 {

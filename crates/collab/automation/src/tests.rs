@@ -213,7 +213,7 @@ impl FakeHost {
                 value: Some(json!({"titles": ["a", "b"], "count": 2})),
                 resources: Vec::new(),
             },
-            "create" => ActionOutput {
+            "create" | "send" => ActionOutput {
                 value: None,
                 resources: vec![NOTE.into()],
             },
@@ -360,6 +360,7 @@ fn invoke(id: &str, app: &str, resource: Selector, action: &str, args: &[(&str, 
                 .iter()
                 .map(|(name, binding)| ((*name).to_string(), binding.clone()))
                 .collect::<BTreeMap<_, _>>(),
+            appearance: None,
         },
     )
 }
@@ -385,6 +386,7 @@ fn run_with(
             mode,
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
+            caused_by: None,
         },
     ))
 }
@@ -737,6 +739,194 @@ fn a_retried_run_reuses_its_invocation_ids_and_acts_once() {
 }
 
 #[test]
+fn bindings_address_into_an_object_input_and_a_loop_item() {
+    let host = FakeHost::new();
+    let mut make = shortcut(
+        "make",
+        vec![
+            Step::new(
+                "each",
+                StepKind::ForEach {
+                    items: Binding::Input("event/notes".into()),
+                    item: "note".into(),
+                    body: vec![invoke(
+                        "make",
+                        NOTES,
+                        Selector::Fixed(INBOX.into()),
+                        "create",
+                        &[("title", Binding::Var("note/title".into()))],
+                    )],
+                },
+            ),
+            invoke(
+                "last",
+                NOTES,
+                Selector::Fixed(INBOX.into()),
+                "create",
+                &[(
+                    "title",
+                    Binding::Template("by {{input.event/by/name}}".into()),
+                )],
+            ),
+        ],
+    );
+    make.inputs = vec![ActionParam::required(
+        "event",
+        ParamType::Object,
+        "What fired",
+    )];
+    assert_eq!(check(&make, &host.catalog(), &NoShortcuts), Ok(()));
+    let mut inputs = serde_json::Map::new();
+    inputs.insert(
+        "event".into(),
+        json!({"notes": [{"title": "a"}, {"title": "b"}], "by": {"name": "Ada"}}),
+    );
+    let report = block_on(run(
+        &host,
+        &Hooks::default(),
+        RunRequest {
+            shortcut: &make,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs,
+            caused_by: None,
+        },
+    ));
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let titles: Vec<_> = host
+        .started()
+        .iter()
+        .map(|request| match &request.argument {
+            InvokeArgument::Json(args) => args.get("title").cloned(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        titles,
+        [Some(json!("a")), Some(json!("b")), Some(json!("by Ada"))]
+    );
+
+    let mut unknown = make;
+    unknown.steps.truncate(1);
+    if let StepKind::ForEach { items, .. } = &mut unknown.steps[0].kind {
+        *items = Binding::Input("other/notes".into());
+    }
+    assert!(
+        check(&unknown, &host.catalog(), &NoShortcuts).is_err(),
+        "the input a pointer starts at must exist"
+    );
+}
+
+#[test]
+fn a_verb_answers_the_item_it_created_and_a_null_option_is_omitted() {
+    let host = FakeHost::new();
+    let mut send = shortcut(
+        "send",
+        vec![
+            invoke(
+                "send",
+                MAIL,
+                Selector::Fixed("mail.outbox:main".into()),
+                "send",
+                &[("body", Binding::Literal(json!("hi")))],
+            ),
+            invoke(
+                "note",
+                NOTES,
+                Selector::Fixed(INBOX.into()),
+                "create",
+                &[
+                    ("title", Binding::Literal(json!("t"))),
+                    ("pinned", Binding::Literal(Value::Null)),
+                ],
+            ),
+            invoke(
+                "archive",
+                NOTES,
+                Selector::FromBinding(Binding::step("send", "")),
+                "archive",
+                &[],
+            ),
+        ],
+    );
+    send.grant.push(app_rule(MAIL));
+    assert_eq!(check(&send, &host.catalog(), &NoShortcuts), Ok(()));
+    let report = run_with(
+        &host,
+        &Hooks::default(),
+        &send,
+        RunId::new(),
+        RunMode::Unattended,
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let started = host.started();
+    assert_eq!(
+        started[1].argument,
+        InvokeArgument::Json(json!({"title": "t"}).as_object().unwrap().clone()),
+        "a null optional argument is left out"
+    );
+    assert_eq!(started[2].target.address.resource, NOTE);
+}
+
+#[test]
+fn an_invoke_step_carries_the_appearance_it_binds_and_refuses_a_bad_one() {
+    let host = FakeHost::new();
+    let mut step = invoke(
+        "make",
+        NOTES,
+        Selector::Fixed(INBOX.into()),
+        "create",
+        &[("title", Binding::Literal(json!("hi")))],
+    );
+    if let StepKind::Invoke { appearance, .. } = &mut step.kind {
+        *appearance = Some(Binding::Input("event/as".into()));
+    }
+    let mut make = shortcut("make", vec![step]);
+    make.inputs = vec![ActionParam::required(
+        "event",
+        ParamType::Object,
+        "What fired",
+    )];
+    assert_eq!(check(&make, &host.catalog(), &NoShortcuts), Ok(()));
+    let go = |shown: Value| {
+        let mut inputs = serde_json::Map::new();
+        inputs.insert("event".into(), json!({ "as": shown }));
+        block_on(run(
+            &host,
+            &Hooks::default(),
+            RunRequest {
+                shortcut: &make,
+                run: RunId::new(),
+                caller: caller(),
+                mode: RunMode::Unattended,
+                trigger: RunTrigger::Manual,
+                inputs,
+                caused_by: None,
+            },
+        ))
+    };
+    let shown = json!({"name": "Ada", "persona": {"service": "discord", "account": "42"}});
+    let report = go(shown);
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let sent = host.started()[0].appearance.clone().expect("an appearance");
+    assert_eq!(sent.name, "Ada");
+    assert_eq!(sent.persona.map(|p| p.account).as_deref(), Some("42"));
+
+    let report = go(json!({"name": " padded "}));
+    assert!(
+        matches!(failure(&report), Some((_, StepFailure::Arguments { .. }))),
+        "{report:?}"
+    );
+    assert_eq!(
+        host.started().len(),
+        1,
+        "a refused appearance invokes nothing"
+    );
+}
+
+#[test]
 fn for_each_runs_its_body_per_item_and_if_takes_one_branch() {
     let host = FakeHost::new();
     let tidy = shortcut(
@@ -972,6 +1162,7 @@ fn an_ai_step_never_reads_a_secret() {
             mode: RunMode::Unattended,
             trigger: RunTrigger::Manual,
             inputs,
+            caused_by: None,
         },
     ));
     assert!(
@@ -1325,6 +1516,7 @@ fn archive_run<'a>(
             mode: RunMode::Unattended,
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
+            caused_by: None,
         },
     )
 }
@@ -1395,4 +1587,151 @@ fn a_step_reaches_only_the_app_and_kind_its_key_names() {
     assert!(!found(ActionKey::new(NOTES, "notes.folderish", "list")));
     assert!(!found(ActionKey::new(MAIL, "notes.folder", "list")));
     assert!(!found(ActionKey::new(NOTES, "notes.folder", "delete")));
+}
+
+/// A catalogue offering one undoable action: posting to chat `chat:1`.
+fn chat_catalog() -> ActionCatalog {
+    ActionCatalog::new(vec![row(
+        "so.tilo.chat",
+        "chat:1",
+        "chat.workspace",
+        "post",
+        Vec::new(),
+        ActionContract {
+            kind: tilo_actions::contract::ActionKind::Undoable,
+            ..ActionContract::default()
+        },
+    )])
+}
+
+/// One step posting to the first chat, with no grant yet.
+fn posting_shortcut() -> Shortcut {
+    let mut shortcut = shortcut(
+        "bridge",
+        vec![Step::new(
+            "post",
+            StepKind::Invoke {
+                action: ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
+                resource: Selector::FirstOfKind("chat.workspace".into()),
+                args: BTreeMap::new(),
+                appearance: None,
+            },
+        )],
+    );
+    shortcut.grant.clear();
+    shortcut
+}
+
+#[test]
+fn check_bot_refuses_a_grant_wider_than_the_steps() {
+    let catalog = chat_catalog();
+    let mut shortcut = posting_shortcut();
+    shortcut.grant = crate::grant::derived_rules(&shortcut, &catalog);
+    assert_eq!(crate::check_bot(&shortcut, &catalog), Ok(()));
+
+    shortcut.grant.push(crate::grant::action_rule(
+        "so.tilo.chat",
+        "chat.workspace",
+        None,
+        "delete",
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+    ));
+    let errors = crate::check_bot(&shortcut, &catalog).expect_err("an unused rule");
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, CheckErrorKind::UnusedRule(_)))
+    );
+
+    shortcut.grant.clear();
+    let errors = crate::check_bot(&shortcut, &catalog).expect_err("a missing rule");
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, CheckErrorKind::MissingRule(_)))
+    );
+}
+
+#[test]
+fn record_and_connector_triggers_round_trip_and_bind_an_event_object() {
+    use crate::{ActorFilter, EVENT_INPUT};
+    let record: TriggerSpec = serde_json::from_value(json!({
+        "trigger": "record_changed",
+        "kind": "chat.workspace",
+        "actions": ["post"],
+        "by": "not_bots"
+    }))
+    .unwrap();
+    assert_eq!(
+        record,
+        TriggerSpec::RecordChanged {
+            kind: "chat.workspace".into(),
+            actions: vec!["post".into()],
+            fields: vec![],
+            by: ActorFilter::NotBots,
+        }
+    );
+    assert_eq!(record.kind(), "record_changed");
+    let connector: TriggerSpec = serde_json::from_value(json!({
+        "trigger": "connector",
+        "app_id": "so.tilo.discord",
+        "source": "message-created",
+        "filter": {"channel": "42"}
+    }))
+    .unwrap();
+    assert_eq!(connector.kind(), "connector");
+    for trigger in [
+        &record,
+        &connector,
+        &TriggerSpec::IncomingMessage {
+            app_id: None,
+            from: None,
+        },
+    ] {
+        let payload = trigger.payload();
+        assert_eq!(payload.len(), 1);
+        assert_eq!(payload[0].name.as_ref(), EVENT_INPUT);
+        assert_eq!(payload[0].ty, ParamType::Object);
+    }
+    // Defaults: `by` is anyone, empty lists are any change.
+    let any: TriggerSpec =
+        serde_json::from_value(json!({"trigger": "record_changed", "kind": "tilo.room"})).unwrap();
+    assert!(matches!(
+        any,
+        TriggerSpec::RecordChanged {
+            by: ActorFilter::Anyone,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn every_step_of_a_caused_run_records_the_cause() {
+    let cause = tilo_actions::context::Cause {
+        installation: "bot-1".into(),
+        event: "cd".repeat(32),
+        depth: 2,
+    };
+    let host = FakeHost::new();
+    let tidy = shortcut("tidy", vec![list()]);
+    let report = block_on(run(
+        &host,
+        &Hooks::default(),
+        RunRequest {
+            shortcut: &tidy,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs: serde_json::Map::new(),
+            caused_by: Some(cause.clone()),
+        },
+    ));
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let started = host.started();
+    assert!(!started.is_empty());
+    for request in started {
+        assert_eq!(request.context.unwrap().caused_by, Some(cause.clone()));
+    }
 }

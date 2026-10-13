@@ -15,7 +15,7 @@ use ui::widget::TaffyTreeExt;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -129,9 +129,7 @@ impl Widget for DiskRow {
         taffy.widget_leaf(crate::full_width_row(ROW_HEIGHT), node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -217,8 +215,7 @@ impl Widget for DiskRow {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let logical = ctx.logical(position);
                 let hover = self.rect.contains(logical);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
@@ -273,10 +270,6 @@ impl Widget for DiskRow {
 
     fn test_id(&self) -> Option<&str> {
         Some(self.disk.name.as_str())
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn is_focusable(&self) -> bool {

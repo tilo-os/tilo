@@ -276,7 +276,7 @@ fn semantic_owner(snapshot: &InspectionNode, name: &str, target: Option<&str>) -
 
 #[cfg(test)]
 mod tests {
-    use super::super::{MouseButton, NamedKey, State, Theme, key_input};
+    use super::super::{NamedKey, State, Theme, key_input};
     use super::*;
     fn frame() -> FrameHarness {
         let mut frame = FrameHarness::new_with_controlled_inputs(
@@ -418,18 +418,11 @@ mod tests {
             .presentation_widgets()
             .1
             .get_rect();
-        frame.send_host_event(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(
-                rect.center().x * 2.0,
-                (rect.y1 - 16.0) * 2.0,
-            ),
-        });
-        frame.send_host_event(&WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        frame.send_host_event(&crate::synthetic_input::cursor_moved(
+            rect.center().x * 2.0,
+            (rect.y1 - 16.0) * 2.0,
+        ));
+        frame.send_host_event(&crate::synthetic_input::mouse_press());
         assert_eq!(
             frame.take_caller_operation().unwrap().address.action,
             "insert"

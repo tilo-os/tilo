@@ -3,7 +3,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
     clippy::too_many_lines,
     reason = "test assertions and fixture setup fail loudly"
@@ -36,6 +35,44 @@ fn grant_json(grant: &VoiceGrant) -> Value {
         })).collect::<Vec<_>>(),
     })
 }
+/// The page's voice transport imports the live plane's `MoQ` library, which
+/// is generated from the `@moq/net` pinned in
+/// `scripts/moq-browser/package-lock.json` and never committed. Build it the
+/// way the browser runtime build does (`npm ci`, then `build.mjs`, which writes
+/// it next to the web modules) unless a build newer than the lock is there.
+fn ensure_moq_library(repository: &std::path::Path) {
+    let builder = repository.join("scripts/moq-browser");
+    let output = repository.join("crates/browser/tilo-browser-runtime/web/media-moq-library.mjs");
+    let modified =
+        |path: &std::path::Path| std::fs::metadata(path).and_then(|metadata| metadata.modified());
+    if let (Ok(built), Ok(pinned)) = (
+        modified(&output),
+        modified(&builder.join("package-lock.json")),
+    ) && built >= pinned
+    {
+        return;
+    }
+    let steps: [(&str, &[&str]); 2] = [
+        ("npm", &["ci", "--no-audit", "--no-fund", "--silent"]),
+        ("node", &["build.mjs"]),
+    ];
+    for (program, args) in steps {
+        let status = std::process::Command::new(program)
+            .args(args)
+            .current_dir(&builder)
+            .status()
+            .unwrap_or_else(|error| {
+                panic!("running {program} to build media-moq-library.mjs: {error}")
+            });
+        assert!(
+            status.success(),
+            "{program} {} in {} failed: {status}",
+            args.join(" "),
+            builder.display()
+        );
+    }
+}
+
 struct Page {
     room: String,
     peer: PeerHandle,
@@ -125,6 +162,7 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
     let workspace = room.workspace_id;
     let call = room.call.call;
     let repository = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../");
+    ensure_moq_library(&repository);
     let server = Responder::handle(move |request| {
         let path = request.target.split('?').next().unwrap();
         let text = |body: String| Some(Reply::status(200).body(body));
@@ -187,7 +225,10 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
                         "text/javascript"
                     },
                 )
-                .body(std::fs::read(file).unwrap()),
+                .body(
+                    std::fs::read(&file)
+                        .unwrap_or_else(|error| panic!("serving {}: {error}", file.display())),
+                ),
         )
     });
     let url = server.url();

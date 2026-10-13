@@ -477,6 +477,7 @@ fn html_export_lists_nest_and_number() {
                     ("ordered", AttrVal::Bool(true)),
                     ("level", AttrVal::Int(0)),
                     ("num_format", AttrVal::Str("lower-roman".into())),
+                    ("num_start", AttrVal::Int(3)),
                 ],
             )],
             ..empty_snapshot()
@@ -493,6 +494,7 @@ fn html_export_lists_nest_and_number() {
             html.contains("list-style-type: lower-roman"),
             "roman numbering:\n{html}"
         );
+        assert!(html.contains(r#"start="3""#), "imported start:\n{html}");
     }
 }
 

@@ -1,5 +1,6 @@
 //! The JSON-lines protocol between `tilo-room-service` and the
-//! `tilo-relay room` child it runs for each short-lived room.
+//! `tilo-relay room` child it runs for each short-lived room, or for its one
+//! persistent room.
 //!
 //! The service writes one [`OperatorCommand`] per line to the child's stdin.
 //! The child writes one [`RoomEvent`] per line to its stdout, each behind
@@ -11,8 +12,28 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::rooms::RoomRole;
+
 /// Version of this protocol, announced in [`RoomEvent::Started`].
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
+
+/// The child reports [`RoomEvent::Online`] at most this often, and only
+/// when the numbers changed, so a busy room does not flood the service.
+pub const ONLINE_EVERY_SECS: u64 = 2;
+
+/// Decodes a 32-byte key or digest written as 64 lowercase hex characters,
+/// the only form this protocol carries.
+#[must_use]
+pub fn hex32(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64
+        || !text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    hex::decode(text).ok()?.try_into().ok()
+}
 
 /// Prefix of every protocol line on the child's stdout.
 pub const LINE_PREFIX: &str = "tilo-room-operator ";
@@ -31,6 +52,31 @@ pub enum OperatorCommand {
     Admit {
         /// The six-digit code the guest's browser displays.
         pairing_code: String,
+    },
+    /// Pre-admit one guest of a persistent room: the child signs a
+    /// pre-admission with the room's owner root for `token_sha256`, issues
+    /// an invitation that only `user_public_key` can redeem, and answers
+    /// [`RoomEvent::PreAdmitted`] or [`RoomEvent::PreAdmitRefused`] for the
+    /// same digest.
+    PreAdmit {
+        /// The guest's user root (hex). Binding the invitation to it means a
+        /// leaked invitation and token admit nobody else, and lets the
+        /// service map a later [`RoomEvent::MemberRemoved`] back to the join.
+        user_public_key: String,
+        /// SHA-256 of the one-time admission token (hex).
+        token_sha256: String,
+        /// How the room's notices name the guest.
+        label: String,
+        /// The role the guest gets.
+        role: RoomRole,
+    },
+    /// Certify an in-memory browser device as the persistent room's one
+    /// read-only spectator person, so a page embedding the room can watch it
+    /// without minting a member per visitor. The child answers
+    /// [`RoomEvent::SpectatorCertified`] or [`RoomEvent::SpectateRefused`].
+    Spectate {
+        /// The browser's device key (hex).
+        device_public_key: String,
     },
     /// Stop the room. A struct variant, so `deny_unknown_fields` holds for
     /// it too (serde ignores extra fields on a tagged unit variant).
@@ -55,6 +101,8 @@ pub enum RoomEvent {
         certificate_sha256: Option<String>,
         /// Page origins allowed to call the room cross-origin.
         allowed_origins: Vec<String>,
+        /// The governed room's UUID; `None` for a short-lived room.
+        room: Option<String>,
     },
     /// The browser that displayed `pairing_code` was certified.
     MemberCertified {
@@ -71,6 +119,49 @@ pub enum RoomEvent {
         pairing_code: String,
         /// Why it certified nobody.
         reason: RefusalReason,
+    },
+    /// The invitation for a [`OperatorCommand::PreAdmit`].
+    PreAdmitted {
+        /// The pre-admission's token digest (hex).
+        token_sha256: String,
+        /// The signed invitation, unpadded base64url.
+        invitation: String,
+    },
+    /// A [`OperatorCommand::PreAdmit`] that issued nothing. Answers the
+    /// waiting join at once instead of letting it time out.
+    PreAdmitRefused {
+        /// The pre-admission's token digest (hex).
+        token_sha256: String,
+        /// Why, for the operator's log.
+        reason: String,
+    },
+    /// The certificate for a [`OperatorCommand::Spectate`].
+    SpectatorCertified {
+        /// The certified device key (hex).
+        device_public_key: String,
+        /// The device certificate, in the form the browser runtime takes.
+        certificate: tilo_user_identity::DeviceCert,
+    },
+    /// A [`OperatorCommand::Spectate`] that certified nothing.
+    SpectateRefused {
+        /// The device key (hex).
+        device_public_key: String,
+        /// Why, for the operator's log.
+        reason: String,
+    },
+    /// Who has an open browser session now.
+    Online {
+        /// Distinct people (user roots), the spectator person excluded.
+        people: u32,
+        /// Open spectator sessions.
+        spectators: u32,
+    },
+    /// A member was removed from the persistent room.
+    MemberRemoved {
+        /// Their user root (hex).
+        user_public_key: String,
+        /// The removal is a ban.
+        banned: bool,
     },
 }
 
@@ -173,6 +264,7 @@ mod tests {
                 user_public_key: "ab".repeat(32),
                 certificate_sha256: None,
                 allowed_origins: vec!["https://rooms.example".into()],
+                room: None,
             },
             RoomEvent::MemberCertified {
                 device: "cd".repeat(32),
@@ -192,6 +284,101 @@ mod tests {
                 reason: RefusalReason::PolicyDenied,
             },
         ]
+    }
+
+    fn v2_events() -> Vec<RoomEvent> {
+        vec![
+            RoomEvent::Started {
+                version: VERSION,
+                origin: "https://rooms.example".into(),
+                plain_origin: None,
+                user_public_key: "ab".repeat(32),
+                certificate_sha256: None,
+                allowed_origins: vec![],
+                room: Some("6f1c3b0e-58a1-4c2e-9d55-0b3c1f6a2e10".into()),
+            },
+            RoomEvent::PreAdmitted {
+                token_sha256: "ab".repeat(32),
+                invitation: "AAECAw".into(),
+            },
+            RoomEvent::PreAdmitRefused {
+                token_sha256: "ab".repeat(32),
+                reason: "too many pre-admissions are open".into(),
+            },
+            RoomEvent::SpectatorCertified {
+                device_public_key: "ef".repeat(32),
+                certificate: tilo_user_identity::DeviceCert {
+                    user_public_key: [1; 32],
+                    device_public_key: [0xef; 32],
+                    device_label: "Watching visitor".into(),
+                    capabilities: tilo_user_identity::DeviceCapabilities::member(),
+                    issued_at_ns: 1,
+                    expires_at_ns: Some(2),
+                    signature: [3; 64],
+                },
+            },
+            RoomEvent::SpectateRefused {
+                device_public_key: "ef".repeat(32),
+                reason: "no".into(),
+            },
+            RoomEvent::Online {
+                people: 3,
+                spectators: 9,
+            },
+            RoomEvent::MemberRemoved {
+                user_public_key: "cd".repeat(32),
+                banned: true,
+            },
+        ]
+    }
+
+    #[test]
+    fn protocol_two_round_trips_and_pins_its_wire_form() {
+        assert_eq!(VERSION, 2);
+        let pre_admit = OperatorCommand::PreAdmit {
+            user_public_key: "cd".repeat(32),
+            token_sha256: "ab".repeat(32),
+            label: "Ada".into(),
+            role: RoomRole::Editor,
+        };
+        assert_eq!(
+            pre_admit.to_line(),
+            format!(
+                "{{\"op\":\"pre_admit\",\"user_public_key\":\"{}\",\"token_sha256\":\"{}\",\"label\":\"Ada\",\"role\":\"Editor\"}}\n",
+                "cd".repeat(32),
+                "ab".repeat(32)
+            )
+        );
+        assert_eq!(
+            OperatorCommand::from_line(&pre_admit.to_line()).unwrap(),
+            pre_admit
+        );
+        let spectate = OperatorCommand::Spectate {
+            device_public_key: "ef".repeat(32),
+        };
+        assert_eq!(
+            OperatorCommand::from_line(&spectate.to_line()).unwrap(),
+            spectate
+        );
+        for event in v2_events() {
+            assert_eq!(RoomEvent::from_line(&event.to_line()).unwrap(), event);
+        }
+        assert_eq!(
+            RoomEvent::Online {
+                people: 7,
+                spectators: 2
+            }
+            .to_line(),
+            "tilo-room-operator {\"event\":\"online\",\"people\":7,\"spectators\":2}"
+        );
+    }
+
+    #[test]
+    fn hex32_accepts_exactly_sixty_four_lowercase_hex_characters() {
+        assert_eq!(hex32(&"ab".repeat(32)), Some([0xab; 32]));
+        assert_eq!(hex32(&"AB".repeat(32)), None);
+        assert_eq!(hex32(&"ab".repeat(31)), None);
+        assert_eq!(hex32(&format!("{} ", "ab".repeat(32))), None);
     }
 
     #[test]
@@ -245,6 +432,9 @@ mod tests {
             "{\"op\":\"admit\",\"pairing_code\":\"012345\",\"extra\":1}",
             "{\"op\":\"kick\",\"pairing_code\":\"012345\"}",
             "{\"op\":\"shutdown\",\"now\":true}",
+            "{\"op\":\"pre_admit\",\"user_public_key\":\"aa\",\"token_sha256\":\"bb\",\"label\":\"x\",\"role\":\"Owner\"}",
+            "{\"op\":\"pre_admit\",\"token_sha256\":\"bb\",\"label\":\"x\",\"role\":\"Editor\"}",
+            "{\"op\":\"spectate\"}",
             "",
         ] {
             assert!(

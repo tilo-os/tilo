@@ -1083,10 +1083,7 @@ impl ui::widget::Decorator for BackupsApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
+            self.cursor = Some(ctx.logical(position));
         }
         if let Some(dialog) = &mut self.restore {
             dialog.handle_detached(

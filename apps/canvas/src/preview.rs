@@ -180,7 +180,7 @@ impl ui::widget::Decorator for VersionPreview {
     /// Escape returns to now.
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         if self.shown.is_none() {
             self.canvas.handle_event(event, ctx);

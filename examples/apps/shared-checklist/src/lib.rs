@@ -27,7 +27,6 @@ pub const APP_TITLE: &str = "Shared Checklist";
 
 pub mod locales;
 
-use locales::keys;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
 
@@ -97,10 +96,10 @@ impl Checklist {
 
 fn item_row(row: &mut ViewCx<Checklist, Item>) -> Element {
     let p = row.paths();
-    let done = row.checkbox(keys::CHECKLIST_DONE_LABEL, p.done);
+    let done = row.checkbox("checklist-done-label", p.done);
     let title = row
         .input(p.title)
-        .with_placeholder(keys::CHECKLIST_TITLE_PLACEHOLDER);
+        .with_placeholder("checklist-title-placeholder");
     Box::new(ui::row![done, title])
 }
 
@@ -139,17 +138,17 @@ impl ResourceApp for App {
         let name = cx
             .input(p.name)
             .with_id("name-input")
-            .with_placeholder(keys::CHECKLIST_NAME_PLACEHOLDER);
+            .with_placeholder("checklist-name-placeholder");
         // The next item's title is this window's own until it is added.
         let next = cx.form::<checklist::Add>();
         let draft = cx
             .input(next.paths().title)
             .with_id("draft-input")
-            .with_placeholder(keys::CHECKLIST_DRAFT_PLACEHOLDER);
-        let add = cx.button(keys::CHECKLIST_ADD, next.submit());
+            .with_placeholder("checklist-draft-placeholder");
+        let add = cx.button("checklist-add", next.submit());
         let progress = cx.text(progress_text).with_id("progress");
         let rows = cx.each(|checklist| &checklist.items, item_row);
-        let clear = cx.button(keys::CHECKLIST_CLEAR_DONE, Checklist::CLEAR_DONE.invoke());
+        let clear = cx.button("checklist-clear-done", Checklist::CLEAR_DONE.invoke());
         Box::new(ui::column![
             labeled_field("checklist-name-label", name),
             ui::row![labeled_field("checklist-draft-label", draft), add],

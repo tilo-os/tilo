@@ -1,29 +1,32 @@
 use ed25519_dalek::SigningKey;
 use registry_types::{RegistryEntry, RegistryTarget, RegistryVersion};
 
-use crate::runtime_history::reconcile;
+use crate::runtime_history::{MissingRuntime, reconcile};
 
 fn version(value: &str, architecture: &str, build: u8) -> RegistryVersion {
     RegistryVersion {
         version: value.into(),
-        tapp_url: format!("https://apps.tilo.so/artifacts/editor/{value}-{architecture}.tapp"),
-        tapp_root_hash_hex: format!("{build:064x}"),
-        tapp_size_bytes: 12_288 + u64::from(build),
         released_at_unix: 1_790_000_000 + u64::from(build),
-        tapp_blake3_hex: format!("{:064x}", u16::from(build) + 256),
-        target: RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: architecture.into(),
-            isa: architecture.into(),
-            runtime: Some(format!("tilo-runtime/2026.07+native.{build:032x}")),
-            interfaces: Vec::new(),
-        },
+        artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+            tapp_url: format!("https://apps.tilo.so/artifacts/editor/{value}-{architecture}.tapp"),
+            tapp_root_hash_hex: format!("{build:064x}"),
+            tapp_size_bytes: 12_288 + u64::from(build),
+            tapp_blake3_hex: format!("{:064x}", u16::from(build) + 256),
+            target: RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: architecture.into(),
+                isa: architecture.into(),
+                runtime: Some(format!("tilo-runtime/2026.07+native.{build:032x}")),
+                interfaces: Vec::new(),
+            },
+        }),
     }
 }
 
 fn signed_entry(id: &str, versions: Vec<RegistryVersion>, key: &SigningKey) -> RegistryEntry {
     let mut entry = RegistryEntry {
         package_id: id.into(),
+        kind: registry_types::EntryKind::App,
         name: "Code".into(),
         description: "A native code editor".into(),
         tagline: "Edit together".into(),
@@ -51,6 +54,32 @@ fn six_releases() -> Vec<RegistryVersion> {
     (2..=7)
         .map(|n| version(&format!("1.0.{n}"), "aarch64", n))
         .collect()
+}
+
+#[test]
+fn delayed_exact_provider_unblocks_without_changing_pending_history() {
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let pending = version("1.0.8", "aarch64", 8);
+    let mut entry = signed_entry("so.tilo.agent", vec![pending.clone()], &key);
+    let original = entry.clone();
+    let error = reconcile(&mut entry, &[], "", &key).unwrap_err();
+    let missing = error.downcast_ref::<MissingRuntime>().unwrap();
+    assert_eq!(missing.package_id, "so.tilo.agent");
+    assert_eq!(missing.version, pending.version);
+    assert_eq!(missing.architecture, "aarch64");
+    assert_eq!(
+        missing.runtime,
+        pending.target().unwrap().runtime.as_deref().unwrap()
+    );
+    assert_eq!(entry, original);
+
+    let provider = offered(&key, &[pending]);
+    assert_eq!(
+        reconcile(&mut entry, &[provider], "", &key).unwrap(),
+        Vec::<RegistryVersion>::new()
+    );
+    assert_eq!(entry, original);
+    assert!(registry_types::verify_entry_signature(&entry));
 }
 
 #[test]
@@ -133,7 +162,7 @@ fn other_architectures_channels_and_platforms_cannot_supply_rollback_slots() {
     let installable = six_releases();
     let mut foreign = installable.clone();
     for v in &mut foreign {
-        v.target.platform = "linux".into();
+        v.tapp_mut().unwrap().target.platform = "linux".into();
     }
     let mut versions = installable;
     versions.push(version("1.0.0", "aarch64", 10));
@@ -156,7 +185,7 @@ fn current_artifact_is_protected_even_without_an_offered_runtime() {
         reconcile(
             &mut entry,
             &[offered(&key, &installable)],
-            &current.tapp_url,
+            &current.tapp().unwrap().tapp_url,
             &key
         )
         .ok(),
@@ -172,7 +201,7 @@ fn published_version_protection_requires_the_exact_signed_artifact_identity() {
     let installable = six_releases();
     let published = version("1.0.0", "aarch64", 10);
     let mut replacement = published.clone();
-    replacement.tapp_blake3_hex = "ab".repeat(32);
+    replacement.tapp_mut().unwrap().tapp_blake3_hex = "ab".repeat(32);
     let mut versions = installable.clone();
     versions.push(replacement.clone());
     let mut entry = signed_entry("so.tilo.code-editor", versions, &key);
@@ -224,7 +253,7 @@ fn architecture_fold_preserves_the_whole_current_release_before_sdk_submission()
     let mut entry = signed_entry("so.tilo.code-editor", versions, &key);
     let catalogue = vec![offered(&key, &installable)];
     assert_eq!(
-        reconcile(&mut entry, &catalogue, &x86.tapp_url, &key).ok(),
+        reconcile(&mut entry, &catalogue, &x86.tapp().unwrap().tapp_url, &key).ok(),
         Some(vec![orphan])
     );
     assert!(entry.versions.contains(&arm));

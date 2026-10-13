@@ -59,6 +59,8 @@ pub struct CgroupObservation {
 struct Prepared {
     check: ApprovedCheck,
     token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    report_nonce: Option<String>,
     runtime_binary_sha256: String,
 }
 
@@ -402,6 +404,7 @@ fn start(
     let prepared = Prepared {
         check: check.clone(),
         token,
+        report_nonce: (!check.reported_phases.is_empty()).then(|| uuid::Uuid::new_v4().to_string()),
         runtime_binary_sha256: binary_hash(&check.runtime_binary)?,
     };
     let bytes = serde_json::to_vec(&prepared).map_err(|e| e.to_string())?;
@@ -433,7 +436,12 @@ fn start(
         .arg("__approved-check-supervise")
         .arg(&config);
     authority()?;
-    let child = bounded_command::spawn_prepared(
+    let spawn = if check.reported_phases.is_empty() {
+        bounded_command::spawn_prepared
+    } else {
+        bounded_command::spawn_prepared_observing_stderr
+    };
+    let child = spawn(
         command,
         None,
         check.limits.output_bytes,
@@ -479,6 +487,8 @@ fn wait(
     config_bytes: &[u8],
     child: &mut bounded_command::AsyncCommand,
     authority: &impl Fn() -> Result<(), String>,
+    reports: &mut super::reports::ReportParser,
+    report: &impl Fn(super::ReportedCheckEvent),
 ) -> (
     CheckOutcome,
     Option<bounded_command::Output>,
@@ -498,6 +508,9 @@ fn wait(
                 None,
                 Some("approved check exceeded its wall deadline".into()),
             );
+        }
+        if let Err(e) = reports.drain(child, authority, report) {
+            return (CheckOutcome::Cancelled, None, None, Some(e));
         }
         match completion(prepared, config_bytes) {
             Ok(Some(status)) => return (CheckOutcome::Exited, None, Some(status), None),
@@ -527,9 +540,40 @@ fn wait(
     }
 }
 
+fn collect_stopped_capture(
+    child: &mut bounded_command::AsyncCommand,
+    outcome: &mut CheckOutcome,
+    error: &mut Option<String>,
+) -> Option<bounded_command::Output> {
+    let capture_started = Instant::now();
+    while capture_started.elapsed() < Duration::from_secs(3) {
+        if let Some(result) = child.try_wait() {
+            match result {
+                Ok(captured) => return Some(captured),
+                Err(failure) => {
+                    *error = Some(failure.to_string());
+                    *outcome = match failure {
+                        bounded_command::Error::OutputTooLarge { .. } => CheckOutcome::OutputLimit,
+                        bounded_command::Error::Timeout(_) => CheckOutcome::TimedOut,
+                        _ => CheckOutcome::Failed,
+                    };
+                }
+            }
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    if error.is_none() {
+        *outcome = CheckOutcome::Failed;
+        *error = Some("stopped check streams could not be collected".into());
+    }
+    None
+}
+
 pub(super) fn run(
     check: &ApprovedCheck,
     authority: impl Fn() -> Result<(), String>,
+    report: impl Fn(super::ReportedCheckEvent),
 ) -> Result<CheckReceipt, String> {
     let started = Instant::now();
     let RunningCheck {
@@ -538,12 +582,20 @@ pub(super) fn run(
         config_bytes: bytes,
         mut child,
     } = start(check, &authority)?;
+    let mut reports =
+        super::reports::ReportParser::new(check, prepared.report_nonce.as_deref().unwrap_or(""));
     // No build script executes until the cgroup was observed and permitted.
     let (observation, mut outcome, mut output, completed, mut error) =
         match admit(check, &prepared.token, &unit.0, &authority) {
             Ok(observed) => {
-                let (outcome, output, completed, failure) =
-                    wait(&prepared, &bytes, &mut child, &authority);
+                let (outcome, output, completed, failure) = wait(
+                    &prepared,
+                    &bytes,
+                    &mut child,
+                    &authority,
+                    &mut reports,
+                    &report,
+                );
                 (Some(observed), outcome, output, completed, failure)
             }
             Err((cause, failure)) => (None, cause, None, None, Some(failure)),
@@ -559,30 +611,13 @@ pub(super) fn run(
         let _ = control(&["--user", "reset-failed", "--", &unit.0]);
     }
     if output.is_none() && completed.is_some() && cleanup_observed {
-        let capture_started = Instant::now();
-        while capture_started.elapsed() < Duration::from_secs(3) {
-            if let Some(result) = child.try_wait() {
-                match result {
-                    Ok(captured) => output = Some(captured),
-                    Err(e) => {
-                        error = Some(e.to_string());
-                        outcome = match e {
-                            bounded_command::Error::OutputTooLarge { .. } => {
-                                CheckOutcome::OutputLimit
-                            }
-                            bounded_command::Error::Timeout(_) => CheckOutcome::TimedOut,
-                            _ => CheckOutcome::Failed,
-                        };
-                    }
-                }
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        if output.is_none() && error.is_none() {
-            outcome = CheckOutcome::Failed;
-            error.get_or_insert_with(|| "stopped check streams could not be collected".into());
-        }
+        output = collect_stopped_capture(&mut child, &mut outcome, &mut error);
+    }
+    // Final informational drain never changes independently observed execution.
+    // Revoked custody refuses all remaining callbacks, including terminal copies.
+    if reports.drain(&mut child, &authority, &report).is_ok() {
+        reports.finish();
+        let _ = reports.publish(&authority, &report);
     }
     drop(child);
     if !cleanup_observed {
@@ -642,22 +677,53 @@ pub fn developer_probe(
     receipt: &Path,
     cancel_after_ms: Option<u64>,
 ) -> Result<CheckReceipt, String> {
+    developer_probe_with_reports(config, receipt, cancel_after_ms, |_| {})
+}
+
+/// Qualify the existing owned guest path with informational report observation.
+///
+/// # Errors
+/// Returns the same private input and supervision failures as [`developer_probe`].
+pub fn developer_probe_with_reports(
+    config: &Path,
+    receipt: &Path,
+    cancel_after_ms: Option<u64>,
+    report: impl Fn(super::ReportedCheckEvent),
+) -> Result<CheckReceipt, String> {
     let check: ApprovedCheck =
         serde_json::from_slice(&read_private(config)?).map_err(|e| e.to_string())?;
     let binding = check.binding.clone();
     let id = check.id.clone();
     let registry = super::ApprovedChecks::new(binding.clone(), vec![check])?;
     let began = Instant::now();
-    let result = registry.run(&binding, &id, || {
-        if cancel_after_ms.is_some_and(|ms| began.elapsed() >= Duration::from_millis(ms)) {
-            Err("developer explicitly cancelled this owned qualification job".into())
-        } else {
-            Ok(())
-        }
-    })?;
+    let result = registry.run_with_reports(
+        &binding,
+        &id,
+        || {
+            if cancel_after_ms.is_some_and(|ms| began.elapsed() >= Duration::from_millis(ms)) {
+                Err("developer explicitly cancelled this owned qualification job".into())
+            } else {
+                Ok(())
+            }
+        },
+        report,
+    )?;
     let bytes = serde_json::to_vec_pretty(&result).map_err(|e| e.to_string())?;
     private_file(receipt, &bytes)?;
     Ok(result)
+}
+
+fn reported_environment(prepared: &Prepared) -> Vec<(String, String)> {
+    let mut environment = prepared.check.environment.clone();
+    if !prepared.check.reported_phases.is_empty()
+        && let Some(nonce) = &prepared.report_nonce
+    {
+        // This separate nonce carries no permit or completion authority. The
+        // private supervisor token must never enter guest environment/output.
+        environment.push(("TILO_CHECK_REPORT_TOKEN".into(), nonce.clone()));
+        environment.push(("TILO_CHECK_REPORT_ID".into(), prepared.check.id.clone()));
+    }
+    environment
 }
 
 /// Internal trusted host entry: waits for the supervisor's cgroup gate, then
@@ -721,7 +787,7 @@ pub fn run_guest(config: &Path) -> Result<i32, String> {
         shell: "/usr/bin/sh".into(),
         runs: None,
         term: "dumb".into(),
-        env: check.environment.clone(),
+        env: reported_environment(&prepared),
         resolver: Some(String::new()),
         editor: None,
     };
@@ -802,9 +868,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn completion_requires_matching_private_token_config_binary_and_real_status() {
-        let dir = tempfile::tempdir().unwrap();
+    fn prepared(root: &Path) -> Prepared {
         let check = ApprovedCheck {
             id: "fixture".into(),
             binding: ProjectBinding {
@@ -813,20 +877,68 @@ mod tests {
                 record: "file:/fixture/project.tilo".into(),
                 resource: "project:fixture".into(),
             },
-            checkout: dir.path().join("source"),
-            build: dir.path().join("build"),
-            scratch: dir.path().into(),
+            checkout: root.join("source"),
+            build: root.join("build"),
+            scratch: root.into(),
             runtime_binary: "/usr/bin/true".into(),
             images: vec![],
             command: vec!["/usr/bin/true".into()],
             environment: vec![],
+            reported_phases: vec![],
             limits: limits(),
         };
-        let mut prepared = Prepared {
+        Prepared {
             check,
             token: uuid::Uuid::new_v4().to_string(),
+            report_nonce: None,
             runtime_binary_sha256: "a".repeat(64),
-        };
+        }
+    }
+
+    #[test]
+    fn report_nonce_is_optional_legacy_compatible_and_has_no_supervisor_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut prepared = prepared(dir.path());
+        let legacy = serde_json::to_value(&prepared).unwrap();
+        assert!(legacy.get("report_nonce").is_none());
+        assert!(legacy["check"].get("reported_phases").is_none());
+        assert_eq!(legacy.as_object().unwrap().len(), 3);
+        let restored: Prepared = serde_json::from_value(legacy).unwrap();
+        assert!(restored.report_nonce.is_none());
+        assert!(reported_environment(&prepared).is_empty());
+        prepared.check.reported_phases = vec![super::super::ReportedCheckPhase {
+            id: "route".into(),
+            label: "Routing".into(),
+        }];
+        let informational_nonce = uuid::Uuid::new_v4().to_string();
+        prepared.report_nonce = Some(informational_nonce.clone());
+        let report_environment = reported_environment(&prepared);
+        assert_ne!(informational_nonce, prepared.token);
+        assert_eq!(
+            report_environment,
+            vec![
+                ("TILO_CHECK_REPORT_TOKEN".into(), informational_nonce),
+                ("TILO_CHECK_REPORT_ID".into(), prepared.check.id.clone()),
+            ]
+        );
+        assert!(
+            report_environment
+                .iter()
+                .all(|(_, value)| value != &prepared.token),
+            "the supervisor permit/completion token never enters the guest environment"
+        );
+        assert!(
+            serde_json::to_value(&prepared)
+                .unwrap()
+                .get("report_nonce")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn completion_requires_matching_private_token_config_binary_and_real_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut prepared = prepared(dir.path());
         assert!(completion(&prepared, b"config").unwrap().is_none());
         for (token, config, binary, code, signal) in [
             (

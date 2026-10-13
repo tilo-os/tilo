@@ -7,6 +7,29 @@
 use anyhow::{Result, bail};
 use ed25519_dalek::SigningKey;
 use registry_types::{RegistryEntry, RegistryVersion};
+use std::fmt;
+
+/// An exact runtime is absent from the verified public catalogue while a
+/// pending app release still needs it for rollback.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MissingRuntime {
+    pub package_id: String,
+    pub version: String,
+    pub architecture: String,
+    pub runtime: String,
+}
+
+impl fmt::Display for MissingRuntime {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}@{} ({}) needs exact runtime {}; fewer than four newer offered releases remain; restore the runtime instead",
+            self.package_id, self.version, self.architecture, self.runtime
+        )
+    }
+}
+
+impl std::error::Error for MissingRuntime {}
 
 /// Re-sign `entry` after reconciling obsolete, unpublished SDK dependencies.
 /// The caller must first verify the catalogue against its existing owner pin.
@@ -32,13 +55,20 @@ pub fn reconcile(
         .iter()
         .find(|old| old.package_id == entry.package_id);
     let offered = |version: &RegistryVersion| {
+        let Some(target) = version.target() else {
+            return false;
+        };
         catalogue.iter().any(|provider| {
             registry_types::is_runtime_package_id(&provider.package_id)
-                && provider.versions.iter().any(|provided| {
-                    provided.target.platform == version.target.platform
-                        && provided.target.architecture == version.target.architecture
-                        && provided.target.runtime == version.target.runtime
-                })
+                && provider
+                    .versions
+                    .iter()
+                    .filter_map(RegistryVersion::target)
+                    .any(|provided| {
+                        provided.platform == target.platform
+                            && provided.architecture == target.architecture
+                            && provided.runtime == target.runtime
+                    })
         })
     };
     // A publisher folds architectures one at a time. The other architecture
@@ -46,10 +76,16 @@ pub fn reconcile(
     let current_release = entry
         .versions
         .iter()
-        .find(|version| version.tapp_url == current_url)
+        .find(|version| {
+            version
+                .tapp()
+                .is_some_and(|tapp| tapp.tapp_url == current_url)
+        })
         .map(|version| version.version.clone());
     let protected = |version: &RegistryVersion| {
-        version.target.native_runtime().is_none()
+        version
+            .target()
+            .is_none_or(|target| target.native_runtime().is_none())
             || current_release
                 .as_ref()
                 .is_some_and(|current| *current == version.version)
@@ -71,13 +107,20 @@ pub fn reconcile(
         .collect();
     for version in &dropped {
         if !registry_types::retention::may_drop(version, &installable) {
-            bail!(
-                "{}@{} ({}) needs exact runtime {}; fewer than four newer offered releases remain; restore the runtime instead",
-                entry.package_id,
-                version.version,
-                version.target.architecture,
-                version.target.runtime.as_deref().unwrap_or_default(),
-            );
+            return Err(MissingRuntime {
+                package_id: entry.package_id.clone(),
+                version: version.version.clone(),
+                architecture: version
+                    .target()
+                    .map_or("", |target| target.architecture.as_str())
+                    .to_owned(),
+                runtime: version
+                    .target()
+                    .and_then(|target| target.runtime.as_deref())
+                    .unwrap_or_default()
+                    .to_owned(),
+            }
+            .into());
         }
     }
     if !dropped.is_empty() {

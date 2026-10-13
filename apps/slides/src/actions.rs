@@ -8,7 +8,6 @@
 //! so the window, the scenarios and the tests say the same thing the same
 //! way.
 
-use tilo_actions::EncodedAction;
 use ui::tilo_resource::{Atom, Edit, Id, Resource, Stamped, items};
 
 use crate::deck::{self, Deck, DeckAction, ElementData, SlideData};
@@ -27,19 +26,6 @@ fn stamped(operation: DeckAction) -> Action {
 
 fn edit(edit: Edit<Deck>) -> Action {
     stamped(DeckAction::FieldEdit(edit))
-}
-
-/// The wire form of `action`, for applying it to a document directly.
-///
-/// # Panics
-/// Never: a deck action is plain data that always serializes.
-#[allow(
-    clippy::expect_used,
-    reason = "the deck's actions serialize with serde_json over owned plain data"
-)]
-#[must_use]
-pub fn encode(action: &Action) -> EncodedAction {
-    ui::tilo_resource::encode::<Deck>(action).expect("a deck action serializes")
 }
 
 /// The resource a slide is published as: its item of the deck.
