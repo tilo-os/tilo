@@ -662,17 +662,13 @@ mod tests {
         let mut doc = AutoCommit::new();
         crate::test_doc::put_image(
             &mut doc,
-            &OpenImage::from_path(&format!("/pictures/{name}"), 800, 400),
+            &OpenImage::fixture(&format!("/pictures/{name}"), 800, 400),
         );
         doc
     }
 
     fn photo_of(name: &str, side: u32) -> LibraryPhoto {
-        LibraryPhoto::from_image(OpenImage::from_path(
-            &format!("/pictures/{name}"),
-            side,
-            side,
-        ))
+        LibraryPhoto::from_image(OpenImage::fixture(&format!("/pictures/{name}"), side, side))
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -787,7 +783,7 @@ mod tests {
             let mut doc = open_doc("receipt.png");
             let mut library = crate::test_doc::library(&doc);
             let (_, photo) = library.photos.iter_mut().next().unwrap();
-            let content = photo.image.content.clone().unwrap_or_default();
+            let content = photo.image.content.clone();
             photo.set_analysis(Some(ImageAnalysis {
                 ocr_text: "invoice 42 north harbour".into(),
                 description: "A dog beside a bicycle".into(),

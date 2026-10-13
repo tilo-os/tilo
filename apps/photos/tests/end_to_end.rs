@@ -731,9 +731,14 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
     // The default destination must not be the file that was opened.
     eprintln!("phase save_does_not_default_to_overwriting_the_original");
     {
-        let open = photos::OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 10, 10);
+        let open = photos::OpenImage::new(
+            "/var/tmp/tilo/home/quinten/harbour.png",
+            10,
+            10,
+            "a".repeat(64),
+        );
         let suggested = PhotosApp::suggested_save_path(&open);
-        assert_ne!(suggested, open.path);
+        assert_ne!(suggested, open.name);
         assert!(suggested.ends_with("harbour-edited.png"), "got {suggested}");
     }
 }

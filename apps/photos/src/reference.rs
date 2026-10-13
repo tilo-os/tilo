@@ -79,11 +79,12 @@ mod tests {
     const PATH: &str = "/var/workspace/photos/harbour.png";
 
     fn photo(path: &str) -> LibraryPhoto {
-        LibraryPhoto::from_image(
-            OpenImage::from_path(path, 1200, 800)
-                .with_content(tilo_content::hash_bytes(path.as_bytes()))
-                .portable(),
-        )
+        LibraryPhoto::from_image(OpenImage::new(
+            path,
+            1200,
+            800,
+            tilo_content::hash_bytes(path.as_bytes()),
+        ))
     }
 
     fn doc_with(photo: &LibraryPhoto) -> AutoCommit {

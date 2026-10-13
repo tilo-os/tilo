@@ -118,15 +118,9 @@ pub fn camera_import_photo(
     }
     let image = pixels::decode(&bytes)
         .ok_or_else(|| crate::strings::tr("photos-camera-error-unsupported"))?;
-    let open = OpenImage {
-        path: name.to_owned(),
-        name: name.to_owned(),
-        width: image.w,
-        height: image.h,
-        content: Some(hash.to_owned()),
-    }
-    .portable();
-    Ok(model::LibraryPhoto::from_image(open))
+    Ok(model::LibraryPhoto::from_image(OpenImage::new(
+        name, image.w, image.h, hash,
+    )))
 }
 
 /// The app as every host mounts it.
@@ -169,16 +163,7 @@ mod camera_import_tests {
 
             let library = library.state().expect("the library reads");
             assert_eq!(library.photos.len(), 1);
-            assert_eq!(
-                library
-                    .all_photos()
-                    .next()
-                    .unwrap()
-                    .image
-                    .content
-                    .as_deref(),
-                Some(hash.as_str())
-            );
+            assert_eq!(library.all_photos().next().unwrap().image.content, hash);
         }
 
         eprintln!("phase camera_import_refuses_missing_or_invalid_portable_bytes");
