@@ -390,8 +390,7 @@ fn entry_json(entry: &HistoryEntry) -> serde_json::Value {
 /// The document as JSON, or `None` when it exceeds [`MAX_SNAPSHOT_BYTES`].
 fn snapshot_json(doc: &AutoCommit) -> Option<serde_json::Value> {
     let value = serde_json::to_value(automerge::AutoSerde::from(doc)).ok()?;
-    let size = serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len());
-    (size <= MAX_SNAPSHOT_BYTES).then_some(value)
+    (runtime_collab::wire_json_len(&value) <= MAX_SNAPSHOT_BYTES).then_some(value)
 }
 
 fn output(value: serde_json::Value) -> ActionOutput {

@@ -255,6 +255,9 @@ fn signature(action: &ActionDescriptor, describe: bool) -> String {
             line.push(']');
         }
     }
+    if action.contract.carries_untrusted_content() {
+        line.push_str(" [untrusted content]");
+    }
     if let Availability::Unavailable { reason, .. } = &action.contract.availability {
         line.push_str(" [unavailable: ");
         line.push_str(reason);

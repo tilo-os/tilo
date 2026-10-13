@@ -95,6 +95,12 @@ pub(super) const APPS: &[CatalogApp] = &[
         platforms: &["linux", "macos", "web"],
     },
     CatalogApp {
+        id: "so.tilo.discord",
+        name: "Discord",
+        category: "Network",
+        platforms: &["linux"],
+    },
+    CatalogApp {
         id: "so.tilo.disk-usage",
         name: "Disk Usage Analyzer",
         category: "System",

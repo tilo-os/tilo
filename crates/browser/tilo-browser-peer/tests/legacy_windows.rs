@@ -11,7 +11,7 @@ use tilo_relay_protocol::legacy_window as wire;
 use tilo_relay_session::RelayClient;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
-use support::{enrol, ready, start_host, start_peer, workspace};
+use support::{TestHost, enrol, ready, start_host, start_peer, workspace};
 
 fn publish(client: &RelayClient, author: [u8; 32], message: &NeighbourMsg) {
     client
@@ -100,17 +100,14 @@ async fn native_window_scenario() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let (http, relay, web) = {
-        let host = start_host(
-            &root,
-            &host_device,
-            state.path(),
-            "127.0.0.1:0".parse().unwrap(),
-        )
-        .await;
-        let http = host.https();
-        (http, host.relay, host.web)
-    };
+    let TestHost { relay, web } = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let http = support::https::DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&laptop.key.to_bytes()))
         .relay_mode(iroh::RelayMode::Disabled)

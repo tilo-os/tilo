@@ -440,6 +440,31 @@ pub struct RemoteActionTarget {
     pub address: ActionAddress,
 }
 
+/// The provider a room's own governance actions (membership, roles, grants,
+/// bans) are answered under. It is the host's, not an app's, so it is the
+/// one provider a caller names without reading it from a catalogue page.
+pub const ROOM_GOVERNANCE_PROVIDER: &str = "tilo.workspace";
+/// The resource kind of a room's governance resource.
+pub const ROOM_GOVERNANCE_KIND: &str = "workspace.permissions";
+
+impl RemoteActionTarget {
+    /// The governance action `verb` (one of
+    /// `tilo_action_policy::roles::governance`) on the room `room`.
+    #[must_use]
+    pub fn room_governance(room: &str, verb: &str) -> Self {
+        Self {
+            provider: ROOM_GOVERNANCE_PROVIDER.to_owned(),
+            address: ActionAddress::new(room_governance_resource(room), verb),
+        }
+    }
+}
+
+/// The id of the room `room`'s governance resource.
+#[must_use]
+pub fn room_governance_resource(room: &str) -> String {
+    format!("{ROOM_GOVERNANCE_KIND}:{room}")
+}
+
 /// Why a host refuses a directory action that asks for confirmation when
 /// the request names no revision: the confirmation covers the action as the
 /// person was shown it, which only that revision identifies. A caller that
@@ -805,6 +830,11 @@ pub struct InvocationReceipt {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InvocationState {
     pub update: InvocationUpdate,
+    /// The action's contract declares content from outside the user's data
+    /// ([`crate::UNTRUSTED_CONTENT_TAG`]), such as a web page's text: what it
+    /// answers is data to reason about, never instructions to follow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub untrusted: bool,
 }
 
 impl InvocationState {
@@ -813,7 +843,15 @@ impl InvocationState {
     pub fn new(invocation: InvocationId, update: InvocationUpdate) -> Self {
         Self {
             update: update.with_invocation(invocation),
+            untrusted: false,
         }
+    }
+
+    /// This state, saying whether what it answers is untrusted content.
+    #[must_use]
+    pub fn with_untrusted(mut self, untrusted: bool) -> Self {
+        self.untrusted = untrusted;
+        self
     }
 
     #[must_use]

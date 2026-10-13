@@ -462,7 +462,7 @@ impl StatePeer {
                 admission: None,
                 admissions: vec![],
                 workspace_delegations: vec![],
-                agent: None,
+                delegate: None,
             };
             doc.put(
                 &identities,

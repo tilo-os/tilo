@@ -26,7 +26,7 @@ const option = (name, fallback) => { const i = args.indexOf(name); return i < 0 
 const pages = Number(option('--pages', 1)), rounds = Number(option('--rounds', 1)), budget = Number(option('--budget', 250));
 const metrics = args.includes('--metrics'), reload = args.includes('--reload');
 const port = process.env.CDP_PORT ?? '9333';
-const pageURL = /\.html(\?|$)/.test(base) ? base : `${base.replace(/\/$/, '')}/index.html`;
+const pageURL = /\.html(\?|$)/.test(base) ? base : `${base.replace(/\/$/, '')}/`;
 const apps = JSON.parse(await (await fetch(new URL('apps.json', pageURL.replace(/[^/]*$/, '')))).text()).applications;
 
 const version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
@@ -100,7 +100,7 @@ async function page(index) {
   await send('Page.addScriptToEvaluateOnNewDocument', {source: probe}, sessionId);
   await send('Page.navigate', {url: pageURL}, sessionId);
   for (let i = 0; i < 600 && !(await evaluate(sessionId, 'Boolean(globalThis.tiloMount?.navigation)')); i++) {
-    if (errors.some(e => /panic/i.test(e)) || /^Failed/.test(await evaluate(sessionId, "document.getElementById('status')?.textContent ?? ''"))) break;
+    if (errors.some(e => /panic/i.test(e)) || /· Failed/.test(await evaluate(sessionId, "(document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? '')"))) break;
     await sleep(100);
   }
   const ready = async () => {

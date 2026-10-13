@@ -62,19 +62,19 @@ for (const app of apps) {
   listeners.push(onMsg);
   await send('Runtime.enable', {}, sessionId);
   await send('Page.enable', {}, sessionId);
-  const url = app === 'desktop' ? `${base}/index.html` : `${base}/index.html?app=${encodeURIComponent(app)}`;
+  const url = app === 'desktop' ? `${base}/` : `${base}/app/#/me/${app}`;
   await send('Page.navigate', {url}, sessionId);
   let status = '';
   for (let i = 0; i < 90; i++) {
     await sleep(1000);
-    const r = await send('Runtime.evaluate', {expression: "document.getElementById('status')?.textContent ?? ''", returnByValue: true}, sessionId);
+    const r = await send('Runtime.evaluate', {expression: "(document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? '')", returnByValue: true}, sessionId);
     status = r.result?.result?.value ?? '';
     if (/frames [1-9]/.test(status) && i > 5) break;
     if (/Failed|error/i.test(status) || log.some(l => l.startsWith('EXC'))) break;
   }
   // Let a few more frames run so construction-time work has happened.
   await sleep(3000);
-  const r = await send('Runtime.evaluate', {expression: "document.getElementById('status')?.textContent ?? ''", returnByValue: true}, sessionId);
+  const r = await send('Runtime.evaluate', {expression: "(document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? '')", returnByValue: true}, sessionId);
   status = r.result?.result?.value ?? status;
   const shot = await send('Page.captureScreenshot', {format: 'png'}, sessionId);
   if (shot.result?.data) (await import('node:fs')).writeFileSync(`${shots}/${app}.png`, Buffer.from(shot.result.data, 'base64'));

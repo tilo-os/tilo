@@ -42,8 +42,8 @@ pub mod voice;
 pub use carrier::{HttpClient, HttpFuture, HttpsLink, LinkError};
 pub use channel_crypto::ChannelContentKeys;
 pub use custody::{
-    CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, certify,
-    certify_with_root, issue_device_cert,
+    CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, answer_pairing,
+    certify, certify_with_root, issue_device_cert, pending_pairings,
 };
 pub use document::{ContentCipher, DocumentRoute, OpenedDocument, coalesce};
 pub use health::{PeerSnapshot, SessionHealth};

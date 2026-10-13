@@ -518,53 +518,22 @@ impl Widget for RadarChart {
             }
         }
         if self.style.legend.visible {
-            self.toggles.clear_hits();
             let rows = chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
                 self.rect.x0 + 12.0,
                 self.rect.x1 - 12.0,
             );
-            let items = chart_legend::layout(
-                self.series.iter().map(|series| series.name.as_str()),
-                self.rect.x0 + 12.0,
-                self.rect.x1 - 12.0,
-                self.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT,
+            let top = self.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT;
+            self.toggles.paint(
+                scene,
+                transform,
+                tr,
+                theme,
+                self.series
+                    .iter()
+                    .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
+                Rect::new(self.rect.x0 + 12.0, top, self.rect.x1 - 12.0, top),
             );
-            for (series, item) in self.series.iter().zip(items) {
-                let x = item.x0;
-                let y = item.y0;
-                let visible = !self.toggles.is_hidden(&series.id);
-                let color = if visible {
-                    series.color
-                } else {
-                    Color::from_rgba8(series.color.r(), series.color.g(), series.color.b(), 65)
-                };
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    color,
-                    None,
-                    &Circle::new((x + 4.0, y + 6.0), 4.0),
-                );
-                tr.draw_style(
-                    scene,
-                    &series.name,
-                    if visible {
-                        theme.tokens.colors.text_dim
-                    } else {
-                        Color::from_rgba8(
-                            theme.tokens.colors.text_dim.r(),
-                            theme.tokens.colors.text_dim.g(),
-                            theme.tokens.colors.text_dim.b(),
-                            90,
-                        )
-                    },
-                    transform * Affine::translate((x + 14.0, y)),
-                    Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
-                    &theme.text(TextRole::Caption),
-                );
-                self.toggles.push_hit(series.id.clone(), item);
-            }
         } else {
             self.toggles.clear_hits();
         }

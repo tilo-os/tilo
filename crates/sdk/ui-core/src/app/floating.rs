@@ -240,6 +240,19 @@ impl App {
 }
 
 impl App {
+    /// Attach an explicit host-service connection to the actual native pump in a fixture.
+    /// Existing production dispatch, connection retention and outcome serialization are unchanged.
+    #[cfg(all(feature = "native", feature = "test-support"))]
+    pub fn test_floating_service_connection(&mut self, client: FloatingSurfaceServiceClient) {
+        self.floating.client = Some(client);
+    }
+
+    /// Poll the actual native host-service pump without running a window event loop.
+    #[cfg(all(feature = "native", feature = "test-support"))]
+    pub fn test_pump_floating_service(&mut self) -> bool {
+        self.pump_floating_surface_service()
+    }
+
     /// A queued request is insufficient: the compositor must have applied it
     /// before the render worker can present any secret pixels.
     #[cfg(feature = "native")]

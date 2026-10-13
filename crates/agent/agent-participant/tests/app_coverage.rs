@@ -59,7 +59,7 @@ fn every_web_app_takes_an_edit_through_its_published_operations() {
             definition.app_id,
             ROOM,
             "coverage-agent",
-            true,
+            tilo_agent_participant::ReplicaActor::Agent,
             Seed::New,
         )
         .unwrap_or_else(|error| panic!("{} did not open: {error}", definition.app_id));

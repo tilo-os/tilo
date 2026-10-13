@@ -351,7 +351,7 @@ pub(crate) fn decode_result(
         let data = match &value["data"] {
             serde_json::Value::Null => None,
             data @ serde_json::Value::Object(_) => {
-                if serde_json::to_vec(data).ok()?.len() > MAX_DATA_BYTES {
+                if runtime_collab::wire_json_len(data) > MAX_DATA_BYTES {
                     return None;
                 }
                 Some(data.clone())

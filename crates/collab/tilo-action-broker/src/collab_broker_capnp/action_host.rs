@@ -19,15 +19,14 @@ use tilo_actions::remote::{
     InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus,
     Reservation, application_provider, pending, workspace_provider, workspace_provider_room,
 };
-use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
+use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
     ActionDirectoryRoot, BrokerActor, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES,
-    InvocationInputs, InvocationOwner, LaunchScope, PublishedAction, PublishedInput,
-    PublishedSurface, app_node, confirmation_satisfied, published_directory_action,
-    validate_directory_target_input,
+    InvocationInputs, InvocationOwner, LaunchScope, PublishedAction, PublishedSurface, app_node,
+    confirmation_satisfied, published_directory_action, validate_directory_target_input,
 };
 use crate::automation;
 use crate::collab_broker::CrdtRoute;
@@ -226,38 +225,10 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
     }
 }
 
+/// The host runs the action wherever its app lives; a published surface
+/// carries no locus of its own.
 fn descriptor(action: &PublishedAction) -> ActionDescriptor {
-    ActionDescriptor {
-        semantic_identity: action.semantic_identity.clone(),
-        address: ActionAddress::new(&action.resource, &action.action),
-        resource_kind: action.resource_kind.clone(),
-        resource_label: action.resource_label.clone(),
-        action_label: action.action_label.clone(),
-        description: action.description.clone(),
-        // The host runs the action wherever its app lives; a published
-        // surface carries no locus of its own.
-        locus: ExecutionLocus::default(),
-        kind: action.operation_kind,
-        contract: action.contract.clone(),
-        input: match &action.input {
-            PublishedInput::None => InputSpec::None,
-            PublishedInput::Text {
-                prompt,
-                placeholder,
-                wants_content,
-            } => InputSpec::Text {
-                prompt: prompt.clone(),
-                placeholder: placeholder.clone(),
-                collects: if *wants_content {
-                    Collects::Content
-                } else {
-                    Collects::Words
-                },
-            },
-        },
-        params: action.params.clone(),
-        view: action.view.clone(),
-    }
+    action.descriptor(ExecutionLocus::default())
 }
 
 fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDescriptor {
@@ -437,9 +408,11 @@ impl CapnpBrokerState {
             as_app = as_app.in_room(room);
         }
         let permitted = match message {
-            RemoteActionMessage::CatalogueRequest { .. } => access.query.then(|| person.clone()),
+            RemoteActionMessage::CatalogueRequest { query, .. } => {
+                (access.query || own_view_lookup(app_id, query)).then(|| person.clone())
+            }
             RemoteActionMessage::Invoke(request) => {
-                if self.app_owns(person, app_id, request) {
+                if self.app_owns(person, app_id, request) || link_request(request) {
                     Some(person.clone())
                 } else {
                     access.invoke.then_some(as_app)
@@ -2903,7 +2876,7 @@ impl CapnpBrokerState {
     ) -> Option<InvocationState> {
         let job = self.remote_job(caller, id)?;
         self.invocation_status(job)
-            .map(|update| InvocationState::new(*id, update))
+            .map(|update| InvocationState::new(*id, update).with_untrusted(self.untrusted_job(job)))
     }
 
     /// Resolves once an invocation changes after what `seen` has seen, or
@@ -3050,6 +3023,89 @@ fn bridge_error(error: ActionDirectoryBridgeError) -> ActionHostError {
         other => ActionHostError::Unavailable {
             reason: format!("the action directory is {other:?}"),
         },
+    }
+}
+
+/// Whether `query` asks only where one of `app_id`'s own resources is shown,
+/// as minting a link to it does. That is read-only view discovery of the
+/// app's own record, answered as the person using it, never the catalogue of
+/// what else they are offered, so it needs no declared `query` access.
+fn own_view_lookup(app_id: &str, query: &tilo_actions::remote::CatalogueQuery) -> bool {
+    query.view_resource.is_some()
+        && query
+            .provider
+            .as_deref()
+            .and_then(|provider| provider.strip_prefix("record:"))
+            .and_then(|record| record.split_once(':'))
+            .is_some_and(|(app, _)| app == app_id)
+}
+
+/// Whether `request` asks for the link to a resource: `share-link`, which
+/// the framework answers for every app and no app may publish itself. It
+/// reads where the resource is shown and grants nothing, so an app showing a
+/// reference (a chat message carrying a page) may ask for it as the person
+/// using it without declared `invoke` access; the person's own grant on the
+/// resource still decides.
+fn link_request(request: &tilo_actions::remote::InvokeRequest) -> bool {
+    request.target.address.action == "share-link"
+}
+
+#[cfg(test)]
+mod own_view_lookup_tests {
+    use super::own_view_lookup;
+    use tilo_actions::remote::{CatalogueQuery, ViewResourceQuery};
+
+    #[test]
+    fn an_app_may_look_up_only_its_own_resources_views() {
+        let lookup = |provider: &str, view: bool| CatalogueQuery {
+            provider: Some(provider.into()),
+            view_resource: view.then(|| ViewResourceQuery {
+                id: "notes.page:1".into(),
+                kind: "notes.page".into(),
+            }),
+            ..CatalogueQuery::default()
+        };
+        assert!(own_view_lookup(
+            "so.tilo.notes",
+            &lookup("record:so.tilo.notes:", true)
+        ));
+        assert!(own_view_lookup(
+            "so.tilo.notes",
+            &lookup("record:so.tilo.notes:uuid:1", true)
+        ));
+        assert!(!own_view_lookup(
+            "so.tilo.notes",
+            &lookup("record:so.tilo.notes.evil:", true)
+        ));
+        assert!(!own_view_lookup(
+            "so.tilo.chat",
+            &lookup("record:so.tilo.notes:", true)
+        ));
+        assert!(
+            !own_view_lookup("so.tilo.notes", &lookup("record:so.tilo.notes:", false)),
+            "the action catalogue still needs declared access"
+        );
+    }
+
+    #[test]
+    fn only_the_link_action_is_open_to_every_app() {
+        let request = |action: &str| tilo_actions::remote::InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: "record:so.tilo.notes:".into(),
+                address: tilo_actions::ActionAddress::new("notes.page:1", action),
+            },
+            argument: tilo_actions::remote::InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        assert!(super::link_request(&request("share-link")));
+        assert!(!super::link_request(&request("share-invite-link")));
+        assert!(!super::link_request(&request("rename")));
     }
 }
 

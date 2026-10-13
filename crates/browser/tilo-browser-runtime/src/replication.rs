@@ -92,6 +92,9 @@ pub(crate) struct Room {
     /// Routes a delivered document failed to apply to: this page never
     /// answers a compaction request for them.
     unapplied: HashSet<DocumentRoute>,
+    /// Changes this page made to the room's records and sent: the person
+    /// posted or created something (the desktop's own document aside).
+    authored: u64,
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -141,10 +144,16 @@ pub(crate) fn open(
         desktop_value: None,
         stored: BTreeSet::new(),
         unapplied: HashSet::new(),
+        authored: 0,
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
     Ok(())
+}
+
+/// How many changes to the room's records peer `id` made and sent.
+pub(crate) fn authored(id: u32) -> u64 {
+    room(id).map_or(0, |room| room.borrow().authored)
 }
 
 /// The certified device key (hex) of peer `id`, if it replicates a room.
@@ -600,8 +609,14 @@ impl Room {
         // Records first: a desktop naming a new tab's record must not reach
         // a peer before the record does.
         for (route, mutation, advance) in outgoing {
+            // A first snapshot carries what was there already; an
+            // increment is what this page changed.
+            let authored = matches!(mutation, DocumentMutation::Incremental(_));
             if self.peer.publish(route, &mutation).is_err() {
                 return;
+            }
+            if authored {
+                self.authored = self.authored.saturating_add(1);
             }
             let (id, key, heads) = advance;
             if let Some(replica) = self

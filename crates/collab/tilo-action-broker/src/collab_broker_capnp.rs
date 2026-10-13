@@ -3256,6 +3256,10 @@ pub struct CapnpBrokerState {
     // Retain result authorization even when the host has no durable journal.
     // Entries share the completed invocation cache's bounded lifetime.
     checkpoint_jobs: Mutex<HashMap<u64, (String, String, tilo_actions::ActionContract)>>,
+    /// Jobs whose action's contract declares untrusted content, so every
+    /// observation of them says so. They share the completed invocation
+    /// cache's bounded lifetime.
+    untrusted_jobs: Mutex<std::collections::HashSet<u64>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     /// Confirmations people gave on their own device for an invocation
     /// someone acting for them makes; see [`Self::witness_confirmation`].
@@ -3735,6 +3739,9 @@ impl CapnpBrokerState {
                 if let Ok(mut checkpoints) = self.checkpoint_jobs.lock() {
                     checkpoints.remove(&oldest);
                 }
+                if let Ok(mut untrusted) = self.untrusted_jobs.lock() {
+                    untrusted.remove(&oldest);
+                }
             }
         }
     }
@@ -4044,6 +4051,7 @@ impl CapnpBrokerState {
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 checkpoint_jobs: Mutex::new(HashMap::new()),
+                untrusted_jobs: Mutex::default(),
                 confirmation_grants: Mutex::new(HashMap::new()),
                 witnessed_confirmations: Mutex::new(HashMap::new()),
                 cancellation_requests: Mutex::new(std::collections::HashSet::new()),
@@ -4962,38 +4970,7 @@ impl CapnpBrokerState {
             .into_iter()
             .filter_map(|surface| {
                 let provider = (!surface.live).then(|| launchable::launchable_provider(&surface));
-                let actions = surface
-                    .actions
-                    .into_iter()
-                    .map(|action| {
-                        let input = match action.input {
-                            PublishedInput::None => serde_json::json!({"kind": "none"}),
-                            PublishedInput::Text {
-                                prompt,
-                                placeholder,
-                                wants_content,
-                            } => serde_json::json!({
-                                "kind": "text",
-                                "prompt": prompt,
-                                "placeholder": placeholder,
-                                "wants_content": wants_content,
-                            }),
-                        };
-                        serde_json::json!({
-                            "resource": action.resource,
-                            "action": action.action,
-                            "resource_kind": action.resource_kind,
-                            "resource_label": action.resource_label,
-                            "action_label": action.action_label,
-                            "description": action.description,
-                            "operation_kind": action.operation_kind,
-                            "params": action.params,
-                            "contract": action.contract,
-                            "input": input,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                (!actions.is_empty()).then(|| {
+                (!surface.actions.is_empty()).then(|| {
                     serde_json::json!({
                         "peer_id": surface.peer_id,
                         "provider": provider,
@@ -5001,7 +4978,7 @@ impl CapnpBrokerState {
                         "cluster_id": surface.route.cluster_id,
                         "record_id": surface.route.record_id,
                         "live": surface.live,
-                        "actions": actions,
+                        "actions": surface.actions,
                     })
                 })
             })
@@ -5016,17 +4993,21 @@ impl CapnpBrokerState {
                 "cluster_id": cluster_id,
                 "record_id": "",
                 "live": true,
-                "actions": [{
-                    "resource": format!("app.{package_id}"),
-                    "action": "open",
-                    "resource_kind": "applications.app",
-                    "resource_label": display_name,
-                    "action_label": format!("Open {display_name}"),
-                    "description": "Launch this application into the current workspace",
-                    "operation_kind": tilo_actions::OperationKind::Effect,
-                    "params": [],
-                    "contract": tilo_actions::ActionContract::default(),
-                    "input": {"kind": "none"},
+                "actions": [PublishedAction {
+                    resource: format!("app.{package_id}"),
+                    semantic_identity: None,
+                    action: "open".into(),
+                    resource_kind: "applications.app".into(),
+                    action_label: format!("Open {display_name}"),
+                    resource_label: display_name,
+                    description: Some(
+                        "Launch this application into the current workspace".into(),
+                    ),
+                    operation_kind: tilo_actions::OperationKind::Effect,
+                    params: Vec::new(),
+                    contract: tilo_actions::ActionContract::default(),
+                    view: None,
+                    input: PublishedInput::None,
                 }],
             }));
         }
@@ -5651,6 +5632,12 @@ impl CapnpBrokerState {
                     ),
                 );
         }
+        if offered.1.contract.carries_untrusted_content() {
+            self.untrusted_jobs
+                .lock()
+                .map_err(|_| "untrusted job registry unavailable")?
+                .insert(id);
+        }
         self.spend_once_grants(&offered.0.route.cluster_id, &spent);
         // Keep acceptance before an immediately completing application's first
         // update. Sending to the unbounded app queue and bounded observation
@@ -6042,6 +6029,13 @@ impl CapnpBrokerState {
         drop(completed);
         drop(pending);
         Ok(retained)
+    }
+
+    /// Whether job `id`'s action declares untrusted content.
+    pub fn untrusted_job(&self, id: u64) -> bool {
+        self.untrusted_jobs
+            .lock()
+            .is_ok_and(|untrusted| untrusted.contains(&id))
     }
 
     pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {

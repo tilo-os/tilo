@@ -11,6 +11,17 @@ fn fixture() -> (
     Caller,
     mpsc::UnboundedReceiver<InvocationEnvelope>,
 ) {
+    fixture_tagged(Vec::new())
+}
+
+/// [`fixture`] with the published action's contract carrying `tags`.
+fn fixture_tagged(
+    tags: Vec<String>,
+) -> (
+    Arc<CapnpBrokerState>,
+    Caller,
+    mpsc::UnboundedReceiver<InvocationEnvelope>,
+) {
     let mut workspace = Workspace::new(WorkspaceId(52), "Synthetic execution presence");
     workspace.set_owner("a1".repeat(32));
     let room = workspace.room.to_string();
@@ -41,6 +52,7 @@ fn fixture() -> (
             contract: tilo_actions::ActionContract {
                 execution: tilo_actions::ExecutionMode::Background { cancellable: true },
                 result: tilo_actions::ResultSpec::Job,
+                tags,
                 ..Default::default()
             },
             input: PublishedInput::None,
@@ -138,6 +150,48 @@ async fn only_admitted_execution_and_validated_terminal_emit_activity() {
     assert!(accepted.source_time_ms > 0);
     assert!(failed.source_time_ms > 0);
     assert!(events.try_recv().is_err());
+}
+
+/// An invocation of an action whose contract declares untrusted content (a
+/// web page's text) is observed as untrusted while it runs and once it has
+/// finished, so every caller reading its answer can tell; any other
+/// action's is not.
+#[tokio::test]
+async fn an_untrusted_contract_marks_every_observation_of_its_invocation() {
+    for untrusted in [false, true] {
+        let tags = if untrusted {
+            vec![tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned()]
+        } else {
+            Vec::new()
+        };
+        let (state, caller, mut app) = fixture_tagged(tags);
+        let request = request();
+        assert!(matches!(
+            state
+                .action_invoke(&caller, None, None, &request)
+                .poll_ready(),
+            PendingPoll::Ready(Ok(_))
+        ));
+        let delivered = app.try_recv().unwrap();
+        let running = state.action_observe(&caller, &request.invocation).unwrap();
+        assert!(!running.is_terminal());
+        assert_eq!(running.untrusted, untrusted, "while it runs");
+        state
+            .apply_invocation_update(
+                7,
+                delivered.id,
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: delivered.invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let finished = state.action_observe(&caller, &request.invocation).unwrap();
+        assert!(finished.is_terminal());
+        assert_eq!(finished.untrusted, untrusted, "once it finished");
+    }
 }
 
 #[test]

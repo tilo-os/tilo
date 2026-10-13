@@ -815,11 +815,22 @@ impl ChatApp {
                 ))
             }
             // One of your own messages — offer the message actions (Edit).
-            Hit::MessageMenu { msg } => Some(self.context_menu(
-                MenuTarget::Message(msg),
-                self.last_mouse,
-                MenuAction::for_message().to_vec(),
-            )),
+            Hit::MessageMenu { msg } => {
+                let mine = self.message(&msg).is_some_and(|m| self.is_me(&m.author));
+                let author = self.message(&msg).map(|m| m.author.clone());
+                let items = if mine {
+                    MenuAction::for_message().to_vec()
+                } else {
+                    let mut items = MenuAction::for_others_message().to_vec();
+                    if !self.perms.can_moderate() {
+                        items.retain(|action| *action != MenuAction::DeleteMessage);
+                    } else if author.is_some_and(|author| crate::moderation::bannable(&author)) {
+                        items.push(MenuAction::BanAuthor);
+                    }
+                    items
+                };
+                Some(self.context_menu(MenuTarget::Message(msg), self.last_mouse, items))
+            }
             _ => Some(self.context_menu(
                 MenuTarget::Workspace(self.active_ws.clone()),
                 self.last_mouse,
@@ -935,16 +946,8 @@ impl ChatApp {
                 // The same device-local handler the public effect reaches.
                 let _ = self.answer_effect(crate::effects::ChatEffect::StopSharingLiveContext);
             }
-            Hit::CopyResourceLink(message) => {
-                if let Some(dispatch) = &self.dispatch {
-                    dispatch.effect(&crate::effects::ChatEffect::CopyResourceLink { message });
-                }
-            }
-            Hit::OpenResourceLink(message) => {
-                if let Some(dispatch) = &self.dispatch {
-                    dispatch.effect(&crate::effects::ChatEffect::OpenResourceLink { message });
-                }
-            }
+            Hit::CopyResourceLink(message) => self.begin_resource_navigation(&message, false),
+            Hit::OpenResourceLink(message) => self.begin_resource_navigation(&message, true),
             Hit::CloseThread => {
                 self.close_thread();
             }
@@ -1225,11 +1228,40 @@ impl ChatApp {
                     let pin = Chat::paths().messages.item(&item(&id)).pinned.set(!pinned);
                     self.apply_now(doc, pin);
                 }
+                MenuAction::BanAuthor => self.ban_author(&id),
                 MenuAction::DeleteMessage => {
-                    self.apply_now(
-                        doc,
-                        Chat::DELETE_MESSAGE.with(chat::DeleteMessage { message: item(&id) }),
-                    );
+                    let mine = self.message(&id).is_some_and(|m| self.is_me(&m.author));
+                    if mine {
+                        self.apply_now(
+                            doc,
+                            Chat::DELETE_MESSAGE.with(chat::DeleteMessage { message: item(&id) }),
+                        );
+                    } else {
+                        self.apply_now(
+                            doc,
+                            Chat::REMOVE_MESSAGE.with(chat::RemoveMessage { message: item(&id) }),
+                        );
+                    }
+                }
+                // The menu files a report with a plain reason; Ctrl+K's
+                // `Report message` and `Report person` ask for one.
+                MenuAction::ReportMessage => self.apply_now(
+                    doc,
+                    Chat::REPORT_MESSAGE.with(chat::ReportMessage {
+                        message: item(&id),
+                        reason: "Reported from the message menu".to_owned(),
+                    }),
+                ),
+                MenuAction::ReportAuthor => {
+                    if let Some(author) = self.message(&id).map(|m| m.author.clone()) {
+                        self.apply_now(
+                            doc,
+                            Chat::REPORT_PERSON.with(chat::ReportPerson {
+                                person: item(&author),
+                                reason: "Reported from the message menu".to_owned(),
+                            }),
+                        );
+                    }
                 }
                 _ => {}
             },
