@@ -1859,7 +1859,11 @@ impl AppHandler {
     /// A touch on the field that has the keyboard, which Android answers by
     /// settling the composition and bringing a dismissed keyboard back.
     #[cfg(target_os = "android")]
-    fn touches_focused_field(&self, window_id: WindowId, location: PhysicalPosition<f64>) -> bool {
+    fn touches_focused_field(
+        &self,
+        window_id: WindowId,
+        location: winit::dpi::PhysicalPosition<f64>,
+    ) -> bool {
         let Some(window) = self
             .window
             .as_ref()
