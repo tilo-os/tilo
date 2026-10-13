@@ -2,12 +2,11 @@
 //! spreadsheet body into the CRDT [`Workbook`] model — sheets, positional cells,
 //! cell types, and **formulas** (`table:formula`, preserved verbatim) — and
 //! serializes a complete valid package back. Untrusted bytes enter only through
-//! the bounded/hardened `SheetPackage` reader (zip-bomb + XXE defence).
+//! the bounded/hardened `ZipPackage` reader (zip-bomb + XXE defence).
 
 use crate::format::CodecError;
 use crate::sheet_common::{
-    ParsedSheet, ParsedWorkbook, SheetPackage, SheetProvider, attr_local, end_local_name,
-    local_name,
+    ParsedSheet, ParsedWorkbook, SheetProvider, attr_local, end_local_name, local_name,
 };
 use crate::xml_escape::escape_attr_quotes;
 use quick_xml::events::Event;
@@ -55,7 +54,7 @@ impl OdsCodec {
     /// # Errors
     /// [`CodecError::Parse`] for a malformed or over-limit package.
     pub fn parse(bytes: &[u8]) -> Result<ParsedWorkbook, CodecError> {
-        let pkg = SheetPackage::read(bytes)?;
+        let pkg = crate::package::ZipPackage::read(bytes)?;
         let content = pkg
             .get("content.xml")
             .ok_or_else(|| CodecError::Parse("ods: missing content.xml".into()))?;
@@ -94,7 +93,7 @@ impl OdsCodec {
 }
 
 fn serialize(snap: &WorkbookSnapshot, styles: Option<Vec<u8>>) -> Result<Vec<u8>, CodecError> {
-    let mut pkg = SheetPackage { parts: Vec::new() };
+    let mut pkg = crate::package::ZipPackage { parts: Vec::new() };
     pkg.set("mimetype", MIMETYPE.as_bytes().to_vec());
     pkg.set("content.xml", content_xml(snap).into_bytes());
     pkg.set("meta.xml", meta_xml(&snap.properties).into_bytes());

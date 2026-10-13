@@ -443,6 +443,46 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
     relay.shutdown().await;
 }
 
+/// The room's default record a host seeds is the one every member's first
+/// window opens: it names the default id, or members refuse it.
+#[cfg(feature = "agents")]
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay stays live through the record check and its consuming shutdown"
+)]
+async fn a_seeded_room_default_record_names_the_default_id() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = view_read_relay(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap();
+    let created = rooms.create("Seeded default record").await.unwrap();
+    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    let record = crate::room_bots::room_record(&catalogue, "so.tilo.notes");
+    assert_eq!(record, ui::record::RecordId::room_default().as_str());
+    assert!(
+        rooms
+            .prepare_application(&created.room, &cert, &catalogue, "so.tilo.notes", &record)
+            .await
+            .unwrap()
+    );
+    let bytes = rooms
+        .record_document(&created.room, "so.tilo.notes", &record)
+        .await
+        .unwrap()
+        .expect("the room holds its default record");
+    let doc = automerge::AutoCommit::load(&bytes).unwrap();
+    let kind = catalogue.get("so.tilo.notes").unwrap().record_kind.clone();
+    assert_eq!(
+        ui::record::identity(&doc),
+        Some(ui::record::RecordCheckout::new(
+            ui::record::RecordId::room_default(),
+            kind
+        ))
+    );
+    relay.shutdown().await;
+}
+
 #[cfg(feature = "agents")]
 #[tokio::test]
 #[expect(

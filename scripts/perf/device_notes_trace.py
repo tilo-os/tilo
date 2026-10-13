@@ -30,9 +30,17 @@ inputs = [row for tag, row, _ in records
 workers = {(row.get("process_id"), row.get("observer_session")) for row in inputs}
 identities = {row.get("id") for row in inputs}
 serials = {row.get("wayland_serial") for row in inputs}
+# The controller collects and validates each key before sending the next one.
+# Keep overlapping input metadata to detect conflicting identities, but transfer
+# the current key's complete witness family only: completed families are already
+# retained by collect_trace on the controller. Thirty-two witnesses per key must
+# not multiply the RPC payload by thirty-two historical keys.
+latest = {(row.get("process_id"), row.get("observer_session"), row.get("id"))
+          for row in inputs[-1:]}
 frames = [row for tag, row, _ in records if tag == markers[1]
           and (row.get("process_id"), row.get("observer_session")) in workers
-          and any(identity in identities for identity in row.get("input_ids", []))]
+          and any((row.get("process_id"), row.get("observer_session"), identity) in latest
+                  for identity in row.get("input_ids", []))]
 frame_ids = {(row.get("process_id"), row.get("observer_session"), row.get("cpu_frame_id")) for row in frames}
 selected = []
 for tag, row, original in records:
