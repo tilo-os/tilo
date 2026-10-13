@@ -18,6 +18,8 @@
 //! collaboration history.
 
 mod channels;
+#[cfg(target_os = "macos")]
+mod confirm;
 mod execution;
 mod files;
 mod joined;
@@ -161,7 +163,7 @@ impl Standalone {
                 app_action_access: Some(apps.access_resolver()),
                 app_action_grants: Some(Arc::new(ProfileGrants {
                     workspace: Arc::clone(&workspace),
-                    apps,
+                    apps: Arc::clone(&apps),
                 })),
                 legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
                 record_content: Some(joined::record_content(&joined, &root.join(BLOB_SOCKET))),
@@ -176,6 +178,16 @@ impl Standalone {
             channels,
             fanout,
         )?;
+        // An action an agent makes for the person, which asks for
+        // confirmation, is put to them in the runtime's native prompt.
+        // Elsewhere nobody here answers, and such an action is refused.
+        #[cfg(target_os = "macos")]
+        if let Some(actions) = broker.app_action_broker() {
+            actions.set_app_action_consent(Arc::new(confirm::ConfirmationPrompt {
+                person: actor.clone(),
+                apps: Arc::clone(&apps),
+            }));
+        }
         let author = files::Author {
             person: identity.user_public_key,
             device,
@@ -510,6 +522,26 @@ impl ActionHost for RuntimeActionHost {
         self.broker
             .state()
             .action_next_change_after_now(&on_this_device(caller), id)
+    }
+
+    /// The person this run's agent acts for confirms `request` on this
+    /// device, as the broker asks them; the agent never confirms by its own
+    /// word. A person acting themselves confirms on their own screen, so
+    /// nothing answers for them here.
+    fn confirm(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
+        let Some(session) = &self.session else {
+            return Pending::ready(Err(ActionHostError::ConfirmationRequired));
+        };
+        if let Err(error) = session.check(caller, &self.joined) {
+            return Pending::ready(Err(error));
+        }
+        self.broker
+            .state()
+            .request_witness(&session.acting(caller), None, request)
     }
 
     fn cancel(
