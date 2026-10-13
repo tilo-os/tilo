@@ -18,7 +18,7 @@ use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_delivery_protocol::peer_actions::UnavailableReason;
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::{ActionHostPlane, Envelope, RelayClient};
-use tilo_relay_protocol::agents::{AgentDelegation, AgentScope};
+use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay, spawn_relay_serving_apps};
@@ -94,6 +94,7 @@ fn invoke(invocation: InvocationId) -> RemoteActionMessage {
         confirmation: None,
         revision: None,
         wait_ms: None,
+        appearance: None,
     })
 }
 
@@ -406,13 +407,15 @@ async fn expired_agent_delegation_cannot_invoke_host() {
     let expires = issued
         .checked_add(u64::try_from(lifetime.as_nanos()).unwrap())
         .unwrap();
-    let delegation = AgentDelegation::sign(
+    let delegation = Delegation::sign(
         &user.user_sk,
         agent.device_pubkey(),
-        "helper",
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "helper".into(),
+        },
         "Helper",
         [0x7c, 0x3a, 0xed],
-        AgentScope {
+        DelegateScope {
             rooms: vec![room.into()],
             apps: Vec::new(),
         },

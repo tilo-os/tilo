@@ -29,8 +29,11 @@ use crate::targets::TargetStore;
 /// The domain of a greetd session unless the image says otherwise.
 pub const DEFAULT_DOMAIN: &str = "unconfined_t";
 
+mod runtime_retention;
 /// Layers and uploads younger than this survive gc: they may belong to a
 /// swap that is still in flight on another connection.
+mod userspace;
+
 const GC_MIN_AGE: Duration = Duration::from_secs(3600);
 
 /// How long a started session may take to bind its control socket.
@@ -568,6 +571,7 @@ impl Daemon {
                 issues: self.issues()?,
                 tools: detect_tools(),
                 awake: Some(self.renew_awake(awake::Change::Request)),
+                capabilities: vec!["userspace.apply".into()],
             });
         }
         match self.client_protocol {
@@ -630,6 +634,10 @@ impl Daemon {
             Request::Swap(p) => {
                 let _locks = self.slot_locks(&p.slot)?;
                 to_value(&self.swap(&p.slot, &p.component, &p.layer, p.info)?)
+            }
+            Request::UserspaceApply(p) => {
+                let _locks = self.slot_locks(&p.slot)?;
+                to_value(&self.apply_userspace(p)?)
             }
             Request::Rollback(p) => {
                 let _locks = self.slot_locks(&p.slot)?;
@@ -806,14 +814,15 @@ impl Daemon {
         let path = self.lease_path();
         let now = tilo_clock::unix_now();
         let (lease, write) = awake::renewal(awake::read(&path), now, change);
-        let mut problem = None;
-        if write
+        let mut problem = if write
             && let Err(error) = serde_json::to_vec(&lease)
                 .map_err(|e| DaemonError::InvalidParams(e.to_string()))
                 .and_then(|bytes| crate::fsutil::write_atomic(&path, &bytes))
         {
-            problem = Some(error.to_string());
-        }
+            Some(error.to_string())
+        } else {
+            None
+        };
         let applied = if lease.active(now) {
             self.apply.hold_awake(&path)
         } else {
@@ -1051,6 +1060,7 @@ impl Daemon {
             _ => None,
         };
         Ok(SlotInfo {
+            session_identity: unit.as_ref().map(Session::identity),
             name: record.name.clone(),
             kind: record.kind,
             owner: record.owner.clone(),

@@ -416,11 +416,7 @@ fn capture_review_theme(
         vello::peniko::Color::TRANSPARENT,
         output.join(format!("{name}-task.png")),
     );
-    let click = winit::event::WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: winit::event::ElementState::Pressed,
-        button: winit::event::MouseButton::Left,
-    };
+    let click = ui::synthetic_input::mouse_press();
     pane.handle_event(
         &click,
         1.0,

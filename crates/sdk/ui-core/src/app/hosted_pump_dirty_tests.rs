@@ -808,13 +808,13 @@ fn cancelled_directory_rpc_does_not_consume_undelivered_cursor() {
 }
 
 /// Bare pointer motion keeps the published resource tree; every change an
-/// event can make to it still republishes within that event (TIL-628).
+/// event can make to it still republishes within that event.
 #[cfg(feature = "native")]
 mod input_publication {
     use super::*;
     use std::rc::Rc;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, ElementState, MouseButton};
+
+    use winit::event::{ElementState, MouseButton};
 
     /// Publishes one resource whose label shows every piece of state an
     /// input can move: a press switches its tab without marking the event
@@ -935,24 +935,13 @@ mod input_publication {
     }
 
     fn move_to(app: &mut App, x: f64, y: f64) {
-        app.surface_input(
-            &Surface,
-            WindowEvent::CursorMoved {
-                device_id: DeviceId::dummy(),
-                position: PhysicalPosition::new(x, y),
-            },
-            false,
-        );
+        app.surface_input(&Surface, crate::synthetic_input::cursor_moved(x, y), false);
     }
 
     fn button(app: &mut App, state: ElementState) {
         app.surface_input(
             &Surface,
-            WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state,
-                button: MouseButton::Left,
-            },
+            crate::synthetic_input::mouse_input(state, MouseButton::Left),
             false,
         );
     }
@@ -1051,7 +1040,7 @@ mod input_publication {
     }
 
     /// Every keystroke ends in a release. One that nothing consumed and that
-    /// moved nothing keeps the tree its press published (TIL-751).
+    /// moved nothing keeps the tree its press published.
     #[test]
     fn key_release_without_state_change_does_not_regenerate_declarations() {
         let (mut app, calls) = app();

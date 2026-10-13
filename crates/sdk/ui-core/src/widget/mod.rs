@@ -6,7 +6,6 @@ pub(crate) mod resource_operation;
 pub(crate) use resource_operation::start_without_document_writes;
 pub(crate) use resource_operation::{ResourceOperation, ResourceOperationStart, start_in_children};
 
-use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
@@ -163,6 +162,41 @@ pub fn layout_rect(
     origin: vello::kurbo::Point,
 ) -> vello::kurbo::Rect {
     placed(&taffy.layout(node).copied().unwrap_or_default(), origin)
+}
+
+/// Implements [`Widget::apply_layout`] and [`Widget::get_rect`] for a widget
+/// that keeps the box layout gives it in `self.rect`.
+#[macro_export]
+macro_rules! rect_geometry {
+    () => {
+        fn apply_layout(
+            &mut self,
+            taffy: &$crate::taffy::TaffyTree<()>,
+            node: $crate::taffy::NodeId,
+            origin: $crate::kurbo::Point,
+        ) {
+            self.rect = $crate::widget::layout_rect(taffy, node, origin);
+        }
+
+        fn get_rect(&self) -> $crate::kurbo::Rect {
+            self.rect
+        }
+    };
+}
+
+/// Implements [`Widget::needs_redraw`] and [`Widget::mark_drawn`] for a
+/// widget that tracks whether it needs repainting in `self.dirty`.
+#[macro_export]
+macro_rules! redraw_flag {
+    () => {
+        fn needs_redraw(&self) -> bool {
+            self.dirty
+        }
+
+        fn mark_drawn(&mut self) {
+            self.dirty = false;
+        }
+    };
 }
 
 /// Let `node` share its row's main axis with its siblings by `grow`: it
@@ -773,6 +807,13 @@ pub trait FloatingSurfaceProvider {
     /// Route native keyboard focus to the exact presentation instance.
     fn on_floating_surface_focus_changed(&mut self, _id: Option<&str>, _focused: bool) {}
 
+    /// Keep the exact secondary presentation's editor logically focused while
+    /// the platform deliberately retains text-input focus on its source.
+    ///
+    /// This is a host-authenticated input route, not a claim made by the app.
+    /// The host clears it when the continuation ends or no longer validates.
+    fn on_floating_surface_ime_source_changed(&mut self, _id: Option<&str>) {}
+
     /// Identify the native surface delivering the current input event. The
     /// host resets this immediately after dispatch; it grants no authority.
     fn on_floating_surface_event_source(&mut self, _id: Option<&str>) {}
@@ -829,6 +870,32 @@ pub trait FloatingSurfaceProvider {
         _theme: &crate::theme::Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
+    }
+
+    /// Paint exactly one app-owned presentation into its native window.
+    ///
+    /// Native secondary windows are independent buffers. Painting the plural
+    /// overlay pass into each one can duplicate sibling surfaces and lets
+    /// content escape the window's own clip.
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool {
+        let presentations = self.floating_surface_presentations();
+        if presentations.len() != 1 || presentations[0].id != id {
+            // A plural paint pass cannot select one of several owners safely.
+            // Multi-surface providers must implement the exact-id pass.
+            return false;
+        }
+        // Existing single-surface providers retain their normal paint pass.
+        // Multi-surface providers override this to select the exact owner.
+        self.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
+        true
     }
 
     /// Desktop-space presentations that need a native secondary window.
@@ -1062,6 +1129,20 @@ impl EventCtx<'_> {
     #[must_use]
     pub fn pen(&self) -> Option<PenSample> {
         crate::pen::current()
+    }
+
+    /// `position`, a pointer position in physical pixels, in this event's
+    /// logical coordinates.
+    #[must_use]
+    pub fn logical(
+        &self,
+        position: impl std::borrow::Borrow<winit::dpi::PhysicalPosition<f64>>,
+    ) -> vello::kurbo::Point {
+        let position = position.borrow();
+        vello::kurbo::Point::new(
+            position.x / self.scale_factor,
+            position.y / self.scale_factor,
+        )
     }
 }
 
@@ -1306,8 +1387,18 @@ pub trait Widget {
         }
     }
 
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
-        false
+    /// Notice, between frames, state that lives outside the document (a
+    /// chrome revision, a momentum scroll still ticking) and report whether
+    /// anything changed. The default updates every child
+    /// [`Widget::children_mut`] returns, without short-circuiting, so a
+    /// container never freezes its descendants at build-time state; a widget
+    /// overrides it to check state of its own and then forward.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
     }
 
     /// Apply, after the sync pass, what the widget took up there and must
@@ -2164,26 +2255,10 @@ pub trait Widget {
         None
     }
 
-    fn accepts_drop(&self, _payload: &DragPayload) -> bool {
-        false
-    }
-    fn on_drop(
-        &mut self,
-        _payload: DragPayload,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) {
-    }
     fn wants_pointer_capture(&self) -> bool {
         false
     }
 
-    /// Unlike `wants_pointer_capture`, does not swallow misses — drawn
-    /// and hit-tested first, so a small on-video affordance gets z-order
-    /// priority without deadening the content under it. Default `false`.
-    fn is_floating(&self) -> bool {
-        false
-    }
     /// `App` polls this in `Event::AboutToWait`; without it a curve would
     /// freeze partway until an unrelated event woke it again.
     fn needs_animation_frame(&self) -> bool {
@@ -2396,6 +2471,7 @@ pub trait Widget {
 /// contract contains only capability accessors.
 pub trait FloatingSurfaceWidgetExt {
     fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool);
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>);
     fn on_floating_surface_event_source(&mut self, id: Option<&str>);
     fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode>;
     fn perform_floating_surface_accessibility_action(
@@ -2423,6 +2499,15 @@ pub trait FloatingSurfaceWidgetExt {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     );
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool;
     fn floating_surface_presentations(
         &self,
     ) -> Vec<crate::floating_surface::FloatingSurfacePresentation>;
@@ -2438,6 +2523,12 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
     fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
         if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
             provider.on_floating_surface_focus_changed(id, focused);
+        }
+    }
+
+    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+        if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
+            provider.on_floating_surface_ime_source_changed(id);
         }
     }
 
@@ -2502,6 +2593,20 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
         if let Some(provider) = capability::capability_mut::<dyn FloatingSurfaceProvider>(self) {
             provider.draw_floating_surfaces(scene, transform, text_renderer, theme, presence);
         }
+    }
+
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &crate::theme::Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) -> bool {
+        capability::capability_mut::<dyn FloatingSurfaceProvider>(self).is_some_and(|provider| {
+            provider.draw_floating_surface(id, scene, transform, text_renderer, theme, presence)
+        })
     }
 
     fn floating_surface_presentations(
@@ -2763,10 +2868,7 @@ pub trait TaffyTreeExt {
         widget: &mut (dyn Widget + 'static),
     ) -> NodeId {
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         self.widget_leaf(style, node_map, widget)
@@ -2793,10 +2895,7 @@ pub trait TaffyTreeExt {
             taffy::Style {
                 display: taffy::Display::Flex,
                 flex_grow: 1.0,
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
+                size: taffy::Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             &[child],
@@ -2949,8 +3048,6 @@ pub mod slash_menu;
 pub use slash_menu::SlashMenu;
 pub mod link_popover;
 pub use link_popover::{LinkPopover, PageEntry};
-pub mod page_palette;
-pub use page_palette::PageJumpPalette;
 pub mod page_sidebar;
 pub use page_sidebar::{PageSidebar, PageSidebarEvent};
 mod dropdown;
@@ -3001,8 +3098,6 @@ pub mod table {
     pub use super::block_editor_table::*;
 }
 pub use table::Table;
-pub mod icon_grid;
-pub use icon_grid::{IconGrid, IconGridItem};
 mod window_group;
 pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
@@ -3206,9 +3301,8 @@ pub mod chip;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
 pub mod card;
 mod tone;
-pub use tone::Tone;
-pub mod collaboration_overview;
 pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};
+pub use tone::Tone;
 mod section;
 pub use section::{ObjectHeader, Section, SectionHeader, SectionHeaderFace, StatusLine};
 pub mod capture_studio;
@@ -3227,7 +3321,6 @@ pub use selection_handles::{Handle as SelectionHandle, SelectionHandles};
 pub mod activity_timeline;
 pub mod history;
 pub mod history_group;
-pub mod history_scrubber;
 pub mod name_field;
 pub use activity_timeline::ActivityTimeline;
 pub use history::{
@@ -3235,26 +3328,12 @@ pub use history::{
     HistoryEntry, HistoryEntryId, HistoryFilter, RedactionDisplay, format_relative_time,
     hue_to_rgb,
 };
-pub use history_scrubber::HistoryScrubber;
 // The artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
 // caller can build one without naming the collab-types crate directly.
 pub use collab_types::ArtifactKind;
 
-// Wheel-disc spoke overflow integration lives in `shell`.
-pub mod channel_browser;
-pub use channel_browser::{ChannelBrowser, ChannelEntry};
-
-pub mod conflict_banner;
-pub mod conflict_picker;
-pub mod merge_strategy;
-
 pub mod qr;
 pub mod resource_actions;
-pub use conflict_banner::ConflictBanner;
-pub use conflict_picker::{ConflictPicker, PickerOutcome};
-pub use merge_strategy::{
-    Alternative, ConcurrentOp, ConflictKind, ConflictResolver, MergeStrategy, surface_banner,
-};
 pub use qr::QrWidget;
 
 #[cfg(test)]
@@ -3745,9 +3824,6 @@ pub(crate) mod control_result_probe {
         }
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Glyph("P")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
     }
 }

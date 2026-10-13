@@ -11,7 +11,7 @@ use ui::widget::ModelPath;
 
 #[cfg(test)]
 use automerge::AutoCommit;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::Color;
@@ -1265,10 +1265,7 @@ impl Widget for CalculatorApp {
         let node = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
+                    size: Size::from_percent(1.0, 1.0),
                     ..Default::default()
                 },
                 &children,
@@ -1406,7 +1403,7 @@ impl Widget for CalculatorApp {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.mouse = p;
                 let hover_changed = self.track_pointer(p);
                 if self.field_dragging {
@@ -1845,10 +1842,6 @@ impl ui::widget::AppWidget for CalculatorApp {
     fn app_icon(&self) -> ui::widget::IconDescriptor {
         ui::widget::IconDescriptor::Named("calculator".into())
     }
-
-    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-        None
-    }
 }
 
 impl CalculatorApp {
@@ -1938,10 +1931,6 @@ impl CalculatorApp {
             .with_children(children)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one parser keeps every retained graph control on the same action-dispatch path"
-    )]
     fn perform_graph_semantic_action(
         &mut self,
         target: &str,
@@ -2016,24 +2005,20 @@ mod tests {
         } else {
             None
         };
-        WindowEvent::KeyboardInput {
-            device_id: winit::event::DeviceId::dummy(),
-            event: winit::event::KeyEvent::synthetic(
-                winit::event::RawKeyEvent {
-                    physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                        winit::keyboard::NativeKeyCode::Unidentified,
-                    ),
-                    state: ElementState::Pressed,
-                },
-                key.clone(),
-                text.clone(),
-                winit::keyboard::KeyLocation::Standard,
-                false,
-                text,
-                key,
-            ),
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+            winit::event::RawKeyEvent {
+                physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified,
+                ),
+                state: ElementState::Pressed,
+            },
+            key.clone(),
+            text.clone(),
+            winit::keyboard::KeyLocation::Standard,
+            false,
+            text,
+            key,
+        ))
     }
 
     /// A hosted calculator: the framework's live app with its resource.

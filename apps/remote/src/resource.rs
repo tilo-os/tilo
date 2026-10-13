@@ -22,10 +22,7 @@ use crate::model::{AuthMethod, ConnectionDraft, ConnectionId, ConnectionKind};
 /// The app's id, which its settings are kept under.
 pub const REMOTE_APP_ID: &str = "so.tilo.remote";
 
-/// Remote's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
 /// The published id of a saved connection.
 pub fn connection_resource_id(id: ConnectionId) -> String {

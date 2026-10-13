@@ -10,12 +10,8 @@
 //! ```
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "a visual review harness uses assertions and deterministic test state"
 )]
 

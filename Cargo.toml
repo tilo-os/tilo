@@ -6,6 +6,7 @@
 # `crates/doc/tilo-doc-codec-markdown-wasm/build.sh`.
 exclude = [
     "vendor/buffa-build",
+    "tools/web/wasm-split",
     "fuzz",
     "crates/doc/tilo-doc-codec-markdown-wasm",
     "vendor/vello",
@@ -58,7 +59,6 @@ members = [
     "crates/browser/paint-stream",
     "crates/hosting/tilo-room-service",
     "crates/hosting/tilo-moq",
-    "apps/hot-reload-demo",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
@@ -76,6 +76,10 @@ members = [
     "apps/calendar",
     "apps/camera",
     "apps/chat",
+    "apps/discord",
+    "apps/discord-model",
+    "apps/moderation-model",
+    "apps/discord/worker",
     "apps/messages",
     "apps/clocks",
     "apps/code-editor",
@@ -128,6 +132,7 @@ members = [
 
     # Agent
     "crates/agent/agent-participant",
+    "crates/agent/connector",
     "crates/agent/local-model-service",
     "crates/agent/model-gateway",
     "crates/agent/provider-config",
@@ -156,6 +161,7 @@ members = [
     "crates/collab/reference",
     "crates/collab/feedback-review",
     "crates/collab/feedback",
+    "crates/collab/moderation",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-joined-room",
@@ -166,6 +172,8 @@ members = [
     "crates/dev/collab-link",
     "crates/dev/collab-probe",
     "crates/dev/copy-lint",
+    "crates/dev/room-load",
+    "crates/dev/fake-discord",
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
     "crates/dev/test-env",
@@ -219,6 +227,7 @@ members = [
     "crates/packaging/package-store",
     "crates/packaging/tilo-app-package",
     "crates/packaging/tilo-app-package-cli",
+    "crates/packaging/bot-directory",
     "crates/packaging/registry-client",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
@@ -428,6 +437,7 @@ uninhabited_references = "deny"
 set_contains_or_insert = "deny"
 clear_with_drain = "deny"
 trailing_empty_array = "deny"
+equatable_if_let = "deny"                   # if let used as an equality test
 # Crates list their banned calls in their own clippy.toml; a listed call is an
 # error, not a style suggestion.
 disallowed_methods = "deny"
@@ -888,6 +898,14 @@ opt-level = 3
 panic = "abort"
 debug = false
 strip = "symbols"
+
+# `wasm-release` with the symbol table kept: the desktop bundle is split into
+# a start module and per-app modules loaded on demand, and the splitter reads
+# function names and relocations from the linked module. The modules it
+# writes are stripped.
+[profile.wasm-split]
+inherits = "wasm-release"
+strip = "none"
 
 # Thin-app profile: release settings minus those incompatible with dynamic SDK
 # linking.

@@ -1097,7 +1097,6 @@ impl Dropdown {
                     self.highlight = vi;
                     self.select_highlighted(state, root);
                 }
-                *handled = true;
             } else if self.rect.contains(pos) {
                 if self.supports_filter() && self.query_rect.contains(pos) {
                     *focus_target = Some(node_id);
@@ -1109,12 +1108,11 @@ impl Dropdown {
                 } else {
                     self.close();
                 }
-                *handled = true;
             } else {
                 // Click-outside dismissal.
                 self.close();
-                *handled = true;
             }
+            *handled = true;
         } else if self.rect.contains(pos) {
             *focus_target = Some(node_id);
             self.do_open();
@@ -1282,10 +1280,7 @@ impl Widget for Dropdown {
             self.caption_height = 0.0;
             let side = f32_of_f64(self.control_size.height(theme));
             let node = taffy.leaf_node(Style {
-                size: Size {
-                    width: Dimension::length(side),
-                    height: Dimension::length(side),
-                },
+                size: Size::from_lengths(side, side),
                 flex_shrink: 0.0,
                 ..Default::default()
             });
@@ -1639,7 +1634,7 @@ impl Widget for Dropdown {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pos = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pos = ctx.logical(position);
                 self.on_cursor_moved(pos, ctx.handled);
             }
             // The pointer left the window: no `CursorMoved` follows, so the
@@ -1774,13 +1769,13 @@ impl Widget for Dropdown {
         let mut node = AccessNode::new(role)
             .with_optional_name(name)
             .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.is_enabled(),
-                expanded: Some(self.open),
-                ..Default::default()
-            });
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.is_enabled())
+                    .expanded(self.open),
+            );
         // Surface the chosen option's ordinal so the reader can say "2 of 5".
         if let Some(idx) = self.values.iter().position(|value| *value == self.selected) {
             node = node.with_position(idx.saturating_add(1), self.options.len());
@@ -2975,10 +2970,7 @@ mod tests {
             let mut dd = Dropdown::new(opts(), "tz");
             dd.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
             let (mut doc, root) = doc_with_tz("UTC");
-            let enter = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(20.0, 20.0),
-            };
+            let enter = crate::synthetic_input::cursor_moved(20.0, 20.0);
             assert!(
                 !feed_key(&mut dd, &enter, &mut doc, &root),
                 "a hover change must not mark the move handled"

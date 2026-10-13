@@ -642,10 +642,6 @@ fn member_of(tree: &WorkspaceTree, room: RoomId, who: &str) -> bool {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the governor, the accepting laptop and the board form one scenario"
-)]
 fn a_room_someone_else_invited_the_person_to_follows_them_with_its_governor() {
     let (laptop_device, board_device) = person_with_two_devices();
     let (person, key) = certified_person(&laptop_device);

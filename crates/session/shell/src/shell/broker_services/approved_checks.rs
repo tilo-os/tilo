@@ -249,6 +249,31 @@ fn diagnostic(text: Option<&String>, sha256: Option<String>) -> Diagnostic {
         truncated: end != text.len(),
     }
 }
+fn reported_observation(
+    event: ush::approved_checks::ReportedCheckEvent,
+) -> runtime_collab::approved_checks::ReportObservation {
+    use runtime_collab::approved_checks::{LaneRefusal, ReportObservation};
+    use ush::approved_checks::{CheckReportRefusal, ReportedCheckEvent};
+    match event {
+        ReportedCheckEvent::Reported(report) => ReportObservation::Reported {
+            phase: report.phase,
+            completed: report.completed,
+            total: report.total,
+        },
+        ReportedCheckEvent::Disabled(reason) => ReportObservation::Disabled {
+            reason: match reason {
+                CheckReportRefusal::InvalidReport => LaneRefusal::InvalidReport,
+                CheckReportRefusal::OversizedReport => LaneRefusal::OversizedReport,
+                CheckReportRefusal::UnknownPhase => LaneRefusal::UnknownPhase,
+                CheckReportRefusal::CorrelationChanged => LaneRefusal::CorrelationChanged,
+                CheckReportRefusal::SequenceChanged => LaneRefusal::SequenceChanged,
+                CheckReportRefusal::OutputUnavailable => LaneRefusal::OutputUnavailable,
+                CheckReportRefusal::Backpressure => LaneRefusal::Backpressure,
+            },
+        },
+    }
+}
+
 impl ApprovedCheckServices for NativeChecks {
     fn run(&self, context: &ApprovedCheckContext) -> Result<Receipt, String> {
         context.recheck()?;
@@ -266,12 +291,17 @@ impl ApprovedCheckServices for NativeChecks {
                 )
             })
             .ok_or("no approved checks for this exact project resource")?;
-        let observed = registered
-            .checks
-            .run(&registered.binding, context.check_id(), || {
+        let observed = registered.checks.run_with_reports(
+            &registered.binding,
+            context.check_id(),
+            || {
                 context.recheck()?;
                 self.host_current(&registered.binding)
-            })?;
+            },
+            |event| {
+                let _ = context.report(reported_observation(event));
+            },
+        )?;
         let artifact_value = serde_json::json!({
             "resource_identity": registered.resource_identity,
             "accepted_opaque_resource": context.resource(),

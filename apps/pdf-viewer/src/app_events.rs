@@ -612,7 +612,7 @@ impl PdfApp {
             }
             WindowEvent::DroppedFile(path) if self.page_sidebar.is_drop_target_armed() => {
                 self.page_sidebar.set_drop_target_armed(false);
-                self.import_file(path, state);
+                self.import_file(path);
                 *handled = true;
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -1671,21 +1671,14 @@ mod event_tests {
         fn move_to(&mut self, p: (f64, f64)) {
             self.feed(
                 Modifiers::default(),
-                &WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: PhysicalPosition::new(p.0, p.1),
-                },
+                &ui::synthetic_input::cursor_moved(p.0, p.1),
             );
         }
 
         fn button(&mut self, state: ElementState, button: MouseButton) {
             self.feed(
                 Modifiers::default(),
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state,
-                    button,
-                },
+                &ui::synthetic_input::mouse_input(state, button),
             );
         }
 
@@ -2580,6 +2573,11 @@ mod event_tests {
             app.apply_toolbar(&ToolbarHit::Open);
         });
         app.sync_settled(&mut st.doc, &st.root);
+        assert!(
+            app.pending_open.is_some(),
+            "the frame drain hands the portal-chosen PDF to the worker"
+        );
+        super::tests::settle_until(&mut app, &mut st, |app| app.pending_open.is_none());
         assert!(
             app.has_document,
             "a portal-chosen PDF loads through the frame drain"

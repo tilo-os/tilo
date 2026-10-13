@@ -452,6 +452,7 @@ activity-capability-one-shared-file = eine geteilte Datei
 activity-capability-network = Netzwerk { $host }
 activity-capability-role = { $role ->
         [owner] Eigentümer
+        [moderator] Moderierende
         [editor] Bearbeitende
         [commenter] Kommentierende
        *[viewer] Betrachtende
@@ -472,9 +473,11 @@ activity-grant = { $kinds ->
     } für { $node } an { $subject }
 activity-grant-task = Aufgabe { $task }
 activity-grant-shortcut = Kurzbefehl { $shortcut }
+activity-grant-bot = Bot { $bot }
 activity-grant-foreign-device = Geräte, die nicht die eigenen sind
 activity-member = { $person } als { $role ->
         [owner] Eigentümer
+        [moderator] Moderierende
         [editor] Bearbeitende
         [commenter] Kommentierende
        *[viewer] Betrachtende
@@ -610,6 +613,7 @@ workspace-settings-tab-apps = Apps
 workspace-settings-close-hint = Esc zum Schließen
 workspace-settings-edit-hint = Eingabetaste zum Speichern · Esc zum Abbrechen
 workspace-settings-role-owner = Eigentümer
+workspace-settings-role-moderator = Moderator
 workspace-settings-role-editor = Bearbeiter
 workspace-settings-role-commenter = Kommentator
 workspace-settings-role-viewer = Betrachter
@@ -617,6 +621,7 @@ workspace-settings-role-blocked = Gesperrt
 workspace-settings-role-admin = Admin
 workspace-settings-role-guest = Gast
 workspace-settings-role-owner-preview = Kann Personen, Berechtigungen und Einstellungen des Arbeitsbereichs verwalten.
+workspace-settings-role-moderator-preview = Kann geteilte Arbeit bearbeiten, Nachrichten anderer entfernen, Kanäle sperren und Bearbeitende und darunter entfernen oder sperren.
 workspace-settings-role-editor-preview = Kann geteilte Arbeit ansehen, kommentieren und bearbeiten.
 workspace-settings-role-commenter-preview = Kann geteilte Arbeit ansehen und kommentieren, aber nicht bearbeiten.
 workspace-settings-role-viewer-preview = Kann geteilte Arbeit ansehen, aber weder kommentieren noch bearbeiten.
@@ -702,6 +707,7 @@ workspace-settings-section-people = Personen
 workspace-settings-section-agents = Agenten
 workspace-settings-section-roles = Rollen
 workspace-settings-section-other = Sonstige
+workspace-settings-subject-bot = Bot { $id }
 workspace-settings-subject-role = alle mit der Rolle { $role }
 workspace-settings-subject-token = Token { $id }
 workspace-settings-subject-workspace = Arbeitsbereich { $id }
@@ -917,11 +923,6 @@ launchpad-activity-detail = Sehen, was sich geändert hat und warum
 launchpad-keyboard-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Super+N zeigt alle Apps
 
 # Peers arriving in and leaving a workspace, batched into one toast
-peer-toast-joined-one = { $name } ist beigetreten
-peer-toast-left-one = { $name } hat verlassen
-peer-toast-joined-many = { $count } Personen sind beigetreten
-peer-toast-left-many = { $count } Personen haben verlassen
-peer-toast-overflow = { $first }, { $second }, { $third } und { $rest } weitere
 
 # Moved from the shell catalogue with the code that uses them
 people-panel-here-now = { $count } gerade hier

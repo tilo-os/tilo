@@ -13,6 +13,7 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
                 started,
                 receiver: Mutex::new(Some(receiver)),
                 requests: Mutex::new(Vec::new()),
+                    adoption: Mutex::new(None),
                 original: Mutex::new(None),
             });
             let rig = Rig::with_services(
@@ -88,6 +89,7 @@ struct ObservedLauncher {
     started: std::sync::mpsc::Sender<()>,
     receiver: Mutex<Option<tokio::sync::oneshot::Receiver<Result<(), String>>>>,
     requests: Mutex<Vec<ObservedLaunch>>,
+    adoption: Mutex<Option<crate::services::LaunchAdoption>>,
     original: Mutex<Option<crate::services::ObservedApplicationLaunch>>,
 }
 impl crate::services::LauncherServices for ObservedLauncher {
@@ -117,10 +119,13 @@ impl crate::services::LauncherServices for ObservedLauncher {
             author.map(str::to_owned),
         ));
         self.started.send(()).unwrap();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        sender.send(self.adoption.lock().unwrap().take()).unwrap();
         Ok(crate::services::LaunchReadiness::new(
             self.receiver.lock().unwrap().take().unwrap(),
             || {},
-        ))
+        )
+        .with_adoption(receiver))
     }
     fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
         false
@@ -142,7 +147,16 @@ impl crate::services::LauncherServices for ObservedLauncher {
 async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_revalidates_actor() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            for scenario in ["ready", "spawn_failed", "revoked", "expired"] {
+            for scenario in [
+                "ready",
+                "adopted",
+                "foreign_room",
+                "foreign_package",
+                "zero_surface",
+                "spawn_failed",
+                "revoked",
+                "expired",
+            ] {
                 let env = Environment::new();
                 let (started, started_rx) = std::sync::mpsc::channel();
                 let (adopt, receiver) = tokio::sync::oneshot::channel();
@@ -150,8 +164,29 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                     started,
                     receiver: Mutex::new(Some(receiver)),
                     requests: Mutex::new(Vec::new()),
+                    adoption: Mutex::new(None),
                     original: Mutex::new(None),
                 });
+                if matches!(
+                    scenario,
+                    "adopted" | "foreign_room" | "foreign_package" | "zero_surface"
+                ) {
+                    *launcher.adoption.lock().unwrap() = Some(crate::services::LaunchAdoption {
+                        adoption_id: uuid::Uuid::new_v4(),
+                        surface_id: if scenario == "zero_surface" { 0 } else { 73 },
+                        package_id: if scenario == "foreign_package" {
+                            "so.tilo.foreign"
+                        } else {
+                            "so.tilo.word-processor"
+                        }
+                        .into(),
+                        room: if scenario == "foreign_room" {
+                            "foreign-room".into()
+                        } else {
+                            env.route.cluster_id.clone()
+                        },
+                    });
+                }
                 let rig = Rig::with_services(
                     &env,
                     HostServices {
@@ -203,7 +238,16 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                 let (id, encoded) = pending.await.unwrap().unwrap();
                 let update: tilo_actions::InvocationUpdate =
                     serde_json::from_str(&encoded).unwrap();
-                if scenario == "ready" {
+                if matches!(scenario, "ready" | "adopted") {
+                    if let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &update {
+                        if scenario == "adopted" {
+                            let value = output.value.as_ref().unwrap();
+                            assert_eq!(value["adopted_window"]["surface_id"], 73);
+                            assert_eq!(value["adopted_window"].as_object().unwrap().len(), 4);
+                        } else {
+                            assert!(output.value.is_none());
+                        }
+                    }
                     assert!(matches!(
                         update,
                         tilo_actions::InvocationUpdate::Succeeded { .. }
@@ -234,6 +278,7 @@ async fn installed_launch_rpc_rejects_a_noncanonical_package_root_before_host_ad
                 started,
                 receiver: Mutex::new(Some(receiver)),
                 requests: Mutex::new(Vec::new()),
+                adoption: Mutex::new(None),
                 original: Mutex::new(None),
             });
             let rig = Rig::with_services(
@@ -274,6 +319,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                     started,
                     receiver: Mutex::new(Some(receiver)),
                     requests: Mutex::new(Vec::new()),
+                    adoption: Mutex::new(None),
                     original: Mutex::new(None),
                 });
                 let rig = Rig::with_services(
@@ -377,6 +423,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                     started,
                     receiver: Mutex::new(Some(receiver)),
                     requests: Mutex::new(vec![]),
+                    adoption: Mutex::new(None),
                     original: Mutex::new(None),
                 });
                 let rig = Rig::with_services(
@@ -406,6 +453,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                         confirmation: None,
                         revision: Some("original-r1".into()),
                         wait_ms: None,
+                        appearance: None,
                     },
                 );
                 rig.state.drain_action_directory_bridge(&rig.directories);

@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use tilo_ui::time::Instant;
 
 use automerge::AutoCommit;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use tilo_ui::State;
 use tilo_ui::bound_dispatch::BoundNodeMap;
 use tilo_ui::headless::FrameHarness;
@@ -212,10 +212,7 @@ impl Retained {
             reason = "the viewport is a few thousand pixels"
         )]
         let window = Style {
-            size: Size {
-                width: Dimension::length(VIEWPORT.0 as f32),
-                height: Dimension::length(VIEWPORT.1 as f32),
-            },
+            size: Size::from_lengths(VIEWPORT.0 as f32, VIEWPORT.1 as f32),
             ..Style::default()
         };
         fixture.window = fixture.tree.new_with_children(window, &[fixture.node])?;

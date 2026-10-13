@@ -625,11 +625,7 @@ pub fn reveal_effect(
     }
 }
 
-/// The editor's Fluent catalogs, source locale first: the sentences its
-/// history renders.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
 /// The editor as a framework app: one surface, the whole window.
 pub struct VideoEditor;

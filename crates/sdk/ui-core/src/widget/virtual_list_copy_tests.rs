@@ -49,9 +49,7 @@ impl Widget for Message {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -86,10 +84,6 @@ impl Widget for Message {
 
     fn name(&self) -> &'static str {
         "Message"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn needs_redraw(&self) -> bool {
@@ -170,10 +164,7 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f64, usize)]) -> Vec<Run> {
         if at == 3 {
             app.surface_input(
                 &window,
-                WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(200.0 * scale, 200.0 * scale),
-                },
+                crate::synthetic_input::cursor_moved(200.0 * scale, 200.0 * scale),
                 false,
             );
         }

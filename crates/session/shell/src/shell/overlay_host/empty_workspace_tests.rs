@@ -523,24 +523,20 @@ fn launchpad_journey_deliver(
 }
 fn launchpad_journey_escape() -> WindowEvent {
     let key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event: winit::event::KeyEvent::synthetic(
-            winit::event::RawKeyEvent {
-                physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
-                ),
-                state: ElementState::Pressed,
-            },
-            key.clone(),
-            None,
-            winit::keyboard::KeyLocation::Standard,
-            false,
-            None,
-            key,
-        ),
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(winit::event::KeyEvent::synthetic(
+        winit::event::RawKeyEvent {
+            physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            ),
+            state: ElementState::Pressed,
+        },
+        key.clone(),
+        None,
+        winit::keyboard::KeyLocation::Standard,
+        false,
+        None,
+        key,
+    ))
 }
 fn launchpad_journey_paint(host: &mut ShellOverlayHost, theme: &Theme, name: &str) {
     host.force_palette_settled();
@@ -582,15 +578,8 @@ fn app_opener_pointer_press_waits_and_drag_cancel_keeps_native_search_closed() {
     let button = launchpad_journey_target(host.content.as_ref())
         .expect("production app opener must be mounted")
         .center();
-    let moved = |point: Point| WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-    };
-    let mouse = |state| WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state,
-        button: winit::event::MouseButton::Left,
-    };
+    let moved = |point: Point| ui::synthetic_input::cursor_moved(point.x, point.y);
+    let mouse = |state| ui::synthetic_input::mouse_input(state, winit::event::MouseButton::Left);
     launchpad_journey_deliver(&mut host, &mut doc, &moved(button), &taffy, node);
     launchpad_journey_deliver(
         &mut host,

@@ -886,10 +886,7 @@ impl Widget for ProcessesPane {
                     top: length(tokens.spacing.rhythm.sibling),
                     bottom: length(0.0_f32),
                 },
-                size: Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
+                size: Size::from_percent(1.0_f32, 1.0_f32),
                 ..Default::default()
             },
             &children,
@@ -974,7 +971,7 @@ impl Widget for ProcessesPane {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
             // Every part follows the pointer, whichever one is under it.
             let mut ignored = false;
             let nodes = [
@@ -1062,12 +1059,6 @@ impl Widget for ProcessesPane {
         children
     }
 
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        for child in self.children() {
-            visitor(child);
-        }
-    }
-
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let shows_filters = self.shows_filters();
         let body: &mut dyn Widget = match &mut self.placeholder {
@@ -1088,14 +1079,6 @@ impl Widget for ProcessesPane {
 
     fn wants_pointer_capture(&self) -> bool {
         self.children().iter().any(|c| c.wants_pointer_capture())
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let mut changed = false;
-        for child in self.children_mut() {
-            changed |= child.update(state, path);
-        }
-        changed
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1494,10 +1477,7 @@ impl Widget for ResourcesPane {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
                 flex_grow: 1.0,
-                size: Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
-                },
+                size: Size::from_percent(1.0_f32, 1.0_f32),
                 ..Default::default()
             },
             &children,
@@ -1531,7 +1511,7 @@ impl Widget for ResourcesPane {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         if let (Some(page), Some(child)) = (&mut self.page, self.node) {
             page.handle_event(event, &mut ctx.reborrow(ctx.path, child));

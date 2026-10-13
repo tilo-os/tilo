@@ -18,9 +18,9 @@ use std::collections::HashMap;
 use zeroize::Zeroizing;
 
 use qrcode::{EcLevel, QrCode};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 
 use crate::presence::PresenceCtx;
@@ -174,18 +174,13 @@ impl Widget for QrWidget {
         // Default 240x240 box; callers can wrap us in a sized container.
         // The module side recomputes in draw from the resolved rect.
         let style = Style {
-            size: Size {
-                width: Dimension::length(240.0),
-                height: Dimension::length(240.0),
-            },
+            size: Size::from_lengths(240.0, 240.0),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!();
 
     // The QR spec caps `matrix_size` at 177 (version 40) and `quiet_modules`
     // is a small widget-construction constant, so every `usize -> f64` cast
@@ -267,10 +262,6 @@ impl Widget for QrWidget {
 
     fn test_id(&self) -> Option<&str> {
         Some(&self.test_id)
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

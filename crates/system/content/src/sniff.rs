@@ -11,8 +11,8 @@ pub fn sniff(bytes: &[u8]) -> ContentMeta {
         len: bytes.len() as u64,
         ..Default::default()
     };
-    if let Some((mime, w, h)) = sniff_image(bytes) {
-        m.mime = mime.to_string();
+    if let Some((format, w, h)) = sniff_image(bytes) {
+        m.mime = format.mime.to_string();
         m.w = w;
         m.h = h;
     }
@@ -26,24 +26,50 @@ pub struct ImageFormat {
     pub mime: &'static str,
 }
 
+const PNG: ImageFormat = ImageFormat {
+    extension: "png",
+    mime: "image/png",
+};
+const JPEG: ImageFormat = ImageFormat {
+    extension: "jpg",
+    mime: "image/jpeg",
+};
+const GIF: ImageFormat = ImageFormat {
+    extension: "gif",
+    mime: "image/gif",
+};
+const WEBP: ImageFormat = ImageFormat {
+    extension: "webp",
+    mime: "image/webp",
+};
+
+/// A PNG, JPEG, GIF or WebP picture's format and intrinsic width and height, read from its
+/// header. `None` when `bytes` is no such picture or its header states no size.
+#[must_use]
+pub fn image_size(bytes: &[u8]) -> Option<(ImageFormat, u32, u32)> {
+    sniff_image(bytes).filter(|&(_, w, h)| w > 0 && h > 0)
+}
+
 /// The picture format `bytes` start with, from the signature alone: PNG, JPEG, GIF, WebP or SVG.
 /// Unlike [`sniff`] it needs no complete header, so it also answers for a truncated prefix.
 #[must_use]
 pub fn image_format(bytes: &[u8]) -> Option<ImageFormat> {
-    let (extension, mime) = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        ("png", "image/png")
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some(PNG)
     } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        ("jpg", "image/jpeg")
+        Some(JPEG)
     } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        ("gif", "image/gif")
+        Some(GIF)
     } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        ("webp", "image/webp")
+        Some(WEBP)
     } else if is_svg(bytes) {
-        ("svg", "image/svg+xml")
+        Some(ImageFormat {
+            extension: "svg",
+            mime: "image/svg+xml",
+        })
     } else {
-        return None;
-    };
-    Some(ImageFormat { extension, mime })
+        None
+    }
 }
 
 /// An SVG document, possibly behind leading whitespace and an XML declaration.
@@ -74,17 +100,17 @@ fn read_u16be(b: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_be_bytes(b.get(at..end)?.try_into().ok()?))
 }
 
-fn sniff_image(b: &[u8]) -> Option<(&'static str, u32, u32)> {
+fn sniff_image(b: &[u8]) -> Option<(ImageFormat, u32, u32)> {
     // PNG: 8-byte signature, then an IHDR chunk whose width/height are the two
     // big-endian u32s at offset 16.
     if b.len() >= 24 && b.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-        return Some(("image/png", read_u32be(b, 16)?, read_u32be(b, 20)?));
+        return Some((PNG, read_u32be(b, 16)?, read_u32be(b, 20)?));
     }
     // GIF: logical screen descriptor at offset 6, little-endian u16s.
     if b.len() >= 10 && (b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a")) {
         let w = u32::from(read_u16le(b, 6)?);
         let h = u32::from(read_u16le(b, 8)?);
-        return Some(("image/gif", w, h));
+        return Some((GIF, w, h));
     }
     // WebP: a RIFF container whose lossy/lossless/extended chunks each state the
     // canvas size in a different place.
@@ -103,23 +129,23 @@ fn sniff_image(b: &[u8]) -> Option<(&'static str, u32, u32)> {
                 );
                 let w = (b24 | (b25 << 8) | (b26 << 16)).saturating_add(1);
                 let h = (b27 | (b28 << 8) | (b29 << 16)).saturating_add(1);
-                return Some(("image/webp", w, h));
+                return Some((WEBP, w, h));
             }
             Some(b"VP8 ") => {
                 let w = u32::from(read_u16le(b, 26)? & 0x3FFF);
                 let h = u32::from(read_u16le(b, 28)? & 0x3FFF);
-                return Some(("image/webp", w, h));
+                return Some((WEBP, w, h));
             }
             Some(b"VP8L") => {
                 let end = 21usize.checked_add(4)?;
                 let bits = u32::from_le_bytes(b.get(21..end)?.try_into().ok()?);
                 return Some((
-                    "image/webp",
+                    WEBP,
                     (bits & 0x3FFF).saturating_add(1),
                     ((bits >> 14) & 0x3FFF).saturating_add(1),
                 ));
             }
-            _ => return Some(("image/webp", 0, 0)),
+            _ => return Some((WEBP, 0, 0)),
         }
     }
     // JPEG: walk the marker segments to the start-of-frame, honouring each segment's declared length
@@ -155,14 +181,14 @@ fn sniff_image(b: &[u8]) -> Option<(&'static str, u32, u32)> {
             if is_sof && i.saturating_add(9) < b.len() {
                 let h = u32::from(read_u16be(b, i.saturating_add(5))?);
                 let w = u32::from(read_u16be(b, i.saturating_add(7))?);
-                return Some(("image/jpeg", w, h));
+                return Some((JPEG, w, h));
             }
             if len < 2 {
                 break;
             }
             i = i.saturating_add(2).saturating_add(len);
         }
-        return Some(("image/jpeg", 0, 0));
+        return Some((JPEG, 0, 0));
     }
     None
 }

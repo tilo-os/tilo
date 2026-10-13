@@ -73,8 +73,11 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/check_changed_rust_allows.py": "tools/tests/test_changed_rust_comparison.py",
     "tools/ci/check_lock_update.py": "tools/tests/test_lock_update.py",
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
+    "tools/ci/compiler_cache_metrics.py": "tools/tests/test_ci_compiler_cache_metrics.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
     "tools/ci/app_sdk_affected.py": "tools/tests/test_app_sdk_affected.py",
+    "tools/ci/macos_apps.py": "tools/tests/test_dev_macos_workflows.py",
+    "tools/ci/prewarm_test_binaries.py": "tools/tests/test_prewarm_test_binaries.py",
     "tools/ci/recheck_base.py": "tools/tests/test_recheck_base.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
@@ -298,7 +301,7 @@ def builder_mold_asset(name: str, entry: tuple[str, str]) -> bool:
 
 
 def image_tool_asset(name: str, entry: tuple[str, str]) -> bool:
-    """chunkah's release source and vendor tree: only os/Containerfile.rechunk reads them (TIL-747)."""
+    """chunkah's release source and vendor tree: only os/Containerfile.rechunk reads them."""
     match = re.fullmatch(r"chunkah-(\d+\.\d+\.\d+)(?:-vendor)?\.tar\.gz", name)
     if not match:
         return False

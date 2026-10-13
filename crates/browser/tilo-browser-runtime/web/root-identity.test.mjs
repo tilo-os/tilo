@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
-  addPasskey, base64url, certifyDevice, createIdentity, currentIdentity, hex, installNode, installNodeCertificate, formatRecoveryKey, IdentityError, nodeInstallInfo,
+  addPasskey, base64url, browserIdentity, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, hex, MAX_DISPLAY_NAME_BYTES, publishEnvelope, publishProfile, signInWithPasskey, installNode, installNodeCertificate, formatRecoveryKey, IdentityError, nodeInstallInfo,
   parseRecoveryKey, unbase64url, unhex, unlockIdentity,
 } from './root-identity.mjs';
 import {fakeAuthenticator} from './testing/fake-authenticator.mjs';
@@ -247,4 +247,146 @@ test('installing a node certifies it and its session and hands both over', async
   assert.deepEqual(JSON.parse(atob(sent.certificate)), {key: nodeKey, role: 'node'});
   assert.deepEqual(JSON.parse(atob(sent.session_certificate)), {key: session, role: 'session'});
   await assert.rejects(installNodeCertificate({origin: 'https://node.example', certificate: '+/8B', sessionCertificate: '{}', installToken: 'token', fetch}), TypeError);
+});
+
+function memoryStorage() {
+  const map = new Map();
+  // Structured clone keeps CryptoKeys (and their extractability), as IndexedDB does.
+  return {map, get: async key => (map.has(key) ? structuredClone(map.get(key)) : undefined), put: async (key, value) => { map.set(key, structuredClone(value)); }, delete: async key => { map.delete(key); }};
+}
+
+test('a browser creates its person once, holds the root only wrapped, and asks to keep its storage', async () => {
+  const storage = memoryStorage();
+  let persistAsked = 0;
+  const persist = {persist: async () => { persistAsked += 1; return true; }};
+  assert.equal(await browserIdentity({storage, create: false}), null);
+  const first = await browserIdentity({storage, persist});
+  assert.equal(persistAsked, 1);
+  assert.match(first.userPublicKey, /^[0-9a-f]{64}$/);
+  assert.equal(first.kept, false);
+  assert.deepEqual(first.envelope.wraps, []);
+  const kept = storage.map.get('identity');
+  assert.equal(kept.held.key.extractable, false);
+  assert.ok(await signsAsRoot(first, first.userPublicKey));
+  const again = await browserIdentity({storage, persist});
+  assert.equal(again.userPublicKey, first.userPublicKey);
+  assert.equal(persistAsked, 1);
+  assert.equal(currentIdentity(), again);
+});
+
+test('keeping a person with a passkey lets a new browser sign in as them', async () => {
+  const credentials = fakeAuthenticator();
+  const storage = memoryStorage();
+  const person = await browserIdentity({storage, persist: null, credentials});
+  const envelope = await person.keepWithPasskey({rpId: 'example.com', userName: 'Brave Otter'});
+  assert.equal(person.kept, true);
+  assert.deepEqual(envelope.wraps.map(wrap => wrap.kind), ['passkey']);
+  assert.deepEqual(storage.map.get('identity').envelope, envelope);
+  assert.equal(new TextDecoder().decode([...credentials.passkeys.values()][0].userHandle), person.userPublicKey);
+
+  const fresh = memoryStorage();
+  const asked = [];
+  const signedIn = await signInWithPasskey({rpId: 'example.com', storage: fresh, credentials,
+    fetchEnvelope: async root => { asked.push(root); return envelope; }});
+  assert.deepEqual(asked, [person.userPublicKey]);
+  assert.equal(signedIn.userPublicKey, person.userPublicKey);
+  assert.equal(signedIn.kept, true);
+  assert.ok(await signsAsRoot(signedIn, person.userPublicKey));
+  const reopened = await browserIdentity({storage: fresh});
+  assert.equal(reopened.userPublicKey, person.userPublicKey);
+
+  await assert.rejects(signInWithPasskey({rpId: 'example.com', storage: memoryStorage(), credentials, fetchEnvelope: async () => null}), {code: 'no-envelope'});
+  const other = await browserIdentity({storage: memoryStorage(), persist: null});
+  await assert.rejects(signInWithPasskey({rpId: 'example.com', storage: memoryStorage(), credentials,
+    fetchEnvelope: async () => ({...envelope, root_public_key: other.userPublicKey})}), {code: 'wrong-identity'});
+});
+
+test('a recovery key opens a browser person, and a new one replaces the old', async () => {
+  const person = await browserIdentity({storage: memoryStorage(), persist: null});
+  const first = await person.createRecoveryKey();
+  assert.equal(person.kept, true);
+  const second = await person.createRecoveryKey();
+  assert.deepEqual(person.envelope.wraps.map(wrap => wrap.kind), ['recovery']);
+  await assert.rejects(unlockIdentity(person.envelope, {recoveryKey: first}), {code: 'rejected'});
+  const opened = await unlockIdentity(person.envelope, {recoveryKey: second});
+  assert.equal(opened.userPublicKey, person.userPublicKey);
+});
+
+test('a host is handed the envelope signed by its root, and a new browser fetches it back', async () => {
+  const person = await browserIdentity({storage: memoryStorage(), persist: null});
+  await assert.rejects(publishEnvelope({origin: 'https://host.example', identity: person, fetch: async () => ({ok: true})}), {code: 'not-kept'});
+  await person.createRecoveryKey();
+  const kept = new Map();
+  const fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    if (path === '/peer/v1/envelope') {
+      const body = JSON.parse(init.body);
+      const envelope = JSON.parse(body.envelope);
+      const label = new TextEncoder().encode('tilo root envelope v1\0');
+      const json = new TextEncoder().encode(body.envelope);
+      const statement = new Uint8Array(label.length + 8 + json.length);
+      statement.set(label);
+      new DataView(statement.buffer).setBigUint64(label.length, BigInt(body.issued_at_ms), true);
+      statement.set(json, label.length + 8);
+      const key = await crypto.subtle.importKey('raw', unhex(envelope.root_public_key), {name: 'Ed25519'}, false, ['verify']);
+      const valid = await crypto.subtle.verify({name: 'Ed25519'}, key, unhex(body.signature), statement);
+      if (valid) kept.set(envelope.root_public_key, envelope);
+      return {ok: valid, status: valid ? 204 : 403, text: async () => ''};
+    }
+    assert.equal(path, '/peer/v1/envelope/fetch');
+    return {ok: true, json: async () => ({envelope: kept.get(init.body) ?? null})};
+  };
+  await publishEnvelope({origin: 'https://host.example', identity: person, fetch});
+  assert.deepEqual(kept.get(person.userPublicKey), person.envelope);
+  const either = async (url, init) => {
+    if (url.startsWith('https://down.example')) throw new Error('unreachable');
+    return fetch(url, init);
+  };
+  assert.deepEqual(await fetchEnvelope(person.userPublicKey, ['https://down.example', 'https://host.example'], {fetch: either}), person.envelope);
+  assert.equal(await fetchEnvelope('ab'.repeat(32), ['https://host.example'], {fetch}), null);
+});
+
+test('a profile names the person, signed by their root, and any of their devices fetches it back', async () => {
+  const person = await browserIdentity({storage: memoryStorage(), persist: null});
+  const kept = new Map();
+  const fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    if (path === '/peer/v1/profile') {
+      const body = JSON.parse(init.body);
+      const profile = JSON.parse(body.profile);
+      const label = new TextEncoder().encode('tilo person profile v1\0');
+      const json = new TextEncoder().encode(body.profile);
+      const statement = new Uint8Array(label.length + 8 + json.length);
+      statement.set(label);
+      new DataView(statement.buffer).setBigUint64(label.length, BigInt(body.issued_at_ms), true);
+      statement.set(json, label.length + 8);
+      const key = await crypto.subtle.importKey('raw', unhex(profile.user_public_key), {name: 'Ed25519'}, false, ['verify']);
+      const valid = await crypto.subtle.verify({name: 'Ed25519'}, key, unhex(body.signature), statement);
+      if (valid) kept.set(profile.user_public_key, profile);
+      return {ok: valid, status: valid ? 204 : 403, text: async () => ''};
+    }
+    assert.equal(path, '/peer/v1/profile/fetch');
+    return {ok: true, json: async () => ({profile: kept.get(init.body) ?? null})};
+  };
+  await assert.rejects(publishProfile({origin: 'https://host.example', identity: person, displayName: '  ', fetch}), {code: 'malformed'});
+  await publishProfile({origin: 'https://host.example', identity: person, displayName: ' Ada Lovelace ', fetch});
+  assert.deepEqual(kept.get(person.userPublicKey), {version: 1, user_public_key: person.userPublicKey, display_name: 'Ada Lovelace'});
+  assert.equal((await fetchProfile(person.userPublicKey, ['https://host.example'], {fetch})).display_name, 'Ada Lovelace');
+  assert.equal(await fetchProfile('ab'.repeat(32), ['https://host.example'], {fetch}), null);
+  const refusing = async () => ({ok: false, status: 403, text: async () => 'this host keeps this for its members only'});
+  await assert.rejects(publishProfile({origin: 'https://host.example', identity: person, displayName: 'Ada', fetch: refusing}), {code: 'publish-refused'});
+});
+
+test('a name is fitted as hosts keep it: 128 bytes of UTF-8, cut between characters', () => {
+  assert.equal(MAX_DISPLAY_NAME_BYTES, 128);
+  const bytes = text => new TextEncoder().encode(text).length;
+  assert.equal(fitDisplayName('  Ada\u0007 Lovelace\n '), 'Ada Lovelace');
+  assert.equal(fitDisplayName('a'.repeat(200)), 'a'.repeat(128));
+  // 64 characters of three bytes each: 42 fit, none cut in half.
+  const wide = fitDisplayName('名'.repeat(64));
+  assert.equal(wide, '名'.repeat(42));
+  assert.ok(bytes(wide) <= 128);
+  const emoji = fitDisplayName('😀'.repeat(40));
+  assert.equal(emoji, '😀'.repeat(32));
+  assert.equal(fitDisplayName(null), '');
 });

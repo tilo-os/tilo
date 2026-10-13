@@ -122,12 +122,6 @@ pub fn timecode(total_secs: u64) -> String {
     }
 }
 
-/// Alias for [`timecode`] — some call sites read better as "duration".
-#[must_use]
-pub fn duration(total_secs: u64) -> String {
-    timecode(total_secs)
-}
-
 const MINUTE: i64 = 60;
 const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
@@ -209,6 +203,27 @@ pub fn relative_compact(secs_ago: i64) -> String {
     } else {
         format!("{}y", secs_ago / YEAR)
     }
+}
+
+/// Name a calendar day next to today in the host's language — `Yesterday`,
+/// `Today`, `Tomorrow` — or `None` further out, where the caller shows its
+/// own date. `days_from_today` is negative for the past.
+///
+/// ```
+/// use tilo_ui::format::near_day;
+/// assert_eq!(near_day(0).as_deref(), Some("Today"));
+/// assert_eq!(near_day(-1).as_deref(), Some("Yesterday"));
+/// assert_eq!(near_day(2), None);
+/// ```
+#[must_use]
+pub fn near_day(days_from_today: i64) -> Option<String> {
+    let key = match days_from_today {
+        -1 => "day-yesterday",
+        0 => "day-today",
+        1 => "day-tomorrow",
+        _ => return None,
+    };
+    Some(crate::i18n::widget_format(key, &[]))
 }
 
 /// Abbreviate a large count to at most one fractional digit: `1.2K`, `3.4M`,
@@ -437,7 +452,6 @@ mod tests {
         ] {
             assert_eq!(timecode(secs), want, "timecode({secs})");
         }
-        assert_eq!(duration(3661), timecode(3661));
 
         for (secs, want) in [
             (0, "just now"),

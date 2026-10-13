@@ -43,6 +43,12 @@ pub fn availability<F: Feature>(feature: F) -> Availability {
     feature.availability()
 }
 
+/// Whether `feature` can be used on this target without a prompt.
+#[must_use]
+pub fn available<F: Feature>(feature: F) -> bool {
+    feature.availability() == Availability::Available
+}
+
 /// A feature this target, or this particular host, cannot provide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Unsupported<F> {
