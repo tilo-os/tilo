@@ -521,6 +521,89 @@ mod tests {
     }
 
     #[test]
+    fn retained_view_order_matches_the_dense_frame_with_two_strips_and_wheel() {
+        let mut cache = cache(24);
+        cache.strips[0].dest_h = 16;
+        cache.strips.push(StripBlit {
+            dest_x: 0,
+            dest_y: 16,
+            dest_w: 64,
+            dest_h: 16,
+            scroll_x: 48,
+        });
+        let mut second = Scene::new();
+        fill(
+            &mut second,
+            Rect::new(60.0, 16.0, 80.0, 32.0),
+            Color::from_rgb8(255, 0, 255),
+        );
+        cache.layers.strips.push(second);
+        cache.layers.strip_parts.push(None);
+        fill(
+            &mut cache.layers.workspace,
+            Rect::new(0.0, 0.0, 8.0, 32.0),
+            Color::from_rgb8(0, 255, 0),
+        );
+        let mut wheel = Scene::new();
+        fill(
+            &mut wheel,
+            Rect::new(0.0, 0.0, 8.0, 8.0),
+            Color::from_rgb8(255, 255, 0),
+        );
+        cache.layers.wheel = Some(WheelSprite {
+            scene: wheel,
+            width: 8,
+            height: 8,
+            x: 14,
+            y: 16,
+        });
+        fill(
+            &mut cache.layers.chrome,
+            Rect::new(15.0, 17.0, 17.0, 19.0),
+            Color::WHITE,
+        );
+        validate(&cache, (64, 32), 128).expect("two disjoint strip layers");
+
+        let dense = crate::shell::render::strip_layers::compose(&cache);
+        let mut oracle = CpuRenderer::new();
+        oracle.update(
+            CpuFrame {
+                scene: &dense,
+                revision: 0,
+                previous_revision: None,
+                regions: None,
+            },
+            (64, 32),
+        );
+        let mut canvases = Canvases::new();
+        canvases.update(&cache, (64, 32));
+        let views = canvases.views(&cache, (64, 32));
+        assert_eq!(views.len(), 6);
+        for (x, y) in [(2, 2), (50, 2), (60, 2), (13, 20), (14, 20), (15, 17)] {
+            let mut actual = [0, 0, 0, 255];
+            for view in &views {
+                for (dest, scroll_x) in &view.pieces {
+                    if x < dest.x
+                        || x >= dest.x.saturating_add(dest.width)
+                        || y < dest.y
+                        || y >= dest.y.saturating_add(dest.height)
+                    {
+                        continue;
+                    }
+                    let at = usize::try_from(y).unwrap() * view.stride
+                        + usize::try_from(x.saturating_add(*scroll_x)).unwrap() * 4;
+                    let pixel = &view.pixels[at..at + 4];
+                    if pixel[3] == 255 {
+                        actual.copy_from_slice(pixel);
+                    }
+                }
+            }
+            let at = (usize::try_from(y).unwrap() * 64 + usize::try_from(x).unwrap()) * 4;
+            assert_eq!(actual, oracle.screen_rgba()[at..at + 4], "pixel {x},{y}");
+        }
+    }
+
+    #[test]
     fn preserved_strip_pan_reuses_pixels_and_matches_the_dense_scene() {
         let mut canvases = Canvases::new();
         let first = cache(0);
