@@ -22,7 +22,6 @@ merge-status-conflicts =
 merge-title = Merge of { $name }
 merge-title-pair = Merge of { $ours } and { $theirs }
 merge-title-empty = Merged result
-compare-title = { $left } and { $right }
 compare-title-empty = Local comparison
 
 ## Merged result
@@ -60,9 +59,6 @@ source-right = Right
 ## Empty and error states
 empty-title = Open two files to compare them
 error-title = Couldn’t open the files
-error-not-text = { $name } isn’t a text file, so it can’t be compared.
-error-unreadable = { $name } couldn’t be read.
-error-chooser = Couldn’t open the file chooser: { $reason }
 
 ## Toolbar
 toolbar-diff = Diff

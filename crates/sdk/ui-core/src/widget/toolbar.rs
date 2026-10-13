@@ -1573,10 +1573,7 @@ impl Widget for Toolbar {
         };
         let style = Style {
             flex_shrink: 1.0,
-            min_size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::length(0.0),
-            },
+            min_size: Size::from_lengths(0.0, 0.0),
             ..Default::default()
         };
         let node = if self.has_elements() {
@@ -1858,10 +1855,7 @@ impl Widget for Toolbar {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Some(Point::new(
-                position.x / ctx.scale_factor,
-                position.y / ctx.scale_factor,
-            ));
+            self.pointer = Some(ctx.logical(position));
         }
         if self.menu.is_open() {
             self.menu
@@ -2146,11 +2140,11 @@ impl Widget for Toolbar {
         }
         Some(
             AccessNode::new(Role::Toolbar)
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.focused,
-                    ..Default::default()
-                })
+                .with_state(
+                    AccessState::new()
+                        .focusable(self.is_focusable())
+                        .focused(self.focused),
+                )
                 .with_children(children),
         )
     }
@@ -2720,10 +2714,7 @@ mod tests {
             .set_style(
                 node,
                 Style {
-                    size: Size {
-                        width: Dimension::length(f32_of_f64(axis_extent)),
-                        height: Dimension::length(28.0),
-                    },
+                    size: Size::from_lengths(f32_of_f64(axis_extent), 28.0),
                     ..Default::default()
                 },
             )
@@ -2937,10 +2928,7 @@ mod tests {
             tree.set_style(
                 node,
                 Style {
-                    size: Size {
-                        width: Dimension::length(500.0),
-                        height: Dimension::length(40.0),
-                    },
+                    size: Size::from_lengths(500.0, 40.0),
                     ..Default::default()
                 },
             )
@@ -2961,10 +2949,7 @@ mod tests {
             tree.set_style(
                 node,
                 Style {
-                    size: Size {
-                        width: Dimension::length(5.0),
-                        height: Dimension::length(40.0),
-                    },
+                    size: Size::from_lengths(5.0, 40.0),
                     ..Default::default()
                 },
             )
@@ -3076,7 +3061,7 @@ mod lifecycle_tests {
         dispatch(
             tb,
             WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed::<DeviceId>() },
+                device_id: DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             },
         );
@@ -3085,7 +3070,7 @@ mod lifecycle_tests {
         dispatch(
             tb,
             WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed::<DeviceId>() },
+                device_id: DeviceId::dummy(),
                 state,
                 button: MouseButton::Left,
             },
@@ -3516,11 +3501,8 @@ mod lifecycle_tests {
                         .layout(&tree, node)
                         .send(host, &event);
                 };
-                let mouse_event = |button, state| WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    button,
-                    state,
-                };
+                let mouse_event =
+                    |button, state| crate::synthetic_input::mouse_input(state, button);
                 send(&mut host, mouse_event(button, ElementState::Pressed));
                 send(&mut host, mouse_event(button, ElementState::Released));
                 send(&mut host, key_event(NamedKey::Escape));
@@ -3534,10 +3516,7 @@ mod lifecycle_tests {
                     .center();
                 send(
                     &mut host,
-                    WindowEvent::CursorMoved {
-                        device_id: winit::event::DeviceId::dummy(),
-                        position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-                    },
+                    crate::synthetic_input::cursor_moved(point.x, point.y),
                 );
                 send(
                     &mut host,
@@ -3638,7 +3617,7 @@ mod command_state_tests {
     }
 
     fn click(tb: &mut Toolbar, p: Point) {
-        let device = unsafe { std::mem::zeroed::<DeviceId>() };
+        let device = DeviceId::dummy();
         dispatch(
             tb,
             &WindowEvent::CursorMoved {

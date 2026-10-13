@@ -88,6 +88,7 @@ type CursorRectangle = (i32, i32, i32, i32);
 #[derive(Clone, Copy, Debug, Default)]
 struct FieldState {
     pending_enable: bool,
+    protocol_activation: Option<bool>,
     pending: Option<ContentType>,
     committed: ContentType,
     pending_cursor: Option<CursorRectangle>,
@@ -102,9 +103,70 @@ struct FieldState {
 #[derive(Debug, Default)]
 pub struct TextFields {
     fields: HashMap<ObjectId, FieldState>,
+    active_protocol: Option<ObjectId>,
 }
 
 impl TextFields {
+    pub(crate) fn protocol_focus_left(&mut self) {
+        self.active_protocol = None;
+    }
+
+    /// Whether Smithay will emit an input-method `done` for this request.
+    /// This mirrors its focused-client and single-active-text-input gates;
+    /// it carries no text and only advances the serial used to reject stale
+    /// input-method commits.
+    pub(crate) fn input_method_done(
+        &mut self,
+        resource: &ZwpTextInputV3,
+        request: &zwp_text_input_v3::Request,
+        admitted: bool,
+    ) -> Option<bool> {
+        if !admitted {
+            return None;
+        }
+        let id = resource.id();
+        let field = self.fields.entry(id.clone()).or_default();
+        match request {
+            zwp_text_input_v3::Request::Enable => {
+                field.protocol_activation = Some(true);
+                None
+            }
+            zwp_text_input_v3::Request::Disable => {
+                field.protocol_activation = Some(false);
+                None
+            }
+            zwp_text_input_v3::Request::Commit => {
+                // `pending_enable` represents true. `pending_edit` alone is
+                // not enough to distinguish Disable, so use the dedicated
+                // protocol field maintained alongside visual metadata.
+                let activation = field.protocol_activation.take();
+                match activation {
+                    Some(true)
+                        if self
+                            .active_protocol
+                            .as_ref()
+                            .is_none_or(|active| active == &id) =>
+                    {
+                        self.active_protocol = Some(id);
+                        Some(true)
+                    }
+                    Some(false)
+                        if self
+                            .active_protocol
+                            .as_ref()
+                            .is_none_or(|active| active == &id) =>
+                    {
+                        self.active_protocol = None;
+                        Some(false)
+                    }
+                    None if self.active_protocol.as_ref() == Some(&id) => Some(true),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Follow one text-input request. State is double-buffered: it applies
     /// on `commit`, and enabling resets it to the protocol's defaults.
     pub fn observe(&mut self, resource: &ZwpTextInputV3, request: &zwp_text_input_v3::Request) {
@@ -168,8 +230,18 @@ impl TextFields {
         self.fields.get(&resource.id()).map(|field| field.revision)
     }
 
-    pub fn forget(&mut self, resource: &ZwpTextInputV3) {
-        self.fields.remove(&resource.id());
+    pub fn forget(&mut self, resource: &ZwpTextInputV3, may_deactivate: bool) -> bool {
+        let id = resource.id();
+        self.fields.remove(&id);
+        let deactivates = may_deactivate
+            && !self
+                .fields
+                .keys()
+                .any(|remaining| remaining.same_client_as(&id));
+        if deactivates {
+            self.active_protocol = None;
+        }
+        deactivates
     }
 
     /// The caret `resource` last committed, in its surface's coordinates.
@@ -201,10 +273,28 @@ impl Dispatch<ZwpTextInputV3, TextInputUserData> for State {
         dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
+        // Consult Smithay's authoritative text-input focus. The shell's
+        // independently tracked keyboard target can legitimately differ
+        // while chrome or a floating preedit continuation owns the seat.
+        let admitted = state.input_method_resource_client.is_some()
+            && state
+                .seat
+                .text_input()
+                .focus()
+                .is_some_and(|surface| surface.id().same_client_as(&resource.id()));
+        let input_method_done = state
+            .text_fields
+            .input_method_done(resource, &request, admitted);
         state.text_fields.observe(resource, &request);
         <TextInputManagerState as Dispatch<ZwpTextInputV3, TextInputUserData, Self>>::request(
             state, client, resource, request, data, dhandle, data_init,
         );
+        if let Some(active) = input_method_done {
+            state.input_method_serial = state.input_method_serial.saturating_add(1);
+            if !active {
+                state.input_method_preedit = super::state::InputMethodPreeditState::Inactive;
+            }
+        }
     }
 
     fn destroyed(
@@ -213,7 +303,18 @@ impl Dispatch<ZwpTextInputV3, TextInputUserData> for State {
         resource: &ZwpTextInputV3,
         data: &TextInputUserData,
     ) {
-        state.text_fields.forget(resource);
+        // This is the same public handle Smithay's own destruction path uses.
+        let destroyed_focused = state
+            .seat
+            .text_input()
+            .focus()
+            .is_none_or(|surface| surface.id().same_client_as(&resource.id()));
+        if state.text_fields.forget(
+            resource,
+            state.input_method_resource_client.is_some() && destroyed_focused,
+        ) {
+            state.input_method_serial = state.input_method_serial.saturating_add(1);
+        }
         <TextInputManagerState as Dispatch<ZwpTextInputV3, TextInputUserData, Self>>::destroyed(
             state, client, resource, data,
         );

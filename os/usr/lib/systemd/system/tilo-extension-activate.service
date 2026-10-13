@@ -19,7 +19,7 @@ After=local-fs.target
 Before=graphical.target display-manager.service greetd.service
 # With nothing turned on and no part of ours left in the sysext search path,
 # `tilo-extension activate` returns at once and changes nothing; starting its
-# Python alone held the greeter 0.4-1.4 s on every boot (TIL-767). These are the
+# Python alone held the greeter 0.4-1.4 s on every boot. These are the
 # helper's own early-return conditions, so the unit runs exactly when the helper
 # has work: an extension is turned on, or parts are still present for it to
 # rebuild or unmerge (a removal deletes the opt-in first and then starts this

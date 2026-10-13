@@ -228,17 +228,38 @@ async function passkeyWrap(env, root, rootPublicKey, options, exclude) {
   return {kind: 'passkey', credential_id: base64url(credentialId), rp_id: options.rpId, prf_salt: base64url(salt), ...sealed};
 }
 
+/** The root wrapped under a non-extractable AES-GCM key: how it is held
+ * while unlocked (a page-only key) and how this browser keeps it (the key
+ * stored in IndexedDB as the CryptoKey itself, so it never leaves). */
+async function holdRoot(env, extractable, key) {
+  key ??= await env.subtle.generateKey({name: 'AES-GCM', length: 256}, false, ['wrapKey', 'unwrapKey']);
+  const nonce = env.random(12);
+  const wrapped = new Uint8Array(await env.subtle.wrapKey('pkcs8', extractable, key, {name: 'AES-GCM', iv: nonce}));
+  return {key, nonce, wrapped};
+}
+
+const releaseRoot = (env, held, extractable) => env.subtle.unwrapKey('pkcs8', held.wrapped, held.key,
+  {name: 'AES-GCM', iv: held.nonce}, {name: 'Ed25519'}, extractable, ['sign']);
+
+async function recoveryWrap(env, root, rootPublicKey) {
+  const recovery = env.random(RECOVERY_BYTES);
+  const salt = env.random(32);
+  const wrap = {kind: 'recovery', salt: base64url(salt),
+    ...await seal(env, root, recovery, salt, associatedData('recovery', rootPublicKey))};
+  const recoveryKey = formatRecoveryKey(recovery);
+  recovery.fill(0);
+  return {wrap, recoveryKey};
+}
+
 /**
  * The unlocked identity: `{kind, publicKey, userPublicKey, sign, addPasskey,
- * lock}`. `kind`/`publicKey`/`sign` are the shape the wasm runtime takes as
- * a signer. `extractable` is the root as unwrapped (it is used once, to keep
- * a copy re-wrappable under a page-only key, and then dropped).
+ * addRecoveryKey, lock}`. `kind`/`publicKey`/`sign` are the shape the wasm
+ * runtime takes as a signer. `held` is the root wrapped under a
+ * non-extractable key (`holdRoot`), released extractable only to wrap it
+ * anew.
  */
-async function unlocked(env, extractable, rootPublicKey, account) {
-  const session = await env.subtle.generateKey({name: 'AES-GCM', length: 256}, false, ['wrapKey', 'unwrapKey']);
-  const sessionNonce = env.random(12);
-  const kept = await env.subtle.wrapKey('pkcs8', extractable, session, {name: 'AES-GCM', iv: sessionNonce});
-  let signer = await env.subtle.unwrapKey('pkcs8', kept, session, {name: 'AES-GCM', iv: sessionNonce}, {name: 'Ed25519'}, false, ['sign']);
+async function unlocked(env, held, rootPublicKey, account) {
+  let signer = await releaseRoot(env, held, false);
   let locked = false;
   const live = () => { if (locked) throw new IdentityError('locked', 'The identity is locked'); };
   const identity = {
@@ -267,12 +288,22 @@ async function unlocked(env, extractable, rootPublicKey, account) {
       if (hex(rootPublicKeyOf(envelope)) !== identity.userPublicKey) {
         throw new IdentityError('wrong-identity', 'This envelope belongs to another identity');
       }
-      const root = await env.subtle.unwrapKey('pkcs8', kept, session, {name: 'AES-GCM', iv: sessionNonce}, {name: 'Ed25519'}, true, ['sign']);
+      const root = await releaseRoot(env, held, true);
       const exclude = envelope.wraps
         .filter(wrap => wrap.kind === 'passkey' && wrap.rp_id === options.rpId)
         .map(wrap => wrap.credential_id);
       const wrap = await passkeyWrap(env, root, rootPublicKey, options, exclude);
       return {...envelope, wraps: [...envelope.wraps, wrap]};
+    },
+    /** `envelope` with a new recovery key wrap in place of any earlier one:
+     * resolves to `{envelope, recoveryKey}`; show the key once. */
+    async addRecoveryKey(envelope) {
+      live();
+      if (hex(rootPublicKeyOf(envelope)) !== identity.userPublicKey) {
+        throw new IdentityError('wrong-identity', 'This envelope belongs to another identity');
+      }
+      const {wrap, recoveryKey} = await recoveryWrap(env, await releaseRoot(env, held, true), rootPublicKey);
+      return {envelope: {...envelope, wraps: [...envelope.wraps.filter(other => other.kind !== 'recovery'), wrap]}, recoveryKey};
     },
     /** Forget the root: this object signs nothing more. */
     lock() { locked = true; signer = undefined; if (current === identity) current = undefined; },
@@ -302,17 +333,13 @@ export async function createIdentity(options = {}) {
   const rootPublicKey = new Uint8Array(await env.subtle.exportKey('raw', root.publicKey));
   const wraps = [];
   if (options.passkey !== false) wraps.push(await passkeyWrap(env, root.privateKey, rootPublicKey, options));
-  const recovery = env.random(RECOVERY_BYTES);
-  const salt = env.random(32);
-  wraps.push({kind: 'recovery', salt: base64url(salt),
-    ...await seal(env, root.privateKey, recovery, salt, associatedData('recovery', rootPublicKey))});
-  const recoveryKey = formatRecoveryKey(recovery);
-  recovery.fill(0);
+  const {wrap, recoveryKey} = await recoveryWrap(env, root.privateKey, rootPublicKey);
+  wraps.push(wrap);
   const envelope = {version: VERSION, root_public_key: hex(rootPublicKey), wraps};
   const account = options.userName && options.userId
     ? {userName: options.userName, userId: options.userId, displayName: options.displayName, rpName: options.rpName}
     : undefined;
-  return {envelope, recoveryKey, identity: await unlocked(env, root.privateKey, rootPublicKey, account)};
+  return {envelope, recoveryKey, identity: await unlocked(env, await holdRoot(env, root.privateKey), rootPublicKey, account)};
 }
 
 /**
@@ -365,7 +392,7 @@ export async function unlockIdentity(envelope, how = {passkey: true}) {
   if (!await provesRoot(env.subtle, root, rootPublicKey)) {
     throw new IdentityError('wrong-root', 'The envelope holds another key than its root');
   }
-  return unlocked(env, root, rootPublicKey);
+  return unlocked(env, await holdRoot(env, root), rootPublicKey);
 }
 
 /** `envelope` with a new passkey wrap, from `options.identity` (default the
@@ -373,6 +400,258 @@ export async function unlockIdentity(envelope, how = {passkey: true}) {
 export async function addPasskey(envelope, {identity = currentIdentity(), ...options} = {}) {
   if (!identity?.addPasskey) throw new IdentityError('locked', 'addPasskey needs an unlocked identity');
   return identity.addPasskey(envelope, options);
+}
+
+/** Where this browser keeps its person (`{get, put, delete}`). */
+const BROWSER_RECORD = 'identity';
+const PRF_LABEL = new TextEncoder().encode('tilo-seal/v1/user-root-prf');
+const ENVELOPE_LABEL = new TextEncoder().encode('tilo root envelope v1\0');
+const PROFILE_LABEL = new TextEncoder().encode('tilo person profile v1\0');
+
+/** The PRF input of every passkey that keeps a browser's person: one known
+ * value, so signing in on a new browser evaluates the PRF in the same
+ * assertion that names the person, before their envelope is fetched. */
+async function browserPrfSalt(subtle) {
+  return new Uint8Array(await subtle.digest('SHA-256', PRF_LABEL));
+}
+
+const emptyEnvelope = rootPublicKey => ({version: VERSION, root_public_key: hex(rootPublicKey), wraps: []});
+
+/** Whether `envelope` can open the root anywhere else: a passkey or a
+ * recovery key wraps it. */
+export const envelopeKept = envelope => Boolean(envelope?.wraps?.some(wrap => wrap.kind === 'passkey' || wrap.kind === 'recovery'));
+
+async function keepInBrowser(env, storage, rootPublicKey, extractable, envelope) {
+  const record = {rootPublicKey, held: await holdRoot(env, extractable), envelope};
+  await storage.put(BROWSER_RECORD, record);
+  return record;
+}
+
+/**
+ * The person `record` keeps, unlocked: the identity (current from now on)
+ * with what keeping it takes. `envelope` is what may travel (the passkey and
+ * recovery wraps; empty until the person keeps it), `kept` whether it opens
+ * anywhere but here.
+ */
+async function openKept(env, storage, record) {
+  const {rootPublicKey} = record;
+  const salt = await browserPrfSalt(env.subtle);
+  const identity = await unlocked(env, record.held, rootPublicKey, {
+    // The passkey's user handle is the root public key: a passkey picked on
+    // a new browser names the person whose envelope to fetch.
+    userId: hex(rootPublicKey), userName: 'Tilo', rpName: 'Tilo',
+  });
+  const save = async envelope => {
+    record.envelope = envelope;
+    await storage.put(BROWSER_RECORD, record);
+    return envelope;
+  };
+  // Descriptors, not values: `envelope` and `kept` follow what is kept.
+  return Object.defineProperties(identity, Object.getOwnPropertyDescriptors({
+    get envelope() { return record.envelope; },
+    get kept() { return envelopeKept(record.envelope); },
+    /** Add a passkey for `rpId` (default this page's host) that opens this
+     * person; `userName` is what the authenticator lists it as. Resolves to
+     * the new envelope, also kept here. */
+    async keepWithPasskey({rpId = globalThis.location?.hostname, userName, displayName} = {}) {
+      const options = {rpId, prfSalt: salt};
+      if (userName) Object.assign(options, {userName, displayName: displayName ?? userName});
+      return save(await identity.addPasskey(record.envelope, options));
+    },
+    /** A new recovery key, replacing any earlier one; resolves to the key
+     * as the person writes it down (shown once, never stored here). */
+    async createRecoveryKey() {
+      const {envelope, recoveryKey} = await identity.addRecoveryKey(record.envelope);
+      await save(envelope);
+      return recoveryKey;
+    },
+  }));
+}
+
+/**
+ * The person this browser is. The first call creates one: a user root,
+ * never in the clear, held wrapped under a non-extractable key kept in
+ * IndexedDB (the CryptoKey itself, which never leaves the browser). It is a
+ * real identity from the start: it joins and owns workspaces like any
+ * other, and keeping it (`keepWithPasskey`, `createRecoveryKey`) only adds
+ * ways to open the same root elsewhere. Asks the browser to keep this
+ * site's storage (`navigator.storage.persist()`).
+ *
+ * Resolves to the identity with `{envelope, kept, keepWithPasskey,
+ * createRecoveryKey}`, or `null` with `create: false` and none kept.
+ */
+export async function browserIdentity({storage, crypto, credentials, create = true, persist = globalThis.navigator?.storage} = {}) {
+  storage ??= (await import('./device-custody.mjs')).idbStorage();
+  const env = environment({crypto, credentials});
+  let record = await storage.get(BROWSER_RECORD);
+  if (!record) {
+    if (!create) return null;
+    const root = await env.subtle.generateKey({name: 'Ed25519'}, true, ['sign', 'verify']);
+    const rootPublicKey = new Uint8Array(await env.subtle.exportKey('raw', root.publicKey));
+    record = await keepInBrowser(env, storage, rootPublicKey, root.privateKey, emptyEnvelope(rootPublicKey));
+    await persist?.persist?.().catch(() => false);
+  }
+  return openKept(env, storage, record);
+}
+
+/**
+ * The person this browser joins workspaces as: the identity unlocked last,
+ * else this browser's own (`browserIdentity`, created on the first visit).
+ * Every caller that joins a workspace asks here.
+ */
+export async function browserPerson(options) {
+  return currentIdentity() ?? browserIdentity(options);
+}
+
+/** Whether this site's storage survives the browser clearing space. */
+export async function storagePersisted(storage = globalThis.navigator?.storage) {
+  return Boolean(await storage?.persisted?.().catch(() => false));
+}
+
+/**
+ * Become, in this browser, a person kept with a passkey elsewhere: the
+ * person picks a passkey (a discoverable credential; its user handle names
+ * the root), `fetchEnvelope(rootPublicKeyHex)` finds that person's envelope
+ * (from a host that keeps it, `fetchEnvelope` below), and the PRF output the
+ * same assertion gave opens it. The root is then kept here as
+ * `browserIdentity` keeps it, replacing whoever this browser was.
+ */
+export async function signInWithPasskey({rpId = globalThis.location?.hostname, fetchEnvelope: find, storage, crypto, credentials} = {}) {
+  if (typeof find !== 'function') throw new TypeError('signInWithPasskey needs fetchEnvelope');
+  storage ??= (await import('./device-custody.mjs')).idbStorage();
+  const env = environment({crypto, credentials});
+  if (!env.credentials?.get) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
+  const salt = await browserPrfSalt(env.subtle);
+  const credential = await env.credentials.get({
+    publicKey: {challenge: env.random(32), rpId, userVerification: 'required', extensions: {prf: {eval: {first: salt}}}},
+  });
+  if (!credential) throw new IdentityError('passkey-cancelled', 'No passkey was used');
+  const output = prfFirst(credential);
+  if (!output) throw new IdentityError('prf-unsupported', 'This passkey cannot unlock a Tilo identity (no PRF)');
+  try {
+    const handle = credential.response?.userHandle;
+    const rootHex = handle ? new TextDecoder().decode(handle) : '';
+    if (!/^[0-9a-f]{64}$/.test(rootHex)) throw new IdentityError('not-tilo', 'This passkey does not name a Tilo identity');
+    const envelope = await find(rootHex);
+    if (!envelope) throw new IdentityError('no-envelope', 'No host this browser knows keeps this identity');
+    const rootPublicKey = rootPublicKeyOf(envelope);
+    if (hex(rootPublicKey) !== rootHex) throw new IdentityError('wrong-identity', 'The host answered with another identity');
+    const credentialId = new Uint8Array(credential.rawId);
+    const wrap = envelope.wraps.find(candidate => candidate.kind === 'passkey' && candidate.credential_id === base64url(credentialId));
+    if (!wrap) throw new IdentityError('no-wrap', 'That passkey does not belong to this identity');
+    const root = await unseal(env, wrap, output, unbase64url(wrap.prf_salt), associatedData('passkey', rootPublicKey, credentialId), true);
+    if (!await provesRoot(env.subtle, root, rootPublicKey)) throw new IdentityError('wrong-root', 'The envelope holds another key than its root');
+    currentIdentity()?.lock();
+    return openKept(env, storage, await keepInBrowser(env, storage, rootPublicKey, root, envelope));
+  } finally {
+    output.fill(0);
+  }
+}
+
+/** The longest name a host keeps in a person's profile, in UTF-8 bytes. */
+export const MAX_DISPLAY_NAME_BYTES = 128;
+
+/**
+ * `name` as a profile keeps it: trimmed, without control characters, and
+ * cut at a character boundary to `MAX_DISPLAY_NAME_BYTES` of UTF-8.
+ */
+export function fitDisplayName(name) {
+  const encoder = new TextEncoder();
+  let fitted = '';
+  let bytes = 0;
+  for (const char of String(name ?? '').replace(/\p{Cc}/gu, '').trim()) {
+    bytes += encoder.encode(char).length;
+    if (bytes > MAX_DISPLAY_NAME_BYTES) break;
+    fitted += char;
+  }
+  return fitted.trim();
+}
+
+/** The bytes a root signs to have a host keep one of its records (its
+ * envelope, its profile): label, issue time (ms, u64 little-endian), the
+ * record's JSON. */
+function rootStatement(label, issuedAtMs, json) {
+  const body = new TextEncoder().encode(json);
+  const out = new Uint8Array(label.length + 8 + body.length);
+  out.set(label, 0);
+  new DataView(out.buffer).setBigUint64(label.length, BigInt(issuedAtMs), true);
+  out.set(body, label.length + 8);
+  return out;
+}
+
+/** Have the host at `origin` keep a record (`json`) under `field`, signed by
+ * `identity`'s root under `label`. */
+async function keepSigned({origin, identity, path, field, label, json, now, fetcher}) {
+  const signature = await identity.sign(rootStatement(label, now, json));
+  const response = await fetcher(new URL(path, origin).href, {
+    method: 'POST',
+    headers: {'content-type': 'application/json'},
+    body: JSON.stringify({[field]: json, issued_at_ms: now, signature: hex(signature)}),
+    credentials: 'omit',
+  });
+  if (!response.ok) throw new IdentityError('publish-refused', (await response.text().catch(() => '')) || `host answered ${response.status}`);
+}
+
+/** The record of root `rootPublicKeyHex` at `path` from the first of
+ * `origins` that keeps one `accept` takes, or `null`. A host answers
+ * `{[field]: record}`, with `null` when it keeps none. */
+async function fetchKept(path, field, rootPublicKeyHex, origins, accept, fetcher) {
+  for (const origin of origins) {
+    try {
+      const response = await fetcher(new URL(path, origin).href, {
+        method: 'POST', headers: {'content-type': 'text/plain'}, body: rootPublicKeyHex, credentials: 'omit',
+      });
+      if (!response.ok) continue;
+      const record = (await response.json())?.[field] ?? null;
+      if (record !== null && accept(record)) return record;
+    } catch {
+      // An unreachable host: ask the next.
+    }
+  }
+  return null;
+}
+
+/**
+ * Have the host at `origin` keep `identity`'s envelope (ciphertext only), so
+ * a new browser can fetch it there. The host keeps envelopes of its members
+ * alone, and of each the newest the root signed.
+ */
+export async function publishEnvelope({origin, identity = currentIdentity(), envelope = identity?.envelope, now = Date.now(), fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
+  if (!identity?.sign || identity.locked) throw new IdentityError('locked', 'Unlock the identity first');
+  if (!envelopeKept(envelope)) throw new IdentityError('not-kept', 'Only a kept identity has an envelope to publish');
+  if (hex(rootPublicKeyOf(envelope)) !== identity.userPublicKey) throw new IdentityError('wrong-identity', 'This envelope belongs to another identity');
+  await keepSigned({
+    origin, identity, path: '/peer/v1/envelope', field: 'envelope', label: ENVELOPE_LABEL, json: JSON.stringify(envelope), now, fetcher,
+  });
+}
+
+/** The envelope of root `rootPublicKeyHex` from the first of `origins` that
+ * keeps it, or `null`. */
+export async function fetchEnvelope(rootPublicKeyHex, origins, {fetch: fetcher = (...args) => globalThis.fetch(...args)} = {}) {
+  return fetchKept('/peer/v1/envelope/fetch', 'envelope', rootPublicKeyHex, origins, envelope => envelope?.root_public_key === rootPublicKeyHex, fetcher);
+}
+
+/**
+ * Have the host at `origin` keep `identity`'s profile: the name the person
+ * chose, signed by their root, so each of their devices (paired, or signed
+ * in on a new browser) shows it. Hosts keep profiles of their members alone,
+ * and of each the newest the root signed. Needs no kept identity: a device
+ * paired to this one reads it from the same hosts.
+ */
+export async function publishProfile({origin, identity = currentIdentity(), displayName, now = Date.now(), fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
+  if (!identity?.sign || identity.locked) throw new IdentityError('locked', 'Unlock the identity first');
+  const name = fitDisplayName(displayName);
+  if (!name) throw new IdentityError('malformed', 'A profile needs a name');
+  const json = JSON.stringify({version: 1, user_public_key: identity.userPublicKey, display_name: name});
+  await keepSigned({origin, identity, path: '/peer/v1/profile', field: 'profile', label: PROFILE_LABEL, json, now, fetcher});
+}
+
+/** The profile (`{version, user_public_key, display_name}`) of root
+ * `rootPublicKeyHex` from the first of `origins` that keeps it, or `null`.
+ * Hosts check the root's signature before keeping one. */
+export async function fetchProfile(rootPublicKeyHex, origins, {fetch: fetcher = (...args) => globalThis.fetch(...args)} = {}) {
+  return fetchKept('/peer/v1/profile/fetch', 'profile', rootPublicKeyHex, origins,
+    profile => profile?.user_public_key === rootPublicKeyHex && typeof profile.display_name === 'string' && profile.display_name.length > 0, fetcher);
 }
 
 /** The wasm runtime, loaded through the page host. */

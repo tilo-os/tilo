@@ -1,8 +1,5 @@
 #![allow(
-    clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
-    clippy::unwrap_used,
     reason = "headless geometry fixture asserts setup failures directly"
 )]
 
@@ -150,14 +147,9 @@ fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
     }
 }
 
-/// Find bar and download status alignment.
+/// The find bar's controls share the find field's centre line.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
-    // Phase `the_find_bar_controls_share_the_find_fields_centre_line`.
+fn find_bar_controls_share_the_find_fields_centre_line() {
     {
         let mut widget = BrowserWidget::new_headless();
         widget.debug_set_viewport_width(1200);
@@ -168,13 +160,19 @@ fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
             ui::theme::Theme::dark(),
         );
         // Open the find bar the way a person does: with the Find shortcut,
-        // which a following frame's sync turns into the bar.
-        harness.set_modifiers(&["ctrl".to_owned()]);
+        // which a following frame's sync turns into the bar. That is Cmd+F on
+        // macOS and Ctrl+F elsewhere — the browser honours the platform's
+        // command modifier, so the test presses the same one.
+        let command = match ui::platform::PlatformConventions::default().platform() {
+            ui::platform::Platform::MacOs => "super",
+            _ => "ctrl",
+        };
+        harness.set_modifiers(&[command.to_owned()]);
         harness.key("f");
         harness.set_modifiers(&[]);
         harness
             .wait_for_named("browser.find.input", tilo_test_env::hang_bound())
-            .expect("Ctrl+F composes the find bar");
+            .expect("the Find shortcut composes the find bar");
         let targets = harness.targets();
         let field = targets["browser.find.input"];
         let window = targets["browser.root"];
@@ -202,10 +200,12 @@ fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
             assert!(rect.x1 <= window.x1, "{id} stays inside the window");
         }
     }
+}
 
-    // Phase `the_download_status_shares_the_toolbar_rows_centre_line`.
-    // A download in progress adds its status to the row without breaking the
-    // row's centre line, and without starving the address field.
+/// A download in progress adds its status to the row without breaking the
+/// row's centre line, and without starving the address field.
+#[test]
+fn download_status_shares_the_toolbar_rows_centre_line() {
     {
         use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 

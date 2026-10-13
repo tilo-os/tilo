@@ -9,7 +9,7 @@ use ui::theme::Theme;
 use ui::time::Instant;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use winit::event::{DeviceId, ElementState, KeyEvent, RawKeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, RawKeyEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
 
 fn key(picker: &mut EmojiPicker, logical: Key, modifiers: ModifiersState) {
@@ -26,11 +26,7 @@ fn key(picker: &mut EmojiPicker, logical: Key, modifiers: ModifiersState) {
         logical,
     );
     picker.handle_event(
-        &WindowEvent::KeyboardInput {
-            device_id: DeviceId::dummy(),
-            event,
-            is_synthetic: false,
-        },
+        &ui::synthetic_input::keyboard_input(event),
         1.0,
         modifiers,
         None,

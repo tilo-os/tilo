@@ -344,6 +344,17 @@ impl PermissionContext {
         )
     }
 
+    /// The permissions of a whole standing a host built (an installer
+    /// bounded by a bot's grants), decided exactly as that standing says.
+    #[must_use]
+    pub fn from_standing(room: &str, standing: Standing) -> Self {
+        Self::new(
+            Actor::person(standing.person.clone()).in_room(room),
+            Vec::new(),
+            standing,
+        )
+    }
+
     /// `person`, who is no member of [`LOCAL_ROOM`]: nothing is allowed.
     pub fn stranger(person: impl Into<String>) -> Self {
         let person = person.into();

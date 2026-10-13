@@ -288,7 +288,7 @@ the hardware, and `vm status` shows what the device reported:
 |---|---|
 | Wake-on-LAN magic packet on `<if>` (enabled) | Ethernet WoL: `vm wake` wakes it |
 | Wake-on-LAN ... supported but disabled | the image did not enable it; the printed `ethtool -s <if> wol g` does, until the next boot |
-| Wi-Fi WoWLAN ... not known to wake this machine | the Wi-Fi chip lists magic-packet wake, but the machine around it may not wake on it (a Snapdragon laptop does not, in s2idle or deep sleep): count on someone at the machine |
+| Wi-Fi WoWLAN ... not known to wake this machine | the Wi-Fi chip lists magic-packet wake, but the machine around it may not wake on it (support and resume reliability must be checked on the booted kernel): count on someone at the machine |
 | cannot wake on a magic packet | someone has to wake it at the machine |
 | unknown | the image has no `ethtool` or `iw` to ask |
 
@@ -378,3 +378,18 @@ where it is recorded with the route, so tilo-vm uses it too.
 - The swap says the session did not start: `tilo-vm logs device` names the
   cause; `tilo-vm rollback --slot device` brings the previous build back.
 - A layer is refused with `target`: it was built for another architecture.
+
+Enable a supported active connection's magic-packet wake without reconnecting:
+
+```sh
+tilo-vm vm network-wake yoga --profile <NetworkManager-UUID> --enabled true
+tilo-vm vm network-wake yoga --profile <NetworkManager-UUID>
+```
+
+This uses the same authenticated device-admin route as other device requests.
+It persists the connection property and asks NetworkManager to reapply it;
+readback distinguishes saved configuration, driver support and current driver
+state. A saved setting with a reapply error needs attention and reports failure;
+it does not disconnect the connection. Settings exposes **Wake over network**
+for saved Wi-Fi profiles. Neither setting nor driver support verifies physical
+wake, and a reachable awake device is required to configure it.

@@ -68,4 +68,4 @@ pub mod worker;
 pub mod workspace;
 
 pub use app::DbClientApp;
-pub use resource::{DbClientShell, LOCALES, Workspace};
+pub use resource::{DbClientShell, Workspace};

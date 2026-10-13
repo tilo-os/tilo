@@ -300,10 +300,7 @@ impl Desk {
     /// The pointer moving to a logical point, as the compositor hands it on.
     fn point_at(&mut self, p: Point) {
         self.dispatch(
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: PhysicalPosition::new(p.x, p.y),
-            },
+            &ui::synthetic_input::cursor_moved(p.x, p.y),
             ModifiersState::empty(),
         );
         self.settle();
@@ -311,14 +308,7 @@ impl Desk {
 
     fn press(&mut self, key: NamedKey, mods: ModifiersState) {
         let ev = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
-        self.dispatch(
-            &WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: ev,
-                is_synthetic: false,
-            },
-            mods,
-        );
+        self.dispatch(&ui::synthetic_input::keyboard_input(ev), mods);
         self.settle();
     }
 
@@ -370,11 +360,7 @@ impl Desk {
 
     fn button(&mut self, state: ElementState) {
         self.dispatch(
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button: winit::event::MouseButton::Left,
-            },
+            &ui::synthetic_input::mouse_input(state, winit::event::MouseButton::Left),
             ModifiersState::empty(),
         );
         self.frame();
@@ -382,10 +368,7 @@ impl Desk {
 
     fn cursor_to(&mut self, p: Point) {
         self.dispatch(
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: PhysicalPosition::new(p.x, p.y),
-            },
+            &ui::synthetic_input::cursor_moved(p.x, p.y),
             ModifiersState::empty(),
         );
         self.frame();

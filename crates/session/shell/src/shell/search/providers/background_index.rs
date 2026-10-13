@@ -6,14 +6,42 @@
 
 use std::cell::{Ref, RefCell};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub(super) struct BackgroundIndex<G, T> {
     thread_name: &'static str,
     ready: RefCell<Option<(G, T)>>,
-    build: RefCell<Option<Receiver<(G, T)>>>,
+    build: RefCell<Option<BuildReply<G, T>>>,
     #[cfg(test)]
     pub(super) probe: std::sync::Arc<BuildProbe>,
+}
+
+/// Readiness includes the loop notification: consuming a build must not
+/// leave its wake outstanding while the loop parks for an unrelated request.
+struct BuildReply<G, T> {
+    receiver: Receiver<(G, T)>,
+    notification: Arc<Mutex<()>>,
+}
+
+impl<G, T> BuildReply<G, T> {
+    fn try_recv(&self) -> Result<(G, T), TryRecvError> {
+        let _notification = self
+            .notification
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.receiver.try_recv()
+    }
+
+    fn recv_timeout(&self, bound: Duration) -> Result<(G, T), RecvTimeoutError> {
+        // Do not lock while waiting: the publisher needs the lock to send.
+        let finished = self.receiver.recv_timeout(bound)?;
+        let _notification = self
+            .notification
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(finished)
+    }
 }
 
 /// Where and how often builds ran, for tests that keep them off the UI thread.
@@ -36,10 +64,14 @@ impl<G: PartialEq + Send + 'static, T: Send + 'static> BackgroundIndex<G, T> {
     }
 
     /// Take in a finished build; start `build` when the retained index is not
-    /// for `generation` and no build runs. `build` returns the generation it
+    /// for the current `generation` and no build runs. `build` returns the generation it
     /// read, captured before its sources, so a source changing meanwhile
     /// leaves the result stale instead of stamping it current.
-    pub(super) fn refresh(&self, generation: &G, build: impl FnOnce() -> (G, T) + Send + 'static) {
+    pub(super) fn refresh(
+        &self,
+        generation: impl Fn() -> G,
+        build: impl FnOnce() -> (G, T) + Send + 'static,
+    ) {
         let receiver = self.build.borrow_mut().take();
         if let Some(receiver) = receiver {
             match receiver.try_recv() {
@@ -48,12 +80,17 @@ impl<G: PartialEq + Send + 'static, T: Send + 'static> BackgroundIndex<G, T> {
                 Err(TryRecvError::Disconnected) => {}
             }
         }
-        if self.is_ready(generation) || self.build.borrow().is_some() {
+        // Reading a finished build may overlap its source's first cache fill.
+        // Compare against the current generation, not a pre-poll observation.
+        if self.is_ready(&generation()) || self.build.borrow().is_some() {
             return;
         }
         let (sender, receiver) = mpsc::sync_channel(1);
+        let notification = Arc::new(Mutex::new(()));
+        let publish_notification = Arc::clone(&notification);
         #[cfg(test)]
         let probe = std::sync::Arc::clone(&self.probe);
+        let wake = crate::shell::search::invocation_wake::waker();
         let spawned = std::thread::Builder::new()
             .name(self.thread_name.into())
             .spawn(move || {
@@ -65,10 +102,19 @@ impl<G: PartialEq + Send + 'static, T: Send + 'static> BackgroundIndex<G, T> {
                     *probe.thread.lock().expect("index build probe lock") =
                         Some(std::thread::current().id());
                 }
-                let _ = sender.send(build());
+                let finished = build();
+                let _notification = publish_notification
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if sender.send(finished).is_ok() {
+                    wake.wake();
+                }
             });
         if spawned.is_ok() {
-            *self.build.borrow_mut() = Some(receiver);
+            *self.build.borrow_mut() = Some(BuildReply {
+                receiver,
+                notification,
+            });
         }
     }
 
@@ -87,9 +133,8 @@ impl<G: PartialEq + Send + 'static, T: Send + 'static> BackgroundIndex<G, T> {
     {
         let started = Instant::now();
         loop {
-            let current = generation();
-            self.refresh(&current, build());
-            if self.is_ready(&current) {
+            self.refresh(&generation, build());
+            if self.is_ready(&generation()) {
                 return;
             }
             let Some(receiver) = self.build.borrow_mut().take() else {
@@ -124,7 +169,6 @@ impl<G: PartialEq + Send + 'static, T: Send + 'static> BackgroundIndex<G, T> {
             .is_some_and(|(built, _)| built == generation)
     }
 
-    #[cfg(test)]
     pub(super) fn building(&self) -> bool {
         self.build.borrow().is_some()
     }
@@ -132,5 +176,68 @@ impl<G: PartialEq + Send + 'static, T: Send + 'static> BackgroundIndex<G, T> {
     #[cfg(test)]
     pub(super) fn set_ready(&self, generation: G, index: T) {
         *self.ready.borrow_mut() = Some((generation, index));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[test]
+    fn a_cold_source_build_is_current_and_notified_before_consumption() {
+        let generation = Arc::new(AtomicU64::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        let (entered, notification) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let released = Mutex::new(released);
+        let _installed = crate::shell::search::invocation_wake::install(Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            entered.send(()).expect("observe the publication wake");
+            released
+                .lock()
+                .expect("release lock")
+                .recv_timeout(Duration::from_secs(10))
+                .expect("release the publication wake");
+        }));
+        let index = BackgroundIndex::new("tilo-test-search-index");
+        let source = Arc::clone(&generation);
+        index.refresh(
+            || generation.load(Ordering::Acquire),
+            move || {
+                source.store(1, Ordering::Release);
+                (1, "cold records")
+            },
+        );
+        notification
+            .recv_timeout(Duration::from_secs(10))
+            .expect("production worker must notify");
+        assert!(
+            matches!(
+                index
+                    .build
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .notification
+                    .try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ),
+            "the build cannot be consumed while its notification is outstanding"
+        );
+        release.send(()).expect("finish notification");
+        index.settle(
+            Duration::from_secs(10),
+            || generation.load(Ordering::Acquire),
+            || || panic!("a current cold build must not be rebuilt"),
+        );
+        assert_eq!(
+            *index.current(&1).expect("current snapshot"),
+            "cold records"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(index.probe.builds.load(Ordering::Relaxed), 1);
     }
 }

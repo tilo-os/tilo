@@ -55,14 +55,10 @@ pub const LARGE_REMOVAL_CHARS: usize = 2_048;
 /// Longest Find query accepted, bounding the per-participant state and the
 /// search work one remote caller can request.
 pub const MAX_FIND_QUERY_BYTES: usize = 256;
-/// Bounds of one spelling replacement.
-pub const MAX_SUGGESTION_CHARS: usize = 256;
 
 /// Why a primitive produced no edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditingError {
-    /// The primitive's body has not landed yet.
-    NotYetImplemented(&'static str),
     /// The view has no caret, or its caret block is not in the document.
     NoCaret,
     /// The primitive needs a non-empty selection.
@@ -74,7 +70,6 @@ pub enum EditingError {
 impl std::fmt::Display for EditingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotYetImplemented(op) => write!(f, "{op} is not yet implemented"),
             Self::NoCaret => f.write_str("needs-caret: Place the caret in the document first"),
             Self::NeedsSelection => f.write_str("needs-selection: Select some text first"),
             Self::Invalid(reason) => write!(f, "invalid arguments: {reason}"),
@@ -1152,148 +1147,6 @@ pub fn paste(view: &ParticipantView, doc: &AutoCommit, content: &PasteContent) -
     Ok(PasteTarget::new(&r).build(blocks))
 }
 
-/// Where `append-paragraph` leaves its invoker: at the end of the text it
-/// appended, in the body — the empty trailing paragraph it fills, or the new
-/// block (minted at apply) after the last one, as `apply_append_paragraph`
-/// resolves it. Resolved from the document once, finished per text.
-#[derive(Debug, Clone)]
-pub(crate) struct AppendTarget {
-    base: ParticipantView,
-    /// `(last body block, its chars, whether append fills it)`.
-    end: Option<(String, usize, bool)>,
-}
-
-impl AppendTarget {
-    /// `body`: the kept order of `doc`'s body, naming its last block without
-    /// listing the body.
-    pub(crate) fn new(view: &ParticipantView, doc: &AutoCommit, body: Option<&BodyOrder>) -> Self {
-        let base = ParticipantView {
-            region: RegionKind::Body,
-            anchor: None,
-            pending: None,
-            ..view.clone()
-        };
-        let end = crate::model::open(doc)
-            .ok()
-            .and_then(|c| match body {
-                Some(body) => body
-                    .id_at(body.len().checked_sub(1)?)
-                    .map(|last| super::body_end_at(doc, &c, last.to_owned())),
-                None => super::body_end(doc, &c),
-            })
-            .map(|end| {
-                let fills = end.chars == 0 && end.kind.as_deref() == Some("paragraph");
-                (end.id, end.chars, fills)
-            });
-        Self { base, end }
-    }
-
-    pub(crate) fn caret_after(&self, text: &str) -> ParticipantView {
-        let typed = text.chars().count();
-        let mut next = self.base.clone();
-        match &self.end {
-            Some((id, _, true)) => next.caret = ViewPoint::new(id, typed),
-            Some((id, chars, false)) => {
-                // Until the new block exists the caret stays at the old end.
-                next.caret = ViewPoint::new(id, *chars);
-                next.pending = Some(PendingCaret {
-                    after: id.clone(),
-                    was_next: None,
-                    steps: 1,
-                    offset: typed,
-                });
-            }
-            // An empty body: the new block is the first one.
-            None => {}
-        }
-        next
-    }
-}
-
-/// `append-paragraph`: add `text` as a paragraph at the end of the body and
-/// leave the caret after it, so the rest of a long paragraph can be typed
-/// there (`type-text`).
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
-pub fn append_paragraph(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditResult {
-    if text.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
-        return Err(EditingError::Invalid(
-            "text must be non-empty and within Writer's limits".into(),
-        ));
-    }
-    let next = AppendTarget::new(view, doc, None).caret_after(text);
-    Ok((vec![super::append_paragraph_action(text)], next))
-}
-
-/// Replace one misspelled body word with a suggestion (`SpliceText`). A caret
-/// or anchor after the word in the same block moves with the text.
-///
-/// # Errors
-///
-/// Returns an [`EditingError`] when the view has no caret or selection in `doc`,
-/// or when the arguments are stale or out of range for this document.
-pub fn apply_spelling_suggestion(
-    view: &ParticipantView,
-    doc: &AutoCommit,
-    block: &str,
-    start: usize,
-    end: usize,
-    replacement: &str,
-) -> EditResult {
-    let action = suggestion_action(block, start, end, replacement)?;
-    let rd = RegionDoc::open(doc, RegionKind::Body)?;
-    rd.point(block, end)?;
-    let mut next = view.settle(doc);
-    if next.region == RegionKind::Body {
-        let grown = replacement.chars().count();
-        let shift = |point: &mut ViewPoint| {
-            if point.block == block && point.offset > start {
-                point.offset = if point.offset >= end {
-                    point.offset - (end - start) + grown
-                } else {
-                    start + grown
-                };
-            }
-        };
-        shift(&mut next.caret);
-        if let Some(anchor) = next.anchor.as_mut() {
-            shift(anchor);
-        }
-    }
-    Ok((vec![action], next))
-}
-
-fn suggestion_action(
-    block: &str,
-    start: usize,
-    end: usize,
-    replacement: &str,
-) -> Result<RichTextAction, EditingError> {
-    if block.is_empty() || start >= end || end - start > MAX_SUGGESTION_CHARS {
-        return Err(EditingError::Invalid(
-            "the misspelled range must be a short non-empty range".into(),
-        ));
-    }
-    if replacement.is_empty()
-        || replacement.chars().count() > MAX_SUGGESTION_CHARS
-        || replacement.contains(['\n', '\r'])
-    {
-        return Err(EditingError::Invalid(
-            "a suggestion is a short single-line replacement".into(),
-        ));
-    }
-    Ok(splice_text_action(
-        RegionKind::Body,
-        block,
-        start,
-        end,
-        replacement,
-    ))
-}
-
 /// Move (and collapse) the caret. View-only: returns no envelopes.
 ///
 /// # Errors
@@ -2011,11 +1864,12 @@ mod tests {
 
     fn old_enter(m: &WordProcessor, doc: &AutoCommit) -> Vec<RichTextAction> {
         let mut out = Vec::new();
-        let mut caret = m.caret().clone();
-        if let Some((start, _)) = m.selection_span(doc) {
+        let caret = if let Some((start, _)) = m.selection_span(doc) {
             out.extend(old_insert_text(m, doc, ""));
-            caret = start;
-        }
+            start
+        } else {
+            m.caret().clone()
+        };
         let region = m.region_kind();
         let block = body_block(doc, &caret.block);
         let kind = block
@@ -3032,23 +2886,6 @@ mod tests {
     }
 
     #[test]
-    fn spelling_suggestion_is_one_splice_and_moves_a_later_caret() {
-        let (mut state, _, ids) = writer(&["teh cat sat"]);
-        let view = at(&ids[0], 7);
-        let (actions, next) =
-            apply_spelling_suggestion(&view, &state.doc, &ids[0], 0, 3, "then").unwrap();
-        assert_eq!(
-            actions,
-            vec![splice_text_action(RegionKind::Body, &ids[0], 0, 3, "then")]
-        );
-        assert_eq!(next.caret.offset, 8);
-        apply_all(&mut state.doc, &actions);
-        assert_eq!(texts(&state.doc), ["then cat sat"]);
-        assert!(apply_spelling_suggestion(&view, &state.doc, &ids[0], 0, 99, "x").is_err());
-        assert!(apply_spelling_suggestion(&view, &state.doc, &ids[0], 0, 3, "two\nlines").is_err());
-    }
-
-    #[test]
     fn stale_or_missing_carets_refuse_instead_of_guessing() {
         let (state, _, ids) = writer(&["abc"]);
         let doc = &state.doc;
@@ -3236,61 +3073,31 @@ mod tests {
         doc.commit();
         let doc = &doc;
         let view = at(&ids[400], 4);
-        let started = ui::time::now();
-        for _ in 0..30 {
-            type_text(&view, doc, "x").unwrap();
-            delete(&view, doc, DeleteDirection::Backward, 1).unwrap();
-            delete(&view, doc, DeleteDirection::Forward, 1).unwrap();
+        // The two sides are measured in alternating rounds and each keeps its
+        // fastest round, so load from tests running alongside cannot inflate
+        // one side only.
+        let mut local = std::time::Duration::MAX;
+        let mut scans = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let started = ui::time::now();
+            for _ in 0..30 {
+                type_text(&view, doc, "x").unwrap();
+                delete(&view, doc, DeleteDirection::Backward, 1).unwrap();
+                delete(&view, doc, DeleteDirection::Forward, 1).unwrap();
+            }
+            local = local.min(started.elapsed());
+            let started = ui::time::now();
+            for _ in 0..20 {
+                let c = crate::model::open(doc).unwrap();
+                std::hint::black_box(tilo_doc::model::region_blocks_in_order(
+                    doc,
+                    &c,
+                    tilo_doc::model::Region::Body,
+                ));
+            }
+            scans = scans.min(started.elapsed());
         }
-        let local = started.elapsed();
-        let started = ui::time::now();
-        for _ in 0..20 {
-            let c = crate::model::open(doc).unwrap();
-            std::hint::black_box(tilo_doc::model::region_blocks_in_order(
-                doc,
-                &c,
-                tilo_doc::model::Region::Body,
-            ));
-        }
-        let scans = started.elapsed();
         // 90 local keystrokes cost less than 20 region scans would.
         assert!(local < scans, "keystrokes {local:?} vs 20 scans {scans:?}");
-    }
-
-    #[test]
-    fn append_then_type_text_streams_to_the_same_paragraph_as_one_append() {
-        let full = "The ocean covers most of the planet, and nobody has seen all of it.";
-        for seed in [&["Intro"][..], &[""][..]] {
-            // One append with the whole text.
-            let (mut whole, _, ids) = writer(seed);
-            let view = at(&ids[0], 0);
-            let (actions, _) = append_paragraph(&view, &whole.doc, full).unwrap();
-            apply_all(&mut whole.doc, &actions);
-            // The same text streamed: first part appended, the rest typed at
-            // the caret the append leaves, through the published edit effect.
-            let (mut streamed, _, ids) = writer(seed);
-            let mut agent = at(&ids[0], 0);
-            let (first, rest) = full.split_at(20);
-            let (actions, next) = append_paragraph(&agent, &streamed.doc, first).unwrap();
-            apply_all(&mut streamed.doc, &actions);
-            agent = next.settle(&streamed.doc);
-            for chunk in rest.as_bytes().chunks(16) {
-                let chunk = std::str::from_utf8(chunk).unwrap();
-                let encoded = invoke(
-                    &agent,
-                    &streamed.doc,
-                    op::TYPE_TEXT,
-                    serde_json::json!({"text": chunk}),
-                );
-                let (actions, next) = type_text(&agent, &streamed.doc, chunk).unwrap();
-                assert_eq!(encoded, encode(&actions[0]));
-                apply_all(&mut streamed.doc, &actions);
-                agent = next.settle(&streamed.doc);
-            }
-            assert_eq!(texts(&streamed.doc), texts(&whole.doc), "seed {seed:?}");
-            assert_eq!(texts(&streamed.doc).last().unwrap(), full);
-            let last = order(&streamed.doc).pop().unwrap();
-            assert_eq!(agent.caret, ViewPoint::new(&last, full.chars().count()));
-        }
     }
 }

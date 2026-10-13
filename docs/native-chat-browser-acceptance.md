@@ -100,6 +100,4 @@ verify a person's chosen display name from the content of a message.
 This qualifies local governed certified-peer resource navigation and actual
 browser disconnect/retry. It does not qualify a full browser-profile restart
 with queued edits, physical devices/microphones, cross-app Follow,
-or the user's public demo. The audited `tilo.coffee` candidate is unconfirmed;
-its resource entry returned 403. That response was not bypassed, expired AWS
-credentials were not renewed, and no deployment or access change was made.
+or a public deployment.

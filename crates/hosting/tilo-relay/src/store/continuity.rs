@@ -402,8 +402,14 @@ mod tests {
     use super::*;
     use crate::store::{
         bounded::{Step, WorkLimit},
-        replay::{ReplayBudget, ReplayId, ReplayLimits},
+        replay::{ReplayBudget, ReplayId, ReplayLimits, WORK_DIR, held_work_name},
     };
+
+    /// A final cut's held queue that holds nothing: the device's own queue
+    /// alone is cut.
+    fn no_held(store: &WorkspaceStore) -> std::path::PathBuf {
+        store.root().join(WORK_DIR).join(held_work_name([3; 16]))
+    }
 
     #[global_allocator]
     static HEAP: tilo_automerge::heap::ThreadCounting = tilo_automerge::heap::ThreadCounting;
@@ -496,7 +502,7 @@ mod tests {
     fn capture(store: &WorkspaceStore, pending_only: bool) -> super::super::replay::ReplaySnapshot {
         let id = ReplayId(rand::random());
         let mut build = if pending_only {
-            store.start_pending_replay_capture(id, [9; 32])
+            store.start_pending_replay_capture(id, [9; 32], &no_held(store))
         } else {
             store.start_replay_capture(id, [9; 32])
         }
@@ -991,7 +997,11 @@ mod tests {
         }
         let mut build = fixture
             .store
-            .start_pending_replay_capture(ReplayId(rand::random()), [9; 32])
+            .start_pending_replay_capture(
+                ReplayId(rand::random()),
+                [9; 32],
+                &no_held(&fixture.store),
+            )
             .unwrap();
         let mut snapshot = loop {
             let step = fixture

@@ -10,7 +10,7 @@
 use std::rc::Rc;
 
 use ui::icons::Icon;
-use ui::widget::{AppModel, ModelPath, NavAction, NavItem, NavList, NavSection, Widget};
+use ui::widget::{NavAction, NavItem, NavList, NavSection, Widget};
 use vello::kurbo::Point;
 
 use crate::app::{Core, Request, Requests, Shared};
@@ -148,28 +148,22 @@ impl Core {
     }
 }
 
-/// The sidebar widget: the shared [`NavList`], kept in step with the library.
+/// The sidebar widget: the shared [`NavList`], following the library.
 pub(crate) struct SidebarNav {
     list: NavList,
     core: Shared,
-    sections: Vec<NavSection>,
-    selected: Option<String>,
 }
 
 impl SidebarNav {
     pub(crate) fn new(core: &Shared, requests: &Requests) -> Self {
-        let (sections, selected) = {
-            let core = core.borrow();
-            (core.nav_sections(), nav_id(&core.filter))
-        };
         let list = {
             let show = Rc::clone(requests);
             let menu = Rc::clone(requests);
             let fold = Rc::clone(requests);
-            NavList::new(sections.clone())
+            let follow = Rc::clone(core);
+            NavList::new(Vec::new())
                 .with_id("feeds.sidebar")
                 .with_accessible_name("Subscriptions")
-                .selected(&selected)
                 .on_select(move |id| {
                     if let Some(filter) = filter_of(&id) {
                         show.borrow_mut().push(Request::Show(filter));
@@ -194,35 +188,17 @@ impl SidebarNav {
                             .push(Request::SetFolderCollapsed(folder, !open));
                     }
                 })
+                .follow(move || {
+                    let core = follow.try_borrow().ok()?;
+                    Some((core.nav_sections(), Some(nav_id(&core.filter))))
+                })
         };
         Self {
             list,
             core: Rc::clone(core),
-            sections,
-            selected: Some(selected),
         }
     }
 
-    /// Follow the library and the chosen place.
-    fn refresh(&mut self) {
-        let Ok(core) = self.core.try_borrow() else {
-            return;
-        };
-        let (sections, selected) = (core.nav_sections(), nav_id(&core.filter));
-        drop(core);
-        if sections != self.sections {
-            self.list.set_sections(sections.clone());
-            self.sections = sections;
-        }
-        if self.selected.as_deref() != Some(selected.as_str())
-            || self.list.selected_id().as_deref() != Some(selected.as_str())
-        {
-            self.list.set_selected(Some(&selected));
-            self.selected = Some(selected);
-        }
-    }
-
-    /// Note where the first feed's row is, for the context-menu capture.
     fn record_first_feed_row(&self) {
         let Ok(mut core) = self.core.try_borrow_mut() else {
             return;
@@ -249,16 +225,6 @@ impl ui::widget::Decorator for SidebarNav {
 
     fn inner_mut(&mut self) -> &mut NavList {
         &mut self.list
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.refresh();
-        Widget::sync(&mut self.list, state, path);
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.refresh();
-        Widget::update(&mut self.list, state, path)
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {

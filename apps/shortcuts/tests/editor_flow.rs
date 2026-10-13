@@ -230,9 +230,9 @@ impl ActionHost for FakeHost {
 
 fn rule(action: &str, kind: tilo_action_policy::ActionKind) -> Value {
     serde_json::to_value(
-        shortcuts::grant::Permission {
+        tilo_automation::grant::Permission {
             app_id: NOTES.into(),
-            reach: shortcuts::grant::Reach::Resource(INBOX.into()),
+            reach: tilo_automation::grant::Reach::Resource(INBOX.into()),
             action: action.into(),
             kind,
             label: String::new(),
@@ -685,9 +685,9 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     assert_eq!(
         saved.grant,
         vec![
-            shortcuts::grant::Permission {
+            tilo_automation::grant::Permission {
                 app_id: "so.tilo.weather".into(),
-                reach: shortcuts::grant::Reach::Resource("weather.location:fixture".into()),
+                reach: tilo_automation::grant::Reach::Resource("weather.location:fixture".into()),
                 action: "refresh".into(),
                 kind: ActionKind::Read,
                 label: String::new(),

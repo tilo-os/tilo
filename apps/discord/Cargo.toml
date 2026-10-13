@@ -1,0 +1,40 @@
+[package]
+name = "discord"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "discord"
+path = "src/lib.rs"
+
+[[bin]]
+name = "discord"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+discord-wire = { path = "../discord-model", features = ["resource"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+serde.workspace = true
+serde_json.workspace = true
+data-encoding.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# The bridge reads a real Chat record in its tests.
+chat = { path = "../chat" }
+# The bridge bot's program is built and checked against the real surfaces.
+tilo-automation = { path = "../../crates/collab/automation" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

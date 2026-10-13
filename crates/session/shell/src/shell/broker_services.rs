@@ -33,6 +33,7 @@ pub(crate) struct NativeOwnerCommitService {
     tree: WorkspaceTreeHandle,
     owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 }
 impl NativeOwnerCommitService {
     pub(crate) fn new(
@@ -54,6 +55,7 @@ impl NativeOwnerCommitService {
             tree,
             owner,
             network,
+            history_keys: None,
         }
     }
     pub(crate) fn owner(&self) -> Option<super::native_workspace_owner::NativeWorkspaceOwner> {
@@ -146,6 +148,89 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
 }
 
 impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitService {
+    fn checkpoint_result_access(
+        &self,
+        room: &str,
+        caller: &tilo_user_identity::DeviceCert,
+        id: uuid::Uuid,
+        mutation: bool,
+    ) -> Result<(), String> {
+        let owner = self
+            .owner
+            .as_ref()
+            .ok_or("native checkpoint governor unavailable")?;
+        owner.health()?;
+        let room_id = super::state::RoomId::parse(room).ok_or("invalid checkpoint room")?;
+        if let Some(network) = self.network.as_ref() {
+            network.check_native_custody(owner, room_id)?;
+            if network.governed_elsewhere(room_id) {
+                return Err("checkpoint requires the governing owner".into());
+            }
+        }
+        owner.with_current(room_id, |view| {
+            if view.device() != view.governor() {
+                return Err("native checkpoint requires the actual governing owner".into());
+            }
+            Ok(())
+        })?;
+        let (key, governor) = tilo_identity_host::broker::trusted_current_device(room)
+            .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
+        let now = std::time::SystemTime::now();
+        owner.with_current(room_id, |view| {
+            if view.device() != view.governor() || view.governor() != &governor {
+                return Err("checkpoint governor custody changed".into());
+            }
+            view.peer().check_checkpoint_writer(&key, now)?;
+            if mutation {
+                view.peer().check_checkpoint_namer(caller, now)?;
+            }
+            Ok(())
+        })?;
+        owner.read_checkpoint(room_id, caller, id, now)?;
+        Ok(())
+    }
+
+    fn checkpoint(
+        &self,
+        request: tilo_peer_state::workspace_checkpoint::CheckpointRequest,
+    ) -> tilo_peer_state::workspace_checkpoint::CheckpointFuture {
+        let owner = self.owner.clone();
+        let network = self.network.clone();
+        Box::pin(async move {
+            let owner = owner.ok_or("native checkpoint governor unavailable")?;
+            owner.health()?;
+            let room =
+                super::state::RoomId::parse(&request.room).ok_or("invalid checkpoint room")?;
+            if let Some(network) = network.as_ref() {
+                network.check_native_custody(&owner, room)?;
+                if network.governed_elsewhere(room) {
+                    return Err("native checkpoint requires the actual governing owner".into());
+                }
+            }
+            owner.with_current(room, |view| {
+                if view.device() != view.governor() {
+                    return Err("native checkpoint requires the actual governing owner".into());
+                }
+                Ok(())
+            })?;
+            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
+                .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
+            owner.with_current(room, |view| {
+                if view.governor() != &governor {
+                    return Err("checkpoint governor custody changed".into());
+                }
+                Ok(())
+            })?;
+            let result = owner.execute_checkpoint(&request, &key, std::time::SystemTime::now())?;
+            if request.command.mutates()
+                && let Some(network) = network
+            {
+                network.schedule_native_owner_publication(room);
+            }
+            Ok(result)
+        })
+    }
+
     fn requires_room(&self, room: &str) -> bool {
         tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
     }
@@ -291,6 +376,13 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
     /// (`tilo_identity_host::policy_change`).
     fn announces_policy_changes(&self) -> bool {
         true
+    }
+    /// The room's agents whose delegation the room's governance verified for
+    /// exactly their device ([`super::state::WorkspaceTree::verified_agents`]).
+    fn history_agents(&self, room: &str) -> Vec<ui::history_source::RosterAgent> {
+        super::state::RoomId::parse(room)
+            .map(|room| self.0.read().verified_agents(room))
+            .unwrap_or_default()
     }
 }
 impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
@@ -1598,8 +1690,12 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificat
 fn native_document_reads(
     tree: &WorkspaceTreeHandle,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 ) -> Arc<dyn NativeDocumentReads> {
-    Arc::new(NativeOwnerCommitService::new(tree.clone(), network))
+    Arc::new(NativeOwnerCommitService {
+        history_keys,
+        ..NativeOwnerCommitService::new(tree.clone(), network)
+    })
 }
 
 fn native_workspace_memberships(
@@ -1634,10 +1730,11 @@ fn native_resource_views(
 pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
+    history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
 ) -> HostServices {
     let committed_documents = membership
         .as_ref()
-        .map(|tree| native_document_reads(tree, network.clone()));
+        .map(|tree| native_document_reads(tree, network.clone(), history_keys));
     let workspace_memberships = membership
         .as_ref()
         .map(|tree| native_workspace_memberships(tree, network.clone()));
@@ -1696,7 +1793,6 @@ pub fn native_services(
         workspace_memberships,
         task_execution,
         resource_views,
-        desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates::default())),
         local_person,
         legacy_workspace: membership.map(|tree| {
@@ -1784,6 +1880,32 @@ impl tilo_action_broker::services::WifiContinuityServices for NativeWifiContinui
             runtime_collab::PortableWifiSecurity::Wpa3 => os_actions::WifiSecurity::Wpa3,
         };
         match command {
+            runtime_collab::WifiContinuityCommand::NetworkWake {
+                profile_uuid,
+                enabled,
+            } => {
+                let result = match enabled {
+                    Some(enabled) => os_actions::network_wake::configure(&profile_uuid, enabled),
+                    None => os_actions::network_wake::status(&profile_uuid),
+                };
+                match result {
+                    Ok(status) => runtime_collab::WifiContinuityReply::NetworkWake {
+                        status: runtime_collab::NetworkWakeStatus {
+                            profile: status.profile,
+                            interface: status.interface,
+                            configured: status.configured,
+                            supported: status.supported,
+                            applied: status.applied,
+                            problem: status
+                                .problem
+                                .map(|problem| problem.chars().take(128).collect()),
+                        },
+                    },
+                    Err(reason) => runtime_collab::WifiContinuityReply::Rejected {
+                        reason: reason.chars().take(128).collect(),
+                    },
+                }
+            }
             runtime_collab::WifiContinuityCommand::Lookup {
                 ssid,
                 security: mode,

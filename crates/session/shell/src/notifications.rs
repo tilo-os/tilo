@@ -38,8 +38,6 @@ use std::sync::{Arc, Mutex};
 #[cfg(any(test, target_os = "linux"))]
 use zbus::zvariant::OwnedValue;
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "linux")]
@@ -390,7 +388,7 @@ impl Default for NotificationBridge {
 
 impl NotificationBridge {
     pub fn new() -> Self {
-        let continuity_epoch = random_nonzero_token();
+        let continuity_epoch = crate::random::nonzero::<16>();
         Self {
             inner: Arc::new(Mutex::new(BridgeInner::default())),
             next_id: Arc::new(AtomicU32::new(1)),
@@ -738,7 +736,7 @@ impl NotificationBridge {
             .copied()
             .unwrap_or_else(|| ContinuityNotificationId {
                 epoch: self.continuity_epoch,
-                token: random_nonzero_token(),
+                token: crate::random::nonzero::<16>(),
             });
         let redact = !draft.previews_allowed || draft.sharing == NotificationSharing::Redacted;
         let projection = ContinuityNotificationProjection {
@@ -988,14 +986,6 @@ impl NotificationBridge {
             .lock()
             .map_or(0, |inner| inner.continuity.remote_by_key.len())
     }
-}
-
-fn random_nonzero_token() -> [u8; 16] {
-    let mut token = [0; 16];
-    while token == [0; 16] {
-        UnwrapErr(SysRng).fill_bytes(&mut token);
-    }
-    token
 }
 
 fn push_bounded<T>(queue: &mut VecDeque<T>, item: T) {

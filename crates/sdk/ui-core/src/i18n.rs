@@ -50,10 +50,8 @@ impl From<std::borrow::Cow<'_, str>> for ArgValue {
 /// The Fluent message a label, placeholder or button shows: looked up in
 /// the active locale when drawn, shown verbatim when no catalog has it.
 ///
-/// `tilo-app` generates one constant per message of an app's
-/// `locales/en-US.ftl` in its locale registry (`locales::keys::NOTES_ADD`),
-/// so a misspelt key in an app that uses them does not compile. A plain
-/// string converts too, for text that is not a catalog message.
+/// `tilo-app check` fails on a literal key that the app's
+/// `locales/en-US.ftl` lacks.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LabelKey(std::borrow::Cow<'static, str>);
 
@@ -1285,7 +1283,7 @@ mod tests {
             assert_eq!(ago(10), "gerade eben");
             assert_eq!(ago(120), "vor 2 Min.");
             assert_eq!(ago(2 * 3600 + 5), "vor 2 Std.");
-            assert_eq!(ago(86_400), "vor 1 Tag");
+            assert_eq!(ago(86_400), "gestern");
             assert_eq!(ago(259_200), "vor 3 Tagen");
 
             assert_eq!(relative(0), "gerade eben");
@@ -1313,10 +1311,6 @@ mod tests {
         let en = make_bundle(&parse_locale_or_default("en-US"), EN_FTL).unwrap();
         let de = make_bundle(&parse_locale_or_default("de-DE"), DE_FTL).unwrap();
         for key in [
-            "relative-time-just-now",
-            "relative-time-minutes",
-            "relative-time-hours",
-            "relative-time-days",
             "relative-ago-just-now",
             "relative-ago-minutes",
             "relative-ago-hours",

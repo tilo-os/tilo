@@ -397,10 +397,7 @@ impl Widget for PairingPromptView {
             flex_direction: taffy::FlexDirection::Column,
             justify_content: Some(taffy::JustifyContent::Center),
             align_items: Some(taffy::AlignItems::Center),
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &[child], node_map, self)
@@ -554,8 +551,9 @@ impl PairingOverlay {
     /// view raises a focus reset: the frame rebuilds its tree before the
     /// next event reaches a widget pointer that no longer exists.
     pub fn pump(&mut self, _state: &AutoCommit, _root: &ObjId) -> bool {
-        let mut changed = false;
-        if let Some(answer) = self.view.as_mut().and_then(PairingPromptView::take_answer) {
+        let answer = self.view.as_mut().and_then(PairingPromptView::take_answer);
+        let mut changed = answer.is_some();
+        if let Some(answer) = answer {
             match answer {
                 PairingReply::Reject => {
                     self.handle.dismiss();
@@ -565,7 +563,6 @@ impl PairingOverlay {
                 }
             }
             self.close();
-            changed = true;
         }
         let current = self.handle.current();
         let shown = self.view.as_ref().map(|view| view.request().clone());

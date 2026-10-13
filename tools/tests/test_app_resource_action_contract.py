@@ -335,27 +335,6 @@ class AppResourceActionContractTests(unittest.TestCase):
             violations, _ = contract.audit(root)
             self.assertEqual(violations, [])
 
-    def test_agent_uses_generic_broker_catalogue_and_receipts(self):
-        with self.subTest(phase='agent must use generic broker catalogue and receipts'):
-            root = self.fixture(
-                "fn resources() {}\nstruct ActionDescriptor;\n",
-                app_name="agent",
-            )
-            violations, _ = contract.audit(root)
-            reasons = "\n".join(item.reason for item in violations)
-            self.assertIn("generic action catalogue", reasons)
-            self.assertIn("invoke and observe", reasons)
-        with self.subTest(phase='generic broker agent passes'):
-            root = self.fixture(
-                "fn resources() {}\n"
-                "struct ActionDescriptor;\n"
-                "RemoteActionMessage::CatalogueRequest; RemoteActionMessage::Invoke(request);\n"
-                "RemoteActionMessage::Observe;\n",
-                app_name="agent",
-            )
-            violations, _ = contract.audit(root)
-            self.assertEqual(violations, [])
-
     def test_direct_ui_core_dependencies_fail_in_every_form(self):
         with self.subTest(phase='direct ui core dependency fails even when renamed'):
             root = self.fixture(

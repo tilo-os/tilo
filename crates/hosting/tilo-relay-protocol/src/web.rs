@@ -168,11 +168,19 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
 pub struct HostInfo {
     /// The host's device certificate (pin its device key).
     pub host_cert: tilo_user_identity::DeviceCert,
-    /// UDP port of the WebTransport listener (same address as HTTPS).
-    pub webtransport_port: u16,
+    /// UDP port of the WebTransport listener (same address as HTTPS), or
+    /// `None` when browsers reach the host through a proxy that publishes
+    /// only HTTPS: a page then opens the live plane over the HTTPS stream at
+    /// once instead of first failing a WebTransport handshake.
+    pub webtransport_port: Option<u16>,
     /// SHA-256 of the TLS certificate (lowercase hex) when it is a
     /// development certificate a browser pins with `serverCertificateHashes`.
     pub certificate_sha256: Option<String>,
+    /// The `https://` origin to dial WebTransport at when it is not the
+    /// page's: a proxy in front of the page passes HTTP only, so QUIC
+    /// reaches the host directly under another name. The HTTPS stream
+    /// fallback stays on the page origin.
+    pub webtransport_origin: Option<String>,
 }
 
 /// What a node runs beside its relay, for a member's session.

@@ -22,25 +22,15 @@
 //! reported as such rather than guessed at.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use ui::time::Duration;
 
 use serde_json::Value;
 
-use crate::plan::Block;
 use crate::providers::ProviderSelection;
 use crate::surface::Catalogue;
 use crate::tools::{self, Revealed};
-
-/// The model that makes the choice.
-pub const MODEL: &str = "claude-opus-5";
-
-/// How much of the document the model is shown. A brief is small; the caps
-/// keep a pathological document from making the call slow or expensive.
-const MAX_BLOCKS: usize = 60;
-const MAX_BLOCK_CHARS: usize = 200;
 
 /// Model turns one action decision may take (discovery calls plus `plan`).
 const MAX_ACTION_TURNS: usize = 12;
@@ -54,11 +44,6 @@ const ACTION_SYSTEM: &str = "Drive Tilo exclusively through the resource/action 
 /// Which path reached the decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Route {
-    /// A model chose, and its answer was in the exported catalogue.
-    Model {
-        /// The model's own one-line reason. For the log, never for the screen.
-        why: String,
-    },
     /// The keyword vocabulary chose, for the stated reason.
     Keywords(Fallback),
 }
@@ -72,36 +57,15 @@ pub enum Fallback {
     Disabled,
     /// Transport, HTTP status, a refusal, or an unreadable body.
     Failed(String),
-    /// The answer was not an id the app exports. Refused, not acted on.
-    OutOfCatalogue(String),
 }
 
 impl Route {
-    /// One word for the logs: which path decided.
-    pub fn label(&self) -> &'static str {
-        match self {
-            Route::Model { .. } => "model",
-            Route::Keywords(_) => "keywords",
-        }
-    }
-
-    /// Whether a model actually chose. This is the bit that must never be
-    /// misrepresented: a recording made on the fallback has to be findable
-    /// afterwards.
-    pub fn is_live(&self) -> bool {
-        matches!(self, Route::Model { .. })
-    }
-
     /// The detail behind the label, for the log line.
     pub fn detail(&self) -> String {
         match self {
-            Route::Model { why } => format!("{MODEL}: {why}"),
             Route::Keywords(Fallback::NoKey) => "no api key".to_string(),
             Route::Keywords(Fallback::Disabled) => "switched off".to_string(),
             Route::Keywords(Fallback::Failed(e)) => format!("the call failed: {e}"),
-            Route::Keywords(Fallback::OutOfCatalogue(a)) => {
-                format!("answered {a:?}, which the app does not export")
-            }
         }
     }
 }
@@ -257,11 +221,10 @@ impl Chooser {
     pub fn choose_actions(
         &self,
         rest: &str,
-        blocks: &[Block],
         catalogue: &Catalogue,
         most_steps: usize,
     ) -> Result<tools::Answer, Route> {
-        self.choose_actions_live(rest, blocks, catalogue, most_steps, &mut |_| {})
+        self.choose_actions_live(rest, catalogue, most_steps, &mut |_| {})
     }
 
     /// [`Self::choose_actions`], reporting what the model produces while it
@@ -275,7 +238,6 @@ impl Chooser {
     pub fn choose_actions_live(
         &self,
         rest: &str,
-        blocks: &[Block],
         catalogue: &Catalogue,
         most_steps: usize,
         live: &mut dyn FnMut(StreamSignal<'_>),
@@ -288,7 +250,7 @@ impl Chooser {
             if !tilo_model_gateway::available() {
                 return fallback(Fallback::NoKey);
             }
-            self.ask_actions_provider(provider, rest, blocks, catalogue, most_steps, live)
+            self.ask_actions_provider(provider, rest, catalogue, most_steps, live)
         } else {
             return fallback(Fallback::NoKey);
         };
@@ -337,7 +299,6 @@ impl Chooser {
         &self,
         provider: &ProviderConnection,
         rest: &str,
-        blocks: &[Block],
         catalogue: &Catalogue,
         most_steps: usize,
         live: &mut dyn FnMut(StreamSignal<'_>),
@@ -349,7 +310,6 @@ impl Chooser {
         let decision = ActionDecision {
             selection: &provider.selection,
             rest,
-            blocks,
             catalogue,
             most_steps,
         };
@@ -374,7 +334,6 @@ type PostTurn<'a> = dyn FnMut(
 struct ActionDecision<'a> {
     selection: &'a ProviderSelection,
     rest: &'a str,
-    blocks: &'a [Block],
     catalogue: &'a Catalogue,
     most_steps: usize,
 }
@@ -394,7 +353,7 @@ impl ActionDecision<'_> {
         let dialect = Dialect::of(self.selection.protocol);
         let began = ui::time::now();
         let mut revealed = Revealed::new();
-        let first = action_user_turn(self.rest, self.blocks, self.catalogue, &mut revealed);
+        let first = action_user_turn(self.rest, self.catalogue, &mut revealed);
         let mut messages = dialect.first_messages(&first);
         let mut refused = None;
         for turn in 0..MAX_ACTION_TURNS {
@@ -801,36 +760,15 @@ fn settle_turn(assistant: Value, calls: Vec<ToolCall>) -> Result<ActionTurn, Str
 
 /// The first user turn of an action decision: the operations published
 /// right now ([`tools::catalogue_summary`], capped as the task loop caps it,
-/// each id shown revealed so `plan` may name it at once), then the document,
-/// then the instruction. Stable first, volatile last: the summary changes
-/// only when the applications republish, so it is the [`FirstTurn`]'s
-/// cached part and the document and instruction are its task.
-pub fn action_user_turn(
-    rest: &str,
-    blocks: &[Block],
-    catalogue: &Catalogue,
-    revealed: &mut Revealed,
-) -> FirstTurn {
+/// each id shown revealed so `plan` may name it at once), then the
+/// instruction. Stable first, volatile last: the summary changes only when
+/// the applications republish, so it is the [`FirstTurn`]'s cached part and
+/// the instruction is its task.
+pub fn action_user_turn(rest: &str, catalogue: &Catalogue, revealed: &mut Revealed) -> FirstTurn {
     let summary = tools::catalogue_summary(catalogue, revealed, tools::MOST_SUMMARISED);
-    let operations = format!("Operations published right now:\n\n{summary}\n");
-    let mut text = String::new();
-    if !blocks.is_empty() {
-        text.push_str("The shared document as it stands:\n\n");
-        for (index, block) in blocks.iter().take(MAX_BLOCKS).enumerate() {
-            let _ = writeln!(
-                text,
-                "{}. {}: {}",
-                index + 1,
-                block.kind,
-                first_chars(block.text.trim(), MAX_BLOCK_CHARS)
-            );
-        }
-        text.push('\n');
-    }
-    let _ = write!(text, "The instruction asks for:\n\n{}\n", rest.trim());
     FirstTurn {
-        operations,
-        task: text,
+        operations: format!("Operations published right now:\n\n{summary}\n"),
+        task: format!("The instruction asks for:\n\n{}\n", rest.trim()),
     }
 }
 
@@ -1089,15 +1027,6 @@ impl Conversation {
         }
     }
 
-    /// Whether the provider streams argument deltas and completed tool calls
-    /// while it writes. Both dialects do: an Anthropic `tool_use` block is
-    /// complete at its own `content_block_stop`.
-    pub fn streams(&self) -> bool {
-        match self.dialect {
-            Dialect::Anthropic | Dialect::OpenAi => true,
-        }
-    }
-
     /// The request for the next turn, offering `tools` (Anthropic-shaped
     /// definitions, re-enveloped for the `OpenAI` dialect).
     pub fn body(&self, tools: &Value) -> Value {
@@ -1149,15 +1078,6 @@ impl Conversation {
     pub fn push_user(&mut self, text: &str) {
         self.messages
             .push(serde_json::json!({"role":"user", "content":text}));
-    }
-
-    /// How many messages the conversation holds (tests and logs).
-    pub fn len(&self) -> usize {
-        self.messages.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.messages.is_empty()
     }
 }
 
@@ -1257,38 +1177,20 @@ enum AskError {
     Failed(String),
 }
 
-// ---------------------------------------------------------------------------
-
-fn first_chars(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        return s.to_string();
-    }
-    s.chars().take(n).collect::<String>() + "…"
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::plan::Instruction;
     use crate::surface::Offer;
-    use std::collections::BTreeMap;
     use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
     use tilo_actions::{ActionContract, ActionParam, ExecutionLocus, OperationKind, ParamType};
-
-    fn block(kind: &str, text: &str) -> Block {
-        Block {
-            id: "b".into(),
-            kind: kind.into(),
-            text: text.into(),
-            attrs: BTreeMap::new(),
-        }
-    }
 
     #[test]
     fn live_tool_transcript_selects_an_arbitrary_typed_app_action() {
         let offer = Offer {
             app: "calculator".to_string(),
             broker_peer_id: None,
+            broker_provider: None,
             descriptor: ActionDescriptor {
                 semantic_identity: None,
                 address: ActionAddress::new("calculator.range:main", "sample"),
@@ -1521,7 +1423,6 @@ mod tests {
         let selection = ProviderSelection::from_profile(&profile, profile.models[0].clone());
         let messages = Dialect::OpenAi.first_messages(&action_user_turn(
             "make the second paragraph bold",
-            &[block("paragraph", "Intro"), block("paragraph", "Details")],
             &Catalogue::default(),
             &mut Revealed::new(),
         ));
@@ -1588,13 +1489,6 @@ mod tests {
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["role"], "user");
         assert_eq!(messages[2]["content"][1]["tool_use_id"], "t2");
-        let conversation = Conversation::new(
-            selection.protocol,
-            "claude-x",
-            "system",
-            &FirstTurn::from("do it"),
-        );
-        assert!(conversation.streams(), "tool calls run while Claude writes");
     }
 
     /// `Finished` goes out before the marks a turn held. The next turn may
@@ -1651,6 +1545,7 @@ mod tests {
             offers: vec![Offer {
                 app: "calculator".to_string(),
                 broker_peer_id: None,
+                broker_provider: None,
                 descriptor: ActionDescriptor {
                     semantic_identity: None,
                     address: ActionAddress::new("calculator.range:main", "sample"),
@@ -1717,8 +1612,7 @@ mod tests {
         decide_on(protocol, "sample twelve values, normalised", answers)
     }
 
-    /// [`decide`] for the instruction `rest`, over the same document and
-    /// catalogue.
+    /// [`decide`] for the instruction `rest`, over the same catalogue.
     fn decide_on(
         protocol: agent_provider_config::ProviderProtocol,
         rest: &str,
@@ -1730,11 +1624,9 @@ mod tests {
             .push(agent_provider_config::ModelDescriptor::new("scripted"));
         let selection = ProviderSelection::from_profile(&profile, profile.models[0].clone());
         let catalogue = calculator();
-        let blocks = [block("paragraph", "sample twelve values, normalised")];
         let decision = ActionDecision {
             selection: &selection,
             rest,
-            blocks: &blocks,
             catalogue: &catalogue,
             most_steps: 4,
         };
@@ -1864,11 +1756,10 @@ mod tests {
                 "{protocol:?}: {user}"
             );
             // Stable first, volatile last: the operations, then the
-            // document, then the instruction.
+            // instruction.
             let operations = user.find(SAMPLE).unwrap();
-            let document = user.find("The shared document as it stands").unwrap();
             let instruction = user.find("The instruction asks for").unwrap();
-            assert!(operations < document && document < instruction, "{user}");
+            assert!(operations < instruction, "{user}");
         }
     }
 
@@ -2027,7 +1918,6 @@ pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, St
     };
     let profile_id = field("profile_id")?;
     Ok(ProviderSelection {
-        profile_label: profile_id.clone(),
         profile_id,
         endpoint: String::new(),
         protocol,
@@ -2157,11 +2047,6 @@ pub mod plan_stream {
                 started: false,
                 failed: false,
             }
-        }
-
-        /// Whether the input so far was not JSON the scanner could follow.
-        pub fn failed(&self) -> bool {
-            self.failed
         }
 
         /// Consume `chunk`. `out(field, value, done)` sees each followed
@@ -2473,7 +2358,7 @@ pub mod plan_stream {
                     seen.push((field.clone(), value.to_owned(), done));
                 });
             }
-            assert!(!scanner.failed(), "{pieces:?}");
+            assert!(!scanner.failed, "{pieces:?}");
             seen
         }
 
@@ -2678,11 +2563,11 @@ pub mod plan_stream {
             let mut scanner = PlanArgumentsScanner::new();
             let mut reports = 0;
             scanner.feed(r#"{"reply" "x"}"#, &mut |_, _, _| reports += 1);
-            assert!(scanner.failed());
+            assert!(scanner.failed);
             assert_eq!(reports, 0);
             let mut nested = PlanArgumentsScanner::new();
             nested.feed(r#"{"reply":{"text":"x"}}"#, &mut |_, _, _| reports += 1);
-            assert!(!nested.failed());
+            assert!(!nested.failed);
             assert_eq!(reports, 0, "only the top-level string reply is followed");
         }
     }

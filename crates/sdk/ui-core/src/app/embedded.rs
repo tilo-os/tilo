@@ -271,10 +271,7 @@ impl Widget for EmbeddedApp {
             self.wants_frame.set(true);
         }
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..taffy::Style::default()
         };
         let Ok(node) = taffy.new_leaf(style) else {
@@ -921,10 +918,7 @@ mod theme_repaint_tests {
         let button = tile.app.root_widget.get_rect();
         // The pointer arrives over the button and its hover is painted.
         let at = button.center();
-        let moved = WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-        };
+        let moved = crate::synthetic_input::cursor_moved(at.x, at.y);
         tile.app.surface_input(&tile.region, moved, false);
         tile.wants_frame.set(true);
         let hovered = paint_tracked(&mut tile, &theme);
@@ -1047,7 +1041,7 @@ mod theme_repaint_tests {
     }
 }
 
-/// TIL-696: a tile whose record was still being written at its last frame
+/// #3986: a tile whose record was still being written at its last frame
 /// left a wake deadline that only its next `draw` moved, so a compositor that
 /// does not paint for a due deadline woke for it on every park.
 #[cfg(test)]
@@ -1132,7 +1126,7 @@ mod saving_record_wake_tests {
         binding
             .records
             .with(&id, |doc| {
-                automerge::transaction::Transactable::put(doc, automerge::ROOT, "til-696", 1_u64)
+                automerge::transaction::Transactable::put(doc, automerge::ROOT, "unsaved", 1_u64)
                     .unwrap();
             })
             .unwrap();

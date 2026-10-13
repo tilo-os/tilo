@@ -162,58 +162,11 @@ impl ConnectionProfile {
     }
 }
 
-/// SQL data-type family, used to pick a type icon + colour in the schema
-/// tree and to right-align numeric result columns.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TypeClass {
-    Integer,
-    Real,
-    Text,
-    Blob,
-    Boolean,
-    DateTime,
-    Numeric,
-    Unknown,
-}
-
-impl TypeClass {
-    /// Classify a raw SQL type declaration the way `SQLite`'s loose typing
-    /// does — substring match against the declared type string.
-    pub fn classify(decl: &str) -> TypeClass {
-        let d = decl.to_ascii_uppercase();
-        if d.contains("INT") {
-            TypeClass::Integer
-        } else if d.contains("BOOL") {
-            TypeClass::Boolean
-        } else if d.contains("CHAR") || d.contains("CLOB") || d.contains("TEXT") {
-            TypeClass::Text
-        } else if d.contains("BLOB") || d.is_empty() {
-            TypeClass::Blob
-        } else if d.contains("REAL") || d.contains("FLOA") || d.contains("DOUB") {
-            TypeClass::Real
-        } else if d.contains("DATE") || d.contains("TIME") {
-            TypeClass::DateTime
-        } else if d.contains("NUMERIC") || d.contains("DECIMAL") || d.contains("MONEY") {
-            TypeClass::Numeric
-        } else {
-            TypeClass::Unknown
-        }
-    }
-
-    pub fn is_numeric(self) -> bool {
-        matches!(
-            self,
-            TypeClass::Integer | TypeClass::Real | TypeClass::Numeric | TypeClass::Boolean
-        )
-    }
-}
-
 /// A single column of a table, as introspected from the engine.
 #[derive(Clone, Debug)]
 pub struct ColumnInfo {
     pub name: String,
     pub decl_type: String,
-    pub class: TypeClass,
     pub not_null: bool,
     pub primary_key: bool,
     pub default: Option<String>,
@@ -430,19 +383,9 @@ impl QueryResult {
 mod tests {
     use super::*;
 
-    /// Columns classify integer families, reals display without trailing zeros, hostile text is refused, and profiles report local or network engines.
+    /// Reals display without trailing zeros, hostile text is refused, and profiles report local or network engines.
     #[test]
     fn cell_and_profile_classification() {
-        // --- phase: classify_picks_integer_for_int_family ---
-        {
-            assert_eq!(TypeClass::classify("INTEGER"), TypeClass::Integer);
-            assert_eq!(TypeClass::classify("BIGINT"), TypeClass::Integer);
-            assert_eq!(TypeClass::classify("VARCHAR(255)"), TypeClass::Text);
-            assert_eq!(TypeClass::classify("DATETIME"), TypeClass::DateTime);
-            assert_eq!(TypeClass::classify("NUMERIC(10,2)"), TypeClass::Numeric);
-            assert_eq!(TypeClass::classify(""), TypeClass::Blob);
-        }
-
         // --- phase: cell_display_formats_reals_without_trailing_zeros ---
         {
             assert_eq!(Cell::Real(3.0).display(), "3.0");

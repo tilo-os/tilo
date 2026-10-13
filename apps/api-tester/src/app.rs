@@ -7,7 +7,7 @@
 //! The app composes the toolkit's widgets and paints nothing of its own. Its
 //! controls tell the app what happened by pushing a [`Cmd`] onto a queue; the
 //! app applies the queue where it has the shared document, keeps the model,
-//! and replaces the parts of the view that depend on it ([`Swap`] slots), so
+//! and replaces the parts of the view that depend on it ([`Slot`]s), so
 //! the controls around them keep their focus.
 //!
 //! The request in the builder is part of the shared record: its controls
@@ -43,8 +43,8 @@ const CREDENTIAL: &str = "request-credential";
 const SECRET_VARIABLE: &str = "variable-value";
 use crate::response;
 use crate::sidebar::{self, SidebarView};
-use crate::swap::{Swap, SwapHandle};
 use crate::vars;
+use ui::widget::{Slot, SlotHandle};
 
 /// What the picker reads when no environment is chosen.
 const NO_ENV: &str = "No environment";
@@ -65,7 +65,7 @@ const ENVIRONMENT_COMMANDS: [(&str, Option<FormMode>); 5] = [
 
 /// A pane of the split: `slot` with room between it and the divider, which
 /// is painted over the edge of both panes.
-fn pane(slot: Swap, below_divider: bool) -> Column {
+fn pane(slot: Slot, below_divider: bool) -> Column {
     let gap = Spacing::BASE.s3;
     let column = Column::new().with_no_padding();
     let column = if below_divider {
@@ -134,14 +134,14 @@ struct Stale {
 /// The slots of the view the app replaces in place.
 struct Slots {
     sidebar: sidebar::NavHandle,
-    url_bar: SwapHandle,
-    request: SwapHandle,
-    tab_panel: Option<SwapHandle>,
-    panel_inner: Option<SwapHandle>,
-    response: SwapHandle,
-    response_body: Option<SwapHandle>,
-    environments: SwapHandle,
-    dialog: SwapHandle,
+    url_bar: SlotHandle,
+    request: SlotHandle,
+    tab_panel: Option<SlotHandle>,
+    panel_inner: Option<SlotHandle>,
+    response: SlotHandle,
+    response_body: Option<SlotHandle>,
+    environments: SlotHandle,
+    dialog: SlotHandle,
 }
 
 /// A state of the shell that exists only once the window has been laid out.
@@ -252,14 +252,14 @@ impl ApiTesterApp {
         let selected = demo.then_some((0, 0));
 
         let builtin = request::section(&model.request, RequestTab::Params, &blanks, &sink);
-        let (request_slot, request) = Swap::new(builtin.element);
+        let (request_slot, request) = Slot::new(builtin.element);
         let (response_slot, response_handle, response_body) =
             Self::response_slot(response.as_ref(), &sink);
-        let (dialog_slot, dialog) = Swap::new(no_dialog());
+        let (dialog_slot, dialog) = Slot::new(no_dialog());
         let env_state = LocalState::new(
             Self::environment_name(&model.environments, model.active_env.as_ref()).to_owned(),
         );
-        let (env_slot, environments) = Swap::new(Self::environment_picker(
+        let (env_slot, environments) = Slot::new(Self::environment_picker(
             &model.environments,
             model.active_env.as_ref(),
             &env_state,
@@ -274,7 +274,7 @@ impl ApiTesterApp {
             &sink,
         );
 
-        let (url_slot, url_bar) = Swap::new(request::url_bar(&sink));
+        let (url_slot, url_bar) = Slot::new(request::url_bar(&sink));
         let content = Self::content(
             url_slot,
             request_slot,
@@ -357,10 +357,10 @@ impl ApiTesterApp {
     /// The content column: the URL bar over the request and the response,
     /// which a divider splits, with the sheet's slot above them.
     fn content(
-        url_bar: Swap,
-        request: Swap,
-        response: Swap,
-        dialog: Swap,
+        url_bar: Slot,
+        request: Slot,
+        response: Slot,
+        dialog: Slot,
         env_vars: &Rc<RefCell<HashMap<String, String>>>,
         sink: &Sink,
     ) -> Element {
@@ -404,13 +404,13 @@ impl ApiTesterApp {
     fn response_slot(
         response: Option<&ResponseData>,
         sink: &Sink,
-    ) -> (Swap, SwapHandle, Option<SwapHandle>) {
+    ) -> (Slot, SlotHandle, Option<SlotHandle>) {
         if let Some(data) = response {
             let built = response::response(data, ResponseView::Pretty, sink);
-            let (slot, handle) = Swap::new(built.element);
+            let (slot, handle) = Slot::new(built.element);
             (slot, handle, Some(built.body))
         } else {
-            let (slot, handle) = Swap::new(response::empty(sink));
+            let (slot, handle) = Slot::new(response::empty(sink));
             (slot, handle, None)
         }
     }
@@ -1055,10 +1055,6 @@ impl ApiTesterApp {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive form-to-verb mapping makes contextual management easy to audit"
-    )]
     fn submit_form(&mut self) {
         let Some(form) = self.form.take() else {
             return;

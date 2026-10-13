@@ -70,6 +70,7 @@ fn setup() -> Result<(tempfile::TempDir, Storage, TestApp<App>, PendingSubmissio
     let digest = storage.save_upload(&bytes)?;
     let entry = RegistryEntry {
         package_id: "com.example.notes".into(),
+        kind: registry_types::EntryKind::App,
         name: "Notes".into(),
         description: "A collaborative notebook".into(),
         tagline: "Write together".into(),
@@ -83,18 +84,20 @@ fn setup() -> Result<(tempfile::TempDir, Storage, TestApp<App>, PendingSubmissio
         updated_at_unix: 10,
         versions: vec![RegistryVersion {
             version: "1.0.0".into(),
-            tapp_url: format!("https://apps.tilo.so/artifacts/{digest}.tapp"),
-            tapp_blake3_hex: digest,
-            tapp_root_hash_hex: root,
-            tapp_size_bytes: bytes.len() as u64,
             released_at_unix: 10,
-            target: RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-                interfaces: vec![],
-            },
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: format!("https://apps.tilo.so/artifacts/{digest}.tapp"),
+                tapp_blake3_hex: digest,
+                tapp_root_hash_hex: root,
+                tapp_size_bytes: bytes.len() as u64,
+                target: RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                    interfaces: vec![],
+                },
+            }),
         }],
     };
     let pending = ModerationService::new(storage.clone())
@@ -184,6 +187,7 @@ fn verified_agent_inspection_and_confirmed_approval_publish_only_reviewed_bytes(
         .entry
         .versions
         .first()
+        .and_then(registry_types::RegistryVersion::tapp)
         .context("version")?
         .tapp_blake3_hex
         .clone();
@@ -238,7 +242,13 @@ fn publisher_replacement_refuses_both_stale_decisions_and_preserves_fresh_feedba
 #[test]
 fn failed_signed_byte_verification_can_be_rejected_but_never_approved() -> Result<()> {
     let (directory, storage, mut app, pending) = setup()?;
-    let version = pending.change.entry.versions.first().context("version")?;
+    let version = pending
+        .change
+        .entry
+        .versions
+        .first()
+        .and_then(registry_types::RegistryVersion::tapp)
+        .context("version")?;
     let upload = directory
         .path()
         .join("registry/uploads")
@@ -347,7 +357,9 @@ fn package_discovery_is_paginated_and_does_not_fetch_unreviewed_urls() -> Result
         let mut entry = pending.change.entry.clone();
         entry.package_id = format!("com.example.notes{number}");
         for version in &mut entry.versions {
-            version.tapp_url = "http://127.0.0.1:9/artifacts/never-fetch.tapp".into();
+            if let Some(tapp) = version.tapp_mut() {
+                tapp.tapp_url = "http://127.0.0.1:9/artifacts/never-fetch.tapp".into();
+            }
         }
         ModerationService::new(storage.clone()).submit(
             sign_change_request(EntryAction::Add, entry, &key),
@@ -392,18 +404,20 @@ fn each_architecture_is_verified_and_has_a_distinct_sandbox_surface() -> Result<
     entry.updated_at_unix = 11;
     entry.versions.push(RegistryVersion {
         version: "1.0.0".into(),
-        tapp_url: format!("https://apps.tilo.so/artifacts/{digest}.tapp"),
-        tapp_blake3_hex: digest.clone(),
-        tapp_root_hash_hex: root,
-        tapp_size_bytes: bytes.len() as u64,
         released_at_unix: 11,
-        target: RegistryTarget {
-            platform: registry_types::TILO_OS_PLATFORM.into(),
-            architecture: "aarch64".into(),
-            isa: "aarch64".into(),
-            runtime: None,
-            interfaces: vec![],
-        },
+        artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+            tapp_url: format!("https://apps.tilo.so/artifacts/{digest}.tapp"),
+            tapp_blake3_hex: digest.clone(),
+            tapp_root_hash_hex: root,
+            tapp_size_bytes: bytes.len() as u64,
+            target: RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
+                architecture: "aarch64".into(),
+                isa: "aarch64".into(),
+                runtime: None,
+                interfaces: vec![],
+            },
+        }),
     });
     ModerationService::new(storage.clone())
         .submit(sign_change_request(EntryAction::Add, entry, &key), 101)?;

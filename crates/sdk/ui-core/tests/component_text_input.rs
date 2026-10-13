@@ -23,9 +23,6 @@ impl AppWidget for Page {
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("P")
     }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
 }
 
 impl Widget for Page {
@@ -536,9 +533,6 @@ impl AppWidget for WithdrawableResource {
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("W")
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
     }
 }
 

@@ -11,10 +11,7 @@ use crate::model::{AttentionCache, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport,
 use crate::resource::{Project as ChipProject, ProjectState, import};
 use crate::verification::{CheckStatus, ReceiptStatus, VerificationReceipt, VerificationRecord};
 
-/// The app's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES).with_system_locale();
+ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
 fn tr(key: &str) -> String {
     I18nManager::lookup_plain(key)

@@ -73,9 +73,9 @@ await send('Page.enable', {}, sessionId);
 await send('Page.addScriptToEvaluateOnNewDocument', {source: clamp}, sessionId);
 const [width, height] = (process.env.VIEWPORT ?? '1728x1117').split('x').map(Number);
 await send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: Number(process.env.DPR ?? 2), mobile: false}, sessionId);
-await send('Page.navigate', {url: `${base}/index.html`}, sessionId);
+await send('Page.navigate', {url: `${base}/`}, sessionId);
 
-const status = () => evaluate("document.getElementById('status')?.textContent ?? ''");
+const status = () => evaluate("(document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? '')");
 const frames = text => Number(/frames (\d+)/.exec(text)?.[1] ?? 0);
 const failed = text => /^failed|Failed/.test(text);
 let text = '';

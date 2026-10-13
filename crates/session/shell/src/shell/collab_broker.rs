@@ -792,7 +792,7 @@ fn spawn_inner(
                 let mut labels: HashMap<String, (Instant, PeerLabels)> = HashMap::new();
                 // A steward re-checks its channels' access policy when an
                 // input announces a change or an expiry it registered comes
-                // due, not on a clock (TIL-707). The watch is armed only
+                // due, not on a clock. The watch is armed only
                 // while stewards wait for that, so a device stewarding no
                 // channel sleeps through every announcement.
                 let policy_watch = {
@@ -822,8 +822,17 @@ fn spawn_inner(
     });
 
     let local_session = crate::shell::collab_broker_capnp::LocalSessionAuthority::new();
+    let channel_keys = if config.is_none() {
+        Some(session_channel_keys(channel_encryption.clone()))
+    } else {
+        None
+    };
     let mut services = if config.is_none() {
-        super::broker_services::native_services(membership.clone(), peer_sync.cloned())
+        super::broker_services::native_services(
+            membership.clone(),
+            peer_sync.cloned(),
+            channel_keys.clone(),
+        )
     } else {
         tilo_action_broker::services::HostServices::default()
     };
@@ -836,11 +845,7 @@ fn spawn_inner(
     // changes tell each route's endpoint when to ask again. A session broker
     // follows even without one; a configured peer broker never has one and
     // still says it cannot follow.
-    services.channel_keys = if config.is_none() {
-        Some(session_channel_keys(channel_encryption.clone()))
-    } else {
-        None
-    };
+    services.channel_keys = channel_keys;
     services.audio_output = Some(Arc::new(super::audio_output::AudioOutputService::new(
         local_session.lifecycle(),
     )));
@@ -965,7 +970,7 @@ fn spawn_inner(
 /// this broker's lifetime. The follow then stays pending at no cost.
 /// Refusing it instead tells the endpoint that this broker cannot say when
 /// keys change, and it falls back to asking the identity service for every
-/// route once a second, forever (TIL-754).
+/// route once a second, forever.
 fn session_channel_keys(
     access: Option<crate::shell::channel_encryption::ChannelKeyAccess>,
 ) -> crate::shell::channel_encryption::ChannelKeyProvider {
@@ -1286,8 +1291,8 @@ mod tests {
 
     /// A session broker without a channel service answers an endpoint's
     /// `channelKeysChanged` with a wait, not a refusal: a refusal makes the
-    /// endpoint ask the identity service for every route once a second
-    /// (TIL-754). The wait still ends when the slot it follows changes.
+    /// endpoint ask the identity service for every route once a second.
+    /// The wait still ends when the slot it follows changes.
     #[test]
     fn a_session_broker_without_a_channel_service_keeps_key_follows_pending() {
         use std::future::Future as _;

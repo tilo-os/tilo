@@ -1066,10 +1066,7 @@ impl Widget for MergeView {
     ) -> NodeId {
         // `new_leaf` on a freshly created tree never fails.
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             ..Default::default()
         };
@@ -1165,7 +1162,7 @@ impl Widget for MergeView {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.cursor = ctx.logical(position);
         }
         let editor = self.merged_editor.control();
         if editor.is_focused() || editor.rect().contains(self.cursor) {
@@ -1180,8 +1177,7 @@ impl Widget for MergeView {
                 self.modifiers = modifiers.state();
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor = ctx.logical(position);
                 let mut moved = false;
                 if self.across.pointer(event, self.cursor, &mut moved) {
                     self.dirty |= moved;
@@ -1392,13 +1388,7 @@ impl Widget for MergeView {
         true
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
+    ui::redraw_flag!();
 }
 
 fn chip_is_selected(current: Resolution, chip: HunkChoice) -> bool {

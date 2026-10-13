@@ -324,7 +324,7 @@ impl NativePlane {
 
     /// Resolves once the plane thread has ended on its own (an error). The
     /// thread signals its own end, so a mount waits on this without the
-    /// once-a-second health tick it used to run (TIL-750).
+    /// once-a-second health tick it used to run.
     pub async fn finished(&self) {
         let mut finished = self.finished.clone();
         // A closed channel means the thread's signal is gone with it.
