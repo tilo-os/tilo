@@ -659,10 +659,10 @@ async fn voice_journey(recover_start: bool) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_owners_native_shell_and_an_invited_browser_talk_on_relay_grants() {
-    voice_journey(false).await;
+    Box::pin(voice_journey(false)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retired_start_recovers_the_exact_call_before_native_and_browser_audio() {
-    voice_journey(true).await;
+    Box::pin(voice_journey(true)).await;
 }
