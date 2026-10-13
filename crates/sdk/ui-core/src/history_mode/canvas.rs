@@ -86,10 +86,7 @@ impl Widget for PreviewCanvas {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
-            min_size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::length(0.0),
-            },
+            min_size: Size::from_lengths(0.0, 0.0),
             flex_grow: 1.0,
             ..Default::default()
         });

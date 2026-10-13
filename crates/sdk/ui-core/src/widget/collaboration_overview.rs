@@ -15,7 +15,7 @@ use crate::tokens::TextRole;
 use crate::widget::avatar::AvatarFace;
 use crate::widget::{TaffyTreeExt, Widget};
 use std::collections::{HashMap, HashSet};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{Color, Fill};
@@ -650,10 +650,7 @@ impl Widget for CollaborationOverview {
         m: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let n = t.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         });
         m.insert(n, std::ptr::from_mut::<dyn Widget>(self));

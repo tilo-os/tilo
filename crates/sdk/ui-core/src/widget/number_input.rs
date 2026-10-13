@@ -838,10 +838,7 @@ impl Widget for NumberInput {
         self.field_padding = f32_of_f64(self.field.text_padding_x(theme));
         self.value_style = self.value_style_in(theme);
         let style = Style {
-            size: Size {
-                width: Dimension::length(size.width),
-                height: Dimension::length(size.height),
-            },
+            size: Size::from_lengths(size.width, size.height),
             // A fixed target: in a row that overflows, the fluid field beside
             // it gives, not the stepper (taffy would otherwise squeeze this
             // leaf below its own size — see `Toggle::build_layout`).

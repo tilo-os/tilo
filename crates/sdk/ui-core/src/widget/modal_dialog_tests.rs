@@ -67,10 +67,7 @@ impl Widget for CountingContent {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::length(200.0),
-                height: Dimension::length(self.height),
-            },
+            size: Size::from_lengths(200.0, self.height),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -1590,10 +1587,7 @@ fn an_unpainted_sheet_centres_on_the_window_not_its_parent() {
                     top: taffy::LengthPercentage::length(0.0),
                     bottom: taffy::LengthPercentage::length(0.0),
                 },
-                size: Size {
-                    width: Dimension::length(1280.0),
-                    height: Dimension::length(800.0),
-                },
+                size: Size::from_lengths(1280.0, 800.0),
                 ..Default::default()
             },
             &[pane],

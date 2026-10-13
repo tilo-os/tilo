@@ -56,7 +56,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -3347,10 +3347,7 @@ impl Widget for NavShell {
         self.structure_dirty = false;
         self.invalidation.invalidate();
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         taffy.widget_node(style, &nodes, node_map, self)

@@ -661,7 +661,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         }
         use automerge::AutoCommit;
         use std::collections::HashMap;
-        use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+        use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
         use ui::theme::Theme;
@@ -683,10 +683,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let vp = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
+                    size: Size::from_lengths(W, H),
                     ..Default::default()
                 },
                 &[root_node],
@@ -752,7 +749,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
     {
         use automerge::AutoCommit;
         use std::collections::HashMap;
-        use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+        use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use ui::presence::PresenceCtx;
         use ui::text_render::TextRenderer;
         use ui::theme::Theme;
@@ -782,10 +779,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let vp = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
+                    size: Size::from_lengths(W, H),
                     ..Default::default()
                 },
                 &[node],
@@ -847,7 +841,7 @@ fn topbar_with_overview_btn_hit() -> (
     vello::kurbo::Point,
 ) {
     use std::collections::HashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+    use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
@@ -871,10 +865,7 @@ fn topbar_with_overview_btn_hit() -> (
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(1600.0),
-                    height: Dimension::length(900.0),
-                },
+                size: Size::from_lengths(1600.0, 900.0),
                 ..Default::default()
             },
             &[node],

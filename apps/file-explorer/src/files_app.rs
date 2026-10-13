@@ -8956,10 +8956,7 @@ impl Widget for FileExplorerWidget {
         let style = taffy::Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         // `new_with_children` only fails when a child belongs to a

@@ -349,10 +349,7 @@ impl Widget for ImageCropEditor {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             ..Default::default()
         };

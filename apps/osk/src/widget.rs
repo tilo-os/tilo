@@ -3299,10 +3299,7 @@ mod tests {
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(w),
-                        height: Dimension::length(h),
-                    },
+                    size: Size::from_lengths(w, h),
                     ..Default::default()
                 },
                 &[child],

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use tilo_ui::widget::TaffyTreeExt;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_ui::State;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;
@@ -43,10 +43,7 @@ impl Widget for Probe {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Style::default()
         };
         taffy.widget_leaf(style, node_map, self)

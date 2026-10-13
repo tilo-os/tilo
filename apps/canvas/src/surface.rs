@@ -3123,10 +3123,7 @@ impl Widget for CanvasSurface {
         // The room its parent leaves along either axis: in a column under
         // the header it takes the width and the height left over.
         let style = Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             flex_basis: taffy::Dimension::length(0.0),
             flex_grow: 1.0,
             flex_shrink: 1.0,

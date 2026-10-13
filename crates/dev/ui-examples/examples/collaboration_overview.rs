@@ -4,7 +4,7 @@ use collab_types::ArtifactKind;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use tilo_actions::ActionContext;
 use tilo_ui::num::f32_of_u32;
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -150,10 +150,7 @@ fn render(mut widget: Box<dyn Widget>, out: &Path) {
     let child = widget.build_layout(&mut taffy, &theme, &mut map);
     let Ok(root) = taffy.new_with_children(
         Style {
-            size: Size {
-                width: Dimension::length(f32_of_u32(w)),
-                height: Dimension::length(f32_of_u32(h)),
-            },
+            size: Size::from_lengths(f32_of_u32(w), f32_of_u32(h)),
             ..Default::default()
         },
         &[child],

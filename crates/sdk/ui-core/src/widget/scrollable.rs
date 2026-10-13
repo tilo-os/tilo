@@ -1299,10 +1299,7 @@ impl crate::widget::Decorator for ViewportContent {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
-                min_size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(self.minimum.get()),
-                },
+                min_size: Size::from_lengths(0.0, self.minimum.get()),
                 flex_shrink: 0.0,
                 ..Default::default()
             },
@@ -2102,10 +2099,7 @@ mod tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let style = Style {
-                size: Size {
-                    width: Dimension::length(200.0),
-                    height: Dimension::length(500.0),
-                },
+                size: Size::from_lengths(200.0, 500.0),
                 ..Default::default()
             };
             taffy.widget_leaf(style, node_map, self)
@@ -2175,10 +2169,7 @@ mod tests {
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let style = Style {
-                size: Size {
-                    width: Dimension::length(200.0),
-                    height: Dimension::length(2000.0),
-                },
+                size: Size::from_lengths(200.0, 2000.0),
                 ..Default::default()
             };
             taffy.widget_leaf(style, node_map, self)
@@ -2551,10 +2542,7 @@ mod tests {
             let node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
             let parent = taffy.parent_node(
                 Style {
-                    size: Size {
-                        width: Dimension::length(200.0),
-                        height: Dimension::length(100.0),
-                    },
+                    size: Size::from_lengths(200.0, 100.0),
                     ..Default::default()
                 },
                 &[node],
@@ -2667,10 +2655,7 @@ mod tests {
             let node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
             let parent = taffy.parent_node(
                 Style {
-                    size: Size {
-                        width: Dimension::length(400.0),
-                        height: Dimension::length(300.0),
-                    },
+                    size: Size::from_lengths(400.0, 300.0),
                     ..Default::default()
                 },
                 &[node],
@@ -3456,10 +3441,7 @@ mod tests {
             let node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
             let parent = taffy.parent_node(
                 Style {
-                    size: Size {
-                        width: Dimension::length(400.0),
-                        height: Dimension::length(300.0),
-                    },
+                    size: Size::from_lengths(400.0, 300.0),
                     ..Default::default()
                 },
                 &[node],

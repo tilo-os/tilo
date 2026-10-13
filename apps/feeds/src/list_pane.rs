@@ -667,10 +667,7 @@ impl Widget for ListPane {
             .as_mut()
             .map(|(_, empty)| empty.build_layout(taffy, theme, node_map));
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+            size: taffy::Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
         let node = match self.empty_node {

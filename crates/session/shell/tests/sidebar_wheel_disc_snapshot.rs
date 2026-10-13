@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_test_env::require_capability;
 
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -143,10 +143,7 @@ fn render_disc_at(
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(CANVAS_W_F32),
-                    height: Dimension::length(CANVAS_H_F32),
-                },
+                size: Size::from_lengths(CANVAS_W_F32, CANVAS_H_F32),
                 // Mirrors `left: 0` on the live shell's absolute-positioned sidebar slot:
                 // the logical centre sits off-canvas, only the visible arc paints.
                 justify_content: Some(taffy::JustifyContent::Start),

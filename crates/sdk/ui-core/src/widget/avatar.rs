@@ -16,7 +16,7 @@
 //! immediate [`AvatarFace`] painter for rows, gutters and clusters that a
 //! caller lays out itself.
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{self, Color, Fill};
@@ -673,10 +673,7 @@ impl Widget for Avatar {
         self.side = self.size.side(theme);
         let side = crate::num::f32_of_f64(self.side);
         let style = Style {
-            size: Size {
-                width: Dimension::length(side),
-                height: Dimension::length(side),
-            },
+            size: Size::from_lengths(side, side),
             flex_shrink: 0.0,
             ..Default::default()
         };

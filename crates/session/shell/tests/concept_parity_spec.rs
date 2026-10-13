@@ -36,7 +36,7 @@ use shell::shell::state::FreshId as _;
 use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -452,10 +452,7 @@ fn render_host_to_scene(host: &mut shell::shell::overlay_host::ShellOverlayHost)
     let root_node = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
+                size: Size::from_lengths(W, H),
                 ..Default::default()
             },
             &[child],

@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 
 use osk::OskWidget;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -53,10 +53,7 @@ fn osk_renders_keys_and_toolbar() {
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(w as f32),
-                        height: Dimension::length(h as f32),
-                    },
+                    size: Size::from_lengths(w as f32, h as f32),
                     ..Default::default()
                 },
                 &[child],
