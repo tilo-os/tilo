@@ -907,6 +907,15 @@ strip = "symbols"
 inherits = "wasm-release"
 strip = "none"
 
+# The browser bundles' quick development build (`build.sh --profile quick`).
+# Without debug information and with light optimisation, the linked desktop
+# module is a quarter of `dev`'s, and wasm-bindgen and the splitter take half
+# as long on it, for a compile that is barely slower.
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+debug = false
+
 # Thin-app profile: release settings minus those incompatible with dynamic SDK
 # linking.
 #
