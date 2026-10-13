@@ -30,6 +30,56 @@ use crate::model::{
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
+/// Bring a library written before every picture was named by its content
+/// up to date. A picture's origin path is no longer stored, and a photograph
+/// kept only by path never had bytes another device could read, so it goes.
+fn upgrade_library(
+    doc: &mut tilo_resource::Doc,
+    from: u32,
+) -> Result<(), tilo_resource::ModelError> {
+    use automerge::transaction::Transactable as _;
+    use automerge::{ObjId, ObjType, ROOT, ReadDoc as _, Value};
+    fn map(
+        doc: &tilo_resource::Doc,
+        parent: &ObjId,
+        key: &str,
+    ) -> Result<Option<ObjId>, tilo_resource::ModelError> {
+        Ok(match doc.get(parent, key)? {
+            Some((Value::Object(ObjType::Map), id)) => Some(id),
+            _ => None,
+        })
+    }
+    if from != 1 {
+        return Err(tilo_resource::ModelError::invalid(format!(
+            "no migration from {from}"
+        )));
+    }
+    let Some(photos) = map(doc, &ROOT, "photos")? else {
+        return Ok(());
+    };
+    let ids: Vec<String> = doc.keys(&photos).collect();
+    for id in ids {
+        // A collection keeps each item under its value key, beside its order.
+        let Some(photo) = map(doc, &photos, &id)? else {
+            continue;
+        };
+        let Some(value) = map(doc, &photo, "v")? else {
+            continue;
+        };
+        let Some(image) = map(doc, &value, "image")? else {
+            continue;
+        };
+        if doc.get(&image, "path")?.is_some() {
+            doc.delete(&image, "path")?;
+        }
+        let content: Option<String> = tilo_resource::read_key(doc, &image, "content")?;
+        if content.is_none_or(|hash| hash.is_empty()) {
+            doc.delete(&photos, id.as_str())?;
+        }
+    }
+    Ok(())
+}
+
 /// The most photographs one verb changes at once.
 pub(crate) const MAX_BATCH_PHOTOS: usize = 256;
 
@@ -39,7 +89,9 @@ pub(crate) const MAX_BATCH_PHOTOS: usize = 256;
     children = PhotoLibrary::places,
     search = crate::search::library_search_entries,
     read_content = PhotoLibrary::content,
-    effects = PhotosEffect
+    effects = PhotosEffect,
+    version = 2,
+    migrate = upgrade_library
 )]
 impl PhotoLibrary {
     /// Import photograph.
@@ -53,7 +105,7 @@ impl PhotoLibrary {
         #[param("When it was taken, as its file says")] captured_at: Option<String>,
         #[param("Where it was taken, as its file says")] location: Option<PhotoLocation>,
     ) -> Result<(), Refusal> {
-        let mut photo = LibraryPhoto::from_image(image.portable());
+        let mut photo = LibraryPhoto::from_image(image);
         photo.captured_at = captured_at
             .map(|value| {
                 crate::model::canonical_capture_at_value(&value)
@@ -170,7 +222,7 @@ impl PhotoLibrary {
         if !crate::model::valid_analysis(&analysis)
             || !matches!(
                 analysis.provenance.source.as_str(),
-                "local-ocr" | "local-vision" | "local-description"
+                "local-ocr" | "local-vision"
             )
         {
             return Err(Refusal::new(
@@ -186,7 +238,7 @@ impl PhotoLibrary {
         let merged = crate::model::merge_image_analysis(
             photo.analysis().as_ref(),
             analysis,
-            photo.image.content.as_deref(),
+            &photo.image.content,
         );
         photo.set_analysis(Some(merged));
         Ok(())
@@ -445,9 +497,7 @@ impl ResourceApp for PhotosShell {
                 return Vec::new();
             }
         };
-        let open = OpenImage::from_path(file.name(), image.w, image.h)
-            .with_content(hash)
-            .portable();
+        let open = OpenImage::new(file.name(), image.w, image.h, hash);
         vec![import(&LibraryPhoto::from_image(open))]
     }
 

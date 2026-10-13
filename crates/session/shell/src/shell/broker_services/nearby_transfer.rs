@@ -7,8 +7,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use tilo_action_broker::services::{NearbyTransferRequestContext, NearbyTransferServices};
 
 use super::super::state::WorkspaceAuthority as _;
@@ -32,12 +30,6 @@ const EXPIRED_TRANSFER: &str = "Nearby Send transfer expired or belongs to anoth
 /// immortal capability handle.
 fn nearby_handle_expiry(now: Instant, ttl: Duration) -> Instant {
     now.checked_add(ttl).unwrap_or(now)
-}
-
-pub(super) fn fresh_handle_bytes() -> [u8; 16] {
-    let mut bytes = [0_u8; 16];
-    UnwrapErr(SysRng).fill_bytes(&mut bytes);
-    bytes
 }
 
 #[derive(Clone)]
@@ -79,7 +71,7 @@ impl NearbyTargetRegistry {
         }
         loop {
             let handle =
-                runtime_collab::NearbyTargetHandle::from_issued_bytes(fresh_handle_bytes());
+                runtime_collab::NearbyTargetHandle::from_issued_bytes(crate::random::bytes::<16>());
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
                     handle,
@@ -170,8 +162,9 @@ impl NearbyTransferRegistry {
             return None;
         }
         loop {
-            let handle =
-                runtime_collab::NearbyTransferHandle::from_issued_bytes(fresh_handle_bytes());
+            let handle = runtime_collab::NearbyTransferHandle::from_issued_bytes(
+                crate::random::bytes::<16>(),
+            );
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
                     handle,
@@ -251,7 +244,9 @@ impl NearbyDestinationRegistry {
         }
         loop {
             let handle =
-                runtime_collab::NearbyDestinationHandle::from_issued_bytes(fresh_handle_bytes());
+                runtime_collab::NearbyDestinationHandle::from_issued_bytes(crate::random::bytes::<
+                    16,
+                >());
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
                     handle,
