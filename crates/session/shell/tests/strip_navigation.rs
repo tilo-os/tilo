@@ -90,6 +90,7 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
             active_tab: ids[0],
             width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
             maximized: false,
+            focus_history: Vec::new(),
         })
         .collect();
 
@@ -391,6 +392,7 @@ fn two_strip_harness() -> (Harness, StripId, StripId, GroupId, Vec<GroupId>) {
             active_tab: 91,
             width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
             maximized: false,
+            focus_history: Vec::new(),
         }],
     });
     tree.desktop.active_group.insert(lower, resident);

@@ -260,7 +260,7 @@ pub fn restore(tree: &mut WorkspaceTree, entry: ClosedTab) -> Option<TabId> {
                 .tabs
                 .insert(at.saturating_add(offset).min(group.tabs.len()), tab);
         }
-        group.active_tab = entry.active_tab;
+        group.activate_tab(entry.active_tab);
         (strip_id, group.id)
     } else {
         if workspace.strips.is_empty() {
@@ -285,6 +285,7 @@ pub fn restore(tree: &mut WorkspaceTree, entry: ClosedTab) -> Option<TabId> {
                 active_tab: entry.active_tab,
                 width: entry.group_width,
                 maximized: false,
+                focus_history: Vec::new(),
             },
         );
         (strip.id, entry.group)
@@ -330,6 +331,7 @@ mod tests {
             active_tab: 2,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }];
         tree
     }

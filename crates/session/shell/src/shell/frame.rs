@@ -5833,6 +5833,7 @@ mod tests {
             active_tab: tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }];
         let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "shared");
         workspace.strips = vec![strip];
@@ -7388,6 +7389,7 @@ mod tests {
                 active_tab: ids[0],
                 width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
                 maximized: false,
+                focus_history: Vec::new(),
             })
             .collect();
 

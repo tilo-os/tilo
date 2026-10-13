@@ -2500,6 +2500,7 @@ mod tests {
                         active_tab: tab_id,
                         width: WindowWidth::Fraction(1_000),
                         maximized: false,
+                        focus_history: Vec::new(),
                     });
                 }
                 (strip.id, target_group, target_tab)

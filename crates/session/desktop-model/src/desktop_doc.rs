@@ -619,6 +619,7 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[(u64, String, Ve
             active_tab,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         return;
     };

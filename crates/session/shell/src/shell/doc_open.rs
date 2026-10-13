@@ -1460,7 +1460,7 @@ mod tests {
                     .window_groups
                     .first_mut()
                 {
-                    g.active_tab = first_tab;
+                    g.activate_tab(first_tab);
                 }
             }
 
